@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<settings>
+    <category label="General">
+        <setting id="server_port" type="number" label="30010" default="7777" />
+        <setting id="default_country" type="labelenum" label="30011" values="DE|AT|CH|EU" default="DE" />
+        <setting id="api_key" type="text" label="API Key" option="hidden" default="" />
+        <setting id="enable_cache" type="bool" label="Enable EPG Caching" default="true" />
+        <setting id="cache_duration" type="number" label="Cache Duration (hours)" default="6" visible="eq(-1,true)" />
+    </category>
+    
+    <category label="Joyn (DE)">
+        <setting id="enable_joyn_de" type="bool" label="Enable Joyn (DE)" default="true" />
+        <setting id="joyn_de_country" type="text" label="Country Code" default="de" visible="false" />
+        <setting id="joyn_de_username" type="text" label="Email" default="" enable="eq(-2,true)" />
+        <setting id="joyn_de_password" type="text" label="Password" option="hidden" default="" enable="eq(-3,true)" />
+
+        <!-- Optional: Proxy settings for DE -->
+        <setting id="joyn_de_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-4,true)" />
+        <setting id="joyn_de_proxy_host" type="text" label="Proxy Host" default="" visible="eq(-1,true)" />
+        <setting id="joyn_de_proxy_port" type="number" label="Proxy Port" default="8080" visible="eq(-2,true)" />
+    </category>
+
+    <!-- Joyn Austria -->
+    <category label="Joyn (AT)">
+        <setting id="enable_joyn_at" type="bool" label="Enable Joyn (AT)" default="false" />
+        <setting id="joyn_at_country" type="text" label="Country Code" default="at" visible="false" />
+        <setting id="joyn_at_username" type="text" label="Email" default="" enable="eq(-2,true)" />
+        <setting id="joyn_at_password" type="text" label="Password" option="hidden" default="" enable="eq(-3,true)" />
+
+        <!-- Optional: Proxy settings for AT -->
+        <setting id="joyn_at_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-4,true)" />
+        <setting id="joyn_at_proxy_host" type="text" label="Proxy Host" default="" visible="eq(-1,true)" />
+        <setting id="joyn_at_proxy_port" type="number" label="Proxy Port" default="8080" visible="eq(-2,true)" />
+    </category>
+
+    <!-- Joyn Switzerland -->
+    <category label="Joyn (CH)">
+        <setting id="enable_joyn_ch" type="bool" label="Enable Joyn (CH)" default="false" />
+        <setting id="joyn_ch_country" type="text" label="Country Code" default="ch" visible="false" />
+        <setting id="joyn_ch_username" type="text" label="Email" default="" enable="eq(-2,true)" />
+        <setting id="joyn_ch_password" type="text" label="Password" option="hidden" default="" enable="eq(-3,true)" />
+
+        <!-- Optional: Proxy settings for CH -->
+        <setting id="joyn_ch_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-4,true)" />
+        <setting id="joyn_ch_proxy_host" type="text" label="Proxy Host" default="" visible="eq(-1,true)" />
+        <setting id="joyn_ch_proxy_port" type="number" label="Proxy Port" default="8080" visible="eq(-2,true)" />
+    </category>
+
+    <!-- RTL+ Provider Settings -->
+    <category id="rtlplus" label="30100">
+        <setting id="rtlplus_username" type="text" label="30101" default="">
+            <level>0</level>
+            <constraints>
+                <allowempty>false</allowempty>
+            </constraints>
+        </setting>
+
+        <setting id="rtlplus_password" type="text" label="30102" default="" option="hidden">
+            <level>0</level>
+            <constraints>
+                <allowempty>false</allowempty>
+            </constraints>
+        </setting>
+
+        <setting id="rtlplus_proxy_enabled" type="bool" label="30110" default="false" />
+        <setting id="rtlplus_proxy_host" type="text" label="30111" visible="eq(-1,true)" />
+        <setting id="rtlplus_proxy_port" type="number" label="30112" visible="eq(-2,true)" />
+    </category>
+    
+    <category label="ZDF">
+        <setting id="enable_zdf" type="bool" label="Enable ZDF" default="true" />
+        <setting id="zdf_username" type="text" label="ZDF Username" default="" visible="eq(-1,true)" />
+        <setting id="zdf_password" type="text" label="ZDF Password" option="hidden" default="" visible="eq(-2,true)" />
+    </category>
+    
+    <category label="ARD">
+        <setting id="enable_ard" type="bool" label="Enable ARD" default="true" />
+    </category>
+</settings>

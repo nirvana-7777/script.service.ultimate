@@ -1,0 +1,113 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: Ultimate Streaming Backend\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2024-02-20 12:00+0000\n"
+"PO-Revision-Date: 2024-02-20 12:00+0000\n"
+"Last-Translator: \n"
+"Language-Team: \n"
+"Language: en_gb\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgctxt "#30001"
+msgid "General"
+msgstr "General"
+
+msgctxt "#30002"
+msgid "Joyn"
+msgstr "Joyn"
+
+msgctxt "#30003"
+msgid "ZDF"
+msgstr "ZDF"
+
+msgctxt "#30004"
+msgid "ARD"
+msgstr "ARD"
+
+msgctxt "#30010"
+msgid "Server Port"
+msgstr "Server Port"
+
+msgctxt "#30011"
+msgid "Default Country"
+msgstr "Default Country"
+
+msgctxt "#30012"
+msgid "API Key"
+msgstr "API Key"
+
+msgctxt "#30013"
+msgid "Enable EPG Caching"
+msgstr "Enable EPG Caching"
+
+msgctxt "#30014"
+msgid "Cache Duration (hours)"
+msgstr "Cache Duration (hours)"
+
+msgctxt "#30020"
+msgid "Enable Joyn"
+msgstr "Enable Joyn"
+
+msgctxt "#30021"
+msgid "Joyn Email"
+msgstr "Joyn Email"
+
+msgctxt "#30022"
+msgid "Joyn Password"
+msgstr "Joyn Password"
+
+msgctxt "#30023"
+msgid "Joyn Country"
+msgstr "Joyn Country"
+
+msgctxt "#30030"
+msgid "Enable ZDF"
+msgstr "Enable ZDF"
+
+msgctxt "#30031"
+msgid "ZDF Username"
+msgstr "ZDF Username"
+
+msgctxt "#30032"
+msgid "ZDF Password"
+msgstr "ZDF Password"
+
+msgctxt "#30040"
+msgid "Enable ARD"
+msgstr "Enable ARD"
+
+msgctxt "#30050"
+msgid "RTL+"
+msgstr "RTL+"
+
+msgctxt "#30051"
+msgid "Enable RTL+"
+msgstr "Enable RTL+"
+
+# RTL+ Settings
+msgctxt "#30100"
+msgid "RTL+"
+msgstr ""
+
+msgctxt "#30101"
+msgid "Username"
+msgstr ""
+
+msgctxt "#30102"
+msgid "Password"
+msgstr ""
+
+msgctxt "#30110"
+msgid "Enable Proxy"
+msgstr ""
+
+msgctxt "#30111"
+msgid "Proxy Host"
+msgstr ""
+
+msgctxt "#30112"
+msgid "Proxy Port"
+msgstr ""
