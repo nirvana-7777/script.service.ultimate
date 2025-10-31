@@ -125,6 +125,223 @@ class UltimateService:
             response.content_type = 'application/json'
             return json.dumps({'error': f'Failed to fetch manifest via proxy: {str(fetch_err)}'})
 
+    def _generate_m3u_content(self, providers=None, save_to_cache=True, cache_filename=None):
+        """
+        Internal method to generate M3U content for specified providers.
+
+        Args:
+            providers: List of provider names, or None for all providers
+            save_to_cache: Whether to save to cache
+            cache_filename: Cache filename to use
+
+        Returns:
+            M3U content as string
+        """
+        # Get base URL for absolute stream URLs
+        base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
+
+        # Start M3U content
+        m3u_content = "#EXTM3U\n"
+
+        # Determine which providers to process
+        if providers is None:
+            # All providers
+            providers_to_process = self.manager.list_providers()
+            cache_filename = cache_filename or "playlist.m3u"
+        else:
+            # Specific provider(s)
+            providers_to_process = [providers] if isinstance(providers, str) else providers
+            cache_filename = cache_filename or f"{providers_to_process[0]}.m3u"
+
+        for provider_name in providers_to_process:
+            try:
+                # Get channels for this provider
+                channels = self.manager.get_channels(
+                    provider_name=provider_name,
+                    fetch_manifests=False
+                )
+
+                # Add each channel to M3U
+                for channel in channels:
+                    m3u_content += self._generate_m3u_channel_entry(base_url, provider_name, channel)
+
+            except Exception as provider_err:
+                logger.warning(f"Failed to get channels for provider '{provider_name}': {str(provider_err)}")
+                continue
+
+        # Save to cache if requested
+        if save_to_cache and cache_filename:
+            if self.vfs.write_text(cache_filename, m3u_content):
+                logger.info(f"M3U playlist cached to {cache_filename}")
+            else:
+                logger.warning(f"Failed to cache M3U playlist to {cache_filename}")
+
+        return m3u_content
+
+    def _generate_m3u_channel_entry(self, base_url, provider_name, channel):
+        """
+        Generate M3U entry for a single channel.
+
+        Args:
+            base_url: Base URL for stream endpoints
+            provider_name: Name of the provider
+            channel: StreamingChannel object
+
+        Returns:
+            M3U entry as string
+        """
+        entry_content = ""
+
+        # Access StreamingChannel attributes directly
+        channel_id = channel.channel_id
+        channel_name = channel.name
+        channel_logo = channel.logo_url or ''
+
+        # Build stream URL
+        stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream"
+
+        # Add M3U entry with extended info first
+        entry_content += f'#EXTINF:-1 tvg-logo="{channel_logo}" group-title="{provider_name}",{channel_name}\n'
+
+        # Get DRM configs and add KODIPROP directives
+        try:
+            drm_configs = self.manager.get_channel_drm_configs(
+                provider_name=provider_name,
+                channel_id=channel_id
+            )
+
+            if drm_configs:
+                drm_directives = self._generate_drm_directives(drm_configs)
+                entry_content += drm_directives
+
+        except Exception as drm_err:
+            logger.debug(f"Could not get DRM for {provider_name}/{channel_id}: {str(drm_err)}")
+
+        # Add stream URL
+        entry_content += f'{stream_url}\n'
+
+        return entry_content
+
+    def _generate_drm_directives(self, drm_configs):
+        """
+        Generate KODIPROP directives for DRM configuration.
+
+        Args:
+            drm_configs: List of DRM configurations
+
+        Returns:
+            DRM directives as string
+        """
+        directives = ""
+
+        # Prioritize: clearkey > widevine > playready
+        selected_drm = None
+        priority_order = ['org.w3.clearkey', 'com.widevine.alpha', 'com.microsoft.playready']
+
+        for priority_system in priority_order:
+            for drm in drm_configs:
+                drm_dict = drm.to_dict() if hasattr(drm, 'to_dict') else drm
+                if priority_system in drm_dict:
+                    selected_drm = (priority_system, drm_dict[priority_system])
+                    break
+            if selected_drm:
+                break
+
+        if selected_drm:
+            drm_system, drm_data = selected_drm
+
+            # Add KODIPROP directives
+            directives += "#KODIPROP:inputstream=inputstream.adaptive\n"
+            directives += "#KODIPROP:inputstream.adaptive.manifest_type=mpd\n"
+
+            # Build DRM legacy string
+            drm_legacy_parts = [drm_system]
+
+            license_info = drm_data.get('license', {})
+
+            # Add license server URL or keyids
+            if drm_system == 'org.w3.clearkey' and license_info.get('keyids'):
+                # ClearKey: format as kid:key,kid:key
+                keyids = license_info['keyids']
+                keys_str = ','.join([f"{kid}:{key}" for kid, key in keyids.items()])
+                drm_legacy_parts.append(keys_str)
+            elif license_info.get('server_url'):
+                # Widevine/PlayReady: add license server URL
+                drm_legacy_parts.append(license_info['server_url'])
+
+                # Add headers if present (URL-encoded)
+                if license_info.get('req_headers'):
+                    req_headers = self._process_license_headers(license_info['req_headers'])
+                    if req_headers:
+                        drm_legacy_parts.append(req_headers)
+
+            # Join parts with pipe separator
+            drm_legacy = '|'.join(drm_legacy_parts)
+            directives += f"#KODIPROP:inputstream.adaptive.drm_legacy={drm_legacy}\n"
+
+        return directives
+
+    def _process_license_headers(self, req_headers):
+        """
+        Process license headers and convert to URL-encoded format.
+
+        Args:
+            req_headers: Headers in various formats (dict, JSON string, query string)
+
+        Returns:
+            URL-encoded headers string
+        """
+        if isinstance(req_headers, str):
+            # Check if it's JSON format
+            if req_headers.strip().startswith('{'):
+                try:
+                    # Parse JSON and convert to URL-encoded
+                    headers_dict = json.loads(req_headers)
+                    return urlencode(headers_dict)
+                except json.JSONDecodeError:
+                    # If not JSON, try to parse as query string
+                    try:
+                        headers_dict = dict(parse_qsl(req_headers))
+                        return urlencode(headers_dict)
+                    except:
+                        logger.warning(f"Failed to parse headers: {req_headers}")
+                        return req_headers
+            else:
+                # Assume it's already URL-encoded or query string format
+                try:
+                    headers_dict = dict(parse_qsl(req_headers))
+                    return urlencode(headers_dict)
+                except:
+                    return req_headers
+        elif isinstance(req_headers, dict):
+            # Convert dict to URL-encoded string
+            return urlencode(req_headers)
+        else:
+            logger.warning(f"Unsupported headers type: {type(req_headers)}")
+            return str(req_headers)
+
+    def _generate_m3u_all(self, save_to_cache: bool = False) -> str:
+        """Internal method to generate M3U for all providers."""
+        logger.info("Generating M3U playlist for all providers")
+        m3u_content = self._generate_m3u_content(providers=None, save_to_cache=save_to_cache)
+
+        # Set appropriate headers for M3U
+        response.content_type = 'audio/x-mpegurl; charset=utf-8'
+        response.headers['Content-Disposition'] = 'attachment; filename="playlist.m3u8"'
+
+        return m3u_content
+
+    def _generate_m3u_provider(self, provider: str, save_to_cache: bool = False) -> str:
+        """Internal method to generate M3U for a specific provider."""
+        logger.info(f"Generating M3U playlist for provider '{provider}'")
+        m3u_content = self._generate_m3u_content(providers=provider, save_to_cache=save_to_cache)
+
+        # Set appropriate headers for M3U
+        response.content_type = 'audio/x-mpegurl; charset=utf-8'
+        response.headers['Content-Disposition'] = f'attachment; filename="{provider}_playlist.m3u8"'
+
+        return m3u_content
+
     def setup_routes(self):
         @self.app.route('/api/providers')
         def list_providers():
@@ -625,262 +842,6 @@ class UltimateService:
                 logger.error(f"Error deleting cache: {e}")
                 response.status = 500
                 return {'error': str(e)}
-
-    def _generate_m3u_all(self, save_to_cache: bool = False) -> str:
-        """
-        Internal method to generate M3U for all providers.
-
-        Args:
-            save_to_cache: Whether to save generated M3U to cache file
-
-        Returns:
-            M3U content as string
-        """
-        # Get base URL for absolute stream URLs
-        base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
-
-        # Start M3U content
-        m3u_content = "#EXTM3U\n"
-
-        # Get all providers
-        providers = self.manager.list_providers()
-
-        for provider_name in providers:
-            try:
-                # Get channels for this provider
-                channels = self.manager.get_channels(
-                    provider_name=provider_name,
-                    fetch_manifests=False
-                )
-
-                # Add each channel to M3U
-                for channel in channels:
-                    # Access StreamingChannel attributes directly
-                    channel_id = channel.channel_id
-                    channel_name = channel.name
-                    channel_logo = channel.logo_url or ''
-
-                    # Build stream URL
-                    stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream"
-
-                    # Add M3U entry with extended info first
-                    m3u_content += f'#EXTINF:-1 tvg-logo="{channel_logo}" group-title="{provider_name}",{channel_name}\n'
-
-                    # Get DRM configs and add KODIPROP directives
-                    try:
-                        drm_configs = self.manager.get_channel_drm_configs(
-                            provider_name=provider_name,
-                            channel_id=channel_id
-                        )
-
-                        if drm_configs:
-                            # Prioritize: clearkey > widevine > playready
-                            selected_drm = None
-                            priority_order = ['org.w3.clearkey', 'com.widevine.alpha', 'com.microsoft.playready']
-
-                            for priority_system in priority_order:
-                                for drm in drm_configs:
-                                    drm_dict = drm.to_dict() if hasattr(drm, 'to_dict') else drm
-                                    if priority_system in drm_dict:
-                                        selected_drm = (priority_system, drm_dict[priority_system])
-                                        break
-                                if selected_drm:
-                                    break
-
-                            if selected_drm:
-                                drm_system, drm_data = selected_drm
-
-                                # Add KODIPROP directives
-                                m3u_content += "#KODIPROP:inputstream=inputstream.adaptive\n"
-                                m3u_content += "#KODIPROP:inputstream.adaptive.manifest_type=mpd\n"
-
-                                # Build DRM legacy string
-                                drm_legacy_parts = [drm_system]
-
-                                license_info = drm_data.get('license', {})
-
-                                # Add license server URL or keyids
-                                if drm_system == 'org.w3.clearkey' and license_info.get('keyids'):
-                                    # ClearKey: format as kid:key,kid:key
-                                    keyids = license_info['keyids']
-                                    keys_str = ','.join([f"{kid}:{key}" for kid, key in keyids.items()])
-                                    drm_legacy_parts.append(keys_str)
-                                elif license_info.get('server_url'):
-                                    # Widevine/PlayReady: add license server URL
-                                    drm_legacy_parts.append(license_info['server_url'])
-
-                                    # Add headers if present (URL-encoded)
-                                    if license_info.get('req_headers'):
-                                        req_headers = license_info['req_headers']
-                                        # If req_headers is a string, try to parse it
-                                        if isinstance(req_headers, str):
-                                            # Assume it's already in key=value&key=value format or similar
-                                            # Just ensure it's URL-encoded
-                                            if '&' in req_headers or '=' in req_headers:
-                                                # Parse and re-encode to ensure proper encoding
-                                                try:
-                                                    headers_dict = dict(parse_qsl(req_headers))
-                                                    req_headers = urlencode(headers_dict)
-                                                except:
-                                                    # If parsing fails, use as-is
-                                                    pass
-                                        elif isinstance(req_headers, dict):
-                                            # Convert dict to URL-encoded string
-                                            req_headers = urlencode(req_headers)
-
-                                        drm_legacy_parts.append(req_headers)
-
-                                # Join parts with pipe separator
-                                drm_legacy = '|'.join(drm_legacy_parts)
-                                m3u_content += f"#KODIPROP:inputstream.adaptive.drm_legacy={drm_legacy}\n"
-
-                    except Exception as drm_err:
-                        logger.debug(f"Could not get DRM for {provider_name}/{channel_id}: {str(drm_err)}")
-
-                    # Add stream URL
-                    m3u_content += f'{stream_url}\n'
-
-            except Exception as provider_err:
-                logger.warning(f"Failed to get channels for provider '{provider_name}': {str(provider_err)}")
-                continue
-
-        # Save to cache if requested
-        if save_to_cache:
-            cache_file = "playlist.m3u"
-            if self.vfs.write_text(cache_file, m3u_content):
-                logger.info(f"M3U playlist cached to {cache_file}")
-            else:
-                logger.warning(f"Failed to cache M3U playlist to {cache_file}")
-
-        # Set appropriate headers for M3U
-        response.content_type = 'audio/x-mpegurl; charset=utf-8'
-        response.headers['Content-Disposition'] = 'attachment; filename="playlist.m3u8"'
-
-        return m3u_content
-
-    def _generate_m3u_provider(self, provider: str, save_to_cache: bool = False) -> str:
-        """
-        Internal method to generate M3U for a specific provider.
-
-        Args:
-            provider: Provider name
-            save_to_cache: Whether to save generated M3U to cache file
-
-        Returns:
-            M3U content as string
-        """
-        # Get base URL for absolute stream URLs
-        base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
-
-        # Start M3U content
-        m3u_content = "#EXTM3U\n"
-
-        # Get channels for this provider
-        channels = self.manager.get_channels(
-            provider_name=provider,
-            fetch_manifests=False
-        )
-
-        # Add each channel to M3U
-        for channel in channels:
-            # Access StreamingChannel attributes directly
-            channel_id = channel.channel_id
-            channel_name = channel.name
-            channel_logo = channel.logo_url or ''
-
-            # Build stream URL
-            stream_url = f"{base_url}/api/providers/{provider}/channels/{channel_id}/stream"
-
-            # Add M3U entry with extended info first
-            m3u_content += f'#EXTINF:-1 tvg-logo="{channel_logo}" group-title="{provider}",{channel_name}\n'
-
-            # Get DRM configs and add KODIPROP directives
-            try:
-                drm_configs = self.manager.get_channel_drm_configs(
-                    provider_name=provider,
-                    channel_id=channel_id
-                )
-
-                if drm_configs:
-                    # Prioritize: clearkey > widevine > playready
-                    selected_drm = None
-                    priority_order = ['org.w3.clearkey', 'com.widevine.alpha', 'com.microsoft.playready']
-
-                    for priority_system in priority_order:
-                        for drm in drm_configs:
-                            drm_dict = drm.to_dict() if hasattr(drm, 'to_dict') else drm
-                            if priority_system in drm_dict:
-                                selected_drm = (priority_system, drm_dict[priority_system])
-                                break
-                        if selected_drm:
-                            break
-
-                    if selected_drm:
-                        drm_system, drm_data = selected_drm
-
-                        # Add KODIPROP directives
-                        m3u_content += "#KODIPROP:inputstream=inputstream.adaptive\n"
-                        m3u_content += "#KODIPROP:inputstream.adaptive.manifest_type=mpd\n"
-
-                        # Build DRM legacy string
-                        drm_legacy_parts = [drm_system]
-
-                        license_info = drm_data.get('license', {})
-
-                        # Add license server URL or keyids
-                        if drm_system == 'org.w3.clearkey' and license_info.get('keyids'):
-                            # ClearKey: format as kid:key,kid:key
-                            keyids = license_info['keyids']
-                            keys_str = ','.join([f"{kid}:{key}" for kid, key in keyids.items()])
-                            drm_legacy_parts.append(keys_str)
-                        elif license_info.get('server_url'):
-                            # Widevine/PlayReady: add license server URL
-                            drm_legacy_parts.append(license_info['server_url'])
-
-                            # Add headers if present (URL-encoded)
-                            if license_info.get('req_headers'):
-                                req_headers = license_info['req_headers']
-                                # If req_headers is a string, try to parse it
-                                if isinstance(req_headers, str):
-                                    # Assume it's already in key=value&key=value format or similar
-                                    # Just ensure it's URL-encoded
-                                    if '&' in req_headers or '=' in req_headers:
-                                        # Parse and re-encode to ensure proper encoding
-                                        try:
-                                            headers_dict = dict(parse_qsl(req_headers))
-                                            req_headers = urlencode(headers_dict)
-                                        except:
-                                            # If parsing fails, use as-is
-                                            pass
-                                elif isinstance(req_headers, dict):
-                                    # Convert dict to URL-encoded string
-                                    req_headers = urlencode(req_headers)
-
-                                drm_legacy_parts.append(req_headers)
-
-                        # Join parts with pipe separator
-                        drm_legacy = '|'.join(drm_legacy_parts)
-                        m3u_content += f"#KODIPROP:inputstream.adaptive.drm_legacy={drm_legacy}\n"
-
-            except Exception as drm_err:
-                logger.debug(f"Could not get DRM for {provider}/{channel_id}: {str(drm_err)}")
-
-            # Add stream URL
-            m3u_content += f'{stream_url}\n'
-
-        # Save to cache if requested
-        if save_to_cache:
-            cache_file = f"{provider}.m3u"
-            if self.vfs.write_text(cache_file, m3u_content):
-                logger.info(f"M3U playlist for '{provider}' cached to {cache_file}")
-            else:
-                logger.warning(f"Failed to cache M3U playlist for '{provider}' to {cache_file}")
-
-        # Set appropriate headers for M3U
-        response.content_type = 'audio/x-mpegurl; charset=utf-8'
-        response.headers['Content-Disposition'] = f'attachment; filename="{provider}_playlist.m3u8"'
-
-        return m3u_content
 
 def run_service():
     service = UltimateService()

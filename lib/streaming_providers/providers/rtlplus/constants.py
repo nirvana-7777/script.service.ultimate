@@ -97,8 +97,10 @@ class RTLPlusHeaders:
             'X-Auth-Token': f'Bearer {access_token}',
             'X-Device-Id': device_id or RTLPlusDefaults.DEVICE_ID,
             'X-Device-Name': RTLPlusDefaults.DEVICE_NAME,
+            'User-Agent': user_agent or RTLPlusDefaults.USER_AGENT,
             'Content-Type': 'application/octet-stream',
-            'User-Agent': user_agent or RTLPlusDefaults.USER_AGENT
+            'Origin': RTLPlusDefaults.BASE_WEBSITE.rstrip('/'),
+            'Referer': RTLPlusDefaults.BASE_WEBSITE
         }
 
 
