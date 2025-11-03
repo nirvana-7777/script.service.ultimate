@@ -94,11 +94,10 @@ class RTLPlusHeaders:
     def get_drm_headers(access_token: str, device_id: str = None, user_agent: str = None) -> dict:
         """Get headers for DRM license requests"""
         return {
-            'X-Auth-Token': f'Bearer {access_token}',
+            'X-Auth-Token': access_token,
             'X-Device-Id': device_id or RTLPlusDefaults.DEVICE_ID,
             'X-Device-Name': RTLPlusDefaults.DEVICE_NAME,
             'User-Agent': user_agent or RTLPlusDefaults.USER_AGENT,
-            'Content-Type': 'application/octet-stream',
             'Origin': RTLPlusDefaults.BASE_WEBSITE.rstrip('/'),
             'Referer': RTLPlusDefaults.BASE_WEBSITE
         }
