@@ -57,6 +57,11 @@ class RTLPlusProvider(StreamingProvider):
         return "rtlplus"
 
     @property
+    def provider_label(self) -> str:
+        return 'RTL+'
+
+
+    @property
     def uses_dynamic_manifests(self) -> bool:
         # RTL+ provides relatively stable manifest URLs that can be fetched and cached
         return False

@@ -45,6 +45,13 @@ class StreamingProvider(ABC):
 
     @property
     @abstractmethod
+    def provider_label(self) -> str:
+        """Return the provider label (e.g., 'JOYN', 'ZDF', 'RTL+')"""
+        pass
+
+
+    @property
+    @abstractmethod
     def uses_dynamic_manifests(self) -> bool:
         """
         Return True if provider uses truly dynamic manifests (timestamps, session-dependent)

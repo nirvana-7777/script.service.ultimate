@@ -200,8 +200,16 @@ class UltimateService:
         # Build stream URL
         stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream"
 
+        # Get provider instance to access provider_label
+        try:
+            provider_instance = self.manager.get_provider(provider_name)
+            provider_label = provider_instance.provider_label
+        except (AttributeError, KeyError, ValueError):
+            # Fallback to provider_name if provider_label is not available
+            provider_label = provider_name
+
         # Add M3U entry with extended info first
-        entry_content += f'#EXTINF:-1 tvg-logo="{channel_logo}" group-title="{provider_name}",{channel_name}\n'
+        entry_content += f'#EXTINF:-1 tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
 
         # Get DRM configs and add KODIPROP directives
         try:
@@ -252,7 +260,6 @@ class UltimateService:
 
             # Add KODIPROP directives
             directives += "#KODIPROP:inputstream=inputstream.adaptive\n"
-            directives += "#KODIPROP:inputstream.adaptive.manifest_type=mpd\n"
 
             # Build DRM legacy string
             drm_legacy_parts = [drm_system]
