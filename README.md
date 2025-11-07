@@ -22,12 +22,19 @@ Once configured, your live TV channels from streaming platforms appear directly 
 ## 📺 Supported Providers
 
 Currently supported:
+
 - 🇩🇪 **Joyn (DE)**
 - 🇦🇹 **Joyn (AT)**
 - 🇨🇭 **Joyn (CH)**
 - 🇩🇪 **RTL+**
+- 🇦🇹 **Magenta TV (AT)**
+- 🇭🇷 **Max TV (HR)**
+- 🇵🇱 **Magenta TV (PL)**
+- 🇲🇪 **Magenta TV (ME)**
+- 🇭🇺 **Magenta TV (HU)**
 
 More providers will be added in future versions.
+
 
 ---
 

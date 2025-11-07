@@ -380,17 +380,17 @@ class BaseAuthenticator(ABC):
 
         return self.credentials is not None and self.credentials.validate()
 
-    # Authentication methods remain mostly unchanged
     def authenticate(self, force_refresh: bool = False) -> BaseAuthToken:
         """Authenticate and get access token with persistent storage"""
         country_str = f" (country: {self.country})" if self.country else ""
         logger.debug(f"[{self.provider_name}{country_str}] Starting authentication, force_refresh={force_refresh}")
 
-        # Check current token state for debugging
+        # DEBUG: Log current token state
         if self._current_token:
-            logger.debug(
-                f"[{self.provider_name}{country_str}] Current token - is_expired: {self._current_token.is_expired}, "
-                f"has_refresh: {bool(self._current_token.refresh_token)}")
+            logger.debug(f"[{self.provider_name}{country_str}] Current token state - "
+                         f"is_expired: {self._current_token.is_expired}, "
+                         f"has_refresh: {bool(self._current_token.refresh_token)}, "
+                         f"needs_refresh: {self._current_token.needs_refresh()}")
         else:
             logger.debug(f"[{self.provider_name}{country_str}] No current token")
 
@@ -399,15 +399,27 @@ class BaseAuthenticator(ABC):
             logger.info(f"[{self.provider_name}{country_str}] Using existing valid token")
             return self._current_token
 
-        # 2. Try refresh if available
-        if (not force_refresh and
+        # 2. ENHANCED REFRESH LOGIC: Attempt refresh if we have a token with refresh capability
+        # This covers both: tokens that need refresh AND expired tokens that can be refreshed
+        should_attempt_refresh = (
+                not force_refresh and
                 self._current_token and
                 self._current_token.refresh_token and
-                self._current_token.needs_refresh()):
+                (self._current_token.needs_refresh() or self._current_token.is_expired)
+        )
 
+        logger.debug(f"[{self.provider_name}{country_str}] Refresh decision - "
+                     f"should_attempt_refresh: {should_attempt_refresh}, "
+                     f"force_refresh: {force_refresh}, "
+                     f"has_token: {bool(self._current_token)}, "
+                     f"has_refresh_token: {bool(self._current_token.refresh_token if self._current_token else False)}, "
+                     f"needs_refresh: {self._current_token.needs_refresh() if self._current_token else False}, "
+                     f"is_expired: {self._current_token.is_expired if self._current_token else False}")
+
+        if should_attempt_refresh:
             logger.info(f"[{self.provider_name}{country_str}] Attempting token refresh")
             try:
-                refreshed_token = self._refresh_token()
+                refreshed_token = self._refresh_token()  # Provider-specific implementation
                 logger.debug(f"[{self.provider_name}{country_str}] Refresh result: {refreshed_token is not None}")
 
                 if refreshed_token:
@@ -416,11 +428,9 @@ class BaseAuthenticator(ABC):
                     logger.info(f"[{self.provider_name}{country_str}] Token refresh successful")
                     return self._current_token
                 else:
-                    logger.debug(
-                        f"[{self.provider_name}{country_str}] Refresh returned None, falling back to full auth")
+                    logger.debug(f"[{self.provider_name}{country_str}] Refresh failed, falling back to full auth")
             except Exception as e:
-                logger.warning(
-                    f"[{self.provider_name}{country_str}] Token refresh failed: {e}, attempting new authentication")
+                logger.warning(f"[{self.provider_name}{country_str}] Token refresh failed: {e}")
 
         # 3. Ensure we have credentials before attempting full authentication
         if not self._ensure_credentials():

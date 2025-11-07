@@ -9,7 +9,7 @@
     </category>
     
     <category label="Joyn (DE)">
-        <setting id="enable_joyn_de" type="bool" label="Enable Joyn (DE)" default="true" />
+        <setting id="enable_joyn_de" type="bool" label="Enable Joyn (DE)" default="false" />
         <setting id="joyn_de_country" type="text" label="Country Code" default="de" visible="false" />
         <setting id="joyn_de_username" type="text" label="Username" default="" enable="eq(-2,true)" />
         <setting id="joyn_de_password" type="text" label="Password" option="hidden" default="" enable="eq(-3,true)" />
@@ -65,6 +65,71 @@
         <setting id="rtlplus_proxy_enabled" type="bool" label="30110" default="false" />
         <setting id="rtlplus_proxy_host" type="text" label="30111" visible="eq(-1,true)" />
         <setting id="rtlplus_proxy_port" type="number" label="30112" visible="eq(-2,true)" />
+    </category>
+
+        <!-- Magenta TV Austria -->
+    <category label="Magenta TV (AT)">
+        <setting id="enable_magentaeu_at" type="bool" label="Enable Magenta TV (AT)" default="false" />
+        <setting id="magentaeu_at_country" type="text" label="Country Code" default="at" visible="false" />
+        <setting id="magentaeu_at_username" type="text" label="Username" default="" enable="eq(-2,true)" />
+        <setting id="magentaeu_at_password" type="text" label="Password" option="hidden" default="" enable="eq(-3,true)" />
+
+        <!-- Optional: Proxy settings for AT -->
+        <setting id="magentaeu_at_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-4,true)" />
+        <setting id="magentaeu_at_proxy_host" type="text" label="Proxy Host" default="" visible="eq(-1,true)" />
+        <setting id="magentaeu_at_proxy_port" type="number" label="Proxy Port" default="8080" visible="eq(-2,true)" />
+    </category>
+
+    <!-- Magenta TV Croatia -->
+    <category label="Max TV (HR)">
+        <setting id="enable_magentaeu_hr" type="bool" label="Enable Max TV (HR)" default="false" />
+        <setting id="magentaeu_hr_country" type="text" label="Country Code" default="hr" visible="false" />
+        <setting id="magentaeu_hr_username" type="text" label="Username" default="" enable="eq(-2,true)" />
+        <setting id="magentaeu_hr_password" type="text" label="Password" option="hidden" default="" enable="eq(-3,true)" />
+
+        <!-- Optional: Proxy settings for HR -->
+        <setting id="magentaeu_hr_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-4,true)" />
+        <setting id="magentaeu_hr_proxy_host" type="text" label="Proxy Host" default="" visible="eq(-1,true)" />
+        <setting id="magentaeu_hr_proxy_port" type="number" label="Proxy Port" default="8080" visible="eq(-2,true)" />
+    </category>
+
+    <!-- Magenta TV Poland -->
+    <category label="Magenta TV (PL)">
+        <setting id="enable_magentaeu_pl" type="bool" label="Enable Magenta TV (PL)" default="false" />
+        <setting id="magentaeu_pl_country" type="text" label="Country Code" default="pl" visible="false" />
+        <setting id="magentaeu_pl_username" type="text" label="Username" default="" enable="eq(-2,true)" />
+        <setting id="magentaeu_pl_password" type="text" label="Password" option="hidden" default="" enable="eq(-3,true)" />
+
+        <!-- Optional: Proxy settings for PL -->
+        <setting id="magentaeu_pl_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-4,true)" />
+        <setting id="magentaeu_pl_proxy_host" type="text" label="Proxy Host" default="" visible="eq(-1,true)" />
+        <setting id="magentaeu_pl_proxy_port" type="number" label="Proxy Port" default="8080" visible="eq(-2,true)" />
+    </category>
+
+    <!-- Magenta TV Montenegro -->
+    <category label="Magenta TV (ME)">
+        <setting id="enable_magentaeu_me" type="bool" label="Enable Magenta TV (ME)" default="false" />
+        <setting id="magentaeu_me_country" type="text" label="Country Code" default="me" visible="false" />
+        <setting id="magentaeu_me_username" type="text" label="Username" default="" enable="eq(-2,true)" />
+        <setting id="magentaeu_me_password" type="text" label="Password" option="hidden" default="" enable="eq(-3,true)" />
+
+        <!-- Optional: Proxy settings for ME -->
+        <setting id="magentaeu_me_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-4,true)" />
+        <setting id="magentaeu_me_proxy_host" type="text" label="Proxy Host" default="" visible="eq(-1,true)" />
+        <setting id="magentaeu_me_proxy_port" type="number" label="Proxy Port" default="8080" visible="eq(-2,true)" />
+    </category>
+
+    <!-- Magenta TV Hungary -->
+    <category label="Magenta TV (HU)">
+        <setting id="enable_magentaeu_hu" type="bool" label="Enable Magenta TV (HU)" default="false" />
+        <setting id="magentaeu_hu_country" type="text" label="Country Code" default="hu" visible="false" />
+        <setting id="magentaeu_hu_username" type="text" label="Username" default="" enable="eq(-2,true)" />
+        <setting id="magentaeu_hu_password" type="text" label="Password" option="hidden" default="" enable="eq(-3,true)" />
+
+        <!-- Optional: Proxy settings for HU -->
+        <setting id="magentaeu_hu_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-4,true)" />
+        <setting id="magentaeu_hu_proxy_host" type="text" label="Proxy Host" default="" visible="eq(-1,true)" />
+        <setting id="magentaeu_hu_proxy_port" type="number" label="Proxy Port" default="8080" visible="eq(-2,true)" />
     </category>
 
 </settings>

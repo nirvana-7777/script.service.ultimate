@@ -396,11 +396,11 @@ class RTLPlusProvider(StreamingProvider):
             print(f"Error parsing DRM configs for RTL+ channel {channel_id}: {e}")
             return []
 
-    def get_drm_configs(self, channel: StreamingChannel, **kwargs) -> List[DRMConfig]:
-        """
-        Get DRM configurations for a channel
-        """
-        return self.get_drm_configs_by_id(channel.channel_id, **kwargs)
+#    def get_drm_configs(self, channel: StreamingChannel, **kwargs) -> List[DRMConfig]:
+#        """
+#        Get DRM configurations for a channel
+#        """
+#        return self.get_drm_configs_by_id(channel.channel_id, **kwargs)
 
     @staticmethod
     def get_epg_data(channel_id: str, **kwargs) -> Optional[Dict]:
@@ -415,7 +415,7 @@ class RTLPlusProvider(StreamingProvider):
         """
         Get license URL for a DRM-protected channel
         """
-        drm_configs = self.get_drm_configs(channel, **kwargs)
+        drm_configs = self.get_drm_configs_by_id(channel.channel_id, **kwargs)
         if drm_configs:
             # Return the first license URL found
             return drm_configs[0].license.server_url

@@ -1,4 +1,4 @@
-# streaming_providers/providers/magenta_eu/auth.py
+# streaming_providers/providers/magentaeu/auth.py
 # -*- coding: utf-8 -*-
 import uuid
 import json
@@ -6,11 +6,17 @@ import base64
 import time
 from typing import Dict, Optional, Any
 from dataclasses import dataclass, field
-from Crypto.Cipher import PKCS1_OAEP
-from Crypto.PublicKey import RSA
+# Updated imports for pycryptodome
+try:
+    # Try pycryptodome first (Kodi script.module.pycryptodome)
+    from Cryptodome.Cipher import PKCS1_OAEP
+    from Cryptodome.PublicKey import RSA
+except ImportError:
+    # Fallback to older pycrypto naming
+    from Crypto.Cipher import PKCS1_OAEP
+    from Crypto.PublicKey import RSA
 
 from ...base.auth.base_auth import BaseAuthenticator, BaseAuthToken, TokenAuthLevel
-from ...base.auth.credentials import UserPasswordCredentials
 from ...base.models.proxy_models import ProxyConfig
 from ...base.utils.logger import logger
 from .constants import (
@@ -36,10 +42,9 @@ from .constants import (
     CALL_TYPES,
     MANAGE_DEVICE,
     BROADCASTING_STREAM_LIMITATION_APPLIES,
-    get_base_url,
     get_bifrost_url,
-    get_natco_key,
-    get_app_key,
+    get_base_url,
+    get_base_headers,
     get_language
 )
 
@@ -49,10 +54,10 @@ class InvalidTokenError(Exception):
     pass
 
 
-def base64url_decode(input: str) -> bytes:
+def base64url_decode(input_str: str) -> bytes:
     """Base64 URL decode"""
-    padding = '=' * (4 - (len(input) % 4))
-    return base64.urlsafe_b64decode(input + padding)
+    padding = '=' * (4 - (len(input_str) % 4))
+    return base64.urlsafe_b64decode(input_str + padding)
 
 
 def decode_jwt(token: str, verify: bool = True) -> Dict[str, Any]:
@@ -80,21 +85,6 @@ def is_token_valid(token: str) -> bool:
         return True
     except InvalidTokenError:
         return False
-
-
-@dataclass
-class MagentaCredentials(UserPasswordCredentials):
-    """Magenta TV credentials with country support"""
-    country: str = DEFAULT_COUNTRY
-
-    def validate(self) -> bool:
-        """Validate credentials"""
-        return bool(self.username and self.password and self.country in SUPPORTED_COUNTRIES)
-
-    @property
-    def credential_type(self) -> str:
-        return "magenta_user_password"
-
 
 @dataclass
 class MagentaAuthToken(BaseAuthToken):
@@ -150,20 +140,12 @@ class MagentaAuthConfig:
         self.x_user_agent = X_USER_AGENT
         self.timeout = DEFAULT_REQUEST_TIMEOUT
 
-    def get_base_headers(self) -> Dict[str, str]:
-        """Get base headers for requests"""
-        return {
-            'User-Agent': self.user_agent,
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-        }
-
     def get_auth_headers(self, call_type: str = CALL_TYPES['GUEST_USER'],
                          flow: str = AUTH_FLOWS['START_UP'],
                          step: str = AUTH_STEPS['GET_ACCESS_TOKEN'],
                          device_id: str = None, session_id: str = None) -> Dict[str, str]:
         """Get authentication headers"""
-        headers = self.get_base_headers()
+        headers = get_base_headers()
         headers.update({
             'X-User-Agent': self.x_user_agent,
             'X-Call-Type': call_type,
@@ -184,7 +166,7 @@ class MagentaAuthConfig:
     def encrypt_password(self, password: str) -> str:
         """Encrypt password using RSA public key"""
         try:
-            rsa_key = self.country_config['rsa_key'],
+            rsa_key = self.country_config['rsa_key']
             if not rsa_key:
                 logger.error(f"No RSA public key configured for country: {self.country}")
                 return password
@@ -206,10 +188,12 @@ class MagentaAuthenticator(BaseAuthenticator):
                  credentials=None,
                  config_dir: Optional[str] = None,
                  http_manager=None,
-                 proxy_config: Optional[ProxyConfig] = None):
-        """
-        Initialize Magenta authenticator
-        """
+                 proxy_config: Optional[ProxyConfig] = None,
+                 device_id: Optional[str] = None,  # New parameter
+                 session_id: Optional[str] = None):  # New parameter
+
+        logger.info(f"=== MagentaAuthenticator.__init__ START ===")
+
         if country not in SUPPORTED_COUNTRIES:
             raise ValueError(f"Unsupported country: {country}. Must be one of: {SUPPORTED_COUNTRIES}")
 
@@ -223,9 +207,10 @@ class MagentaAuthenticator(BaseAuthenticator):
         # Setup config
         self._config = MagentaAuthConfig(self.country, self._http_manager)
 
-        # NOW call parent __init__ - this will setup settings_manager and load session
+        # Call parent init (this will load existing session if available)
+        # Call parent init (this will load existing session if available)
         super().__init__(
-            provider_name='magenta_eu',
+            provider_name='magentaeu',
             settings_manager=settings_manager,
             credentials=credentials,
             country=country,
@@ -233,22 +218,122 @@ class MagentaAuthenticator(BaseAuthenticator):
             enable_kodi_integration=True
         )
 
-        # After parent init, we can extract session data from the loaded token
-        self._extract_session_data_from_token()
+        logger.info(f"=== MagentaAuthenticator.__init__ AFTER super().__init__ ===")
 
-    def _extract_session_data_from_token(self) -> None:
-        """Extract session data from the loaded token (if any)"""
+        # CORRECT LOGIC: Use stored IDs first, then cookie-based, then random
+        final_device_id = None
+        final_session_id = None
+
+        # 1. FIRST PRIORITY: Use stored session IDs from loaded token
         if self._current_token and isinstance(self._current_token, MagentaAuthToken):
-            # Session data is already stored in the token
-            logger.debug("Session data extracted from loaded token")
+            stored_device_id = self._current_token.device_id
+            stored_session_id = self._current_token.session_id
+
+            if stored_device_id and stored_session_id:
+                final_device_id = stored_device_id
+                final_session_id = stored_session_id
+                logger.debug(f"Using stored session IDs - device_id: {final_device_id}, session_id: {final_session_id}")
+
+        # 2. SECOND PRIORITY: Only get cookie-based IDs if no stored IDs available
+        if not final_device_id or not final_session_id:
+            # Get cookie-based IDs (second priority)
+            cookie_device_id, cookie_session_id = device_id, session_id
+
+            # If no cookie IDs provided as parameters, initialize guest session
+            if not cookie_device_id or not cookie_session_id:
+                cookie_device_id, cookie_session_id = self._initialize_guest_session()
+                logger.debug(
+                    f"Initialized guest session from cookies - device_id: {cookie_device_id}, session_id: {cookie_session_id}")
+
+            if cookie_device_id and cookie_session_id:
+                final_device_id = cookie_device_id
+                final_session_id = cookie_session_id
+                logger.debug(
+                    f"Using cookie-based session IDs - device_id: {final_device_id}, session_id: {final_session_id}")
+
+        # 3. LAST RESORT: Generate random IDs (shouldn't happen)
+        if not final_device_id or not final_session_id:
+            final_device_id = str(uuid.uuid4())
+            final_session_id = str(uuid.uuid4())
+            logger.warning(f"CRITICAL: No session IDs available, using random fallback")
+
+        # Ensure current token has the correct IDs
+        if not self._current_token or not isinstance(self._current_token, MagentaAuthToken):
+            self._current_token = MagentaAuthToken(
+                access_token="",
+                refresh_token="",
+                token_type="Bearer",
+                expires_in=0,
+                issued_at=time.time(),
+                device_id=final_device_id,
+                session_id=final_session_id
+            )
         else:
-            # No token loaded, initialize empty session data
-            logger.debug("No token loaded, session data will be initialized on first auth")
+            self._current_token.device_id = final_device_id
+            self._current_token.session_id = final_session_id
+
+        logger.info(f"Final session IDs - device_id: {final_device_id}, session_id: {final_session_id}")
 
     @property
     def auth_endpoint(self) -> str:
         """Authentication endpoint - required by BaseAuthenticator"""
         return API_ENDPOINTS['LOGIN'].format(natco=self.country)
+
+    @property
+    def current_token(self):
+        return self._current_token
+
+    @property
+    def channel_map_id(self):
+        if self._current_token and hasattr(self._current_token, 'channel_map_id'):
+            return self._current_token.channel_map_id
+        return ""
+
+    def get_auth_headers(self, call_type: str, flow: str, step: str) -> Dict[str, str]:
+        return self._config.get_auth_headers(call_type, flow, step)
+
+    def get_epg_headers(self) -> Dict[str, str]:
+        return self.get_auth_headers("GUEST_USER", "START_UP", "EPG_CHANNEL")
+
+    @property
+    def http_manager(self):
+        """Public access to HTTP manager"""
+        return self._http_manager
+
+    def _initialize_guest_session(self) -> tuple[str, str]:
+        """Initialize guest session and get device_id/session_id from cookies"""
+        try:
+            startup_url = f"{get_base_url(self.country)}/epg"
+            headers = get_base_headers()
+
+            response = self._http_manager.get(
+                startup_url,
+                operation='session_init',
+                headers=headers,
+                timeout=DEFAULT_REQUEST_TIMEOUT
+            )
+
+            # Extract cookies from response
+            device_id = ""
+            session_id = ""
+
+            if hasattr(response, 'cookies'):
+                cookies = response.cookies.get_dict()
+                device_id = cookies.get("deviceId", "")
+                session_id = cookies.get("sessionId", "")
+
+            # If no cookies found, generate UUIDs
+            if not device_id or not session_id:
+                device_id = str(uuid.uuid4())
+                session_id = str(uuid.uuid4())
+
+            logger.debug(f"Initialized guest session from cookies - device_id: {device_id}, session_id: {session_id}")
+            return device_id, session_id
+
+        except Exception as e:
+            logger.warning(f"Session initialization failed: {e}")
+            # Generate fallback IDs
+            return str(uuid.uuid4()), str(uuid.uuid4())
 
     def _get_auth_headers(self) -> Dict[str, str]:
         """Get headers for authentication request - required by BaseAuthenticator"""
@@ -270,16 +355,23 @@ class MagentaAuthenticator(BaseAuthenticator):
 
     def _build_auth_payload(self) -> Dict[str, Any]:
         """Build authentication payload - required by BaseAuthenticator"""
-        if not self.credentials or not isinstance(self.credentials, MagentaCredentials):
-            raise Exception("No valid Magenta credentials available")
+        from ...base.auth.credentials import UserPasswordCredentials
 
+        if not self.credentials or not isinstance(self.credentials, UserPasswordCredentials):
+            raise Exception("No valid credentials available")
+
+        # Enhanced validation
+        if not self.credentials.username or not self.credentials.password:
+            raise Exception("Username and password cannot be empty")
+
+        # Get device_id from current token or expect it to be provided via other means
         device_id = ""
         if self._current_token and isinstance(self._current_token, MagentaAuthToken):
             device_id = self._current_token.device_id or ""
 
-        # If no device_id, initialize session
+        # If no device_id, we need to get it from the provider
         if not device_id:
-            device_id, _ = self._initialize_session()
+            device_id = str(uuid.uuid4())
 
         encrypted_password = self._config.encrypt_password(self.credentials.password)
 
@@ -304,33 +396,65 @@ class MagentaAuthenticator(BaseAuthenticator):
                 "broadcastingStreamLimitationApplies": BROADCASTING_STREAM_LIMITATION_APPLIES
             },
             "telekomLogin": {
-                "username": self.credentials.username,
-                "password": encrypted_password
+                "username": self.credentials.username,  # Works for both types!
+                "password": encrypted_password  # Works for both types!
             }
         }
 
     def _create_token_from_response(self, response_data: Dict[str, Any]) -> BaseAuthToken:
         """Create token from API response - required by BaseAuthenticator"""
-        # Get existing session data from current token
+        # PRESERVE the existing session IDs (which follow the correct priority)
         device_id = ""
         session_id = ""
         channel_map_id = ""
 
-        if self._current_token and isinstance(self._current_token, MagentaAuthToken):
+        # Try to get session IDs from multiple sources in priority order:
+
+        # 1. First from the response_data itself (when loading from stored session)
+        if 'device_id' in response_data:
+            device_id = response_data.get('device_id', '')
+        if 'session_id' in response_data:
+            session_id = response_data.get('session_id', '')
+
+        # 2. Then from current token (for new authentications)
+        if (not device_id or not session_id) and self._current_token and isinstance(self._current_token,
+                                                                                    MagentaAuthToken):
             device_id = self._current_token.device_id or ""
             session_id = self._current_token.session_id or ""
             channel_map_id = self._current_token.channel_map_id or ""
 
-        # If no device_id/session_id, initialize session
-        if not device_id or not session_id:
-            device_id, session_id = self._initialize_session()
+        # 3. If we found session IDs, log it
+        if device_id and session_id:
+            logger.debug(f"Creating new token with session IDs - device_id: {device_id}, session_id: {session_id}")
+        else:
+            logger.warning(f"No session IDs found in response_data or current_token during token creation")
+
+        # DUAL KEY SUPPORT: Handle both camelCase (API responses) and snake_case (stored sessions)
+        # Access token
+        access_token = response_data.get('accessToken') or response_data.get('access_token')
+        if not access_token:
+            logger.error(f"CRITICAL: No access token found in response data")
+            logger.error(f"Available keys: {list(response_data.keys())}")
+            raise Exception("No access token found in response data")
+
+        # Refresh token
+        refresh_token = response_data.get('refreshToken') or response_data.get('refresh_token', '')
+
+        # Expires in
+        expires_in = response_data.get('expiresIn') or response_data.get('expires_in', 3600)
+
+        # Token type
+        token_type = response_data.get('tokenType') or response_data.get('token_type', 'Bearer')
+
+        # For stored sessions, issued_at might be in the data, otherwise use current time
+        issued_at = response_data.get('issued_at', time.time())
 
         token = MagentaAuthToken(
-            access_token=response_data['accessToken'],
-            refresh_token=response_data.get('refreshToken', ''),
-            token_type='Bearer',
-            expires_in=response_data.get('expiresIn', 3600),
-            issued_at=time.time(),
+            access_token=access_token,
+            refresh_token=refresh_token,
+            token_type=token_type,
+            expires_in=expires_in,
+            issued_at=issued_at,
             device_id=device_id,
             session_id=session_id,
             channel_map_id=channel_map_id
@@ -338,75 +462,61 @@ class MagentaAuthenticator(BaseAuthenticator):
 
         # Classify token
         token.auth_level = self._classify_token(token)
-        logger.debug(f"Token created and classified as: {token.auth_level.value}")
+        logger.debug(f"Token created successfully from {len(response_data)} data fields")
 
         return token
 
     def get_fallback_credentials(self):
         """Get fallback credentials - required by BaseAuthenticator"""
-        # Return empty credentials as fallback
-        return MagentaCredentials(username="", password="", country=self.country)
-
-    def _initialize_session(self) -> tuple:
-        """Initialize session by visiting startup page, returns (device_id, session_id)"""
-        try:
-            startup_url = API_ENDPOINTS['STARTUP_PAGE'].format(
-                base_url=self._config.country_config['base_url']
-            )
-
-            headers = self._config.get_base_headers()
-            response = self._http_manager.get(
-                startup_url,
-                operation='session_init',
-                headers=headers,
-                timeout=self._config.timeout
-            )
-
-            # Extract cookies
-            device_id = ""
-            session_id = ""
-            if hasattr(response, 'cookies'):
-                cookies = response.cookies.get_dict()
-                device_id = cookies.get("deviceId", str(uuid.uuid4()))
-                session_id = cookies.get("sessionId", str(uuid.uuid4()))
-
-                logger.debug(f"Session initialized - device_id: {device_id}, session_id: {session_id}")
-
-            return device_id, session_id
-
-        except Exception as e:
-            logger.warning(f"Session initialization failed: {e}")
-            # Generate fallback IDs
-            return str(uuid.uuid4()), str(uuid.uuid4())
+        from ...base.auth.credentials import UserPasswordCredentials
+        return UserPasswordCredentials(username="", password="")
 
     def _perform_authentication(self) -> BaseAuthToken:
         """Perform Magenta TV authentication - required by BaseAuthenticator"""
-        if not self.credentials or not isinstance(self.credentials, MagentaCredentials):
-            raise Exception("No valid Magenta credentials available")
+        # Enhanced credential validation - FIXED VERSION
+        if not self.credentials:
+            raise Exception("No credentials available for authentication")
+
+        # Accept both MagentaCredentials AND base UserPasswordCredentials
+        from ...base.auth.credentials import UserPasswordCredentials
+        if not isinstance(self.credentials, UserPasswordCredentials):
+            raise Exception(
+                f"Invalid credential type: {type(self.credentials)}. Expected UserPasswordCredentials or MagentaCredentials")
+
+        # Validate credential content
+        if not self.credentials.username or not self.credentials.password:
+            raise Exception("Username and password are required for authentication")
 
         logger.info(f"Performing Magenta TV authentication for country: {self.country}")
 
-        # Perform login
-        headers = self._get_auth_headers()
-        payload = self._build_auth_payload()
+        try:
+            # Perform login
+            headers = self._get_auth_headers()
+            payload = self._build_auth_payload()
 
-        response = self._http_manager.post(
-            self.auth_endpoint,
-            operation='auth',
-            headers=headers,
-            json_data=payload,
-            timeout=self._config.timeout
-        )
+            logger.debug(f"Authentication payload prepared for user: {self.credentials.username}")
 
-        response.raise_for_status()
-        token_data = response.json()
+            response = self._http_manager.post(
+                self.auth_endpoint,
+                operation='auth',
+                headers=headers,
+                json_data=payload,
+                timeout=self._config.timeout
+            )
 
-        # Handle device limit exceeded
-        if token_data.get("deviceLimitExceed", False):
-            logger.info("Device limit exceeded, attempting token upgrade")
-            token_data = self._upgrade_token(token_data['refreshToken'])
+            response.raise_for_status()
+            token_data = response.json()
 
-        return self._create_token_from_response(token_data)
+            # Handle device limit exceeded
+            if token_data.get("deviceLimitExceed", False):
+                logger.info("Device limit exceeded, attempting token upgrade")
+                token_data = self._upgrade_token(token_data['refreshToken'])
+
+            return self._create_token_from_response(token_data)
+
+        except Exception as e:
+            logger.error(f"Authentication failed for user {self.credentials.username}: {e}")
+            raise
 
     def _upgrade_token(self, refresh_token: str) -> Dict[str, Any]:
         """Upgrade token when device limit is exceeded"""
@@ -432,6 +542,16 @@ class MagentaAuthenticator(BaseAuthenticator):
         response.raise_for_status()
         return response.json()
 
+    def _get_session_data(self) -> tuple[str, str, str]:
+        """Safely get session data from current token"""
+        if isinstance(self._current_token, MagentaAuthToken):
+            return (
+                self._current_token.device_id or "",
+                self._current_token.session_id or "",
+                self._current_token.channel_map_id or ""
+            )
+        return "", "", ""
+
     def _refresh_token(self) -> Optional[BaseAuthToken]:
         """Refresh Magenta TV token - override base method"""
         if not self._current_token or not self._current_token.refresh_token:
@@ -443,18 +563,33 @@ class MagentaAuthenticator(BaseAuthenticator):
 
             refresh_url = API_ENDPOINTS['REFRESH_TOKEN'].format(natco=self.country)
 
+            device_id, session_id, channel_map_id = self._get_session_data()
+
+            # Build headers according to your working example
             headers = self._config.get_auth_headers(
                 call_type=CALL_TYPES['AUTH_USER'],
                 flow=AUTH_FLOWS['START_UP'],
                 step=AUTH_STEPS['REFRESH_TOKEN']
             )
-            headers['Refresh_token'] = self._current_token.refresh_token
 
+            # Add the specific headers from your working example
+            headers.update({
+                'Authorization': f'Bearer {self._current_token.access_token}',
+                'Refresh_token': self._current_token.refresh_token,
+                'channel': 'Tv',
+            })
+
+            # Build payload matching your working example
             payload = {
-                "clientVersion": self._config.app_version,
-                "concurrencyLimitParam": DEVICE_CONCURRENCY_PARAM,
-                "deviceId": self._current_token.device_id or ""
+                "clientVersion": APP_VERSION,  # Use current APP_VERSION
+                "deviceId": device_id,
+                "concurrencyLimitParam": DEVICE_CONCURRENCY_PARAM
             }
+
+            logger.debug(f"Refresh request - URL: {refresh_url}")
+            logger.debug(
+                f"Refresh request - Headers: { {k: v for k, v in headers.items() if k not in ['Authorization', 'Refresh_token']} }")
+            logger.debug(f"Refresh request - Payload: {payload}")
 
             response = self._http_manager.post(
                 refresh_url,
@@ -467,16 +602,16 @@ class MagentaAuthenticator(BaseAuthenticator):
             response.raise_for_status()
             token_data = response.json()
 
-            # Create new token but preserve session data
+            # Create new token with updated data but preserve session IDs
             new_token = MagentaAuthToken(
                 access_token=token_data['accessToken'],
-                refresh_token=token_data.get('refreshToken', ''),
+                refresh_token=token_data.get('refreshToken', self._current_token.refresh_token),
                 token_type='Bearer',
                 expires_in=token_data.get('expiresIn', 3600),
                 issued_at=time.time(),
-                device_id=self._current_token.device_id,
-                session_id=self._current_token.session_id,
-                channel_map_id=self._current_token.channel_map_id
+                device_id=device_id,
+                session_id=session_id,
+                channel_map_id=channel_map_id
             )
 
             # Classify token
@@ -486,6 +621,8 @@ class MagentaAuthenticator(BaseAuthenticator):
 
         except Exception as e:
             logger.warning(f"Token refresh failed: {e}")
+            if hasattr(e, 'response') and hasattr(e.response, 'text'):
+                logger.error(f"Refresh response content: {e.response.text}")
             return None
 
     def _classify_token(self, token: BaseAuthToken) -> TokenAuthLevel:
@@ -494,7 +631,19 @@ class MagentaAuthenticator(BaseAuthenticator):
             if not token or not token.access_token:
                 return TokenAuthLevel.UNKNOWN
 
-            claims = token.get_jwt_claims()
+            # Only MagentaAuthToken has get_jwt_claims method
+            if isinstance(token, MagentaAuthToken):
+                claims = token.get_jwt_claims()
+            else:
+                # For BaseAuthToken, try to decode JWT manually
+                try:
+                    claims = decode_jwt(token.access_token, verify=False)
+                except InvalidTokenError:
+                    return TokenAuthLevel.UNKNOWN
+                except (ValueError, json.JSONDecodeError, UnicodeDecodeError) as e:
+                    logger.debug(f"Error decoding JWT token: {e}")
+                    return TokenAuthLevel.UNKNOWN
+
             if not claims:
                 return TokenAuthLevel.UNKNOWN
 

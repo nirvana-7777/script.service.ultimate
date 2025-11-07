@@ -8,7 +8,7 @@ import urllib.parse
 from datetime import datetime, timedelta
 from base64 import b64decode
 from json import dumps
-from urllib.parse import urlencode
+#from urllib.parse import urlencode
 
 from ...base.provider import StreamingProvider
 from ...base.models import DRMConfig, LicenseConfig, DRMSystem
@@ -550,50 +550,50 @@ class JoynProvider(StreamingProvider):
             logger.error(f"Error getting manifest for {channel.name}: {e}")
             return None
 
-    def get_drm_configs(self,
-                        channel: StreamingChannel,
-                        needs_base64_wrap: bool = False,
-                        **kwargs) -> List[DRMConfig]:
-        """
-        Get DRM configuration for Joyn channels (Widevine)
+#    def get_drm_configs(self,
+#                        channel: StreamingChannel,
+#                        needs_base64_wrap: bool = False,
+#                        **kwargs) -> List[DRMConfig]:
+#        """
+#        Get DRM configuration for Joyn channels (Widevine)
 
-        Args:
-            channel: StreamingChannel object
-            needs_base64_wrap: Whether to wrap the license request in base64
-            **kwargs: Additional parameters
+#        Args:
+#            channel: StreamingChannel object
+#            needs_base64_wrap: Whether to wrap the license request in base64
+#            **kwargs: Additional parameters
 
-        Returns:
-            List of DRMConfig objects (typically contains one Widevine config)
-        """
-        if not channel.license_url:
-            return []  # No DRM if no license URL
+#        Returns:
+#            List of DRMConfig objects (typically contains one Widevine config)
+#        """
+#        if not channel.license_url:
+#            return []  # No DRM if no license URL
 
-        try:
-            # Get fresh auth token if needed
-            if not self.authenticator.is_authenticated():
-                self.bearer_token = self.authenticator.authenticate()
+#        try:
+#            # Get fresh auth token if needed
+#            if not self.authenticator.is_authenticated():
+#                self.bearer_token = self.authenticator.authenticate()
 
-            # Prepare license headers
-            license_headers = DRM_REQUEST_HEADERS.copy()
-            license_headers['Authorization'] = f"Bearer {self.bearer_token}"
+#            # Prepare license headers
+#            license_headers = DRM_REQUEST_HEADERS.copy()
+#            license_headers['Authorization'] = f"Bearer {self.bearer_token}"
 
-            return [
-                DRMConfig(
-                    system=DRMSystem.WIDEVINE,
-                    priority=1,  # Highest priority for Widevine
-                    license=LicenseConfig(
-                        server_url=channel.license_url,
-                        server_certificate=channel.certificate_url,
-                        req_headers=urlencode(license_headers),
-                        use_http_get_request=False,
-                        wrapper="base64" if needs_base64_wrap else None
-                    )
-                )
-            ]
+#            return [
+#                DRMConfig(
+#                    system=DRMSystem.WIDEVINE,
+#                    priority=1,  # Highest priority for Widevine
+#                    license=LicenseConfig(
+#                        server_url=channel.license_url,
+#                        server_certificate=channel.certificate_url,
+#                        req_headers=urlencode(license_headers),
+#                        use_http_get_request=False,
+#                        wrapper="base64" if needs_base64_wrap else None
+#                    )
+#                )
+#            ]
 
-        except Exception as e:
-            logger.error(f"Error generating DRM config for {channel.name}: {e}")
-            return []
+#        except Exception as e:
+#            logger.error(f"Error generating DRM config for {channel.name}: {e}")
+#            return []
 
     def get_manifest(self,
                      channel_id: str,

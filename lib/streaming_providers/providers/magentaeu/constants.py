@@ -1,7 +1,9 @@
-# streaming_providers/providers/magenta_eu/constants.py
+# streaming_providers/providers/magentaeu/constants.py
 # ============================================================================
 # Magenta TV Configuration
 # ============================================================================
+
+from typing import Dict
 
 # Supported countries
 SUPPORTED_COUNTRIES = ['hr', 'pl', 'me', 'at', 'hu']
@@ -212,3 +214,33 @@ def get_language(country: str) -> str:
 def get_rsa_key(country: str) -> str:
     """Get RSA public key for country"""
     return get_country_config(country)['rsa_key']
+
+def get_base_headers() -> Dict[str, str]:
+    """Get base headers for requests"""
+    return {
+        'User-Agent': USER_AGENT,
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+    }
+
+def get_guest_headers(country: str, device_id: str, session_id: str) -> Dict[str, str]:
+    """Get headers for guest/unauthenticated requests"""
+    import uuid
+
+    headers = {
+        'User-Agent': USER_AGENT,
+        'X-User-Agent': X_USER_AGENT,
+        'X-Call-Type': 'GUEST_USER',
+        'X-Tv-Flow': 'START_UP',
+        'X-Tv-Step': 'EPG_CHANNEL',
+        'x-request-session-id': session_id,
+        'x-request-tracking-id': str(uuid.uuid4()),
+        'Tenant': 'tv',
+        'Origin': get_base_url(country),
+        'App_key': get_app_key(country),
+        'App_version': APP_VERSION,
+        'Device-Id': device_id,
+        'Device-Name': DEVICE_NAME,
+    }
+    return headers
+

@@ -1,7 +1,7 @@
 # streaming_providers/base/manager.py
 from typing import Dict, List, Optional
 from .provider import StreamingProvider
-from .models import StreamingChannel
+from .models import StreamingChannel, DRMSystem
 from .drm import DRMPluginManager
 from .utils.logger import logger
 
@@ -339,48 +339,51 @@ class ProviderManager:
         return xmltv_data
 
     def get_channel_drm_configs(self, provider_name: str, channel_id: str, **kwargs) -> List:
-        """
-        Get DRM configurations for a specific channel from a provider.
-        DRM configs are processed through registered plugins before being returned.
-
-        Args:
-            provider_name: Name of the provider
-            channel_id: ID of the channel
-            **kwargs: Additional arguments (e.g., country)
-
-        Returns:
-            List of DRM configuration objects (processed by plugins if available)
-
-        Raises:
-            ValueError: If provider not found
-        """
         provider = self.get_provider(provider_name)
         if not provider:
             logger.error(f"ProviderManager: Cannot get DRM configs - provider '{provider_name}' not found")
             raise ValueError(f"Provider '{provider_name}' not found")
 
         logger.debug(f"ProviderManager: Getting DRM configs for channel '{channel_id}' from provider '{provider_name}'")
-        
+
         # Get raw DRM configs from provider
         drm_configs = provider.get_drm_configs_by_id(channel_id, **kwargs)
         logger.debug(f"ProviderManager: Retrieved {len(drm_configs)} raw DRM configs")
-        
-        # Get manifest URL for the channel
-        manifest_url = provider.get_manifest(channel_id, **kwargs)
-        
-        # Extract PSSH data from manifest if available
+
+        # Check if we need PSSH data at all
         pssh_data_list = []
-        if manifest_url:
-            logger.debug(f"ProviderManager: Extracting PSSH data from manifest")
-            try:
-                pssh_data_list = self._extract_pssh_from_manifest(manifest_url)
-                logger.debug(f"ProviderManager: Extracted {len(pssh_data_list)} PSSH data entries")
-            except Exception as e:
-                logger.warning(f"ProviderManager: Could not extract PSSH data from manifest: {e}")
-                
+        if drm_configs and self.drm_plugin_manager.plugins:
+            # Get DRM systems from configs
+            config_drm_systems = {config.system for config in drm_configs}
+            # Get DRM systems that have plugins (excluding GENERIC which processes all)
+            plugin_drm_systems = set(self.drm_plugin_manager.plugins.keys())
+
+            # Check if there's overlap OR if there's a GENERIC plugin (which processes everything)
+            needs_pssh = bool(
+                config_drm_systems & plugin_drm_systems or
+                DRMSystem.GENERIC in plugin_drm_systems
+            )
+
+            if needs_pssh:
+                manifest_url = provider.get_manifest(channel_id, **kwargs)
+                if manifest_url:
+                    logger.debug(
+                        f"ProviderManager: PSSH needed - extracting from manifest (matching systems: {config_drm_systems & plugin_drm_systems})")
+                    try:
+                        pssh_data_list = self._extract_pssh_from_manifest(manifest_url)
+                        logger.debug(f"ProviderManager: Extracted {len(pssh_data_list)} PSSH data entries")
+                    except Exception as e:
+                        logger.warning(f"ProviderManager: Could not extract PSSH data from manifest: {e}")
+            else:
+                logger.debug(
+                    f"ProviderManager: No matching plugins for DRM systems {config_drm_systems}, skipping PSSH extraction")
+        else:
+            logger.debug(f"ProviderManager: No configs or no plugins registered, skipping PSSH extraction")
+
         # Process through DRM plugins with PSSH data
         processed_configs = self.drm_plugin_manager.process_drm_configs(drm_configs, pssh_data_list, **kwargs)
-        logger.info(f"ProviderManager: Processed DRM configs for channel '{channel_id}' - {len(processed_configs)} configs returned")
+        logger.info(
+            f"ProviderManager: Processed DRM configs for channel '{channel_id}' - {len(processed_configs)} configs returned")
 
         return processed_configs
 

@@ -1,17 +1,16 @@
-# streaming_providers/providers/magenta_eu/provider.py
+# streaming_providers/providers/magentaeu/provider.py
 # -*- coding: utf-8 -*-
-from typing import Dict, Optional, List
-import json
 import time
-from datetime import datetime, timedelta
+from typing import Dict, Optional, List
 
+from ...base.auth import UserPasswordCredentials
 from ...base.provider import StreamingProvider
 from ...base.models import DRMConfig, LicenseConfig, DRMSystem
 from ...base.models.streaming_channel import StreamingChannel
 from ...base.network import HTTPManagerFactory, ProxyConfigManager
 from ...base.models.proxy_models import ProxyConfig
 from ...base.utils.logger import logger
-from .auth import MagentaAuthenticator, MagentaCredentials
+from .auth import MagentaAuthenticator
 from .constants import (
     SUPPORTED_COUNTRIES,
     DEFAULT_COUNTRY,
@@ -24,10 +23,10 @@ from .constants import (
     WV_URL,
     CONTENT_TYPE_LIVE,
     STREAMING_FORMAT_DASH,
-    get_base_url,
     get_bifrost_url,
     get_natco_key,
-    get_app_key,
+    get_guest_headers,
+    get_base_url,
     get_language
 )
 
@@ -39,9 +38,8 @@ class MagentaProvider(StreamingProvider):
                  config_dir: Optional[str] = None,
                  proxy_config: Optional[ProxyConfig] = None,
                  proxy_url: Optional[str] = None):
-        """
-        Initialize Magenta provider
-        """
+
+        logger.info(f"=== MagentaProvider.__init__ START for country: {country} ===")
         super().__init__(country=country)
 
         if country not in SUPPORTED_COUNTRIES:
@@ -54,47 +52,46 @@ class MagentaProvider(StreamingProvider):
                 self._load_proxy_from_manager(config_dir)
         )
 
-        if self.proxy_config:
-            logger.info("Using proxy configuration for Magenta TV")
-        else:
-            logger.debug("No proxy configuration found for Magenta TV")
-
         # Create HTTP manager
         self.http_manager = HTTPManagerFactory.create_for_provider(
-            provider_name='magenta_eu',
+            provider_name='magentaeu',
             proxy_config=self.proxy_config,
             user_agent=USER_AGENT,
             timeout=DEFAULT_REQUEST_TIMEOUT,
             max_retries=DEFAULT_MAX_RETRIES
         )
 
-        # Create authenticator
+        # Initialize ALL instance attributes
+        self._device_id = None
+        self._session_id = None
+        self.bearer_token = None
+        self._channels_cache = None
+        self._channels_cache_timestamp = 0
+        self._cache_ttl = 3600  # Cache TTL in seconds
+
+        # Create authenticator - it will handle session initialization internally
         self.authenticator = MagentaAuthenticator(
             country=country,
             config_dir=config_dir,
             http_manager=self.http_manager,
             proxy_config=self.proxy_config
+            # No need to pass device_id/session_id - authenticator handles this
         )
 
-        # Authenticate
-        try:
-            self.bearer_token = self.authenticator.get_bearer_token()
-        except Exception as e:
-            logger.warning(f"Could not authenticate during initialization: {e}")
-            self.bearer_token = None
+        logger.info(f"=== MagentaProvider.__init__ COMPLETE ===")
 
     def _load_proxy_from_manager(self, config_dir: Optional[str]) -> Optional[ProxyConfig]:
         """Load proxy configuration from ProxyConfigManager"""
         try:
             proxy_manager = ProxyConfigManager(config_dir)
-            return proxy_manager.get_proxy_config('magenta_eu', self.country)
+            return proxy_manager.get_proxy_config('magentaeu', self.country)
         except Exception as e:
             logger.warning(f"Could not load proxy from ProxyConfigManager: {e}")
             return None
 
     @property
     def provider_name(self) -> str:
-        return 'magenta_eu'
+        return 'magentaeu'
 
     @property
     def provider_label(self) -> str:
@@ -105,8 +102,9 @@ class MagentaProvider(StreamingProvider):
         return False
 
     def authenticate(self, **kwargs) -> str:
-        """Authenticate and return bearer token"""
+        logger.info(f"=== MagentaProvider.authenticate() CALLED with kwargs: {kwargs} ===")
         self.bearer_token = self.authenticator.get_bearer_token(force_refresh=kwargs.get('force_refresh', False))
+        logger.info(f"=== MagentaProvider.authenticate() COMPLETE ===")
         return self.bearer_token
 
     def get_dynamic_manifest_params(self, channel: StreamingChannel, **kwargs) -> Optional[str]:
@@ -118,35 +116,27 @@ class MagentaProvider(StreamingProvider):
         return self.bearer_token
 
     def fetch_channels(self, **kwargs) -> List[StreamingChannel]:
-        """Fetch available channels from Magenta TV"""
+        """Fetch available channels from Magenta TV - no authentication required"""
         try:
-            # Get user account to ensure we have channel map ID
-            self.authenticator.get_user_account()
+            # USE AUTHENTICATOR'S SESSION IDs (single source of truth)
+            device_id = self.authenticator.current_token.device_id if self.authenticator.current_token else ""
+            session_id = self.authenticator.current_token.session_id if self.authenticator.current_token else ""
 
             channels_url = API_ENDPOINTS['EPG_CHANNELS'].format(
                 bifrost_url=get_bifrost_url(self.country)
             )
 
-            # Get channel map ID from authenticator
-            channel_map_id = ""
-            if (self.authenticator._current_token and
-                    isinstance(self.authenticator._current_token,
-                               self.authenticator.__class__.__bases__[0].MagentaAuthToken)):
-                channel_map_id = self.authenticator._current_token.channel_map_id or ""
+            headers = get_guest_headers(self.country, device_id, session_id)
 
             params = {
-                'channelMap_id': channel_map_id,
+                'channelMap_id': '',
                 'includeVirtualChannels': 'true',
                 'natco_key': get_natco_key(self.country),
                 'app_language': get_language(self.country),
                 'natco_code': self.country
             }
 
-            headers = self.authenticator._config.get_auth_headers(
-                call_type="GUEST_USER",
-                flow="START_UP",
-                step="EPG_CHANNEL"
-            )
+            logger.debug(f"Fetching channels with device_id: {device_id}, session_id: {session_id}")
 
             response = self.http_manager.get(
                 channels_url,
@@ -160,10 +150,16 @@ class MagentaProvider(StreamingProvider):
             channels_data = response.json()
             channels = self._process_channels_response(channels_data)
 
+            self._channels_cache = channels
+            self._channels_cache_timestamp = time.time()
+
             logger.info(f"Successfully fetched {len(channels)} channels for country {self.country}")
             return channels
 
         except Exception as e:
+            logger.error(f"Error fetching channels from Magenta TV: {e}")
+            if hasattr(e, 'response') and hasattr(e.response, 'text'):
+                logger.error(f"Response content: {e.response.text}")
             raise Exception(f"Error fetching channels from Magenta TV: {e}")
 
     def _process_channels_response(self, response_data: Dict) -> List[StreamingChannel]:
@@ -234,7 +230,7 @@ class MagentaProvider(StreamingProvider):
             if not channel.manifest:
                 return None
 
-            # Get DRM config
+            # Get DRM config (this requires authentication)
             drm_config = self.get_drm_config(channel)
             if drm_config:
                 channel.drm_config = drm_config
@@ -246,53 +242,141 @@ class MagentaProvider(StreamingProvider):
             return None
 
     def get_manifest(self, channel_id: str, **kwargs) -> Optional[str]:
-        """
-        Get manifest URL for a specific channel by ID
-        For Magenta TV, manifests are already provided in channel data
-        """
-        # Since manifests are provided directly in channel data,
-        # this would need to fetch channel data again or use cached data
+        if self._channels_cache:
+            for channel in self._channels_cache:
+                if channel.channel_id == channel_id:
+                    return channel.manifest
         return None
+
+    def get_drm_configs_by_id(self, channel_id: str, **kwargs) -> List[DRMConfig]:
+        """Get DRM configurations for channel by ID"""
+        logger.info(f"=== get_drm_configs_by_id CALLED for channel_id: {channel_id} ===")
+
+        # Find channel in cache
+        channel = None
+        if self._channels_cache:
+            for cached_channel in self._channels_cache:
+                if cached_channel.channel_id == channel_id:
+                    channel = cached_channel
+                    break
+
+        if not channel:
+            logger.warning(f"Channel with ID {channel_id} not found in cache")
+            return []
+
+        # Get DRM config using the existing method
+        drm_config = self.get_drm_config(channel, **kwargs)
+        return [drm_config] if drm_config else []
 
     def get_drm_configs(self, channel: StreamingChannel, **kwargs) -> List[DRMConfig]:
         """Get DRM configurations for channel"""
+        logger.info(f"=== get_drm_configs CALLED for channel: {channel.name} ===")
         drm_config = self.get_drm_config(channel)
         return [drm_config] if drm_config else []
 
     def get_drm_config(self, channel: StreamingChannel, **kwargs) -> Optional[DRMConfig]:
-        """Get DRM configuration for channel"""
+        """Get DRM configuration for channel with correct authentication"""
         try:
+            import json
+            import base64
+            from .auth import MagentaAuthToken, decode_jwt
+
             pid = channel.cdm.replace("pid=", "") if channel.cdm else ""
+            logger.info(f"=== get_drm_config: Extracted PID: {pid} ===")
+
             if not pid:
+                logger.debug(f"No PID found for channel {channel.name}")
                 return None
 
             license_url = f"{WV_URL}{pid}"
 
-            headers = DRM_REQUEST_HEADERS.copy()
-            headers.update({
-                'Authorization': f'Bearer {self.bearer_token}',
+            # Get access token (authenticate if needed)
+            if not self.bearer_token:
+                try:
+                    self.authenticate()
+                except Exception as e:
+                    logger.warning(f"Authentication failed for DRM config: {e}")
+                    return None
+
+            access_token = self.bearer_token
+            if not access_token:
+                logger.warning("No bearer token available for DRM config")
+                return None
+
+            # Remove 'Bearer ' prefix if present
+            if access_token.startswith('Bearer '):
+                access_token = access_token[7:]
+
+            # Decode JWT token to get account details
+            try:
+                # Get current token from authenticator
+                current_token = self.authenticator.current_token
+
+                # Use the helper method if token is MagentaAuthToken
+                if isinstance(current_token, MagentaAuthToken) and hasattr(current_token, 'get_jwt_claims'):
+                    decoded_payload = current_token.get_jwt_claims()
+                    if not decoded_payload:
+                        logger.warning("Failed to get JWT claims from token")
+                        return None
+                else:
+                    # Fallback: use decode_jwt helper
+                    decoded_payload = decode_jwt(access_token, verify=False)
+
+            except Exception as e:
+                logger.warning(f"Error decoding JWT token for DRM: {e}")
+                return None
+
+            # Extract account information from JWT payload
+            account_id = decoded_payload.get('dc_cts_accountId', '')
+            persona_token = decoded_payload.get('dc_cts_personaToken', '')
+
+            if not account_id or not persona_token:
+                logger.warning("Missing account ID or persona token in JWT payload")
+                return None
+
+            # Create reencoded session for Basic auth
+            import base64
+            reencoded_session = f"{get_base_url(self.country)}/{account_id}:{persona_token}"
+            basic_auth = base64.b64encode(reencoded_session.encode()).decode()
+
+            # Build license headers
+            headers = {
+                'Authorization': f'Basic {basic_auth}',
+                'Content-Type': DRM_REQUEST_HEADERS.get('Content-Type', 'application/octet-stream'),
                 'Origin': get_base_url(self.country),
                 'Referer': f"{get_base_url(self.country)}/",
-            })
+                'User-Agent': USER_AGENT
+            }
 
-            return DRMConfig(
+            # Remove any None values from headers
+            headers = {k: v for k, v in headers.items() if v is not None}
+
+            # Create DRM configuration using LicenseConfig
+            import json
+            drm_config = DRMConfig(
                 system=DRMSystem.WIDEVINE,
-                license_url=license_url,
-                headers=headers,
-                challenge_data=b'',
-                session_id=str(int(time.time()))
+                priority=1,
+                license=LicenseConfig(
+                    server_url=license_url,
+                    req_headers=json.dumps(headers),
+                    req_data="{CHA-RAW}",
+                    use_http_get_request=False
+                )
             )
+
+            logger.debug(f"DRM config created successfully for channel {channel.name}")
+            return drm_config
 
         except Exception as e:
             logger.warning(f"Error creating DRM config for {channel.name}: {e}")
             return None
 
-    def validate_credentials(self, credentials: MagentaCredentials) -> bool:
+    def validate_credentials(self, credentials: UserPasswordCredentials) -> bool:
         """Validate Magenta TV credentials"""
         try:
             # Test authentication with provided credentials
             temp_authenticator = MagentaAuthenticator(
-                country=credentials.country,
+#                country=credentials.country,
                 config_dir=self.authenticator.settings_manager.config_dir if hasattr(
                     self.authenticator.settings_manager, 'config_dir') else None,
                 http_manager=self.http_manager,
@@ -307,6 +391,7 @@ class MagentaProvider(StreamingProvider):
             logger.debug(f"Credential validation failed: {e}")
             return False
 
-    def get_supported_countries(self) -> List[str]:
+    @staticmethod
+    def get_supported_countries() -> List[str]:
         """Get list of supported countries"""
         return SUPPORTED_COUNTRIES.copy()

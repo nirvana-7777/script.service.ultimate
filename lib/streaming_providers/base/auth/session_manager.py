@@ -258,16 +258,7 @@ class SessionManager:
             return False
 
     def load_token_data(self, provider: str, country: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """
-        Load token data for a provider
-
-        Args:
-            provider: Provider name
-            country: Optional country code
-
-        Returns:
-            Dictionary with token data or None if not found/expired
-        """
+        """Load token data for a provider"""
         country_str = f" (country: {country})" if country else ""
 
         logger.debug(f"Loading token data for {provider}{country_str}")
@@ -294,10 +285,20 @@ class SessionManager:
                      f"expires_in={expires_in}, current_time={current_time}, "
                      f"time_until_expiry={time_until_expiry:.0f}")
 
-        if current_time >= (expires_at - 300):  # 5 minute buffer
-            logger.info(f"Token expired for {provider}{country_str} "
-                        f"(expired {abs(time_until_expiry):.0f}s ago)")
-            return None
+        is_expired = current_time >= (expires_at - 300)  # 5 minute buffer
+        has_refresh_token = bool(session_data.get('refresh_token'))
+
+        logger.debug(f"Token status - is_expired: {is_expired}, has_refresh_token: {has_refresh_token}")
+
+        if is_expired:
+            if has_refresh_token:
+                # Token is expired BUT we have a refresh token - return the data so refresh can be attempted
+                logger.info(
+                    f"Token expired for {provider}{country_str} but refresh token available - returning data for refresh")
+                return session_data
+            else:
+                logger.info(f"Token expired for {provider}{country_str} and no refresh token available")
+                return None
 
         logger.info(f"Loaded valid token data for {provider}{country_str} "
                     f"(expires in {time_until_expiry:.0f}s, "

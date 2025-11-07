@@ -69,18 +69,18 @@ class StreamingProvider(ABC):
         """
         pass
 
-    def get_drm_configs(self, channel: StreamingChannel, **kwargs) -> List[DRMConfig]:
-        """
-        Get all DRM configurations for a channel
+#    def get_drm_configs(self, channel: StreamingChannel, **kwargs) -> List[DRMConfig]:
+#        """
+#        Get all DRM configurations for a channel
 
-        Args:
-            channel: Channel to get DRM configs for
-            **kwargs: Additional parameters
+#        Args:
+ #           channel: Channel to get DRM configs for
+  #          **kwargs: Additional parameters
 
-        Returns:
-            List of DRMConfig objects (can be empty if no DRM is used)
-        """
-        return []
+   #     Returns:
+    #        List of DRMConfig objects (can be empty if no DRM is used)
+     #   """
+      #  return []
 
     def get_drm_configs_by_id(self, channel_id: str, **kwargs) -> List[DRMConfig]:
         """
