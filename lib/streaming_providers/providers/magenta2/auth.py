@@ -426,18 +426,19 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
                 issuer_url = None
                 oauth_endpoint = None
                 line_auth_endpoint = self._authorize_tokens_url  # From manifest
-                backchannel_start_url = None  # NEW
-                qr_code_url_template = None  # NEW
+                backchannel_start_url = None
+                qr_code_url_template = None  # NEW: Get from dynamic endpoints
+
+                # NEW: Get QR code URL from dynamic endpoints (bootstrap)
+                if 'login_qr_code' in self._dynamic_endpoints:
+                    qr_code_url_template = self._dynamic_endpoints['login_qr_code']
+                    logger.debug(f"QR code URL from dynamic endpoints: {qr_code_url_template}")
 
                 if self._openid_config:
                     issuer_url = self._openid_config.get('issuer')
                     oauth_endpoint = self._openid_config.get('token_endpoint')
-                    # NEW: Try to get backchannel from OpenID config
-                    backchannel_start_url = self._openid_config.get('backchannel_authentication_endpoint')
-
-                # NEW: Get QR code URL from dynamic endpoints
-                if 'login_qr_code' in self._dynamic_endpoints:
-                    qr_code_url_template = self._dynamic_endpoints['login_qr_code']
+                    # Get backchannel from OpenID config
+                    backchannel_start_url = self._openid_config.get('backchannel_auth_start')
 
                 self._sam3_client = Sam3Client(
                     http_manager=self._http_manager,
@@ -447,8 +448,8 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
                     issuer_url=issuer_url,
                     oauth_token_endpoint=oauth_endpoint,
                     line_auth_endpoint=line_auth_endpoint,
-                    backchannel_start_url=backchannel_start_url,  # NEW
-                    qr_code_url_template=qr_code_url_template  # NEW
+                    backchannel_start_url=backchannel_start_url,
+                    qr_code_url_template=qr_code_url_template  # PASS THE QR CODE URL
                 )
 
                 logger.info(
@@ -462,7 +463,7 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
 
         except Exception as e:
             logger.warning(f"Failed to initialize SAM3/SSO clients: {e}")
-
+            
     def can_use_line_auth(self) -> bool:
         """Check if line auth components are available"""
         return (

@@ -619,8 +619,8 @@ class Sam3Client:
         self.userinfo_endpoint = openid_config.get('userinfo_endpoint')
 
         # Get backchannel auth start endpoint
-        if 'backchannel_authentication_endpoint' in openid_config:
-            self.backchannel_start_url = openid_config['backchannel_authentication_endpoint']
+        if 'backchannel_auth_start' in openid_config:
+            self.backchannel_start_url = openid_config['backchannel_auth_start']
             logger.debug(f"Backchannel auth endpoint from OpenID: {self.backchannel_start_url}")
 
         # OAuth token endpoint might be different from line auth endpoint

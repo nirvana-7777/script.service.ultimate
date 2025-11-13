@@ -17,6 +17,7 @@ class BootstrapConfig:
     openid_config_url: Optional[str] = None
     account_base_url: Optional[str] = None
     consumer_accounts_url: Optional[str] = None
+    login_qr_code_url: Optional[str] = None
     raw_data: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -35,6 +36,7 @@ class BootstrapConfig:
             openid_config_url=base_settings.get('sam3Url'),
             account_base_url=base_settings.get('accountBaseUrl'),
             consumer_accounts_url=base_settings.get('consumerAccountsBaseUrl'),
+            login_qr_code_url=base_settings.get('loginQrCodeUrl'),
             raw_data=bootstrap_data
         )
 

@@ -66,6 +66,9 @@ class EndpointManager:
         if bootstrap.remote_login_url:
             self._add_endpoint('remote_login', EndpointCategory.AUTHENTICATION, bootstrap.remote_login_url)
 
+        if bootstrap.login_qr_code_url:
+            self._add_endpoint('login_qr_code', EndpointCategory.AUTHENTICATION, bootstrap.login_qr_code_url)
+
         # Content endpoints
         if bootstrap.device_tokens_url:
             self._add_endpoint('device_tokens', EndpointCategory.CONTENT, bootstrap.device_tokens_url)
