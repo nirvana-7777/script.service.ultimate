@@ -404,8 +404,15 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
 
     def update_sam3_client_id(self, client_id: str) -> None:
         """Public method to update SAM3 client ID"""
+        old_client_id = self._sam3_client_id
         self._sam3_client_id = client_id
-        logger.debug(f"Updated SAM3 client ID: {client_id}")
+
+        # Also update the SAM3 client if it exists
+        if self._sam3_client:
+            self._sam3_client.update_sam3_client_id(client_id)
+            logger.info(f"✓ Updated SAM3 client ID: {old_client_id[:8]}... -> {client_id[:8]}...")
+        else:
+            logger.debug(f"Updated SAM3 client ID (no client to update yet): {client_id}")
 
     def update_client_model(self, client_model: str) -> None:
         """Public method to update client model"""
