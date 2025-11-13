@@ -108,13 +108,19 @@ class KodiNotificationAdapter(NotificationInterface):
             # Build dialog heading and message
             heading = "MagentaTV Remote Login"
 
-            # Initial message with instructions
-            line1 = f"Please scan the QR code with your mobile device"
-            line2 = f"Login Code: [B]{login_code}[/B]"
-            line3 = f"Expires in: {self._format_time(expires_in)}"
+            # FIXED: Combine all lines into a single message string
+            # Kodi DialogProgress.create() only takes 2 arguments: heading and message
+            message_lines = [
+                "Please scan the QR code with your mobile device",
+                f"Login Code: [B]{login_code}[/B]",
+                f"Expires in: {self._format_time(expires_in)}",
+                "",
+                "Or open the MagentaTV app and enter the code"
+            ]
+            message = "\n".join(message_lines)
 
-            # Show dialog
-            self._dialog.create(heading, line1, line2, line3)
+            # FIXED: Only pass 2 arguments to create()
+            self._dialog.create(heading, message)
 
             # Set QR code image if available
             if qr_image_path and os.path.exists(qr_image_path):
@@ -156,12 +162,16 @@ class KodiNotificationAdapter(NotificationInterface):
             elapsed = self._expires_in - remaining_seconds
             percentage = int((elapsed / self._expires_in) * 100)
 
-            # Update dialog
-            line1 = "Please scan the QR code with your mobile device"
-            line2 = "Or open the MagentaTV app and enter the code"
-            line3 = f"Time remaining: {self._format_time(remaining_seconds)}"
+            # FIXED: Combine all lines into a single message string
+            message_lines = [
+                "Please scan the QR code with your mobile device",
+                "Or open the MagentaTV app and enter the code",
+                f"Time remaining: {self._format_time(remaining_seconds)}"
+            ]
+            message = "\n".join(message_lines)
 
-            self._dialog.update(percentage, line1, line2, line3)
+            # FIXED: Update dialog with combined message
+            self._dialog.update(percentage, message)
 
             return True
 
@@ -307,4 +317,3 @@ class KodiNotificationAdapter(NotificationInterface):
             return f"{minutes}m {secs}s"
         else:
             return f"{secs}s"
-
