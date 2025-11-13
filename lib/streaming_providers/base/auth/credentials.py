@@ -63,7 +63,7 @@ class ClientCredentials(BaseCredentials):
     Client credentials (client_id/client_secret) based authentication
     """
     client_id: str
-    client_secret: str
+    client_secret: Optional[str] = ""
     grant_type: str = 'client_credentials'
 
     def validate(self) -> bool:

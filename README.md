@@ -27,6 +27,7 @@ Currently supported:
 - 🇦🇹 **Joyn (AT)**
 - 🇨🇭 **Joyn (CH)**
 - 🇩🇪 **RTL+**
+- 🇩🇪 **Magenta TV 2.0**
 - 🇦🇹 **Magenta TV (AT)**
 - 🇭🇷 **Max TV (HR)**
 - 🇵🇱 **Magenta TV (PL)**
