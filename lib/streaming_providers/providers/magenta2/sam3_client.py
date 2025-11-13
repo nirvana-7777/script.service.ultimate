@@ -326,12 +326,22 @@ class Sam3Client:
     # Remote Login (Backchannel Authentication)
     # ========================================================================
 
+    def update_sam3_client_id(self, new_client_id: str) -> None:
+        """Update SAM3 client ID and recreate remote login handler"""
+        old_client_id = self.sam3_client_id
+        self.sam3_client_id = new_client_id
+
+        # Invalidate the existing remote login handler so it gets recreated with new client ID
+        if self._remote_login_handler:
+            logger.debug(
+                f"Invalidating remote login handler due to client ID change: {old_client_id} -> {new_client_id}")
+            self._remote_login_handler = None
+
+        logger.info(f"✓ Updated SAM3 client ID to: {new_client_id}")
+
     def _get_remote_login_handler(self) -> Optional['RemoteLoginHandler']:
         """
         Get or create remote login handler
-
-        Returns:
-            RemoteLoginHandler if endpoints available, None otherwise
         """
         # Return existing handler if available
         if self._remote_login_handler:
@@ -343,18 +353,11 @@ class Sam3Client:
         has_qr_template = bool(self.qr_code_url_template)
 
         if not all([has_backchannel, has_token_endpoint, has_qr_template]):
-            # SINGLE DETAILED DEBUG: Show exactly what's missing and what's available
+            # Detailed debug logging
             logger.debug("🚫 Remote login not available - missing endpoints:")
-            logger.debug(f"  • backchannel_start_url: {has_backchannel}")
-            logger.debug(f"     → {self.backchannel_start_url or 'MISSING'}")
-
-            logger.debug(f"  • token_endpoint: {has_token_endpoint}")
-            token_endpoint = self._get_token_endpoint()
-            logger.debug(f"     → {token_endpoint or 'MISSING'}")
-
-            logger.debug(f"  • qr_code_url_template: {has_qr_template}")
-            logger.debug(f"     → {self.qr_code_url_template or 'MISSING'}")
-
+            logger.debug(f"  • backchannel_start_url: {has_backchannel} -> {self.backchannel_start_url}")
+            logger.debug(f"  • token_endpoint: {has_token_endpoint} -> {self._get_token_endpoint()}")
+            logger.debug(f"  • qr_code_url_template: {has_qr_template} -> {self.qr_code_url_template}")
             return None
 
         # LAZY IMPORT to avoid circular dependency
@@ -364,16 +367,16 @@ class Sam3Client:
             logger.error(f"Failed to import RemoteLoginHandler: {e}")
             return None
 
-        # Create handler
+        # Create handler with CURRENT client ID
         self._remote_login_handler = RemoteLoginHandler(
             http_manager=self.http_manager,
-            sam3_client_id=self.sam3_client_id,
+            sam3_client_id=self.sam3_client_id,  # Use current value
             backchannel_start_url=self.backchannel_start_url,
             token_endpoint=self._get_token_endpoint(),
             qr_code_url_template=self.qr_code_url_template
         )
 
-        logger.info("✓ Remote login handler initialized")
+        logger.info(f"✓ Remote login handler initialized with client_id: {self.sam3_client_id[:8]}...")
         return self._remote_login_handler
 
     def can_use_remote_login(self) -> bool:
@@ -597,7 +600,8 @@ class Sam3Client:
 
         return "&".join(payload_parts)
 
-    def _extract_code_and_state(self, redirect_url: str) -> tuple[str, str]:
+    @staticmethod
+    def _extract_code_and_state(redirect_url: str) -> tuple[str, str]:
         """Extract code and state from redirect URL"""
         try:
             parsed = urlparse(redirect_url)
@@ -671,56 +675,3 @@ class Sam3Client:
                      f"oauth_token={bool(self.oauth_token_endpoint)}, "
                      f"line_auth={bool(self.line_auth_endpoint)}, "
                      f"backchannel={bool(self.backchannel_start_url)}")
-
-    def update_sam3_client_id(self, new_client_id: str) -> None:
-        """Update SAM3 client ID and recreate remote login handler"""
-        old_client_id = self.sam3_client_id
-        self.sam3_client_id = new_client_id
-
-        # Invalidate the existing remote login handler so it gets recreated with new client ID
-        if self._remote_login_handler:
-            logger.debug(
-                f"Invalidating remote login handler due to client ID change: {old_client_id} -> {new_client_id}")
-            self._remote_login_handler = None
-
-        logger.info(f"✓ Updated SAM3 client ID to: {new_client_id}")
-
-    def _get_remote_login_handler(self) -> Optional['RemoteLoginHandler']:
-        """
-        Get or create remote login handler
-        """
-        # Return existing handler if available
-        if self._remote_login_handler:
-            return self._remote_login_handler
-
-        # Check if we have required endpoints
-        has_backchannel = bool(self.backchannel_start_url)
-        has_token_endpoint = bool(self._get_token_endpoint())
-        has_qr_template = bool(self.qr_code_url_template)
-
-        if not all([has_backchannel, has_token_endpoint, has_qr_template]):
-            # Detailed debug logging
-            logger.debug("🚫 Remote login not available - missing endpoints:")
-            logger.debug(f"  • backchannel_start_url: {has_backchannel} -> {self.backchannel_start_url}")
-            logger.debug(f"  • token_endpoint: {has_token_endpoint} -> {self._get_token_endpoint()}")
-            logger.debug(f"  • qr_code_url_template: {has_qr_template} -> {self.qr_code_url_template}")
-            return None
-
-        # LAZY IMPORT to avoid circular dependency
-        try:
-            from .remote_login_handler import RemoteLoginHandler
-        except ImportError as e:
-            logger.error(f"Failed to import RemoteLoginHandler: {e}")
-            return None
-
-        # Create handler with CURRENT client ID
-        self._remote_login_handler = RemoteLoginHandler(
-            http_manager=self.http_manager,
-            sam3_client_id=self.sam3_client_id,  # Use current value
-            backchannel_start_url=self.backchannel_start_url,
-            token_endpoint=self._get_token_endpoint(),
-            qr_code_url_template=self.qr_code_url_template
-        )
-
-        logger.info(f"✓ Remote login handler initialized with client_id: {self.sam3_client_id[:8]}...")
-        return self._remote_login_handler
