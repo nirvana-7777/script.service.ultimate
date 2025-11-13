@@ -22,6 +22,7 @@ from .constants import (
     DEFAULT_COUNTRY,
     DEFAULT_PLATFORM,
     MAGENTA2_PLATFORMS,
+    MAGENTA2_CLIENT_IDS,
     CONTENT_TYPE_LIVE,
     CONTENT_TYPE_VOD,
     MODE_LIVE,
@@ -98,18 +99,14 @@ class Magenta2Provider(StreamingProvider):
         self.endpoint_manager: Optional[EndpointManager] = None
         self.provider_config: Optional[ProviderConfig] = None
 
-        # 🚨 PERFORM CONFIGURATION DISCOVERY FIRST (before authenticator)
-        try:
-            self._perform_configuration_discovery()
-        except Exception as e:
-            logger.error(f"Configuration discovery failed: {e}")
-            raise
+        # 🚨 INITIALIZE AUTHENTICATOR FIRST (with minimal config)
+        # Use fallback client IDs initially
+        fallback_client_id = MAGENTA2_CLIENT_IDS.get(platform, MAGENTA2_CLIENT_IDS[DEFAULT_PLATFORM])
 
-        # 🚨 NOW INITIALIZE AUTHENTICATOR WITH DISCOVERED CONFIG
         if username and password:
             # Use user credentials for complete authentication flow
             credentials = Magenta2UserCredentials(
-                client_id=self.provider_config.bootstrap.sam3_client_id if self.provider_config else None,
+                client_id=fallback_client_id,  # Use fallback initially
                 platform=platform,
                 country=country,
                 device_id=self.device_id,
@@ -120,14 +117,14 @@ class Magenta2Provider(StreamingProvider):
         else:
             # Use client credentials for TAA-only flow
             credentials = Magenta2Credentials(
-                client_id=self.provider_config.bootstrap.sam3_client_id if self.provider_config else None,
+                client_id=fallback_client_id,  # Use fallback initially
                 platform=platform,
                 country=country,
                 device_id=self.device_id
             )
             logger.info("Using client credentials for authentication")
 
-        # Create authenticator with the appropriate credentials
+        # Create authenticator with minimal configuration
         self.authenticator = Magenta2Authenticator(
             country=country,
             platform=platform,
@@ -135,36 +132,103 @@ class Magenta2Provider(StreamingProvider):
             http_manager=self.http_manager,
             proxy_config=self.proxy_config,
             credentials=credentials,
-            endpoints={},
-            client_model=self.provider_config.bootstrap.client_model if self.provider_config else None,
-            device_model=self.provider_config.bootstrap.device_model if self.provider_config else None,
-            sam3_client_id=self.provider_config.bootstrap.sam3_client_id if self.provider_config else None,
+            endpoints={},  # Empty initially, will be updated after discovery
+            client_model=f"ftv-{platform}",  # Use fallback initially
+            device_model=f"{platform.upper()}_FTV",  # Use fallback initially
+            sam3_client_id=fallback_client_id,  # Use fallback initially
             session_id=self.session_id,
             device_id=self.device_id
         )
 
-        # 🚨 NOW CONFIGURE AUTHENTICATOR WITH DISCOVERED DATA (after authenticator exists)
-        if self.provider_config and self.provider_config.manifest:
-            device_token = self.provider_config.get_device_token()
-            authorize_tokens_url = self.provider_config.get_authorize_tokens_url()
+        # 🚨 NOW PERFORM CONFIGURATION DISCOVERY (authenticator exists)
+        try:
+            self._perform_configuration_discovery()
+        except Exception as e:
+            logger.error(f"Configuration discovery failed: {e}")
+            raise
 
-            if device_token:
-                self.authenticator.set_device_token(device_token, authorize_tokens_url)
-                logger.debug("Device token configured in authenticator")
+        # 🚨 UPDATE AUTHENTICATOR WITH DISCOVERED CONFIG
+        if self.provider_config:
+            # Update authenticator with discovered client_id and models
+            if self.provider_config.bootstrap.sam3_client_id:
+                # Use public method if available, otherwise update directly
+                if hasattr(self.authenticator, 'update_sam3_client_id'):
+                    self.authenticator.update_sam3_client_id(self.provider_config.bootstrap.sam3_client_id)
+                else:
+                    self.authenticator._sam3_client_id = self.provider_config.bootstrap.sam3_client_id
 
-            # CRITICAL: Pass MPX account PID for account URI construction
-            if self.provider_config.manifest.mpx.account_pid:
-                self.authenticator.set_mpx_account_pid(self.provider_config.manifest.mpx.account_pid)
-                logger.debug(f"MPX account PID configured: {self.provider_config.manifest.mpx.account_pid}")
+                if self.authenticator.credentials:
+                    self.authenticator.credentials.client_id = self.provider_config.bootstrap.sam3_client_id
+                logger.debug(
+                    f"Updated authenticator with SAM3 client ID: {self.provider_config.bootstrap.sam3_client_id}")
 
-            # Pass OpenID configuration if available
-            if self.provider_config.openid:
-                self.authenticator.set_openid_config(self.provider_config.openid.raw_data)
+            if self.provider_config.bootstrap.client_model:
+                if hasattr(self.authenticator, 'update_client_model'):
+                    self.authenticator.update_client_model(self.provider_config.bootstrap.client_model)
+                else:
+                    self.authenticator._client_model = self.provider_config.bootstrap.client_model
+                logger.debug(f"Updated authenticator with client model: {self.provider_config.bootstrap.client_model}")
+
+            if self.provider_config.bootstrap.device_model:
+                if hasattr(self.authenticator, 'update_device_model'):
+                    self.authenticator.update_device_model(self.provider_config.bootstrap.device_model)
+                else:
+                    self.authenticator._device_model = self.provider_config.bootstrap.device_model
+                logger.debug(f"Updated authenticator with device model: {self.provider_config.bootstrap.device_model}")
+
+            # Update authenticator with device token and MPX account if available
+            if self.provider_config.manifest:
+                device_token = self.provider_config.get_device_token()
+                authorize_tokens_url = self.provider_config.get_authorize_tokens_url()
+
+                if device_token:
+                    self.authenticator.set_device_token(device_token, authorize_tokens_url)
+                    logger.debug("Device token configured in authenticator")
+
+                # CRITICAL: Pass MPX account PID for account URI construction
+                if self.provider_config.manifest.mpx.account_pid:
+                    self.authenticator.set_mpx_account_pid(self.provider_config.manifest.mpx.account_pid)
+                    logger.debug(f"MPX account PID configured: {self.provider_config.manifest.mpx.account_pid}")
+
+                # Pass OpenID configuration if available
+                if self.provider_config.openid:
+                    self.authenticator.set_openid_config(self.provider_config.openid.raw_data)
+
+            # Update authenticator with discovered endpoints using public methods
+            if self.endpoint_manager:
+                # Get all endpoints
+                all_endpoints = {
+                    name: info.url
+                    for name, info in self.endpoint_manager.get_all_endpoints().items()
+                }
+
+                # Update authenticator with discovered endpoints using public method
+                if hasattr(self.authenticator, 'update_dynamic_endpoints'):
+                    self.authenticator.update_dynamic_endpoints(all_endpoints)
+                    logger.info(f"✓ Updated authenticator with {len(all_endpoints)} endpoints")
+                elif hasattr(self.authenticator, 'update_endpoints'):
+                    self.authenticator.update_endpoints(all_endpoints)
+                    logger.info(f"✓ Updated authenticator with {len(all_endpoints)} endpoints")
+                else:
+                    logger.warning("No public method available to update endpoints")
+
+                # Specifically update SAM3 client with QR code URL
+                qr_url = self.endpoint_manager.get_endpoint('login_qr_code')
+                if qr_url and hasattr(self.authenticator, 'update_sam3_qr_code_url'):
+                    success = self.authenticator.update_sam3_qr_code_url(qr_url)
+                    if success:
+                        logger.info("✓ Successfully updated SAM3 client with QR code URL")
+                    else:
+                        logger.warning("✗ Failed to update SAM3 client with QR code URL")
 
         # Initialize auth tokens (lazy - populated on first use)
         self.bearer_token = None  # TAA access token (JWT)
         self.persona_token = None  # COMPOSED persona token (Base64) for API calls
         self.device_token = None
+
+        logger.info("Magenta2 provider initialization completed successfully")
+
+        logger.info("Magenta2 provider initialization completed successfully")
 
     @staticmethod
     def _generate_uuid() -> str:

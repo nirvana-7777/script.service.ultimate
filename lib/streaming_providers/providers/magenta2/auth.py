@@ -402,6 +402,30 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
             proxy_config=proxy_config
         )
 
+    def update_sam3_client_id(self, client_id: str) -> None:
+        """Public method to update SAM3 client ID"""
+        self._sam3_client_id = client_id
+        logger.debug(f"Updated SAM3 client ID: {client_id}")
+
+    def update_client_model(self, client_model: str) -> None:
+        """Public method to update client model"""
+        self._client_model = client_model
+        logger.debug(f"Updated client model: {client_model}")
+
+    def update_device_model(self, device_model: str) -> None:
+        """Public method to update device model"""
+        self._device_model = device_model
+        logger.debug(f"Updated device model: {device_model}")
+
+    def update_dynamic_endpoints(self, endpoints: Dict[str, str]) -> None:
+        """Public method to update dynamic endpoints"""
+        self._dynamic_endpoints.update(endpoints)
+        logger.debug(f"Updated dynamic endpoints with {len(endpoints)} entries")
+
+    def update_endpoints(self, endpoints: Dict[str, str]) -> None:
+        """Public method to update endpoints (alias for compatibility)"""
+        self.update_dynamic_endpoints(endpoints)
+
     def _initialize_taa_client(self) -> None:
         """Initialize TAA client"""
         self._taa_client = TaaClient(
