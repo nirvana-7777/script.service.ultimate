@@ -211,11 +211,21 @@ class Magenta2Provider(StreamingProvider):
                 qr_url = self.endpoint_manager.get_endpoint('login_qr_code')
                 if qr_url:
                     logger.info(f"✓ QR code endpoint discovered in endpoint manager: {qr_url}")
+
+                    # PROPER FIX: Use public method to update SAM3 client
+                    if hasattr(self.authenticator, 'update_sam3_qr_code_url'):
+                        success = self.authenticator.update_sam3_qr_code_url(qr_url)
+                        if success:
+                            logger.info("✓ Successfully updated SAM3 client with QR code URL")
+                        else:
+                            logger.warning("✗ Failed to update SAM3 client with QR code URL")
+
+                    # Also debug the current status
+                    if hasattr(self.authenticator, 'get_sam3_client_status'):
+                        status = self.authenticator.get_sam3_client_status()
+                        logger.debug(f"SAM3 client status after update: {status}")
                 else:
                     logger.warning("✗ QR code endpoint NOT found in endpoint manager")
-                    # Show all available endpoints for debugging
-                    all_endpoints = self.endpoint_manager.get_all_endpoints()
-                    logger.debug(f"Available endpoints: {list(all_endpoints.keys())}")
 
             if self.provider_config and self.provider_config.manifest:
                 device_token = self.provider_config.get_device_token()

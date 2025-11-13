@@ -485,6 +485,29 @@ class Sam3Client:
         logger.warning(f"No access token available for scope {scope} - line auth may be needed")
         return ""
 
+    def get_token_endpoint(self) -> str:
+        """Public method to get token endpoint"""
+        return self._get_token_endpoint()
+
+    def get_client_status(self) -> Dict[str, Any]:
+        """
+        Public method to get SAM3 client status for debugging
+        """
+        return {
+            'initialized': True,
+            'has_backchannel_url': bool(self.backchannel_start_url),
+            'has_token_endpoint': bool(self._get_token_endpoint()),
+            'has_qr_code_url': bool(self.qr_code_url_template),
+            'backchannel_url': self.backchannel_start_url,
+            'token_endpoint': self._get_token_endpoint(),
+            'qr_code_url': self.qr_code_url_template
+        }
+
+    def set_qr_code_url(self, qr_code_url: str) -> None:
+        """Public method to set QR code URL"""
+        self.qr_code_url_template = qr_code_url
+        logger.debug(f"QR code URL set: {qr_code_url}")
+
     # ========================================================================
     # HTML Form Parsing Helpers
     # ========================================================================

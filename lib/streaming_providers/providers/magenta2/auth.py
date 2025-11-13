@@ -463,7 +463,31 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
 
         except Exception as e:
             logger.warning(f"Failed to initialize SAM3/SSO clients: {e}")
-            
+
+    def update_sam3_qr_code_url(self, qr_code_url: str) -> bool:
+        """
+        Public method to update SAM3 client with QR code URL
+        Returns True if successful, False otherwise
+        """
+        if not self._sam3_client:
+            logger.warning("Cannot update QR code URL - SAM3 client not initialized")
+            return False
+
+        # Use public method instead of direct assignment
+        self._sam3_client.set_qr_code_url(qr_code_url)
+        logger.info(f"✓ Updated SAM3 client with QR code URL: {qr_code_url}")
+        return True
+
+    def get_sam3_client_status(self) -> Dict[str, Any]:
+        """
+        Public method to get SAM3 client status for debugging
+        """
+        if not self._sam3_client:
+            return {'initialized': False}
+
+        # Use public method instead of accessing protected members
+        return self._sam3_client.get_client_status()
+
     def can_use_line_auth(self) -> bool:
         """Check if line auth components are available"""
         return (
