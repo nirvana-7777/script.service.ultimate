@@ -79,15 +79,6 @@ class KodiNotificationAdapter(NotificationInterface):
     ) -> NotificationResult:
         """
         Show remote login dialog in Kodi
-
-        Args:
-            login_code: Short login code
-            qr_url: URL to QR code SVG
-            expires_in: Expiration time in seconds
-            interval: Update interval
-
-        Returns:
-            NotificationResult indicating outcome
         """
         if not self._kodi_available:
             return NotificationResult.ERROR
@@ -102,30 +93,38 @@ class KodiNotificationAdapter(NotificationInterface):
             # Create progress dialog
             self._dialog = self.xbmcgui.DialogProgress()
 
+            # Download QR code (we need the file path)
+            qr_file_path = self._download_qr_code(qr_url)
+
             # Build dialog heading and message
             heading = "MagentaTV Remote Login"
 
-            # SOLUTION 1: Clear text display with QR code URL and manual code
+            # FIXED: Show both the URL AND file path clearly
             message_lines = [
-                "Please scan the QR code with your mobile device:",
+                "=== SCAN QR CODE ===",
+                "Open this URL on your phone:",
+                f"[COLOR yellow]{qr_url}[/COLOR]",
                 "",
-                "QR Code URL:",
-                f"{qr_url}",
+                "QR code also saved to:",
+                f"{qr_file_path}" if qr_file_path else "Download failed",
                 "",
-                "Or enter this code manually:",
-                f"[B]{login_code}[/B]",
+                "=== OR ENTER MANUALLY ===",
+                f"Code: [B][COLOR white]{login_code}[/COLOR][/B]",
                 "",
-                f"Expires in: {self._format_time(expires_in)}",
+                f"⏰ Expires in: {self._format_time(expires_in)}",
                 "",
-                "Press OK to continue waiting, or Cancel to abort"
+                "Waiting for authentication...",
+                "(Press Cancel to abort)"
             ]
             message = "\n".join(message_lines)
 
-            # Show dialog with only 2 arguments
+            # Show dialog
             self._dialog.create(heading, message)
 
             logger.info(f"Kodi dialog shown: code={login_code}, expires_in={expires_in}s")
             logger.info(f"QR code URL displayed: {qr_url}")
+            if qr_file_path:
+                logger.info(f"QR code saved to: {qr_file_path}")
 
             return NotificationResult.CONTINUE
 
