@@ -206,8 +206,17 @@ class Magenta2Provider(StreamingProvider):
             # Initialize endpoint manager with discovered configuration
             self.endpoint_manager = EndpointManager(self.provider_config)
 
-            # 🚨 REMOVED: Don't configure authenticator here - it doesn't exist yet
-            # Just log what we discovered for now
+            # DEBUG: Check if QR code endpoint is discovered
+            if self.endpoint_manager:
+                qr_url = self.endpoint_manager.get_endpoint('login_qr_code')
+                if qr_url:
+                    logger.info(f"✓ QR code endpoint discovered in endpoint manager: {qr_url}")
+                else:
+                    logger.warning("✗ QR code endpoint NOT found in endpoint manager")
+                    # Show all available endpoints for debugging
+                    all_endpoints = self.endpoint_manager.get_all_endpoints()
+                    logger.debug(f"Available endpoints: {list(all_endpoints.keys())}")
+
             if self.provider_config and self.provider_config.manifest:
                 device_token = self.provider_config.get_device_token()
                 authorize_tokens_url = self.provider_config.get_authorize_tokens_url()
