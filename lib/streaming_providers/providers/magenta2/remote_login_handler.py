@@ -108,6 +108,12 @@ class RemoteLoginHandler:
                 'User-Agent': SSO_USER_AGENT
             }
 
+            # DEBUG: Log exact request details
+            logger.debug(f"Backchannel auth request:")
+            logger.debug(f"  URL: {self.backchannel_start_url}")
+            logger.debug(f"  Headers: {headers}")
+            logger.debug(f"  Payload: {payload}")
+
             # Start backchannel auth
             response = self.http_manager.post(
                 self.backchannel_start_url,
