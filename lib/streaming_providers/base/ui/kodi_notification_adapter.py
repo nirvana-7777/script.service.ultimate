@@ -79,6 +79,15 @@ class KodiNotificationAdapter(NotificationInterface):
     ) -> NotificationResult:
         """
         Show remote login dialog in Kodi
+
+        Args:
+            login_code: Short login code
+            qr_url: URL to QR code SVG
+            expires_in: Expiration time in seconds
+            interval: Update interval
+
+        Returns:
+            NotificationResult indicating outcome
         """
         if not self._kodi_available:
             return NotificationResult.ERROR
@@ -157,18 +166,22 @@ class KodiNotificationAdapter(NotificationInterface):
             elapsed = self._expires_in - remaining_seconds
             percentage = int((elapsed / self._expires_in) * 100)
 
-            # Update message with current countdown
+            # FIXED: Update message with current countdown
             message_lines = [
-                "Please scan the QR code with your mobile device",
-                "or enter the code manually in the MagentaTV app",
+                "=== SCAN QR CODE ===",
+                "Open the URL shown above on your phone",
                 "",
-                f"Time remaining: {self._format_time(remaining_seconds)}",
+                "=== OR ENTER MANUALLY ===",
+                "Use the code shown above in MagentaTV app",
                 "",
-                "Press OK to continue waiting, or Cancel to abort"
+                f"⏰ Time remaining: {self._format_time(remaining_seconds)}",
+                "",
+                "Waiting for authentication...",
+                "(Press Cancel to abort)"
             ]
             message = "\n".join(message_lines)
 
-            # Update dialog with only 2 arguments
+            # Update dialog
             self._dialog.update(percentage, message)
 
             return True
@@ -231,7 +244,7 @@ class KodiNotificationAdapter(NotificationInterface):
 
     def _download_qr_code(self, qr_url: str) -> Optional[str]:
         """
-        Download QR code SVG from URL (kept for compatibility but not used in display)
+        Download QR code SVG from URL
         """
         try:
             # Use http_manager if available
