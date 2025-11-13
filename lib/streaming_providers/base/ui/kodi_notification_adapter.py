@@ -19,7 +19,7 @@ class KodiNotificationAdapter(NotificationInterface):
 
     Uses xbmcgui.DialogProgress() for non-blocking display
     Features:
-    - Downloads and displays QR code SVG
+    - Shows QR code URL and login code clearly
     - Live countdown updates
     - User can cancel
     - Non-blocking operation
@@ -102,34 +102,30 @@ class KodiNotificationAdapter(NotificationInterface):
             # Create progress dialog
             self._dialog = self.xbmcgui.DialogProgress()
 
-            # Download QR code SVG
-            qr_image_path = self._download_qr_code(qr_url)
-
             # Build dialog heading and message
             heading = "MagentaTV Remote Login"
 
-            # FIXED: Combine all lines into a single message string
-            # Kodi DialogProgress.create() only takes 2 arguments: heading and message
+            # SOLUTION 1: Clear text display with QR code URL and manual code
             message_lines = [
-                "Please scan the QR code with your mobile device",
-                f"Login Code: [B]{login_code}[/B]",
+                "Please scan the QR code with your mobile device:",
+                "",
+                "QR Code URL:",
+                f"{qr_url}",
+                "",
+                "Or enter this code manually:",
+                f"[B]{login_code}[/B]",
+                "",
                 f"Expires in: {self._format_time(expires_in)}",
                 "",
-                "Or open the MagentaTV app and enter the code"
+                "Press OK to continue waiting, or Cancel to abort"
             ]
             message = "\n".join(message_lines)
 
-            # FIXED: Only pass 2 arguments to create()
+            # Show dialog with only 2 arguments
             self._dialog.create(heading, message)
 
-            # Set QR code image if available
-            if qr_image_path and os.path.exists(qr_image_path):
-                # Note: DialogProgress doesn't support images directly
-                # We'll show the code prominently instead
-                logger.info(f"QR code downloaded to: {qr_image_path}")
-                # TODO: Consider using a custom window for better QR display
-
             logger.info(f"Kodi dialog shown: code={login_code}, expires_in={expires_in}s")
+            logger.info(f"QR code URL displayed: {qr_url}")
 
             return NotificationResult.CONTINUE
 
@@ -162,15 +158,18 @@ class KodiNotificationAdapter(NotificationInterface):
             elapsed = self._expires_in - remaining_seconds
             percentage = int((elapsed / self._expires_in) * 100)
 
-            # FIXED: Combine all lines into a single message string
+            # Update message with current countdown
             message_lines = [
                 "Please scan the QR code with your mobile device",
-                "Or open the MagentaTV app and enter the code",
-                f"Time remaining: {self._format_time(remaining_seconds)}"
+                "or enter the code manually in the MagentaTV app",
+                "",
+                f"Time remaining: {self._format_time(remaining_seconds)}",
+                "",
+                "Press OK to continue waiting, or Cancel to abort"
             ]
             message = "\n".join(message_lines)
 
-            # FIXED: Update dialog with combined message
+            # Update dialog with only 2 arguments
             self._dialog.update(percentage, message)
 
             return True
@@ -214,7 +213,7 @@ class KodiNotificationAdapter(NotificationInterface):
                     5000
                 )
 
-            # Cleanup QR image
+            # Cleanup QR image if it was downloaded
             self._cleanup_qr_image()
 
         except Exception as e:
@@ -233,16 +232,10 @@ class KodiNotificationAdapter(NotificationInterface):
 
     def _download_qr_code(self, qr_url: str) -> Optional[str]:
         """
-        Download QR code SVG from URL
-
-        Args:
-            qr_url: URL to QR code SVG
-
-        Returns:
-            str: Path to downloaded file, or None if failed
+        Download QR code SVG from URL (kept for compatibility but not used in display)
         """
         try:
-            # Use http_manager if available, otherwise fall back to requests
+            # Use http_manager if available
             if self._http_manager:
                 logger.debug(f"Downloading QR code via http_manager from: {qr_url}")
                 response = self._http_manager.get(
@@ -261,11 +254,6 @@ class KodiNotificationAdapter(NotificationInterface):
                     return None
 
             response.raise_for_status()
-
-            # Verify content type
-            content_type = response.headers.get('Content-Type', '')
-            if 'svg' not in content_type.lower():
-                logger.warning(f"Unexpected content type: {content_type}")
 
             # Create temp file for QR code
             temp_dir = tempfile.gettempdir()
