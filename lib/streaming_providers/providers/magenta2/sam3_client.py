@@ -338,16 +338,31 @@ class Sam3Client:
             return self._remote_login_handler
 
         # Check if we have required endpoints
-        if not all([
-            self.backchannel_start_url,
-            self._get_token_endpoint(),
-            self.qr_code_url_template
-        ]):
-            logger.debug("Remote login not available - missing endpoints")
+        has_backchannel = bool(self.backchannel_start_url)
+        has_token_endpoint = bool(self._get_token_endpoint())
+        has_qr_template = bool(self.qr_code_url_template)
+
+        if not all([has_backchannel, has_token_endpoint, has_qr_template]):
+            # SINGLE DETAILED DEBUG: Show exactly what's missing and what's available
+            logger.debug("🚫 Remote login not available - missing endpoints:")
+            logger.debug(f"  • backchannel_start_url: {has_backchannel}")
+            logger.debug(f"     → {self.backchannel_start_url or 'MISSING'}")
+
+            logger.debug(f"  • token_endpoint: {has_token_endpoint}")
+            token_endpoint = self._get_token_endpoint()
+            logger.debug(f"     → {token_endpoint or 'MISSING'}")
+
+            logger.debug(f"  • qr_code_url_template: {has_qr_template}")
+            logger.debug(f"     → {self.qr_code_url_template or 'MISSING'}")
+
             return None
 
-        # Import here to avoid circular dependency
-        from .remote_login_handler import RemoteLoginHandler
+        # LAZY IMPORT to avoid circular dependency
+        try:
+            from .remote_login_handler import RemoteLoginHandler
+        except ImportError as e:
+            logger.error(f"Failed to import RemoteLoginHandler: {e}")
+            return None
 
         # Create handler
         self._remote_login_handler = RemoteLoginHandler(
