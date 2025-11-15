@@ -70,7 +70,7 @@ class TaaClient:
             )
 
             # Build headers
-            headers = self._get_taa_headers(sam3_token)
+            headers = self._get_taa_headers()
 
             # Use provided endpoint or fallback
             endpoint = taa_endpoint or "https://taa.telekom-dienste.de/taa/v1/token"
@@ -299,6 +299,7 @@ class TaaClient:
             claim_mappings = {
                 # Core persona token (most important!)
                 'dc_cts_persona_token': [
+                    'dc_cts_personaToken',  # Capital T! This is what the API returns
                     'dc_cts_persona_token',
                     'personaToken',
                     'urn:telekom:ott:dc_cts_persona_token'
@@ -375,12 +376,17 @@ class TaaClient:
             logger.error(f"Failed to parse TAA JWT completely: {e}")
             return {}
 
-    def _get_taa_headers(self, sam3_token: str) -> Dict[str, str]:
-        """Get headers for TAA requests with required requestId"""
+    def _get_taa_headers(self) -> Dict[str, str]:
+        """
+        Get headers for TAA requests with required requestId
+
+        Note: The accessToken is sent in the request body, not as Authorization header.
+        The TAA endpoint uses the token from the payload, not from headers.
+        """
         import uuid
 
         # Use TAA-specific user agent if available, otherwise fallback to platform user agent
-        user_agent = self.platform_config.get('taa_user_agent') or self.platform_config['user_agent']
+        user_agent = self.platform_config.get('user_agent')
 
         headers = {
             'requestId': str(uuid.uuid4()),  # Required by TAA endpoint!
@@ -389,10 +395,9 @@ class TaaClient:
             'Content-Type': 'application/json; charset=UTF-8'
         }
 
-        # Only add Authorization header if we have a token
-        # Some TAA endpoints might not require it
-        if sam3_token:
-            headers['Authorization'] = f'Bearer {sam3_token}'
+        # NOTE: We do NOT add Authorization header here
+        # The accessToken is sent in the request body payload
+        # Authorization header is not needed for TAA endpoint
 
         return headers
 
