@@ -93,12 +93,10 @@ class TaaClient:
                 json_data=taa_payload
             )
 
-            # Log response for debugging on error
-            if response.status_code >= 400:
-                logger.error(f"TAA request failed with status {response.status_code}")
-                logger.error(f"Response body: {response.text[:500]}")
+            # Log response details
+            logger.debug(f"TAA response status: {response.status_code}")
 
-            # Check for device limit exceeded
+            # Check for device limit exceeded or other errors
             if response.status_code == 400:
                 try:
                     error_data = response.json()
@@ -110,9 +108,18 @@ class TaaClient:
                             access_token="",
                             device_limit_exceeded=True
                         )
+
+                    # Log any other error details
+                    if 'error' in error_data:
+                        logger.error(f"TAA error type: {error_data.get('error')}")
+                    if 'error_description' in error_data:
+                        logger.error(f"TAA error description: {error_data.get('error_description')}")
+                    if 'message' in error_data:
+                        logger.error(f"TAA error message: {error_data.get('message')}")
+
                 except (ValueError, KeyError) as e:
                     logger.error(f"Could not parse 400 error response: {e}")
-                    pass  # Will be handled by raise_for_status below
+                    logger.error(f"Raw response text: {response.text}")
 
             response.raise_for_status()
             taa_data = response.json()
@@ -125,6 +132,20 @@ class TaaClient:
 
         except Exception as e:
             logger.error(f"TAA authentication failed: {e}")
+
+            # Try to extract error details if available
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_body = e.response.text
+                    logger.error(f"TAA error response body: {error_body}")
+                    try:
+                        error_json = e.response.json()
+                        logger.error(f"TAA error response JSON: {json.dumps(error_json, indent=2)}")
+                    except:
+                        pass
+                except:
+                    pass
+
             raise Exception(f"TAA authentication failed: {e}")
 
     def _build_complete_taa_payload(self, sam3_token: str, device_id: str,
@@ -250,8 +271,7 @@ class TaaClient:
 
         return result
 
-    @staticmethod
-    def _parse_taa_jwt_complete(jwt_token: str) -> Dict[str, Any]:
+    def _parse_taa_jwt_complete(self, jwt_token: str) -> Dict[str, Any]:
         """
         Complete JWT parsing extracting ALL required fields from TAA token
         """
