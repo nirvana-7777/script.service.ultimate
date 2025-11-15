@@ -1140,7 +1140,7 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
             sam3_token=sam3_token,
             device_id=self._device_id,
             client_model=self._client_model,
-            device_model=self._device_model,
+            device_model=None,
             taa_endpoint=self._get_endpoint('taa_auth', 'TAA_AUTH')
         )
 
@@ -1229,7 +1229,7 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
                 sam3_token=sam3_token,
                 device_id=self._device_id,
                 client_model=self._client_model,
-                device_model=self._device_model,
+                device_model=None,
                 taa_endpoint=self._get_endpoint('taa_auth', 'TAA_AUTH')
             )
 
@@ -1407,7 +1407,7 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
                 sam3_token=sam3_token,
                 device_id=self._device_id,
                 client_model=self._client_model,
-                device_model=self._device_model,
+                device_model=None,
                 taa_endpoint=self.auth_endpoint
             )
 
