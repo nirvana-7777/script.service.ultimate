@@ -1,6 +1,10 @@
 """
 Kodi notification adapter with threaded polling support
-Displays QR code in WindowDialog while polling happens in background thread
+Architecture:
+1. Starts polling in background thread
+2. Shows QR code dialog (blocking)
+3. Dialog monitors thread status and auto-closes on success
+4. User can cancel by closing dialog
 """
 import time
 import os
@@ -10,44 +14,104 @@ from typing import Optional, Callable
 from .notification_interface import NotificationInterface, NotificationResult
 from ..utils.logger import logger
 
-# Import the lightweight SVG converter
+# Import QR generator
 try:
-    from .svg_to_png import convert_svg_to_png
+    from .qr_generator import generate_qr_code_png
+    QR_GENERATOR_AVAILABLE = True
 except ImportError:
-    logger.warning("svg_to_png not available, will try to use SVG directly")
-    convert_svg_to_png = None
+    logger.warning("qr_generator not available")
+    QR_GENERATOR_AVAILABLE = False
+
+
+class PollingThread(threading.Thread):
+    """
+    Background thread for polling authentication status
+    """
+
+    def __init__(self, poll_callback: Callable, expires_in: int, interval: int):
+        """
+        Initialize polling thread
+
+        Args:
+            poll_callback: Function to call for polling (returns token_data or None)
+            expires_in: Total time before expiration
+            interval: Polling interval in seconds
+        """
+        super().__init__(daemon=True)
+        self.poll_callback = poll_callback
+        self.expires_in = expires_in
+        self.interval = interval
+
+        self.auth_completed = False
+        self.token_data = None
+        self.error = None
+        self.stop_event = threading.Event()
+        self.start_time = None
+
+    def run(self):
+        """Run polling loop"""
+        self.start_time = time.time()
+        logger.info("Polling thread started")
+
+        try:
+            # Call the polling callback (blocking)
+            self.token_data = self.poll_callback()
+
+            if self.token_data:
+                self.auth_completed = True
+                logger.info("Polling thread: Authentication successful")
+            else:
+                logger.warning("Polling thread: Authentication failed/timed out")
+
+        except Exception as e:
+            logger.error(f"Polling thread error: {e}", exc_info=True)
+            self.error = str(e)
+
+    def stop(self):
+        """Signal thread to stop"""
+        self.stop_event.set()
+
+    def get_remaining_time(self) -> int:
+        """Get remaining time in seconds"""
+        if not self.start_time:
+            return self.expires_in
+        elapsed = time.time() - self.start_time
+        return max(0, int(self.expires_in - elapsed))
 
 
 class QRCodeDialog:
     """
-    WindowDialog for displaying QR code
-    Non-blocking when used with threading
+    WindowDialog for displaying QR code with status monitoring
     """
 
-    def __init__(self, xbmcgui, qr_image_path: str, login_code: str, qr_url: str,
-                 expires_in: int, poll_callback: Optional[Callable] = None):
+    def __init__(self, xbmcgui, xbmc, qr_image_path: str, login_code: str,
+                 expires_in: int, polling_thread: Optional[PollingThread] = None):
         """
         Initialize QR code dialog
 
         Args:
             xbmcgui: xbmcgui module
+            xbmc: xbmc module
             qr_image_path: Path to QR code PNG file
             login_code: Login code for manual entry
-            qr_url: Full QR code URL
             expires_in: Expiration time in seconds
-            poll_callback: Optional callback function that returns True if auth completed
+            polling_thread: Optional polling thread to monitor
         """
         self.xbmcgui = xbmcgui
+        self.xbmc = xbmc
         self.qr_image_path = qr_image_path
         self.login_code = login_code
-        self.qr_url = qr_url
         self.expires_in = expires_in
-        self.poll_callback = poll_callback
+        self.polling_thread = polling_thread
 
         self.dialog = None
-        self.start_time = time.time()
         self.user_closed = False
-        self.auth_completed = False
+        self.time_label = None
+        self.status_label = None
+
+        # Background monitoring thread
+        self.monitor_thread = None
+        self.monitor_stop = threading.Event()
 
     def show(self):
         """Show the QR code dialog"""
@@ -58,79 +122,75 @@ class QRCodeDialog:
             screen_width = self.dialog.getWidth()
             screen_height = self.dialog.getHeight()
 
-            # Calculate positions and sizes
-            qr_size = min(screen_width // 3, screen_height // 3, 600)
-            qr_x = (screen_width - qr_size) // 2
-            qr_y = 80
+            # Calculate layout
+            dialog_width = int(screen_width * 0.8)
+            dialog_height = int(screen_height * 0.8)
+            dialog_x = (screen_width - dialog_width) // 2
+            dialog_y = (screen_height - dialog_height) // 2
 
-            # Background panel
-            bg_width = screen_width - 200
-            bg_height = screen_height - 160
-            bg_x = 100
-            bg_y = 80
-
-            # Semi-transparent background
+            # Background
             bg = self.xbmcgui.ControlImage(
-                bg_x, bg_y, bg_width, bg_height,
-                ''  # No image, just uses aspect for background
+                dialog_x, dialog_y, dialog_width, dialog_height,
+                aspectRatio=0  # Scale to fit
             )
-            bg.setColorDiffuse('0xDD000000')
+            bg.setColorDiffuse('0xE0000000')  # Semi-transparent black
             self.dialog.addControl(bg)
 
             # Title
-            title_y = bg_y + 20
+            title_y = dialog_y + 30
             title = self.xbmcgui.ControlLabel(
-                x=bg_x + 50, y=title_y,
-                width=bg_width - 100, height=40,
+                x=dialog_x + 50, y=title_y,
+                width=dialog_width - 100, height=50,
                 label='[B]MagentaTV Remote Login[/B]',
-                font='font13_title',
+                font='font30',
                 textColor='0xFFFFFFFF',
-                alignment=0x00000002  # Center aligned
+                alignment=0x00000002  # Center
             )
             self.dialog.addControl(title)
 
-            # QR Code image
-            qr_y_pos = title_y + 60
+            # QR Code
+            qr_size = min(dialog_width // 2, dialog_height // 2, 400)
+            qr_x = (screen_width - qr_size) // 2
+            qr_y = title_y + 70
+
             if os.path.exists(self.qr_image_path):
                 qr_image = self.xbmcgui.ControlImage(
-                    qr_x, qr_y_pos, qr_size, qr_size,
+                    qr_x, qr_y, qr_size, qr_size,
                     self.qr_image_path
                 )
                 self.dialog.addControl(qr_image)
             else:
-                logger.error(f"QR code image not found: {self.qr_image_path}")
+                logger.error(f"QR image not found: {self.qr_image_path}")
 
             # Instructions
-            instructions_y = qr_y_pos + qr_size + 30
+            instructions_y = qr_y + qr_size + 40
 
-            # Line 1: Scan QR code
-            line1 = self.xbmcgui.ControlLabel(
-                x=bg_x + 50, y=instructions_y,
-                width=bg_width - 100, height=30,
+            inst1 = self.xbmcgui.ControlLabel(
+                x=dialog_x + 50, y=instructions_y,
+                width=dialog_width - 100, height=30,
                 label='[B]Scan QR code with your MagentaTV app[/B]',
                 font='font13',
                 textColor='0xFFFFFFFF',
                 alignment=0x00000002
             )
-            self.dialog.addControl(line1)
+            self.dialog.addControl(inst1)
 
-            # Line 2: Or enter code manually
-            line2_y = instructions_y + 35
-            line2 = self.xbmcgui.ControlLabel(
-                x=bg_x + 50, y=line2_y,
-                width=bg_width - 100, height=30,
-                label=f'Or enter code manually: [B][COLOR yellow]{self.login_code}[/COLOR][/B]',
+            inst2_y = instructions_y + 35
+            inst2 = self.xbmcgui.ControlLabel(
+                x=dialog_x + 50, y=inst2_y,
+                width=dialog_width - 100, height=30,
+                label=f'Or enter code: [COLOR yellow]{self.login_code}[/COLOR]',
                 font='font13',
                 textColor='0xFFCCCCCC',
                 alignment=0x00000002
             )
-            self.dialog.addControl(line2)
+            self.dialog.addControl(inst2)
 
-            # Line 3: Time remaining (will be updated)
-            line3_y = line2_y + 40
+            # Time remaining label
+            time_y = inst2_y + 45
             self.time_label = self.xbmcgui.ControlLabel(
-                x=bg_x + 50, y=line3_y,
-                width=bg_width - 100, height=30,
+                x=dialog_x + 50, y=time_y,
+                width=dialog_width - 100, height=30,
                 label=f'Time remaining: {self._format_time(self.expires_in)}',
                 font='font12',
                 textColor='0xFFFF8800',
@@ -138,46 +198,99 @@ class QRCodeDialog:
             )
             self.dialog.addControl(self.time_label)
 
-            # Line 4: Waiting message
-            line4_y = line3_y + 35
-            line4 = self.xbmcgui.ControlLabel(
-                x=bg_x + 50, y=line4_y,
-                width=bg_width - 100, height=30,
+            # Status label
+            status_y = time_y + 35
+            self.status_label = self.xbmcgui.ControlLabel(
+                x=dialog_x + 50, y=status_y,
+                width=dialog_width - 100, height=30,
                 label='Waiting for authentication...',
                 font='font12',
                 textColor='0xFFAAAAAA',
                 alignment=0x00000002
             )
-            self.dialog.addControl(line4)
+            self.dialog.addControl(self.status_label)
 
-            # Line 5: Close instruction
-            line5_y = line4_y + 30
-            line5 = self.xbmcgui.ControlLabel(
-                x=bg_x + 50, y=line5_y,
-                width=bg_width - 100, height=25,
+            # Cancel hint
+            cancel_y = status_y + 35
+            cancel = self.xbmcgui.ControlLabel(
+                x=dialog_x + 50, y=cancel_y,
+                width=dialog_width - 100, height=25,
                 label='(Press any key to cancel)',
                 font='font10',
                 textColor='0xFF888888',
                 alignment=0x00000002
             )
-            self.dialog.addControl(line5)
+            self.dialog.addControl(cancel)
 
-            # Show dialog (blocking call)
+            # Start background monitor if we have polling thread
+            if self.polling_thread:
+                self._start_monitor()
+
+            # Show dialog (blocking)
             logger.info("Showing QR code dialog")
             self.dialog.doModal()
 
-            # Dialog closed by user
+            # Dialog closed
             self.user_closed = True
-            logger.info("User closed QR code dialog")
+            self._stop_monitor()
+            logger.info("QR code dialog closed by user")
 
         except Exception as e:
             logger.error(f"Failed to show QR code dialog: {e}", exc_info=True)
         finally:
             self._cleanup()
 
-    def close(self, success: bool = False):
-        """Close the dialog programmatically"""
-        self.auth_completed = success
+    def _start_monitor(self):
+        """Start background monitor thread"""
+        self.monitor_stop.clear()
+        self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self.monitor_thread.start()
+        logger.debug("Started dialog monitor thread")
+
+    def _stop_monitor(self):
+        """Stop background monitor thread"""
+        self.monitor_stop.set()
+        if self.monitor_thread:
+            self.monitor_thread.join(timeout=1.0)
+        logger.debug("Stopped dialog monitor thread")
+
+    def _monitor_loop(self):
+        """Monitor polling thread status and update UI"""
+        while not self.monitor_stop.is_set():
+            try:
+                # Update countdown
+                if self.polling_thread:
+                    remaining = self.polling_thread.get_remaining_time()
+                    if self.time_label:
+                        self.time_label.setLabel(f'Time remaining: {self._format_time(remaining)}')
+
+                    # Check if auth completed
+                    if self.polling_thread.auth_completed:
+                        logger.info("Monitor: Authentication completed, closing dialog")
+                        if self.status_label:
+                            self.status_label.setLabel('[COLOR green]Authentication successful![/COLOR]')
+                        time.sleep(1)  # Show success message briefly
+                        self.close_dialog()
+                        break
+
+                    # Check for errors
+                    if self.polling_thread.error:
+                        logger.error(f"Monitor: Polling error: {self.polling_thread.error}")
+                        if self.status_label:
+                            self.status_label.setLabel('[COLOR red]Authentication failed[/COLOR]')
+                        time.sleep(2)
+                        self.close_dialog()
+                        break
+
+                # Sleep briefly
+                time.sleep(0.5)
+
+            except Exception as e:
+                logger.error(f"Monitor loop error: {e}")
+                break
+
+    def close_dialog(self):
+        """Close dialog programmatically"""
         if self.dialog:
             try:
                 self.dialog.close()
@@ -193,7 +306,8 @@ class QRCodeDialog:
                 pass
             self.dialog = None
 
-    def _format_time(self, seconds: int) -> str:
+    @staticmethod
+    def _format_time(seconds: int) -> str:
         """Format seconds as MM:SS"""
         if seconds <= 0:
             return "Expired"
@@ -204,13 +318,12 @@ class QRCodeDialog:
 
 class KodiNotificationAdapter(NotificationInterface):
     """
-    Kodi-based notification adapter with threading support
+    Kodi notification adapter with fast QR generation and threading
 
-    Features:
-    - Shows QR code in WindowDialog
-    - Polls in background thread
-    - Auto-closes on auth success
-    - User can cancel anytime
+    Architecture:
+    1. Generate QR code directly from target URL (fast)
+    2. Start polling in background thread
+    3. Show dialog that monitors thread and auto-closes on success
     """
 
     def __init__(self, http_manager=None):
@@ -218,7 +331,7 @@ class KodiNotificationAdapter(NotificationInterface):
         Initialize Kodi notification adapter
 
         Args:
-            http_manager: Optional HTTPManager instance for QR code download
+            http_manager: Optional HTTPManager instance
         """
         super().__init__()
 
@@ -239,132 +352,177 @@ class KodiNotificationAdapter(NotificationInterface):
         self._qr_dialog = None
         self._qr_image_path = None
         self._http_manager = http_manager
-
-        # Threading
-        self._poll_thread = None
-        self._poll_callback = None
-        self._auth_completed = False
-        self._stop_polling = threading.Event()
+        self._polling_thread = None
 
     @property
     def supports_qr_display(self) -> bool:
-        """Kodi can display QR code images"""
+        """Kodi can display QR codes"""
         return True
 
     @property
     def supports_countdown(self) -> bool:
-        """Kodi supports live countdown"""
+        """Kodi supports countdown via monitor thread"""
         return True
 
     @property
     def is_blocking(self) -> bool:
-        """With threading, operation is non-blocking from caller's perspective"""
-        return False
+        """Dialog is blocking but polling happens in thread"""
+        return True  # From caller's perspective, it blocks
 
-    def show_remote_login(
+    def show_remote_login_with_polling(
             self,
             login_code: str,
-            qr_url: str,
+            qr_target_url: str,
             expires_in: int,
-            interval: int = 10
+            interval: int,
+            poll_callback: Callable
     ) -> NotificationResult:
         """
-        Show remote login dialog with QR code
+        Show remote login with integrated polling
 
-        This starts a background thread and shows the QR dialog.
-        The dialog is blocking but polling happens in background.
+        This is the main method that coordinates everything:
+        1. Generate QR code from target URL (fast!)
+        2. Start polling thread
+        3. Show dialog (blocking, but thread runs)
+        4. Return result based on outcome
 
         Args:
             login_code: Short login code
-            qr_url: URL to QR code SVG
+            qr_target_url: The URL to encode in QR code (NOT the SVG URL!)
             expires_in: Expiration time in seconds
-            interval: Update interval (not used in threaded mode)
+            interval: Polling interval
+            poll_callback: Function to call for polling
 
         Returns:
-            NotificationResult indicating outcome
+            NotificationResult
         """
         if not self._kodi_available:
             return NotificationResult.ERROR
 
         self._is_active = True
         self._is_cancelled = False
-        self._auth_completed = False
-        self._stop_polling.clear()
 
         try:
-            # Download and convert QR code to PNG
-            qr_image_path = self._download_and_convert_qr(qr_url)
+            # Step 1: Generate QR code (fast!)
+            qr_image_path = self._generate_qr_code(qr_target_url)
 
             if not qr_image_path:
-                logger.error("Failed to download/convert QR code")
+                logger.error("Failed to generate QR code")
                 return NotificationResult.ERROR
 
             self._qr_image_path = qr_image_path
 
-            # Create QR dialog
+            # Step 2: Start polling thread
+            self._polling_thread = PollingThread(poll_callback, expires_in, interval)
+            self._polling_thread.start()
+            logger.info("Started polling thread")
+
+            # Step 3: Show dialog (blocking, but thread runs)
             self._qr_dialog = QRCodeDialog(
                 self.xbmcgui,
+                self.xbmc,
                 qr_image_path,
                 login_code,
-                qr_url,
-                expires_in
+                expires_in,
+                self._polling_thread
             )
 
-            # Show dialog (this is blocking, but that's okay)
-            # The polling will happen in the remote_login_handler
             self._qr_dialog.show()
 
-            # Check if user closed dialog (cancelled)
-            if self._qr_dialog.user_closed and not self._qr_dialog.auth_completed:
-                logger.info("User cancelled login via dialog close")
+            # Step 4: Determine outcome
+            if self._polling_thread.auth_completed:
+                logger.info("Authentication successful")
+                return NotificationResult.CONTINUE
+            elif self._qr_dialog.user_closed:
+                logger.info("User cancelled")
+                self._is_cancelled = True
+                return NotificationResult.CANCELLED
+            else:
+                logger.warning("Authentication timed out")
+                return NotificationResult.TIMEOUT
+
+        except Exception as e:
+            logger.error(f"Failed to show remote login: {e}", exc_info=True)
+            return NotificationResult.ERROR
+        finally:
+            self._is_active = False
+            self._cleanup_qr_image()
+
+    def show_remote_login(
+            self,
+            login_code: str,
+            qr_target_url: str,
+            expires_in: int,
+            interval: int = 10
+    ) -> NotificationResult:
+        """
+        Simplified version without polling (for backward compatibility)
+        Just shows the dialog, no polling
+
+        Args:
+            login_code: Short login code
+            qr_target_url: The URL to encode in QR code
+            expires_in: Expiration time
+            interval: Update interval (unused in this version)
+        """
+        if not self._kodi_available:
+            return NotificationResult.ERROR
+
+        self._is_active = True
+        self._is_cancelled = False
+
+        try:
+            qr_image_path = self._generate_qr_code(qr_target_url)
+
+            if not qr_image_path:
+                return NotificationResult.ERROR
+
+            self._qr_image_path = qr_image_path
+
+            self._qr_dialog = QRCodeDialog(
+                self.xbmcgui,
+                self.xbmc,
+                qr_image_path,
+                login_code,
+                expires_in,
+                None  # No polling thread
+            )
+
+            self._qr_dialog.show()
+
+            if self._qr_dialog.user_closed:
                 self._is_cancelled = True
                 return NotificationResult.CANCELLED
 
             return NotificationResult.CONTINUE
 
         except Exception as e:
-            logger.error(f"Failed to show Kodi QR dialog: {e}", exc_info=True)
-            self._is_active = False
+            logger.error(f"Failed to show QR dialog: {e}", exc_info=True)
             return NotificationResult.ERROR
+        finally:
+            self._is_active = False
+            self._cleanup_qr_image()
 
     def update_countdown(self, remaining_seconds: int) -> bool:
-        """
-        Update countdown (called by polling loop)
-
-        Args:
-            remaining_seconds: Seconds remaining
-
-        Returns:
-            bool: True to continue, False if user cancelled
-        """
-        # Check if user closed dialog
+        """Check if user cancelled"""
         if self._qr_dialog and self._qr_dialog.user_closed:
             self._is_cancelled = True
             return False
-
         return not self._is_cancelled
 
     def close(self, success: bool = False, message: Optional[str] = None):
-        """
-        Close QR dialog and show result notification
-
-        Args:
-            success: Whether authentication succeeded
-            message: Optional message
-        """
+        """Close and show notification"""
         if not self._is_active:
             return
 
         self._is_active = False
-        self._stop_polling.set()
 
         try:
-            # Close QR dialog if open
             if self._qr_dialog:
-                self._qr_dialog.close(success)
+                self._qr_dialog.close_dialog()
                 self._qr_dialog = None
 
-            # Show result notification
+            # Show result
             if success:
                 self.xbmcgui.Dialog().notification(
                     "MagentaTV",
@@ -380,66 +538,54 @@ class KodiNotificationAdapter(NotificationInterface):
                     5000
                 )
 
-            # Cleanup QR image
             self._cleanup_qr_image()
 
         except Exception as e:
-            logger.error(f"Failed to close Kodi dialog: {e}")
+            logger.error(f"Failed to close dialog: {e}")
 
     def is_cancelled(self) -> bool:
-        """
-        Check if user cancelled
-
-        Returns:
-            bool: True if user closed dialog
-        """
-        if self._qr_dialog and self._qr_dialog.user_closed and not self._qr_dialog.auth_completed:
-            self._is_cancelled = True
+        """Check if cancelled"""
         return self._is_cancelled
 
-    def _download_and_convert_qr(self, qr_url: str) -> Optional[str]:
+    def get_token_data(self) -> Optional[dict]:
+        """Get token data from polling thread"""
+        if self._polling_thread:
+            return self._polling_thread.token_data
+        return None
+
+    @staticmethod
+    def _generate_qr_code(target_url: str) -> Optional[str]:
         """
-        Download QR code SVG and convert to PNG
+        Generate QR code PNG file from target URL
+
+        This is GENERIC - works for any provider!
+        No provider-specific logic here.
 
         Args:
-            qr_url: URL to SVG QR code
+            target_url: The URL to encode in the QR code
 
         Returns:
-            Path to PNG file or None if failed
+            Path to PNG file
         """
         try:
-            logger.info(f"Downloading QR code from: {qr_url}")
-
-            # Download SVG
-            if self._http_manager:
-                response = self._http_manager.get(
-                    qr_url,
-                    operation='qr_download',
-                    timeout=10
-                )
-            else:
-                try:
-                    import requests
-                    response = requests.get(qr_url, timeout=10)
-                except ImportError:
-                    logger.error("Neither http_manager nor requests available")
-                    return None
-
-            response.raise_for_status()
-            svg_data = response.content
-
-            logger.info(f"Downloaded SVG: {len(svg_data)} bytes")
-
-            # Convert SVG to PNG
-            if convert_svg_to_png:
-                logger.info("Converting SVG to PNG...")
-                png_data = convert_svg_to_png(svg_data, output_size=512)
-                logger.info(f"Converted to PNG: {len(png_data)} bytes")
-            else:
-                logger.error("SVG to PNG converter not available")
+            if not QR_GENERATOR_AVAILABLE:
+                logger.error("QR generator not available")
                 return None
 
-            # Save PNG to temp file
+            logger.info(f"Generating QR code for: {target_url}")
+            start_time = time.time()
+
+            # Generate QR code directly from target URL
+            png_data = generate_qr_code_png(target_url, size=512)
+
+            if not png_data:
+                logger.error("Failed to generate QR code PNG")
+                return None
+
+            elapsed = time.time() - start_time
+            logger.info(f"Generated QR code in {elapsed:.2f}s: {len(png_data)} bytes")
+
+            # Save to temp file
             temp_dir = tempfile.gettempdir()
             png_filename = f"magentatv_qr_{int(time.time())}.png"
             png_path = os.path.join(temp_dir, png_filename)
@@ -451,11 +597,11 @@ class KodiNotificationAdapter(NotificationInterface):
             return png_path
 
         except Exception as e:
-            logger.error(f"Failed to download/convert QR code: {e}", exc_info=True)
+            logger.error(f"Failed to generate QR code: {e}", exc_info=True)
             return None
 
     def _cleanup_qr_image(self):
-        """Cleanup temporary QR image file"""
+        """Cleanup temporary QR image"""
         if self._qr_image_path and os.path.exists(self._qr_image_path):
             try:
                 os.remove(self._qr_image_path)

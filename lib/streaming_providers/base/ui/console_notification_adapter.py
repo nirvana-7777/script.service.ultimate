@@ -48,7 +48,7 @@ class ConsoleNotificationAdapter(NotificationInterface):
     def show_remote_login(
             self,
             login_code: str,
-            qr_url: str,
+            qr_target_url: str,
             expires_in: int,
             interval: int = 10
     ) -> NotificationResult:
@@ -57,7 +57,7 @@ class ConsoleNotificationAdapter(NotificationInterface):
 
         Args:
             login_code: Short login code
-            qr_url: URL to QR code
+            qr_target_url: The URL to encode in QR (displayed to user)
             expires_in: Expiration time in seconds
             interval: Update interval
 
@@ -71,7 +71,7 @@ class ConsoleNotificationAdapter(NotificationInterface):
 
         # Print header
         print("\n" + "=" * 70)
-        print("  MAGENTATV REMOTE LOGIN REQUIRED")
+        print("  REMOTE LOGIN REQUIRED")
         print("=" * 70)
         print()
 
@@ -80,7 +80,7 @@ class ConsoleNotificationAdapter(NotificationInterface):
         print()
         print(f"  Option 1: Scan QR Code")
         print(f"  Visit this URL on your mobile device:")
-        print(f"  {qr_url}")
+        print(f"  {qr_target_url}")
         print()
         print(f"  Option 2: Manual Entry")
         print(f"  Login Code: {login_code}")
@@ -91,7 +91,7 @@ class ConsoleNotificationAdapter(NotificationInterface):
         print()
 
         logger.info(f"Remote login started: code={login_code}, expires_in={expires_in}s")
-        logger.info(f"QR code URL: {qr_url}")
+        logger.info(f"QR target URL: {qr_target_url}")
 
         return NotificationResult.CONTINUE
 

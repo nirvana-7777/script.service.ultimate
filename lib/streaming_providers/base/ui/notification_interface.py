@@ -38,7 +38,7 @@ class NotificationInterface(ABC):
     def show_remote_login(
             self,
             login_code: str,
-            qr_url: str,
+            qr_target_url: str,
             expires_in: int,
             interval: int = 10
     ) -> NotificationResult:
@@ -46,14 +46,15 @@ class NotificationInterface(ABC):
         Show remote login notification to user
 
         This method should:
-        1. Display the login code and QR code/URL
+        1. Display the login code and QR target URL
         2. Show countdown timer
         3. Allow user cancellation
         4. Return when done or cancelled
 
         Args:
             login_code: Short code user can type (e.g., "PY48E62Q")
-            qr_url: Full URL to QR code SVG (e.g., "https://wcps.t-online.de/caas/default/v1/remoteLogin/PY48E62Q")
+            qr_target_url: The actual URL to encode in QR code / display to user
+                          (e.g., "https://telekom.de/tv-login?login_code=PY48E62Q")
             expires_in: Total seconds until expiration
             interval: Polling interval in seconds (for countdown updates)
 
