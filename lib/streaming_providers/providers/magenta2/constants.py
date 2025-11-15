@@ -16,31 +16,46 @@ MAGENTA2_PLATFORMS = {
         'device_name': 'Web Browser',
         'firmware': 'Chrome 120',
         'user_agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'terminal_type': 'WEB'
+        'terminal_type': 'WEB',
+        # TAA-specific device identification
+        'taa_device_model': 'Web Browser',
+        'taa_os': 'Chrome 120'
     },
     'android-tv': {
         'device_name': 'Android TV',
         'firmware': 'Android 11',
         'user_agent': 'Mozilla/5.0 (Linux; Android 11; Android TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'terminal_type': 'ATV_ANDROIDTV'
+        'terminal_type': 'ATV_ANDROIDTV',
+        # TAA-specific device identification (API level format required)
+        'taa_device_model': 'SHIELD Android TV',
+        'taa_os': 'API level 30'
     },
     'atv-launcher': {
         'device_name': 'MagentaTV Stick',
         'firmware': 'Android 11',
         'user_agent': 'Mozilla/5.0 (Linux; Android 11; AFTS Build/PPR1.180610.011) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'terminal_type': 'ATV_LAUNCHER'
+        'terminal_type': 'ATV_LAUNCHER',
+        # TAA-specific device identification
+        'taa_device_model': 'MagentaTV Stick',
+        'taa_os': 'API level 30'
     },
     'android-mobile': {
         'device_name': 'Android Mobile',
         'firmware': 'Android 13',
         'user_agent': 'Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36',
-        'terminal_type': 'ANDROID_MOBILE'
+        'terminal_type': 'ANDROID_MOBILE',
+        # TAA-specific device identification
+        'taa_device_model': 'Android Mobile',
+        'taa_os': 'API level 33'
     },
     'ios': {
         'device_name': 'iPhone',
         'firmware': 'iOS 15',
         'user_agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1',
-        'terminal_type': 'IOS'
+        'terminal_type': 'IOS',
+        # TAA-specific device identification
+        'taa_device_model': 'iPhone',
+        'taa_os': 'iOS 15.0'
     }
 }
 

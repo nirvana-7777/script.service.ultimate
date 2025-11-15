@@ -52,7 +52,7 @@ class TaaClient:
             sam3_token: SAM3 access token for TAA scope
             device_id: Device identifier
             client_model: Client model from bootstrap
-            device_model: Device model from bootstrap
+            device_model: Device model from bootstrap (if None, uses taa_device_model from platform config)
             taa_endpoint: TAA endpoint URL
 
         Returns:
@@ -116,11 +116,11 @@ class TaaClient:
                                     client_model: Optional[str] = None,
                                     device_model: Optional[str] = None) -> Dict[str, Any]:
         """
-        Build complete TAA payload matching C++ structure exactly
+        Build complete TAA payload matching the correct format exactly
 
-        C++ structure:
+        Correct format:
         {
-          "keyValue": "IDM/APPVERSION2/TokenChannelParams(id=Tv)/TokenDeviceParams(id=...,model=...,os=...)/DE/telekom",
+          "keyValue": "IDM/APPVERSION2/TokenChannelParams(id=Tv)/TokenDeviceParams(id=..., model=..., os=...)/DE/telekom",
           "accessToken": "...",
           "accessTokenSource": "IDM",
           "appVersion": "APPVERSION2",
@@ -129,24 +129,35 @@ class TaaClient:
           "natco": "DE",
           "type": "telekom"
         }
+
+        CRITICAL: Note the spaces after commas in TokenDeviceParams!
         """
-        # Use provided models or fallback to platform defaults
-        resolved_device_model = device_model or self.platform_config['device_name']
+        # Use provided device model or fallback to TAA-specific device model from platform config
+        # TAA requires specific device identification format (e.g., "SHIELD Android TV", "API level 30")
+        resolved_device_model = device_model or self.platform_config.get('taa_device_model') or self.platform_config[
+            'device_name']
+
+        # Get TAA-specific OS format (e.g., "API level 30" instead of "Android 11")
+        resolved_os = self.platform_config.get('taa_os') or self.platform_config['firmware']
+
         resolved_client_model = client_model or f"ftv-{self.platform}"
 
-        # Build keyValue string matching C++ format exactly
+        # Build keyValue string with CORRECT spacing (spaces after commas!)
+        # Format: TokenDeviceParams(id=..., model=..., os=...)
+        #                                 ^         ^
+        #                            spaces here!
         key_value_parts = [
             IDM,
             APPVERSION2,
             "TokenChannelParams(id=Tv)",
-            f"TokenDeviceParams(id={device_id},model={resolved_device_model},os={self.platform_config['firmware']})",
+            f"TokenDeviceParams(id={device_id}, model={resolved_device_model}, os={resolved_os})",
             "DE",
             "telekom"
         ]
 
         key_value = "/".join(key_value_parts)
 
-        # Build complete payload matching C++ structure
+        # Build complete payload
         payload = {
             "keyValue": key_value,
             "accessToken": sam3_token,
@@ -158,7 +169,7 @@ class TaaClient:
             "device": {
                 "id": device_id,
                 "model": resolved_device_model,
-                "os": self.platform_config['firmware']
+                "os": resolved_os
             },
             "natco": "DE",
             "type": "telekom"
@@ -169,6 +180,7 @@ class TaaClient:
             payload["client"] = {"model": resolved_client_model}
 
         logger.debug(f"Built TAA payload with keyValue: {key_value}")
+        logger.debug(f"Device model: {resolved_device_model}, OS: {resolved_os}")
         return payload
 
     def _parse_taa_response(self, taa_data: Dict[str, Any]) -> TaaAuthResult:
@@ -213,7 +225,8 @@ class TaaClient:
 
         return result
 
-    def _parse_taa_jwt_complete(self, jwt_token: str) -> Dict[str, Any]:
+    @staticmethod
+    def _parse_taa_jwt_complete(jwt_token: str) -> Dict[str, Any]:
         """
         Complete JWT parsing extracting ALL required fields from TAA token
         """
