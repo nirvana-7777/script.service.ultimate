@@ -133,8 +133,8 @@ class TaaClient:
         except Exception as e:
             logger.error(f"TAA authentication failed: {e}")
 
-            # Try to extract error details if available
-            if hasattr(e, 'response') and e.response is not None:
+            # Try to extract error details if available (for requests.HTTPError)
+            if hasattr(e, 'response') and hasattr(e.response, 'text'):
                 try:
                     error_body = e.response.text
                     logger.error(f"TAA error response body: {error_body}")
@@ -271,7 +271,8 @@ class TaaClient:
 
         return result
 
-    def _parse_taa_jwt_complete(self, jwt_token: str) -> Dict[str, Any]:
+    @staticmethod
+    def _parse_taa_jwt_complete(jwt_token: str) -> Dict[str, Any]:
         """
         Complete JWT parsing extracting ALL required fields from TAA token
         """
@@ -375,11 +376,17 @@ class TaaClient:
             return {}
 
     def _get_taa_headers(self, sam3_token: str) -> Dict[str, str]:
-        """Get headers for TAA requests"""
+        """Get headers for TAA requests with required requestId"""
+        import uuid
+
+        # Use TAA-specific user agent if available, otherwise fallback to platform user agent
+        user_agent = self.platform_config.get('taa_user_agent') or self.platform_config['user_agent']
+
         headers = {
-            'User-Agent': self.platform_config['user_agent'],
+            'requestId': str(uuid.uuid4()),  # Required by TAA endpoint!
+            'User-Agent': user_agent,
             'Accept': 'application/json',
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json; charset=UTF-8'
         }
 
         # Only add Authorization header if we have a token

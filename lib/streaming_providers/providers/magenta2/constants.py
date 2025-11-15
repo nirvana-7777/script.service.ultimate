@@ -24,7 +24,7 @@ MAGENTA2_PLATFORMS = {
     'android-tv': {
         'device_name': 'Android TV',
         'firmware': 'Android 11',
-        'user_agent': 'Mozilla/5.0 (Linux; Android 11; Android TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'user_agent': 'Dalvik/2.1.0 (Linux; U; Android 11; SHIELD Android TV Build/RQ1A.210105.003) ((2.00T_ATV::3.134.4462::mdarcy::))',
         'terminal_type': 'ATV_ANDROIDTV',
         # TAA-specific device identification (API level format required)
         'taa_device_model': 'SHIELD Android TV',
