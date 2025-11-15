@@ -234,7 +234,7 @@ class SessionManager:
     def load_scoped_token(self, provider: str, scope: str,
                           country: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
-        Load token data for a specific scope
+        Load token data for a specific scope (ENHANCED VERSION)
 
         Args:
             provider: Provider name
@@ -243,6 +243,11 @@ class SessionManager:
 
         Returns:
             Token data dictionary or None
+
+        Enhanced:
+            - Returns token even if access_token expired (for refresh attempts)
+            - Properly handles yo_digital tokens with separate expiry times
+            - Logs detailed expiration status
         """
         country_str = f" (country: {country})" if country else ""
 
@@ -266,10 +271,28 @@ class SessionManager:
             logger.warning(f"Scope '{scope}' exists but doesn't contain valid token data")
             return None
 
-        # Check if token is expired
-        if self._is_token_expired(token_data):
+        # Check access token expiration
+        access_token_expired = self._is_token_expired(token_data)
+
+        # For yo_digital, also check refresh token
+        if scope == 'yo_digital' and 'refresh_token' in token_data:
+            refresh_token_expired = self._is_refresh_token_expired(token_data)
+
+            if access_token_expired and not refresh_token_expired:
+                logger.info(f"Access token expired for scope '{scope}' but refresh token still valid")
+                return token_data  # Return so caller can attempt refresh
+            elif access_token_expired and refresh_token_expired:
+                logger.warning(f"Both access and refresh tokens expired for scope '{scope}'")
+                return None  # Both expired, no point returning
+            else:
+                logger.info(f"Loaded valid token for {provider}{country_str}/{scope}")
+                return token_data
+
+        # Standard token handling (tvhubs, taa, etc.)
+        if access_token_expired:
             logger.info(f"Token for scope '{scope}' is expired")
-            return token_data  # Return anyway so refresh can be attempted
+            # Still return it - caller might want to attempt refresh or re-auth
+            return token_data
 
         logger.info(f"Loaded valid token for {provider}{country_str}/{scope}")
         return token_data
@@ -279,22 +302,103 @@ class SessionManager:
         """
         Check if token is expired with buffer
 
+        Enhanced to support multiple expiration formats:
+        1. Standard format: expires_in + issued_at (for access_token)
+        2. yo_digital format: separate expiry for access_token and refresh_token
+
         Args:
             token_data: Token data dictionary
             buffer_seconds: Seconds buffer before expiry (default 5 minutes)
 
         Returns:
             True if expired, False otherwise
+
+        Note:
+            For yo_digital tokens with both access_token and refresh_token,
+            this checks the access_token expiration only (not refresh_token).
         """
-        if 'expires_in' not in token_data or 'issued_at' not in token_data:
-            return False  # Can't determine, assume valid
-
-        expires_in = token_data.get('expires_in', 0)
-        issued_at = token_data.get('issued_at', 0)
         current_time = time.time()
-        expires_at = issued_at + expires_in
 
-        return current_time >= (expires_at - buffer_seconds)
+        # Format 1: Standard single token expiration
+        # Used by: tvhubs tokens, taa tokens, SAM3 tokens
+        if 'expires_in' in token_data and 'issued_at' in token_data:
+            expires_in = token_data.get('expires_in', 0)
+            issued_at = token_data.get('issued_at', 0)
+            expires_at = issued_at + expires_in
+
+            is_expired = current_time >= (expires_at - buffer_seconds)
+
+            if is_expired:
+                logger.debug(f"Token expired (standard format): "
+                             f"issued_at={issued_at}, expires_in={expires_in}, "
+                             f"expires_at={expires_at}, current={current_time}")
+
+            return is_expired
+
+        # Format 2: yo_digital separate expiration for access_token
+        # yo_digital tokens have separate expiry for access and refresh tokens
+        if 'access_token_expires_in' in token_data and 'access_token_issued_at' in token_data:
+            expires_in = token_data.get('access_token_expires_in', 0)
+            issued_at = token_data.get('access_token_issued_at', 0)
+            expires_at = issued_at + expires_in
+
+            is_expired = current_time >= (expires_at - buffer_seconds)
+
+            if is_expired:
+                logger.debug(f"Access token expired (yo_digital format): "
+                             f"issued_at={issued_at}, expires_in={expires_in}, "
+                             f"expires_at={expires_at}, current={current_time}")
+
+            return is_expired
+
+        # Format 3: Direct expiration timestamp (if some API returns 'exp' or 'expires_at')
+        if 'expires_at' in token_data:
+            expires_at = token_data.get('expires_at', 0)
+            is_expired = current_time >= (expires_at - buffer_seconds)
+
+            if is_expired:
+                logger.debug(f"Token expired (direct timestamp): "
+                             f"expires_at={expires_at}, current={current_time}")
+
+            return is_expired
+
+        # No expiration info available - assume valid
+        logger.debug("No expiration info in token data - assuming valid")
+        return False
+
+    @staticmethod
+    def _is_refresh_token_expired(token_data: Dict[str, Any], buffer_seconds: int = 300) -> bool:
+        """
+        Check if refresh token is expired (for yo_digital tokens)
+
+        This is a separate check specifically for yo_digital refresh tokens
+        which have their own expiration separate from access tokens.
+
+        Args:
+            token_data: Token data dictionary
+            buffer_seconds: Seconds buffer before expiry (default 5 minutes)
+
+        Returns:
+            True if refresh token expired, False otherwise or if no refresh token
+        """
+        # yo_digital format with separate refresh token expiry
+        if 'refresh_token_expires_in' in token_data and 'refresh_token_issued_at' in token_data:
+            current_time = time.time()
+            expires_in = token_data.get('refresh_token_expires_in', 0)
+            issued_at = token_data.get('refresh_token_issued_at', 0)
+            expires_at = issued_at + expires_in
+
+            is_expired = current_time >= (expires_at - buffer_seconds)
+
+            if is_expired:
+                logger.debug(f"Refresh token expired (yo_digital format): "
+                             f"issued_at={issued_at}, expires_in={expires_in}, "
+                             f"expires_at={expires_at}, current={current_time}")
+
+            return is_expired
+
+        # No refresh token or no expiration info
+        return False
 
     def save_token(self, provider: str, token: BaseAuthToken,
                    country: Optional[str] = None) -> bool:

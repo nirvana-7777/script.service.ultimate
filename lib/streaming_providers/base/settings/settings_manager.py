@@ -547,6 +547,16 @@ class SettingsManager:
             all_countries = self.session_manager.get_all_countries(provider_name)
             status['configured_countries'] = all_countries
 
+        scoped_tokens = {}
+        available_scopes = self.list_scoped_tokens(provider_name, country)
+
+        for scope in available_scopes:
+            scope_status = self.get_scoped_token_status(provider_name, scope, country)
+            scoped_tokens[scope] = scope_status
+
+        if scoped_tokens:
+            status['scoped_tokens'] = scoped_tokens
+
         return status
 
     def is_provider_ready(self, provider_name: str, country: Optional[str] = None) -> bool:
@@ -1122,6 +1132,189 @@ class SettingsManager:
             logger.error(f"Error migrating {provider_name} to country structure: {e}")
             return False
 
+    # ============= Scoped Token Management (Pass-through to SessionManager) =============
+
+    def save_scoped_token(self, provider_name: str, scope: str, token_data: Dict[str, Any],
+                          country: Optional[str] = None) -> bool:
+        """
+        Save authentication token for a specific scope
+
+        Pass-through method to SessionManager.save_scoped_token()
+
+        Args:
+            provider_name: Name of the provider
+            scope: Token scope (e.g., 'tvhubs', 'taa', 'yo_digital')
+            token_data: Token data to save (should include access_token, expires_in, etc.)
+            country: Optional country code
+
+        Returns:
+            True if successful, False otherwise
+
+        Examples:
+            # Save tvhubs token (access token only)
+            settings_manager.save_scoped_token('magenta2', 'tvhubs', {
+                'access_token': '...',
+                'token_type': 'Bearer',
+                'expires_in': 7200,
+                'issued_at': 1234567890
+            }, 'de')
+
+            # Save yo_digital token (access + refresh, each with own expiry)
+            settings_manager.save_scoped_token('magenta2', 'yo_digital', {
+                'access_token': '...',
+                'access_token_expires_in': 3600,
+                'access_token_issued_at': 1234567890,
+                'refresh_token': '...',
+                'refresh_token_expires_in': 86400,
+                'refresh_token_issued_at': 1234567890,
+                'token_type': 'Bearer'
+            }, 'de')
+        """
+        return self.session_manager.save_scoped_token(provider_name, scope, token_data, country)
+
+    def load_scoped_token(self, provider_name: str, scope: str,
+                          country: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Load token data for a specific scope
+
+        Pass-through method to SessionManager.load_scoped_token()
+
+        Args:
+            provider_name: Name of the provider
+            scope: Token scope (e.g., 'tvhubs', 'taa', 'yo_digital')
+            country: Optional country code
+
+        Returns:
+            Token data dictionary or None if not found or expired
+
+        Note:
+            This method checks token expiration automatically.
+            For yo_digital tokens, it checks both access_token and refresh_token expiry.
+        """
+        return self.session_manager.load_scoped_token(provider_name, scope, country)
+
+    def clear_scoped_token(self, provider_name: str, scope: str,
+                           country: Optional[str] = None) -> bool:
+        """
+        Clear token for a specific scope
+
+        Pass-through method to SessionManager.clear_scoped_token()
+
+        Args:
+            provider_name: Name of the provider
+            scope: Token scope to clear
+            country: Optional country code
+
+        Returns:
+            True if successful, False otherwise
+
+        Example:
+            # Clear only the tvhubs token, keep taa and yo_digital
+            settings_manager.clear_scoped_token('magenta2', 'tvhubs', 'de')
+        """
+        return self.session_manager.clear_scoped_token(provider_name, scope, country)
+
+    def list_scoped_tokens(self, provider_name: str, country: Optional[str] = None) -> List[str]:
+        """
+        List all available token scopes for a provider
+
+        Args:
+            provider_name: Name of the provider
+            country: Optional country code
+
+        Returns:
+            List of scope names (e.g., ['tvhubs', 'taa', 'yo_digital'])
+
+        Example:
+            scopes = settings_manager.list_scoped_tokens('magenta2', 'de')
+            # Returns: ['tvhubs', 'taa', 'yo_digital']
+        """
+        session_data = self.session_manager.load_session(provider_name, country)
+        if not session_data:
+            return []
+
+        # Filter out non-scope keys (device_id, refresh_token at provider level)
+        non_scope_keys = {'device_id', 'refresh_token'}
+        scopes = [
+            key for key in session_data.keys()
+            if isinstance(session_data[key], dict) and key not in non_scope_keys
+        ]
+
+        return scopes
+
+    def get_scoped_token_status(self, provider_name: str, scope: str,
+                                country: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get detailed status information for a scoped token
+
+        Args:
+            provider_name: Name of the provider
+            scope: Token scope
+            country: Optional country code
+
+        Returns:
+            Dictionary with token status information
+
+        Example:
+            status = settings_manager.get_scoped_token_status('magenta2', 'yo_digital', 'de')
+            # Returns:
+            # {
+            #     'exists': True,
+            #     'access_token_valid': True,
+            #     'access_token_expires_at': 1234567890,
+            #     'refresh_token_valid': True,
+            #     'refresh_token_expires_at': 1234654290,
+            #     'scope': 'yo_digital'
+            # }
+        """
+        token_data = self.load_scoped_token(provider_name, scope, country)
+
+        if not token_data:
+            return {
+                'exists': False,
+                'scope': scope,
+                'provider_name': provider_name,
+                'country': country
+            }
+
+        status = {
+            'exists': True,
+            'scope': scope,
+            'provider_name': provider_name,
+            'country': country,
+            'token_type': token_data.get('token_type', 'Bearer')
+        }
+
+        # Check access token expiration
+        if 'access_token' in token_data:
+            status['has_access_token'] = True
+
+            # Standard expiration (single expires_in and issued_at)
+            if 'expires_in' in token_data and 'issued_at' in token_data:
+                expires_at = token_data['issued_at'] + token_data['expires_in']
+                status['access_token_expires_at'] = expires_at
+                status['access_token_valid'] = time.time() < expires_at
+
+            # yo_digital style (separate access_token_expires_in)
+            elif 'access_token_expires_in' in token_data and 'access_token_issued_at' in token_data:
+                expires_at = token_data['access_token_issued_at'] + token_data['access_token_expires_in']
+                status['access_token_expires_at'] = expires_at
+                status['access_token_valid'] = time.time() < expires_at
+            else:
+                status['access_token_valid'] = None  # Cannot determine
+
+        # Check refresh token expiration (for yo_digital)
+        if 'refresh_token' in token_data:
+            status['has_refresh_token'] = True
+
+            if 'refresh_token_expires_in' in token_data and 'refresh_token_issued_at' in token_data:
+                expires_at = token_data['refresh_token_issued_at'] + token_data['refresh_token_expires_in']
+                status['refresh_token_expires_at'] = expires_at
+                status['refresh_token_valid'] = time.time() < expires_at
+            else:
+                status['refresh_token_valid'] = None  # Cannot determine
+
+        return status
 
 # For imports that expect the old interface
 UnifiedSettingsManager = SettingsManager  # Backward compatibility alias
