@@ -78,6 +78,13 @@ class TaaClient:
             logger.debug(f"TAA request to: {endpoint}")
             logger.debug(f"TAA payload keyValue: {taa_payload.get('keyValue', 'MISSING')}")
 
+            # Log complete payload for debugging (mask sensitive data)
+            payload_debug = taa_payload.copy()
+            if 'accessToken' in payload_debug:
+                payload_debug['accessToken'] = payload_debug['accessToken'][:50] + '...'
+            logger.debug(f"Complete TAA payload: {json.dumps(payload_debug, indent=2)}")
+            logger.debug(f"TAA headers: {headers}")
+
             # Perform TAA request
             response = self.http_manager.post(
                 endpoint,
@@ -86,17 +93,25 @@ class TaaClient:
                 json_data=taa_payload
             )
 
+            # Log response for debugging on error
+            if response.status_code >= 400:
+                logger.error(f"TAA request failed with status {response.status_code}")
+                logger.error(f"Response body: {response.text[:500]}")
+
             # Check for device limit exceeded
             if response.status_code == 400:
                 try:
                     error_data = response.json()
+                    logger.error(f"TAA 400 error response: {json.dumps(error_data, indent=2)}")
+
                     if error_data.get('deviceLimitExceeded'):
                         logger.error("Device limit exceeded in TAA authentication")
                         return TaaAuthResult(
                             access_token="",
                             device_limit_exceeded=True
                         )
-                except (ValueError, KeyError):
+                except (ValueError, KeyError) as e:
+                    logger.error(f"Could not parse 400 error response: {e}")
                     pass  # Will be handled by raise_for_status below
 
             response.raise_for_status()
@@ -179,8 +194,18 @@ class TaaClient:
         if resolved_client_model:
             payload["client"] = {"model": resolved_client_model}
 
+        # Validate payload has all required fields
+        required_fields = ["keyValue", "accessToken", "accessTokenSource", "appVersion", "channel", "device", "natco",
+                           "type"]
+        missing_fields = [field for field in required_fields if field not in payload]
+        if missing_fields:
+            logger.error(f"TAA payload missing required fields: {missing_fields}")
+            raise ValueError(f"TAA payload incomplete: missing {missing_fields}")
+
         logger.debug(f"Built TAA payload with keyValue: {key_value}")
         logger.debug(f"Device model: {resolved_device_model}, OS: {resolved_os}")
+        logger.debug(f"Payload fields: {list(payload.keys())}")
+
         return payload
 
     def _parse_taa_response(self, taa_data: Dict[str, Any]) -> TaaAuthResult:
@@ -331,12 +356,18 @@ class TaaClient:
 
     def _get_taa_headers(self, sam3_token: str) -> Dict[str, str]:
         """Get headers for TAA requests"""
-        return {
+        headers = {
             'User-Agent': self.platform_config['user_agent'],
             'Accept': 'application/json',
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {sam3_token}'
+            'Content-Type': 'application/json'
         }
+
+        # Only add Authorization header if we have a token
+        # Some TAA endpoints might not require it
+        if sam3_token:
+            headers['Authorization'] = f'Bearer {sam3_token}'
+
+        return headers
 
     def validate_taa_token(self, taa_token: str) -> bool:
         """
