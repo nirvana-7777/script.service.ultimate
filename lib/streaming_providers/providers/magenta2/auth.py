@@ -506,7 +506,7 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
             from .token_flow_manager import TokenFlowManager
 
             self.token_flow_manager = TokenFlowManager(
-                session_manager=self.settings_manager,
+                session_manager=self.settings_manager.session_manager,  # ✅ Correct!
                 sam3_client=self._sam3_client,
                 taa_client=self._taa_client,
                 provider_name=self.provider_name,
