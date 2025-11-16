@@ -391,10 +391,6 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
         self._taa_client: Optional[TaaClient] = None
         self._initialize_taa_client()
 
-        # Initialize TokenFlowManager
-        self.token_flow_manager: Optional[TokenFlowManager] = None
-        self._initialize_token_flow_manager()
-
         # Initialize parent
         super().__init__(
             provider_name='magenta2',
@@ -406,6 +402,12 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
             http_manager=self._http_manager,
             proxy_config=proxy_config
         )
+
+        # Initialize TokenFlowManager
+        self.token_flow_manager: Optional[TokenFlowManager] = None
+        self._initialize_token_flow_manager()
+
+        logger.info("Magenta2 authenticator initialization completed successfully")
 
     def update_sam3_client_id(self, client_id: str) -> None:
         """Public method to update SAM3 client ID"""
