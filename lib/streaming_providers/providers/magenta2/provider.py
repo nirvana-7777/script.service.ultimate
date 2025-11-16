@@ -474,11 +474,36 @@ class Magenta2Provider(StreamingProvider):
             logger.error(f"Device registration failed: {e}")
             return False
 
+    def get_yo_digital_token(self, force_refresh: bool = False) -> str:
+        """Get yo_digital access token following complete hierarchy"""
+
+        # Try TokenFlowManager via public API
+        yo_digital_token = self.authenticator.get_yo_digital_token(force_refresh)
+
+        if yo_digital_token:
+            logger.info("✓ Got yo_digital token")
+            return yo_digital_token
+
+        # Fallback to existing authentication
+        logger.info("Using legacy authentication flow")
+        return self.authenticate(force_refresh=force_refresh)
+
     def authenticate(self, **kwargs) -> str:
-        """
-        ENHANCED: Authenticate with line auth priority
-        """
-        # PROPER: Use public method to check line auth availability
+        """Authenticate and get access token"""
+        force_refresh = kwargs.get('force_refresh', False)
+
+        # Try new yo_digital flow first (unless force_legacy is set)
+        if not kwargs.get('force_legacy', False):
+            yo_digital_token = self.authenticator.get_yo_digital_token(force_refresh)
+
+            if yo_digital_token:
+                self.bearer_token = yo_digital_token
+                logger.info("✓ Authentication via yo_digital")
+                return self.bearer_token
+
+        # Fallback to existing line_auth + TAA flow
+        logger.info("Using legacy authentication flow")
+
         line_auth_available = (
                 hasattr(self.authenticator, 'can_use_line_auth') and
                 self.authenticator.can_use_line_auth()

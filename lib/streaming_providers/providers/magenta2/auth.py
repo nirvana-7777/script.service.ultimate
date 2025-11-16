@@ -17,6 +17,7 @@ from ...base.utils.logger import logger
 from .sam3_client import Sam3Client
 from .sso_client import SsoClient
 from .taa_client import TaaClient, TaaAuthResult
+from .token_flow_manager import TokenFlowManager
 
 from .constants import (
     SUPPORTED_COUNTRIES,
@@ -390,6 +391,10 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
         self._taa_client: Optional[TaaClient] = None
         self._initialize_taa_client()
 
+        # Initialize TokenFlowManager
+        self.token_flow_manager: Optional[TokenFlowManager] = None
+        self._initialize_token_flow_manager()
+
         # Initialize parent
         super().__init__(
             provider_name='magenta2',
@@ -494,6 +499,40 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
 
         except Exception as e:
             logger.warning(f"Failed to initialize SAM3/SSO clients: {e}")
+
+    def _initialize_token_flow_manager(self) -> None:
+        """Initialize token flow manager after SAM3 and TAA clients are ready"""
+        if self._sam3_client and self._taa_client:
+            from .token_flow_manager import TokenFlowManager
+
+            self.token_flow_manager = TokenFlowManager(
+                session_manager=self.settings_manager,
+                sam3_client=self._sam3_client,
+                taa_client=self._taa_client,
+                provider_name=self.provider_name,
+                country=self.country
+            )
+            logger.debug("TokenFlowManager initialized")
+
+    def get_yo_digital_token(self, force_refresh: bool = False) -> Optional[str]:
+        """
+        Public method to get yo_digital access token
+
+        Returns:
+            yo_digital access token or None
+        """
+        if not self.token_flow_manager:
+            logger.warning("TokenFlowManager not initialized")
+            return None
+
+        result = self.token_flow_manager.get_yo_digital_token(force_refresh)
+
+        if result.success:
+            logger.info(f"✓ Got yo_digital token via: {result.flow_path}")
+            return result.access_token
+        else:
+            logger.error(f"✗ Failed to get yo_digital token: {result.error}")
+            return None
 
     def update_sam3_qr_code_url(self, qr_code_url: str) -> bool:
         """
