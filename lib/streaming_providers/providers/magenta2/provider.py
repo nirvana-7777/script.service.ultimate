@@ -571,20 +571,32 @@ class Magenta2Provider(StreamingProvider):
 
         for entry in response_data['entries']:
             try:
-                # Extract channel information from the entry
-                title = entry.get('title', 'Unknown Channel')
-                channel_id = entry.get('guid', '')
-
-                if not channel_id:
-                    continue
-
-                # Extract station information
+                # Extract station information first
                 stations = entry.get('stations', {})
                 station_info = None
                 if stations:
                     # Get the first station (there's usually only one)
                     station_id = next(iter(stations.keys()))
                     station_info = stations[station_id]
+
+                # PREFER station title over entry title (cleaner name)
+                title = None
+                if station_info:
+                    title = station_info.get('title')  # "RNF HD"
+
+                if not title:
+                    title = entry.get('title', 'Unknown Channel')  # Fallback: "RNF HD - Main"
+
+                # Remove "- Main" suffix if present
+                if title and " - Main" in title:
+                    title = title.replace(" - Main", "")
+
+                # Extract CORRECT channel ID from era$mediaPids
+                channel_id = self._extract_channel_id_from_entry(entry)
+
+                if not channel_id:
+                    logger.warning(f"No channel ID found for entry: {title}")
+                    continue
 
                 # Extract logo URLs from station info
                 logo_url = None
@@ -595,15 +607,10 @@ class Magenta2Provider(StreamingProvider):
                     elif 'stationLogoColored' in thumbnails:
                         logo_url = thumbnails['stationLogoColored'].get('url')
 
-                # Extract channel number
-                channel_number = entry.get('channelNumber')
-                if channel_number:
-                    title = f"{channel_number}. {title}"
-
-                # Create channel object
+                # Create channel object with clean title (no channel number, no quality suffix)
                 magenta2_channel = Magenta2Channel(
-                    name=title,
-                    channel_id=channel_id,
+                    name=title,  # Clean title like "RNF HD"
+                    channel_id=channel_id,  # Correct ID from era$mediaPids
                     logo_url=logo_url,
                     mode=MODE_LIVE,
                     content_type=CONTENT_TYPE_LIVE,
@@ -616,10 +623,46 @@ class Magenta2Provider(StreamingProvider):
                 )
                 channels.append(streaming_channel)
 
+                logger.debug(f"Processed channel: {title} (ID: {channel_id})")
+
             except Exception as e:
                 logger.warning(f"Error processing channel station entry: {e}")
 
+        logger.info(f"Successfully processed {len(channels)} channels from channel stations feed")
         return channels
+
+    @staticmethod
+    def _extract_channel_id_from_entry(entry: Dict) -> Optional[str]:
+        """Extract the correct channel ID from era$mediaPids"""
+        try:
+            stations = entry.get('stations', {})
+            if not stations:
+                return None
+
+            # Get the first station
+            station_id = next(iter(stations.keys()))
+            station_info = stations[station_id]
+
+            # Extract from era$mediaPids (this is the correct ID for API calls)
+            era_media_pids = station_info.get('era$mediaPids', {})
+            channel_id = era_media_pids.get('urn:theplatform:tv:location:any')
+
+            if channel_id:
+                logger.debug(f"Extracted channel ID from era$mediaPids: {channel_id}")
+                return channel_id
+
+            # Fallback to guid if era$mediaPids not available
+            fallback_id = entry.get('guid')
+            if fallback_id:
+                logger.warning(f"Using fallback channel ID from guid: {fallback_id}")
+                return fallback_id
+
+            logger.warning("No channel ID found in entry")
+            return None
+
+        except Exception as e:
+            logger.warning(f"Error extracting channel ID from entry: {e}")
+            return None
 
     def fetch_channels(self,
                        time_window_hours: int = DEFAULT_EPG_WINDOW_HOURS,
