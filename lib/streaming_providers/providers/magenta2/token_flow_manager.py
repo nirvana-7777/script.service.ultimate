@@ -6,6 +6,8 @@ yo_digital → taa → tvhubs → line_auth/remote_login
 """
 
 import time
+import base64
+import json
 from typing import Optional, Dict, Any
 from dataclasses import dataclass
 
@@ -25,6 +27,12 @@ class TokenFlowResult:
     refresh_token_expires_in: Optional[int] = None
     error: Optional[str] = None
     flow_path: Optional[str] = None  # For debugging which path was taken
+
+@dataclass
+class PersonaResult:
+    success: bool
+    persona_token: Optional[str] = None
+    error: Optional[str] = None
 
 
 class TokenFlowManager:
@@ -51,7 +59,8 @@ class TokenFlowManager:
                  sam3_client: 'Sam3Client',
                  taa_client: 'TaaClient',
                  provider_name: str,
-                 country: Optional[str] = None):
+                 country: Optional[str] = None,
+                 provider_config: Optional[Any] = None):
         """
         Initialize TokenFlowManager
 
@@ -67,9 +76,124 @@ class TokenFlowManager:
         self.taa_client = taa_client
         self.provider_name = provider_name
         self.country = country
+        self.provider_config = provider_config
 
         logger.debug(f"TokenFlowManager initialized for {provider_name}" +
                      (f" ({country})" if country else ""))
+
+    @staticmethod
+    def _extract_jwt_claims(jwt_token: str) -> Dict[str, Any]:
+        """Extract claims from JWT token"""
+        try:
+            parts = jwt_token.split('.')
+            if len(parts) != 3:
+                logger.warning("Invalid JWT format")
+                return {}
+
+            # Decode payload
+            payload_b64 = parts[1]
+            padding = len(payload_b64) % 4
+            if padding:
+                payload_b64 += '=' * (4 - padding)
+
+            payload_json = base64.b64decode(payload_b64).decode('utf-8')
+            claims = json.loads(payload_json)
+
+            logger.debug(f"JWT claims extracted: {list(claims.keys())}")
+            return claims
+
+        except Exception as e:
+            logger.error(f"Failed to extract JWT claims: {e}")
+            return {}
+
+    def _compose_persona_token(self, access_token: str) -> Optional[str]:
+        """
+        Compose persona token from access_token JWT claims
+        """
+        try:
+            # Import here to avoid circular imports
+            from .config_models import ProviderConfig
+
+            # Extract dc_cts_persona_token from JWT
+            claims = self._extract_jwt_claims(access_token)
+            dc_cts_persona_token = claims.get('dc_cts_persona_token')
+
+            if not dc_cts_persona_token:
+                logger.error("No dc_cts_persona_token found in JWT claims")
+                return None
+
+            # Use the discovered account URI from ProviderConfig
+            if not hasattr(self, 'provider_config') or not self.provider_config:
+                logger.error("No provider_config available - cannot compose persona token")
+                return None
+
+            # Type check to ensure it's a ProviderConfig
+            if not isinstance(self.provider_config, ProviderConfig):
+                logger.error(f"provider_config is not ProviderConfig: {type(self.provider_config)}")
+                return None
+
+            # CORRECTED: Use get_mpx_account_uri() method from ProviderConfig
+            account_uri = self.provider_config.get_mpx_account_uri()
+            if not account_uri:
+                logger.error("No account URI available from provider_config")
+                return None
+
+            logger.debug(f"Using discovered account URI: {account_uri}")
+
+            # Compose: account_uri + ":" + dc_cts_persona_token
+            raw_token = f"{account_uri}:{dc_cts_persona_token}"
+
+            # Base64 encode
+            persona_token = base64.b64encode(raw_token.encode('utf-8')).decode('utf-8')
+
+            logger.info("✓ Persona token composed successfully")
+            logger.debug(f"Account URI: {account_uri}")
+            logger.debug(f"Persona token preview: {persona_token[:50]}...")
+
+            return persona_token
+
+        except ImportError as e:
+            logger.error(f"Failed to import ProviderConfig: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Failed to compose persona token: {e}")
+            return None
+
+    def get_persona_token(self, force_refresh: bool = False) -> PersonaResult:
+        """
+        Get persona token - compose from successful yo_digital token
+        """
+        # Get access_token using existing method
+        token_result = self.get_yo_digital_token(force_refresh)
+
+        # If it failed, return the failure
+        if not token_result.success:
+            return PersonaResult(
+                success=False,
+                error=token_result.error,
+            )
+
+        # We have success - extract access_token and compose persona_token
+        access_token = token_result.access_token
+
+        if not access_token:
+            return PersonaResult(
+                success=False,
+                error="Failed to get yo_digital access token"
+            )
+
+        # Compose persona_token
+        persona_token = self._compose_persona_token(access_token)
+        if not persona_token:
+            return PersonaResult(
+                success=False,
+                error="Failed to compose persona token"
+            )
+
+        return PersonaResult(
+            success=True,
+            persona_token=persona_token
+        )
 
     def get_yo_digital_token(self, force_refresh: bool = False) -> TokenFlowResult:
         """

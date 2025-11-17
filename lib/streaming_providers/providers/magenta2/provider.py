@@ -138,7 +138,8 @@ class Magenta2Provider(StreamingProvider):
             device_model=f"{platform.upper()}_FTV",  # Use fallback initially
             sam3_client_id=fallback_client_id,  # Use fallback initially
             session_id=self.session_id,
-            device_id=self.device_id
+            device_id=self.device_id,
+            provider_config=None
         )
 
         # 🚨 NOW PERFORM CONFIGURATION DISCOVERY (authenticator exists)
@@ -151,6 +152,8 @@ class Magenta2Provider(StreamingProvider):
         # 🚨 UPDATE AUTHENTICATOR WITH DISCOVERED CONFIG
         if self.provider_config:
             # Update authenticator with discovered client_id and models
+            self.authenticator.provider_config = self.provider_config  # ✅ Store the config
+            logger.info("✓ ProviderConfig stored in authenticator")
             if self.provider_config.bootstrap.sam3_client_id:
                 # Use public method if available, otherwise update directly
                 if hasattr(self.authenticator, 'update_sam3_client_id'):
@@ -355,10 +358,9 @@ class Magenta2Provider(StreamingProvider):
             'x-dt-call-id': self._generate_call_id()
         }
 
-    def _get_api_headers(self, use_persona_token: bool = False,
-                         require_auth: bool = False) -> Dict[str, str]:
+    def _get_api_headers(self, require_auth: bool = False) -> Dict[str, str]:
         """
-        FIXED: Get headers for API requests with proper token usage
+        Get headers for API requests with persona_token Basic auth
         """
         headers = {
             'User-Agent': self.platform_config['user_agent'],
@@ -367,19 +369,20 @@ class Magenta2Provider(StreamingProvider):
         }
 
         # Lazy authentication - only authenticate if required and not already done
-        if require_auth and not self.bearer_token:
+        if require_auth and not self.persona_token:
             try:
                 self._ensure_authenticated()
             except Exception as e:
                 logger.warning(f"Could not authenticate for API headers: {e}")
 
-        # CRITICAL FIX: Use COMPOSED persona token for API calls when requested
-        if use_persona_token and self.persona_token:
+        # Use persona token for Basic auth when available
+        if require_auth and self.persona_token:
             headers['Authorization'] = f'Basic {self.persona_token}'
-            logger.debug("Using composed persona token (Basic auth)")
+            logger.debug("Using persona token (Basic auth) for API call")
         elif self.bearer_token:
+            # Fallback to Bearer token for backward compatibility
             headers['Authorization'] = f'Bearer {self.bearer_token}'
-            logger.debug("Using TAA bearer token")
+            logger.debug("Using TAA bearer token (fallback)")
 
         return headers
 
@@ -475,18 +478,15 @@ class Magenta2Provider(StreamingProvider):
             logger.error(f"Device registration failed: {e}")
             return False
 
-    def get_yo_digital_token(self, force_refresh: bool = False) -> str:
-        """Get yo_digital access token following complete hierarchy"""
+    def get_persona_token(self, force_refresh: bool = False) -> str:
+        """Get persona token for ALL API calls"""
+        persona_token = self.authenticator.get_persona_token()
+        if persona_token:
+            logger.info("✓ Got persona token")
+            return persona_token
 
-        # Try TokenFlowManager via public API
-        yo_digital_token = self.authenticator.get_yo_digital_token(force_refresh)
-
-        if yo_digital_token:
-            logger.info("✓ Got yo_digital token")
-            return yo_digital_token
-
-        # Fallback to existing authentication
-        logger.info("Using legacy authentication flow")
+        # Fallback to legacy authentication if persona token fails
+        logger.info("Using legacy authentication flow as fallback")
         return self.authenticate(force_refresh=force_refresh)
 
     def authenticate(self, **kwargs) -> str:
@@ -545,32 +545,18 @@ class Magenta2Provider(StreamingProvider):
         return self.bearer_token
 
     def _ensure_authenticated(self) -> None:
-        """Ensure we have valid authentication token"""
-
-        # Try TokenFlowManager first (gets yo_digital)
-        if hasattr(self.authenticator, 'get_yo_digital_token'):
-            yo_digital_token = self.authenticator.get_yo_digital_token()
-            if yo_digital_token:
-                self.bearer_token = yo_digital_token
-                logger.info("✓ Lazy authentication via yo_digital")
+        """Ensure we have valid persona token"""
+        if hasattr(self.authenticator, 'get_persona_token'):
+            persona_token = self.authenticator.get_persona_token()
+            if persona_token:
+                self.persona_token = persona_token
+                logger.info("✓ Lazy authentication via persona token")
                 return
 
-        # Fallback to old flow
+        # Fallback to old flow (for backward compatibility)
+        logger.info("Using legacy authentication for lazy auth")
         self.bearer_token = self.authenticator.get_bearer_token()
-
-        # CRITICAL: Get composed persona token
-        self.persona_token = self.authenticator.get_persona_token()
-
-        if not self.persona_token:
-            # Debug information
-            auth_state = self.authenticator.debug_authentication_state()
-            logger.error(f"Authentication state: {json.dumps(auth_state, indent=2)}")
-            raise Exception(
-                "Lazy authentication succeeded but persona token composition failed. "
-                "Check if TAA JWT contains dc_cts_persona_token and account_uri claims."
-            )
-
-        logger.info("✓ Lazy authentication complete with persona token")
+        # Note: Legacy flow might not set persona_token
 
     def get_dynamic_manifest_params(self, channel: StreamingChannel, **kwargs) -> Optional[str]:
         return None
@@ -806,13 +792,13 @@ class Magenta2Provider(StreamingProvider):
 
     def get_entitlement_token(self, content_id: str, content_type: str = CONTENT_TYPE_LIVE) -> str:
         """
-        FIXED: Get entitlement token using COMPOSED persona token
+        Get entitlement token using persona_token Basic auth
         """
         # Ensure we're authenticated with persona token
         self._ensure_authenticated()
 
-        # CRITICAL: Use persona token (Basic auth) for entitlement
-        headers = self._get_api_headers(use_persona_token=True, require_auth=True)
+        # Use persona token (Basic auth) for entitlement
+        headers = self._get_api_headers(require_auth=True)
 
         payload = {
             "content_id": content_id,
@@ -1064,7 +1050,7 @@ class Magenta2Provider(StreamingProvider):
             # Get required components for SMIL request
             selector_service = self.endpoint_manager.get_endpoint('mpx_selector')
             if not selector_service:
-                logger.error(f"No mpx_basic_url_selector_service endpoint found for channel {channel_id}")
+                logger.error(f"No mpx_selector endpoint found for channel {channel_id}")
                 return None
 
             account_pid = self.provider_config.manifest.mpx.account_pid
@@ -1073,20 +1059,18 @@ class Magenta2Provider(StreamingProvider):
                 return None
 
             # Get composed persona token for Basic auth
-            persona_token = self.authenticator.get_persona_token()
+            persona_token = self.get_persona_token()
             if not persona_token:
-                logger.error(f"No composed persona token available for channel {channel_id}")
+                logger.error(f"No persona token available for channel {channel_id}")
                 return None
 
-            # Fixed client ID (can be parameterized later if needed)
+            # Fixed client ID
             client_id = "a8198f31-b406-4177-8dee-f6216c356c75"
 
             # Construct SMIL URL
             smil_url = f"{selector_service}{account_pid}/media/{channel_id}?format=smil&formats=MPEG-DASH&tracking=true&clientId={client_id}"
 
             logger.info(f"Requesting SMIL manifest for channel {channel_id}")
-            logger.debug(f"SMIL URL: {smil_url}")
-            logger.debug(f"Using account PID: {account_pid}, client ID: {client_id}")
 
             # Make SMIL request with Basic auth
             headers = {
@@ -1103,14 +1087,13 @@ class Magenta2Provider(StreamingProvider):
             )
             response.raise_for_status()
 
-            logger.info(f"✓ SMIL response received for channel {channel_id} (status: {response.status_code})")
+            logger.info(f"✓ SMIL response received for channel {channel_id}")
 
             # Parse SMIL to extract MPD URL
             mpd_url = self._parse_smil_for_mpd(response.text, channel_id)
 
             if mpd_url:
                 logger.info(f"✓ MPD manifest URL extracted for channel {channel_id}")
-                logger.debug(f"MPD URL: {mpd_url}")
             else:
                 logger.warning(f"✗ No MPD URL found in SMIL response for channel {channel_id}")
 

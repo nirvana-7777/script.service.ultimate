@@ -327,7 +327,8 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
                  device_model: Optional[str] = None,
                  sam3_client_id: Optional[str] = None,
                  session_id: Optional[str] = None,
-                 device_id: Optional[str] = None):
+                 device_id: Optional[str] = None,
+                 provider_config: Optional[Any] = None):
         """
         Enhanced authenticator with complete authentication flow support
         """
@@ -355,6 +356,7 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
         # Session and device management
         self._session_id = session_id or str(uuid.uuid4())
         self._device_id = device_id or str(uuid.uuid4())
+        self.provider_config = provider_config
 
         # NEW: Store MPX account info for persona token composition
         self._mpx_account_pid: Optional[str] = None
@@ -512,7 +514,8 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
                 sam3_client=self._sam3_client,
                 taa_client=self._taa_client,
                 provider_name=self.provider_name,
-                country=self.country
+                country=self.country,
+                provider_config=self.provider_config
             )
             logger.debug("TokenFlowManager initialized")
 
