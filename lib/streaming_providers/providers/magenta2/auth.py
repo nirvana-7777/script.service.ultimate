@@ -823,7 +823,7 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
         }
 
         # Save provider session data without access_token and without persona fields
-        self.settings_manager.save_session(
+        self.settings_manager.session_manager.save_session(
             self.provider_name,
             provider_session_data,
             self.country
@@ -983,7 +983,7 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
                     'device_id': getattr(self, '_device_id', '')
                 }
 
-                self.settings_manager.save_session(
+                self.settings_manager.session_manager.save_session(
                     self.provider_name,
                     provider_session_data,
                     self.country
