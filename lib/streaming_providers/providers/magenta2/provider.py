@@ -544,16 +544,17 @@ class Magenta2Provider(StreamingProvider):
         return self.bearer_token
 
     def _ensure_authenticated(self) -> None:
-        """
-        FIXED: Ensure we have valid authentication token AND composed persona token
-        """
-        # Check if we have both bearer token AND composed persona token
-        if self.bearer_token and self.persona_token and self.authenticator.is_authenticated():
-            return
+        """Ensure we have valid authentication token"""
 
-        logger.debug("Performing lazy authentication")
+        # Try TokenFlowManager first (gets yo_digital)
+        if hasattr(self.authenticator, 'get_yo_digital_token'):
+            yo_digital_token = self.authenticator.get_yo_digital_token()
+            if yo_digital_token:
+                self.bearer_token = yo_digital_token
+                logger.info("✓ Lazy authentication via yo_digital")
+                return
 
-        # Authenticate to get bearer token
+        # Fallback to old flow
         self.bearer_token = self.authenticator.get_bearer_token()
 
         # CRITICAL: Get composed persona token
