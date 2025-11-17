@@ -84,6 +84,8 @@ class MpxConfig:
     feeds: Dict[str, str] = field(default_factory=dict)
     # ADD THIS: Channel stations feed
     channel_stations_feed: Optional[str] = None
+    mpx_account_uri: Optional[str] = None  # Actual account URI for persona token
+    mpx_basic_url_selector_service: Optional[str] = None  # MPD manifest endpoint
 
     @classmethod
     def from_manifest_data(cls, manifest_data: Dict[str, Any]) -> 'MpxConfig':
@@ -130,16 +132,20 @@ class MpxConfig:
             bookmark_base_url=get_param('mpxBookmarkBaseUrl') or mpx_data.get('bookmarkBaseUrl'),
             pvr_base_url=get_param('mpxPvrBaseUrl') or mpx_data.get('pvrBaseUrl'),
             feeds=feeds,
-            # ADD THIS:
-            channel_stations_feed=channel_stations_feed
+            channel_stations_feed=channel_stations_feed,
+            mpx_account_uri = get_param('mpxAccountUri'),  # Extract actual account URI
+            mpx_basic_url_selector_service = get_param('mpxBasicUrlSelectorService')  # Extract MPD endpoint
         )
 
     def get_account_uri(self) -> str:
         """
-        NEW: Construct MPX account URI for persona token composition
-        Format: urn:theplatform:auth:root:{accountPid}
+        Get MPX account URI for persona token composition
+        Prefer actual mpxAccountUri, fallback to constructed format
         """
-        return f"urn:theplatform:auth:root:{self.account_pid}"
+        if self.mpx_account_uri:
+            return self.mpx_account_uri
+        # Fallback to constructed format
+        return "http://access.auth.theplatform.com/data/Account/2709353023"
 
 
 @dataclass

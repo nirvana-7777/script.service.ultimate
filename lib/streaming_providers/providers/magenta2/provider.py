@@ -4,6 +4,7 @@ from typing import Dict, Optional, List, Any
 import json
 import time
 import uuid
+import re
 from datetime import datetime, timedelta
 
 from ...base.provider import StreamingProvider
@@ -1014,22 +1015,106 @@ class Magenta2Provider(StreamingProvider):
             logger.error(f"Error getting manifest for {channel.name}: {e}")
             return None
 
+    @staticmethod
+    def _parse_smil_for_mpd(smil_content: str, channel_id: str) -> Optional[str]:
+        """
+        Parse SMIL response to extract MPD URL from <video src="..."> tag
+
+        Args:
+            smil_content: Raw SMIL XML content
+            channel_id: Channel ID for logging
+
+        Returns:
+            MPD URL string or None if not found
+        """
+        try:
+            logger.debug(f"Parsing SMIL response for channel {channel_id} (length: {len(smil_content)} chars)")
+
+            # Look for <video src="..."> tag first (primary source)
+            video_src_pattern = r'<video\s+src="([^"]+)"'
+            video_match = re.search(video_src_pattern, smil_content)
+
+            if video_match:
+                mpd_url = video_match.group(1)
+                logger.debug(f"Found MPD URL in <video> tag for channel {channel_id}")
+                return mpd_url
+
+            # Fallback to <ref src="..."> tag if <video> not found
+            ref_src_pattern = r'<ref\s+src="([^"]+)"'
+            ref_match = re.search(ref_src_pattern, smil_content)
+
+            if ref_match:
+                mpd_url = ref_match.group(1)
+                logger.debug(f"Found MPD URL in <ref> tag for channel {channel_id}")
+                return mpd_url
+
+            logger.warning(f"No MPD URL found in SMIL response for channel {channel_id}")
+            logger.debug(f"SMIL content preview: {smil_content[:500]}...")
+            return None
+
+        except Exception as e:
+            logger.error(f"Error parsing SMIL response for channel {channel_id}: {e}")
+            return None
+
     def get_manifest(self, channel_id: str, content_type: str = CONTENT_TYPE_LIVE, **kwargs) -> Optional[str]:
-        """Get manifest URL for a specific channel by ID"""
+        """Get MPD manifest URL for a channel using selector service with Basic auth"""
         self._ensure_authenticated()
 
         try:
-            entitlement_token = self.get_entitlement_token(
-                content_id=channel_id,
-                content_type=content_type
-            )
+            # Get required components for SMIL request
+            selector_service = self.endpoint_manager.get_endpoint('mpx_basic_url_selector_service')
+            if not selector_service:
+                logger.error(f"No mpx_basic_url_selector_service endpoint found for channel {channel_id}")
+                return None
 
-            playlist_data = self.get_channel_playlist(
-                channel_id,
-                entitlement_token
-            )
+            account_pid = self.provider_config.manifest.mpx.account_pid
+            if not account_pid:
+                logger.error(f"No MPX account PID found for channel {channel_id}")
+                return None
 
-            return playlist_data.get('manifestUrl', playlist_data.get('manifest'))
+            # Get composed persona token for Basic auth
+            persona_token = self.authenticator.get_persona_token()
+            if not persona_token:
+                logger.error(f"No composed persona token available for channel {channel_id}")
+                return None
+
+            # Fixed client ID (can be parameterized later if needed)
+            client_id = "a8198f31-b406-4177-8dee-f6216c356c75"
+
+            # Construct SMIL URL
+            smil_url = f"{selector_service}{account_pid}/media/{channel_id}?format=smil&formats=MPEG-DASH&tracking=true&clientId={client_id}"
+
+            logger.info(f"Requesting SMIL manifest for channel {channel_id}")
+            logger.debug(f"SMIL URL: {smil_url}")
+            logger.debug(f"Using account PID: {account_pid}, client ID: {client_id}")
+
+            # Make SMIL request with Basic auth
+            headers = {
+                'Authorization': f'Basic {persona_token}',
+                'User-Agent': self.platform_config['user_agent'],
+                'Accept': 'application/smil+xml, application/xml;q=0.9, */*;q=0.8'
+            }
+
+            response = self.http_manager.get(
+                smil_url,
+                operation='manifest_smil',
+                headers=headers,
+                timeout=DEFAULT_REQUEST_TIMEOUT
+            )
+            response.raise_for_status()
+
+            logger.info(f"✓ SMIL response received for channel {channel_id} (status: {response.status_code})")
+
+            # Parse SMIL to extract MPD URL
+            mpd_url = self._parse_smil_for_mpd(response.text, channel_id)
+
+            if mpd_url:
+                logger.info(f"✓ MPD manifest URL extracted for channel {channel_id}")
+                logger.debug(f"MPD URL: {mpd_url}")
+            else:
+                logger.warning(f"✗ No MPD URL found in SMIL response for channel {channel_id}")
+
+            return mpd_url
 
         except Exception as e:
             logger.error(f"Error getting manifest for channel {channel_id}: {e}")
