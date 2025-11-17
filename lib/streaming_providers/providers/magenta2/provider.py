@@ -1062,7 +1062,7 @@ class Magenta2Provider(StreamingProvider):
 
         try:
             # Get required components for SMIL request
-            selector_service = self.endpoint_manager.get_endpoint('mpx_basic_url_selector_service')
+            selector_service = self.endpoint_manager.get_endpoint('mpx_selector')
             if not selector_service:
                 logger.error(f"No mpx_basic_url_selector_service endpoint found for channel {channel_id}")
                 return None
