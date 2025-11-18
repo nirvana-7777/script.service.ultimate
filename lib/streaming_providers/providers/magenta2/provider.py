@@ -1187,8 +1187,10 @@ class Magenta2Provider(StreamingProvider):
             logger.error(f"Error getting SMIL data for channel {channel_id}: {e}")
             return None
 
+    # In provider.py - update _get_smil_content method
+
     def _get_smil_content(self, channel_id: str) -> Optional[str]:
-        """Get SMIL content for a channel to extract releasePid"""
+        """Get SMIL content for a channel to extract releasePid and release concurrency lock"""
         try:
             # Reuse the same logic as get_manifest but return the raw SMIL content
             self._ensure_authenticated()
@@ -1204,12 +1206,13 @@ class Magenta2Provider(StreamingProvider):
             if not account_pid:
                 return None
 
+            # Use the same client_id as in the original SMIL request
             client_id = "a8198f31-b406-4177-8dee-f6216c356c75"
             smil_url = f"{selector_service}{account_pid}/media/{channel_id}?format=smil&formats=MPEG-DASH&tracking=true&clientId={client_id}"
 
             headers = {
                 'Authorization': f'Basic {self.persona_token}',
-                'User-Agent': self.platform_config['user_agent'],
+                'User-Agent': self.platform_config['user_agent'],  # Platform user agent
                 'Accept': 'application/smil+xml, application/xml;q=0.9, */*;q=0.8'
             }
 
@@ -1221,7 +1224,18 @@ class Magenta2Provider(StreamingProvider):
             )
 
             if response.status_code == 200:
-                return response.text
+                smil_content = response.text
+
+                # RELEASE CONCURRENCY LOCK IMMEDIATELY AFTER GETTING SMIL
+                from .concurrency import extract_and_release_lock
+                extract_and_release_lock(
+                    smil_content,
+                    self.http_manager,
+                    client_id=client_id,  # Use the same client_id as SMIL request
+                    user_agent=self.platform_config['user_agent']  # Platform user agent
+                )
+
+                return smil_content
             else:
                 logger.error(f"Failed to get SMIL content for DRM: {response.status_code}")
                 return None
