@@ -1059,6 +1059,26 @@ class Magenta2Provider(StreamingProvider):
         try:
             logger.debug(f"Parsing SMIL response for channel {channel_id} (length: {len(smil_content)} chars)")
 
+            # First check for error cases
+            error_title_pattern = r'<ref[^>]*title="([^"]*)"[^>]*abstract="([^"]*)"[^>]*>'
+            error_match = re.search(error_title_pattern, smil_content)
+
+            if error_match:
+                title = error_match.group(1)
+                abstract = error_match.group(2)
+                logger.warning(f"SMIL error response for channel {channel_id}: {title} - {abstract}")
+
+                # Check for specific error patterns
+                if "errorFiles/Unavailable.flv" in smil_content:
+                    logger.error(f"SMIL returned unavailable content for channel {channel_id}")
+                    return None
+                if "Invalid Token" in title or "InvalidAuthToken" in smil_content:
+                    logger.error(f"Invalid authentication token for channel {channel_id}")
+                    return None
+                if "403" in smil_content:
+                    logger.error(f"Access forbidden (403) for channel {channel_id}")
+                    return None
+
             # Look for <video src="..."> tag first (primary source)
             video_src_pattern = r'<video\s+src="([^"]+)"'
             video_match = re.search(video_src_pattern, smil_content)
@@ -1066,6 +1086,15 @@ class Magenta2Provider(StreamingProvider):
             if video_match:
                 mpd_url = video_match.group(1)
                 logger.debug(f"Found MPD URL in <video> tag for channel {channel_id}")
+
+                # Log additional info if available in ref tag
+                ref_info_pattern = r'<ref[^>]*src="([^"]*)"[^>]*title="([^"]*)"[^>]*abstract="([^"]*)"'
+                ref_info_match = re.search(ref_info_pattern, smil_content)
+                if ref_info_match and ref_info_match.group(1) == mpd_url:
+                    title = ref_info_match.group(2)
+                    abstract = ref_info_match.group(3)
+                    logger.debug(f"Stream info: {title} - {abstract}")
+
                 return mpd_url
 
             # Fallback to <ref src="..."> tag if <video> not found
@@ -1075,10 +1104,26 @@ class Magenta2Provider(StreamingProvider):
             if ref_match:
                 mpd_url = ref_match.group(1)
                 logger.debug(f"Found MPD URL in <ref> tag for channel {channel_id}")
+
+                # Extract title and abstract from the ref tag
+                ref_full_pattern = r'<ref[^>]*src="%s"[^>]*title="([^"]*)"[^>]*abstract="([^"]*)"' % re.escape(mpd_url)
+                ref_full_match = re.search(ref_full_pattern, smil_content)
+                if ref_full_match:
+                    title = ref_full_match.group(1)
+                    abstract = ref_full_match.group(2)
+                    logger.debug(f"Stream info: {title} - {abstract}")
+
                 return mpd_url
 
+            # If we get here, no MPD URL was found
             logger.warning(f"No MPD URL found in SMIL response for channel {channel_id}")
-            logger.debug(f"SMIL content preview: {smil_content[:500]}...")
+
+            # Log the full SMIL content for debugging in case of unexpected format
+            if len(smil_content) < 1000:  # Only log if it's reasonably short
+                logger.debug(f"Full SMIL content: {smil_content}")
+            else:
+                logger.debug(f"SMIL content preview: {smil_content[:500]}...")
+
             return None
 
         except Exception as e:
