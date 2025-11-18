@@ -1153,61 +1153,84 @@ class Magenta2Provider(StreamingProvider):
             return None
 
     def get_manifest(self, channel_id: str, content_type: str = CONTENT_TYPE_LIVE, **kwargs) -> Optional[str]:
-        """Get MPD manifest URL for a channel using selector service with Basic auth"""
+        """Get MPD manifest URL with persona token authentication"""
+        # Ensure we have persona token
         self._ensure_authenticated()
 
+        if not self.persona_token:
+            logger.error(f"No persona token available for channel {channel_id}")
+            return None
+
+        # DEBUG: Verify persona token
+        logger.debug("=== PERSONA TOKEN VERIFICATION ===")
+        logger.debug(f"Persona token length: {len(self.persona_token)}")
+        logger.debug(f"Persona token preview: {self.persona_token[:100]}...")
+
+        # Get required components for SMIL request
+        selector_service = self.endpoint_manager.get_endpoint('mpx_selector')
+        if not selector_service:
+            logger.error(f"No mpx_selector endpoint found for channel {channel_id}")
+            return None
+
+        account_pid = self.provider_config.manifest.mpx.account_pid
+        if not account_pid:
+            logger.error(f"No MPX account PID found for channel {channel_id}")
+            return None
+
+        # Fixed client ID
+        client_id = "a8198f31-b406-4177-8dee-f6216c356c75"
+
+        # Construct SMIL URL
+        smil_url = f"{selector_service}{account_pid}/media/{channel_id}?format=smil&formats=MPEG-DASH&tracking=true&clientId={client_id}"
+
+        logger.info(f"Requesting SMIL manifest for channel {channel_id}")
+
+        # CRITICAL: Make SMIL request with Basic auth using persona token
+        headers = {
+            'Authorization': f'Basic {self.persona_token}',
+            'User-Agent': self.platform_config['user_agent'],
+            'Accept': 'application/smil+xml, application/xml;q=0.9, */*;q=0.8'
+        }
+
+        # DEBUG: Log the exact request details
+        logger.debug("=== SMIL REQUEST DETAILS ===")
+        logger.debug(f"SMIL URL: {smil_url}")
+        logger.debug(f"Headers being sent: {headers}")
+        logger.debug(f"Authorization header present: {'Authorization' in headers}")
+        logger.debug(f"Authorization header value preview: {headers['Authorization'][:100]}...")
+
         try:
-            # Get required components for SMIL request
-            selector_service = self.endpoint_manager.get_endpoint('mpx_selector')
-            if not selector_service:
-                logger.error(f"No mpx_selector endpoint found for channel {channel_id}")
-                return None
-
-            account_pid = self.provider_config.manifest.mpx.account_pid
-            if not account_pid:
-                logger.error(f"No MPX account PID found for channel {channel_id}")
-                return None
-
-            # Get composed persona token for Basic auth
-            persona_token = self.get_persona_token()
-            if not persona_token:
-                logger.error(f"No persona token available for channel {channel_id}")
-                return None
-
-            # Fixed client ID
-            client_id = "a8198f31-b406-4177-8dee-f6216c356c75"
-
-            # Construct SMIL URL
-            smil_url = f"{selector_service}{account_pid}/media/{channel_id}?format=smil&formats=MPEG-DASH&tracking=true&clientId={client_id}"
-
-            logger.info(f"Requesting SMIL manifest for channel {channel_id}")
-
-            # Make SMIL request with Basic auth
-            headers = {
-                'Authorization': f'Basic {persona_token}',
-                'User-Agent': self.platform_config['user_agent'],
-                'Accept': 'application/smil+xml, application/xml;q=0.9, */*;q=0.8'
-            }
-
+            # Make the request with explicit header verification
             response = self.http_manager.get(
                 smil_url,
                 operation='manifest_smil',
-                headers=headers,
+                headers=headers,  # Make sure headers are passed
                 timeout=DEFAULT_REQUEST_TIMEOUT
             )
-            response.raise_for_status()
 
             logger.info(f"✓ SMIL response received for channel {channel_id}")
+            logger.debug(f"Response status: {response.status_code}")
+            logger.debug(f"Response headers: {dict(response.headers)}")
+            logger.debug(f"Response content length: {len(response.text)}")
+
+            # Check if response contains error
+            if "DecoderException" in response.text:
+                logger.error(f"SMIL returned DecoderException")
+                logger.debug(f"SMIL error content: {response.text}")
+                return None
 
             # Parse SMIL to extract MPD URL
             mpd_url = self._parse_smil_for_mpd(response.text, channel_id)
 
             if mpd_url:
                 logger.info(f"✓ MPD manifest URL extracted for channel {channel_id}")
+                logger.debug(f"MPD URL: {mpd_url}")
+                return mpd_url
             else:
                 logger.warning(f"✗ No MPD URL found in SMIL response for channel {channel_id}")
-
-            return mpd_url
+                # Log the full SMIL content for debugging
+                logger.debug(f"Full SMIL response: {response.text}")
+                return None
 
         except Exception as e:
             logger.error(f"Error getting manifest for channel {channel_id}: {e}")
