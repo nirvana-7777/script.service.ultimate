@@ -1277,16 +1277,28 @@ class Magenta2Provider(StreamingProvider):
             decoded = base64.b64decode(self.persona_token).decode('utf-8')
             logger.debug(f"Decoded persona token: {decoded[:100]}...")
 
-            # Split by colon to get account_uri:persona_jwt
-            parts = decoded.split(':', 1)
+            # The format is: account_uri:persona_jwt
+            # But account_uri contains colons (http://), so we need to split carefully
 
-            if len(parts) == 2:
-                persona_jwt = parts[1]
+            # Find the last colon (after the account URI)
+            last_colon_index = decoded.rfind(':')
+
+            if last_colon_index != -1:
+                account_uri = decoded[:last_colon_index]
+                persona_jwt = decoded[last_colon_index + 1:]
+
+                logger.debug(f"Account URI: {account_uri}")
                 logger.debug(f"Extracted persona JWT token length: {len(persona_jwt)}")
                 logger.debug(f"Persona JWT token preview: {persona_jwt[:50]}...")
-                return persona_jwt
+
+                # Verify it's a JWT token (should start with eyJ)
+                if persona_jwt.startswith('eyJ'):
+                    return persona_jwt
+                else:
+                    logger.error(f"Extracted token doesn't look like a JWT: {persona_jwt[:20]}...")
+                    return None
             else:
-                logger.error(f"Invalid persona token format - expected account_uri:persona_jwt, got {len(parts)} parts")
+                logger.error("No colon found in decoded persona token")
                 logger.debug(f"Decoded token: {decoded}")
                 return None
 
