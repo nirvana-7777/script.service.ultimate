@@ -161,13 +161,18 @@ class TokenFlowManager:
 
     def get_persona_token(self, force_refresh: bool = False) -> PersonaResult:
         """
-        Get persona token - compose from successful yo_digital token
+        Get persona token - compose from successful yo_digital token result
         """
-        # Get access_token using existing method
+        logger.debug("=== GET_PERSONA_TOKEN START ===")
+
+        # Get TokenFlowResult from existing method
         token_result = self.get_yo_digital_token(force_refresh)
+        logger.debug(f"token_result.success: {token_result.success}")
+        logger.debug(f"token_result.access_token present: {bool(token_result.access_token)}")
 
         # If it failed, return the failure
         if not token_result.success:
+            logger.debug("=== GET_PERSONA_TOKEN FAILED (token_result failed) ===")
             return PersonaResult(
                 success=False,
                 error=token_result.error,
@@ -177,19 +182,27 @@ class TokenFlowManager:
         access_token = token_result.access_token
 
         if not access_token:
+            logger.debug("=== GET_PERSONA_TOKEN FAILED (no access_token) ===")
             return PersonaResult(
                 success=False,
                 error="Failed to get yo_digital access token"
             )
 
+        logger.debug(f"About to call _compose_persona_token with access_token: {access_token[:50]}...")
+
         # Compose persona_token
         persona_token = self._compose_persona_token(access_token)
+
+        logger.debug(f"_compose_persona_token returned: {persona_token is not None}")
+
         if not persona_token:
+            logger.debug("=== GET_PERSONA_TOKEN FAILED (composition failed) ===")
             return PersonaResult(
                 success=False,
                 error="Failed to compose persona token"
             )
 
+        logger.debug("=== GET_PERSONA_TOKEN SUCCESS ===")
         return PersonaResult(
             success=True,
             persona_token=persona_token
