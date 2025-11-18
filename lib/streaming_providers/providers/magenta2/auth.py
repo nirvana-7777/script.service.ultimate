@@ -504,12 +504,25 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
         except Exception as e:
             logger.warning(f"Failed to initialize SAM3/SSO clients: {e}")
 
+    def _perform_remote_login_flow(self) -> Optional[Dict[str, Any]]:
+        """
+        Helper method for TokenFlowManager to perform remote login
+        Returns token data dict or None
+        """
+        if not self._sam3_client:
+            return None
+
+        try:
+            return self._sam3_client.remote_login(scope="tvhubs offline_access")
+        except Exception as e:
+            logger.error(f"Remote login flow failed: {e}")
+            return None
+
     def _initialize_token_flow_manager(self) -> None:
         """Initialize token flow manager after SAM3 and TAA clients are ready"""
         if self._sam3_client and self._taa_client:
             from .token_flow_manager import TokenFlowManager
 
-            # Get session manager from settings_manager
             session_manager = getattr(self.settings_manager, 'session_manager', None)
             if not session_manager:
                 logger.error("Cannot initialize TokenFlowManager: No session_manager available")
@@ -521,10 +534,12 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
                 taa_client=self._taa_client,
                 provider_name=self.provider_name,
                 country=self.country,
-                provider_config=self.provider_config  # ✅ Make sure this is passed!
+                provider_config=self.provider_config,
+                # NEW: Pass callbacks to break circular dependency
+                line_auth_callback=self._perform_line_auth_with_response,
+                remote_login_callback=self._perform_remote_login_flow
             )
-            logger.debug("TokenFlowManager initialized")
-            logger.debug(f"TokenFlowManager provider_config available: {self.provider_config is not None}")
+            logger.debug("TokenFlowManager initialized with auth callbacks")
 
     def get_yo_digital_token(self, force_refresh: bool = False) -> Optional[str]:
         """

@@ -53,14 +53,16 @@ class TokenFlowManager:
     6. Try remote_login → get tvhubs + refresh_token → chain to yo_digital
     7. All failed → ERROR
     """
-
     def __init__(self,
                  session_manager: SessionManager,
                  sam3_client: 'Sam3Client',
                  taa_client: 'TaaClient',
                  provider_name: str,
                  country: Optional[str] = None,
-                 provider_config: Optional[Any] = None):
+                 provider_config: Optional[Any] = None,
+                 # NEW: Add optional callbacks
+                 line_auth_callback: Optional[callable] = None,
+                 remote_login_callback: Optional[callable] = None):
         """
         Initialize TokenFlowManager
 
@@ -77,6 +79,10 @@ class TokenFlowManager:
         self.provider_name = provider_name
         self.country = country
         self.provider_config = provider_config
+
+        # Store callbacks
+        self._line_auth_callback = line_auth_callback
+        self._remote_login_callback = remote_login_callback
 
         logger.debug(f"TokenFlowManager initialized for {provider_name}" +
                      (f" ({country})" if country else ""))
@@ -531,32 +537,80 @@ class TokenFlowManager:
     def _get_yo_digital_via_line_auth(self) -> TokenFlowResult:
         """Try line_auth to get tvhubs + refresh_token, then chain to yo_digital"""
         try:
-            # Check if line_auth is available
-            if not hasattr(self.sam3_client, 'line_auth'):
+            # Check if callback is available
+            if not self._line_auth_callback:
                 return TokenFlowResult(
                     success=False,
-                    error="line_auth not available",
+                    error="line_auth callback not configured",
                     flow_path="yo_digital_via_line_auth"
                 )
 
-            # Check if we have device_token (required for line_auth)
-            # This would be set up during provider initialization
-            if not hasattr(self.sam3_client, 'line_auth_endpoint'):
+            logger.info("Attempting line_auth flow via callback")
+
+            # Call the authenticator's line auth method
+            line_response = self._line_auth_callback()
+
+            if not line_response:
                 return TokenFlowResult(
                     success=False,
-                    error="line_auth endpoint not configured",
+                    error="line_auth failed",
                     flow_path="yo_digital_via_line_auth"
                 )
 
-            logger.info("Attempting line_auth flow")
+            # Save tvhubs token
+            self._save_tvhubs_token(line_response)
 
-            # Line auth is handled by authenticator's _perform_line_auth_flow
-            # We can't call it directly from here without circular dependency
-            # So we return a special result that tells the caller to try line_auth
+            # Save refresh token at provider level
+            if 'refresh_token' in line_response:
+                self._save_refresh_token(line_response['refresh_token'])
+
+            # Now exchange for taa
+            logger.debug("Exchanging line_auth refresh_token for taa")
+            taa_token = self.sam3_client.get_token(
+                grant_type='refresh_token',
+                scope='taa',
+                credential1=line_response['refresh_token']
+            )
+
+            if not taa_token:
+                return TokenFlowResult(
+                    success=False,
+                    error="Failed to exchange line_auth refresh for taa",
+                    flow_path="yo_digital_via_line_auth"
+                )
+
+            # Save taa token
+            self._save_taa_token(taa_token)
+
+            # Finally get yo_digital
+            logger.debug("Getting yo_digital tokens from line_auth taa token")
+            yo_digital_result = self.taa_client.get_yo_digital_tokens(
+                taa_access_token=taa_token,
+                device_id=self.session_manager.get_device_id(self.provider_name, self.country)
+            )
+
+            if not yo_digital_result:
+                return TokenFlowResult(
+                    success=False,
+                    error="Failed to get yo_digital from line_auth taa",
+                    flow_path="yo_digital_via_line_auth"
+                )
+
+            # Convert YoDigitalTokens to dict for saving
+            yo_digital_dict = {
+                'accessToken': yo_digital_result.access_token,
+                'accessExpiresIn': yo_digital_result.access_token_expires_in,
+                'refreshToken': yo_digital_result.refresh_token,
+                'refreshExpiresIn': yo_digital_result.refresh_token_expires_in
+            }
+
+            # Save yo_digital tokens
+            self._save_yo_digital_tokens(yo_digital_dict)
 
             return TokenFlowResult(
-                success=False,
-                error="line_auth needs to be triggered by authenticator",
+                success=True,
+                access_token=yo_digital_result.access_token,
+                refresh_token=yo_digital_result.refresh_token,
                 flow_path="yo_digital_via_line_auth"
             )
 
