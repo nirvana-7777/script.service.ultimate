@@ -166,6 +166,7 @@ class TokenFlowManager:
             logger.info("✓ Persona token composed successfully")
             logger.debug(f"Final persona token length: {len(persona_token)}")
             logger.debug(f"Final persona token preview: {persona_token[:50]}...")
+            logger.debug(f"Final persona token: {persona_token}")
 
             return persona_token
 
