@@ -101,11 +101,6 @@ class TokenFlowManager:
 
             logger.debug(f"JWT claims extracted: {list(claims.keys())}")
 
-            # Log ALL persona-related claims for debugging
-            persona_claims = {k: v for k, v in claims.items() if 'persona' in k.lower()}
-            if persona_claims:
-                logger.debug(f"Persona-related claims: {persona_claims}")
-
             return claims
 
         except Exception as e:
@@ -166,7 +161,6 @@ class TokenFlowManager:
             logger.info("✓ Persona token composed successfully")
             logger.debug(f"Final persona token length: {len(persona_token)}")
             logger.debug(f"Final persona token preview: {persona_token[:50]}...")
-            logger.debug(f"Final persona token: {persona_token}")
 
             return persona_token
 

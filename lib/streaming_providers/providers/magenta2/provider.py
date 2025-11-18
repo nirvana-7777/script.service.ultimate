@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 from typing import Dict, Optional, List, Any
 import json
+import base64
 import time
 import uuid
 import re
@@ -1153,133 +1154,210 @@ class Magenta2Provider(StreamingProvider):
             return None
 
     def get_manifest(self, channel_id: str, content_type: str = CONTENT_TYPE_LIVE, **kwargs) -> Optional[str]:
-        """Get MPD manifest URL with persona token authentication"""
-        # Ensure we have persona token
-        self._ensure_authenticated()
+        """Get MPD manifest URL using unified SMIL data"""
+        smil_data = self._get_smil_data(channel_id)
 
-        if not self.persona_token:
-            logger.error(f"No persona token available for channel {channel_id}")
+        if not smil_data or not smil_data['mpd_url']:
+            logger.error(f"No MPD URL found in SMIL for channel {channel_id}")
             return None
 
-        # DEBUG: Verify persona token
-        logger.debug("=== PERSONA TOKEN VERIFICATION ===")
-        logger.debug(f"Persona token length: {len(self.persona_token)}")
-        logger.debug(f"Persona token preview: {self.persona_token[:100]}...")
+        logger.info(f"✓ MPD manifest URL extracted for channel {channel_id}")
+        logger.debug(f"MPD URL: {smil_data['mpd_url']}")
 
-        # Get required components for SMIL request
-        selector_service = self.endpoint_manager.get_endpoint('mpx_selector')
-        if not selector_service:
-            logger.error(f"No mpx_selector endpoint found for channel {channel_id}")
-            return None
+        return smil_data['mpd_url']
 
-        account_pid = self.provider_config.manifest.mpx.account_pid
-        if not account_pid:
-            logger.error(f"No MPX account PID found for channel {channel_id}")
-            return None
-
-        # Fixed client ID
-        client_id = "a8198f31-b406-4177-8dee-f6216c356c75"
-
-        # Construct SMIL URL
-        smil_url = f"{selector_service}{account_pid}/media/{channel_id}?format=smil&formats=MPEG-DASH&tracking=true&clientId={client_id}"
-
-        logger.info(f"Requesting SMIL manifest for channel {channel_id}")
-
-        # CRITICAL: Make SMIL request with Basic auth using persona token
-        headers = {
-            'Authorization': f'Basic {self.persona_token}',
-            'User-Agent': self.platform_config['user_agent'],
-            'Accept': 'application/smil+xml, application/xml;q=0.9, */*;q=0.8'
-        }
-
-        # DEBUG: Log the exact request details
-        logger.debug("=== SMIL REQUEST DETAILS ===")
-        logger.debug(f"SMIL URL: {smil_url}")
-        logger.debug(f"Headers being sent: {headers}")
-        logger.debug(f"Authorization header present: {'Authorization' in headers}")
-        logger.debug(f"Authorization header value preview: {headers['Authorization'][:100]}...")
-
+    def _get_smil_data(self, channel_id: str) -> Optional[Dict[str, Any]]:
+        """Get complete SMIL data including content, MPD URL, and releasePid"""
         try:
-            # Make the request with explicit header verification
+            smil_content = self._get_smil_content(channel_id)
+            if not smil_content:
+                return None
+
+            mpd_url = self._parse_smil_for_mpd(smil_content, channel_id)
+            release_pid = self._extract_release_pid_from_smil(smil_content)
+
+            return {
+                'content': smil_content,
+                'mpd_url': mpd_url,
+                'release_pid': release_pid,
+                'channel_id': channel_id
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting SMIL data for channel {channel_id}: {e}")
+            return None
+
+    def _get_smil_content(self, channel_id: str) -> Optional[str]:
+        """Get SMIL content for a channel to extract releasePid"""
+        try:
+            # Reuse the same logic as get_manifest but return the raw SMIL content
+            self._ensure_authenticated()
+
+            if not self.persona_token:
+                return None
+
+            selector_service = self.endpoint_manager.get_endpoint('mpx_selector')
+            if not selector_service:
+                return None
+
+            account_pid = self.provider_config.manifest.mpx.account_pid
+            if not account_pid:
+                return None
+
+            client_id = "a8198f31-b406-4177-8dee-f6216c356c75"
+            smil_url = f"{selector_service}{account_pid}/media/{channel_id}?format=smil&formats=MPEG-DASH&tracking=true&clientId={client_id}"
+
+            headers = {
+                'Authorization': f'Basic {self.persona_token}',
+                'User-Agent': self.platform_config['user_agent'],
+                'Accept': 'application/smil+xml, application/xml;q=0.9, */*;q=0.8'
+            }
+
             response = self.http_manager.get(
                 smil_url,
-                operation='manifest_smil',
-                headers=headers,  # Make sure headers are passed
+                operation='manifest_smil_drm',
+                headers=headers,
                 timeout=DEFAULT_REQUEST_TIMEOUT
             )
 
-            logger.info(f"✓ SMIL response received for channel {channel_id}")
-            logger.debug(f"Response status: {response.status_code}")
-            logger.debug(f"Response headers: {dict(response.headers)}")
-            logger.debug(f"Response content length: {len(response.text)}")
-
-            # Check if response contains error
-            if "DecoderException" in response.text:
-                logger.error(f"SMIL returned DecoderException")
-                logger.debug(f"SMIL error content: {response.text}")
-                return None
-
-            # Parse SMIL to extract MPD URL
-            mpd_url = self._parse_smil_for_mpd(response.text, channel_id)
-
-            if mpd_url:
-                logger.info(f"✓ MPD manifest URL extracted for channel {channel_id}")
-                logger.debug(f"MPD URL: {mpd_url}")
-                return mpd_url
+            if response.status_code == 200:
+                return response.text
             else:
-                logger.warning(f"✗ No MPD URL found in SMIL response for channel {channel_id}")
-                # Log the full SMIL content for debugging
-                logger.debug(f"Full SMIL response: {response.text}")
+                logger.error(f"Failed to get SMIL content for DRM: {response.status_code}")
                 return None
 
         except Exception as e:
-            logger.error(f"Error getting manifest for channel {channel_id}: {e}")
+            logger.error(f"Error getting SMIL content for DRM: {e}")
+            return None
+
+    @staticmethod
+    def _url_encode(value: str) -> str:
+        """URL encode a string"""
+        from urllib.parse import quote
+        return quote(value, safe='')
+
+    @staticmethod
+    def _extract_release_pid_from_smil(smil_content: str) -> Optional[str]:
+        """Extract releasePid from SMIL trackingData parameter"""
+        try:
+            # Look for trackingData parameter in ref tag
+            tracking_data_pattern = r'<param name="trackingData" value="([^"]*)"'
+            match = re.search(tracking_data_pattern, smil_content)
+
+            if not match:
+                logger.warning("No trackingData found in SMIL content")
+                return None
+
+            tracking_data = match.group(1)
+            logger.debug(f"Found trackingData: {tracking_data}")
+
+            # Extract pid from trackingData (pid=value)
+            pid_pattern = r'pid=([^|]+)'
+            pid_match = re.search(pid_pattern, tracking_data)
+
+            if pid_match:
+                release_pid = pid_match.group(1)
+                logger.debug(f"Extracted releasePid: {release_pid}")
+                return release_pid
+            else:
+                logger.warning("No pid found in trackingData")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error extracting releasePid from SMIL: {e}")
+            return None
+
+    def _extract_persona_jwt_token(self) -> Optional[str]:
+        """Extract the raw persona JWT token from the composed persona token"""
+        try:
+            if not self.persona_token:
+                return None
+
+            # Decode the base64 persona token
+            decoded = base64.b64decode(self.persona_token).decode('utf-8')
+
+            # Split by colon to get account_uri:persona_jwt
+            parts = decoded.split(':', 1)
+
+            if len(parts) == 2:
+                persona_jwt = parts[1]
+                logger.debug(f"Extracted persona JWT token length: {len(persona_jwt)}")
+                return persona_jwt
+            else:
+                logger.error("Invalid persona token format - expected account_uri:persona_jwt")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error extracting persona JWT token: {e}")
             return None
 
     def get_drm_configs_by_id(self, channel_id: str, content_type: str = CONTENT_TYPE_LIVE,
                               **kwargs) -> List[DRMConfig]:
-        """Get all DRM configurations for a channel by ID"""
-        self._ensure_authenticated()
-
+        """Get DRM configuration using unified SMIL data"""
         try:
-            entitlement_token = self.get_entitlement_token(
-                content_id=channel_id,
-                content_type=content_type
-            )
-
-            playlist_data = self.get_channel_playlist(
-                channel_id,
-                entitlement_token
-            )
-
-            license_url = playlist_data.get('licenseUrl', playlist_data.get('license'))
-            if not license_url:
+            # Get SMIL data with releasePid
+            smil_data = self._get_smil_data(channel_id)
+            if not smil_data or not smil_data['release_pid']:
+                logger.error(f"No releasePid found in SMIL for channel {channel_id}")
                 return []
 
-            widevine_license_url = self.endpoint_manager.get_endpoint(
-                'widevine_license') if self.endpoint_manager else license_url
+            release_pid = smil_data['release_pid']
 
+            # Rest of the DRM logic remains the same...
+            self._ensure_authenticated()
+            if not self.persona_token:
+                return []
+
+            raw_persona_token = self._extract_persona_jwt_token()
+            if not raw_persona_token:
+                return []
+
+            # ... continue with existing DRM logic
+            widevine_endpoint = self.endpoint_manager.get_endpoint('widevine_license')
+            if not widevine_endpoint:
+                return []
+
+            account_uri = self._get_account_uri()
+            encoded_account_uri = self._url_encode(account_uri)
+
+            license_url = (f"{widevine_endpoint}?"
+                           f"schema=1.0&"
+                           f"releasePid={release_pid}&"
+                           f"token={raw_persona_token}&"
+                           f"account={encoded_account_uri}")
+
+            # Create DRM config...
             drm_config = DRMConfig(
                 system=DRMSystem.WIDEVINE,
                 priority=1,
                 license=LicenseConfig(
-                    server_url=widevine_license_url,
-                    server_certificate=playlist_data.get('certificateUrl', playlist_data.get('certificate')),
+                    server_url=license_url,
+                    server_certificate=None,
                     req_headers=json.dumps({
-                        'Authorization': f'Bearer {self.bearer_token}',
-                        'Content-Type': DRM_REQUEST_HEADERS['Content-Type'],
-                        'User-Agent': self.platform_config['user_agent']
+                        'User-Agent': self.platform_config['user_agent'],
+                        'Content-Type': 'application/octet-stream'
                     }),
                     req_data="{CHA-RAW}",
                     use_http_get_request=False
                 )
             )
 
+            logger.info(f"✓ DRM configuration created for channel {channel_id} (releasePid: {release_pid})")
             return [drm_config]
 
         except Exception as e:
             logger.error(f"Error getting DRM configs for channel {channel_id}: {e}")
             return []
+
+    def _get_account_uri(self) -> str:
+        """Get account URI with fallback logic"""
+        if self.provider_config and self.provider_config.manifest:
+            account_uri = self.provider_config.manifest.mpx.get_account_uri()
+            if account_uri:
+                return account_uri
+
+        # Fallback
+        return "http://access.auth.theplatform.com/data/Account/2709353023"
 
     def get_epg(self, channel_id: str, start_time: Optional[datetime] = None,
                 end_time: Optional[datetime] = None, **kwargs) -> List[Dict]:
