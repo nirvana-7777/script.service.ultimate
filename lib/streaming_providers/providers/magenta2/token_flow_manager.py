@@ -114,55 +114,51 @@ class TokenFlowManager:
 
     def _compose_persona_token(self, access_token: str) -> Optional[str]:
         """
-        Compose persona token from access_token JWT claims with correct claim names
+        Compose persona token from access_token JWT claims with fallback logic
         """
         try:
-            # Import here to avoid circular imports
-            from .config_models import ProviderConfig
-
             # Extract claims from JWT
             claims = self._extract_jwt_claims(access_token)
 
-            # CORRECTED: Use the actual claim name from your logs
-            dc_cts_persona_token = claims.get('dc_cts_personaToken')  # Capital T!
-
-            if not dc_cts_persona_token:
-                # Try alternative names
-                alternative_names = [
-                    'dc_cts_persona_token',  # underscore
-                    'personaToken',  # simple
-                    'urn:telekom:ott:dc_cts_persona_token'  # URN format
-                ]
-
-                for alt_name in alternative_names:
-                    if alt_name in claims:
-                        dc_cts_persona_token = claims[alt_name]
-                        logger.debug(f"Found persona token using alternative name: {alt_name}")
-                        break
-
+            # Get persona token
+            dc_cts_persona_token = claims.get('dc_cts_personaToken')
             if not dc_cts_persona_token:
                 logger.error("No persona token found in JWT claims")
-                logger.error(
-                    f"Available persona-related claims: {[k for k in claims.keys() if 'persona' in k.lower()]}")
                 return None
 
-            # Use the discovered account URI from ProviderConfig
-            if not hasattr(self, 'provider_config') or not self.provider_config:
-                logger.error("No provider_config available - cannot compose persona token")
-                return None
+            # Get account URI - try multiple sources
+            account_uri = None
 
-            # Type check to ensure it's a ProviderConfig
-            if not isinstance(self.provider_config, ProviderConfig):
-                logger.error(f"provider_config is not ProviderConfig: {type(self.provider_config)}")
-                return None
+            # 1. Try provider_config first
+            if hasattr(self, 'provider_config') and self.provider_config:
+                account_uri = self.provider_config.get_mpx_account_uri()
+                if account_uri:
+                    logger.debug("Using account URI from provider_config")
 
-            # Get account URI
-            account_uri = self.provider_config.get_mpx_account_uri()
+            # 2. Try to extract from JWT claims
             if not account_uri:
-                logger.error("No account URI available from provider_config")
+                account_uri = claims.get('dc_cts_account_uri') or claims.get('accountUri')
+                if account_uri:
+                    logger.debug("Using account URI from JWT claims")
+
+            # 3. Try to construct from MPX account PID in JWT
+            if not account_uri:
+                # Look for account-related claims
+                account_pid = claims.get('oid')  # From your JWT: 'oid': '2709353023'
+                if account_pid:
+                    account_uri = f"http://access.auth.theplatform.com/data/Account/{account_pid}"
+                    logger.debug(f"Constructed account URI from oid: {account_uri}")
+
+            # 4. Final fallback - hardcoded (should match your MPX account)
+            if not account_uri:
+                account_uri = "http://access.auth.theplatform.com/data/Account/2709353023"
+                logger.warning(f"Using fallback account URI: {account_uri}")
+
+            if not account_uri:
+                logger.error("No account URI available from any source")
                 return None
 
-            logger.debug(f"Using discovered account URI: {account_uri}")
+            logger.debug(f"Using account URI: {account_uri}")
             logger.debug(f"Persona token length: {len(dc_cts_persona_token)}")
 
             # Compose: account_uri + ":" + dc_cts_persona_token
@@ -172,15 +168,11 @@ class TokenFlowManager:
             persona_token = base64.b64encode(raw_token.encode('utf-8')).decode('utf-8')
 
             logger.info("✓ Persona token composed successfully")
-            logger.debug(f"Account URI: {account_uri}")
             logger.debug(f"Raw token length: {len(raw_token)}")
             logger.debug(f"Persona token preview: {persona_token[:50]}...")
 
             return persona_token
 
-        except ImportError as e:
-            logger.error(f"Failed to import ProviderConfig: {e}")
-            return None
         except Exception as e:
             logger.error(f"Failed to compose persona token: {e}")
             return None

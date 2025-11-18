@@ -154,6 +154,12 @@ class Magenta2Provider(StreamingProvider):
             # Update authenticator with discovered client_id and models
             self.authenticator.provider_config = self.provider_config  # ✅ Store the config
             logger.info("✓ ProviderConfig stored in authenticator")
+
+            # Also update TokenFlowManager if it exists
+            if hasattr(self.authenticator, 'token_flow_manager') and self.authenticator.token_flow_manager:
+                self.authenticator.token_flow_manager.provider_config = self.provider_config
+                logger.info("✓ ProviderConfig also stored in TokenFlowManager")
+
             if self.provider_config.bootstrap.sam3_client_id:
                 # Use public method if available, otherwise update directly
                 if hasattr(self.authenticator, 'update_sam3_client_id'):

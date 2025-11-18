@@ -509,15 +509,22 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
         if self._sam3_client and self._taa_client:
             from .token_flow_manager import TokenFlowManager
 
+            # Get session manager from settings_manager
+            session_manager = getattr(self.settings_manager, 'session_manager', None)
+            if not session_manager:
+                logger.error("Cannot initialize TokenFlowManager: No session_manager available")
+                return
+
             self.token_flow_manager = TokenFlowManager(
-                session_manager=self.settings_manager.session_manager,  # ✅ Correct!
+                session_manager=session_manager,
                 sam3_client=self._sam3_client,
                 taa_client=self._taa_client,
                 provider_name=self.provider_name,
                 country=self.country,
-                provider_config=self.provider_config
+                provider_config=self.provider_config  # ✅ Make sure this is passed!
             )
             logger.debug("TokenFlowManager initialized")
+            logger.debug(f"TokenFlowManager provider_config available: {self.provider_config is not None}")
 
     def get_yo_digital_token(self, force_refresh: bool = False) -> Optional[str]:
         """
