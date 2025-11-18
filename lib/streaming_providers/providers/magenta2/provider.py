@@ -545,18 +545,34 @@ class Magenta2Provider(StreamingProvider):
         return self.bearer_token
 
     def _ensure_authenticated(self) -> None:
-        """Ensure we have valid persona token"""
-        if hasattr(self.authenticator, 'get_persona_token'):
-            persona_token = self.authenticator.get_persona_token()
-            if persona_token:
-                self.persona_token = persona_token
-                logger.info("✓ Lazy authentication via persona token")
+        """Ensure we have valid persona token for API calls"""
+        if self.persona_token:
+            return  # Already have persona token
+
+        # Get persona token via TokenFlowManager
+        if hasattr(self.authenticator, 'token_flow_manager') and self.authenticator.token_flow_manager:
+            persona_result = self.authenticator.token_flow_manager.get_persona_token()
+            if persona_result.success:
+                self.persona_token = persona_result.persona_token
+                logger.info("✓ Persona token obtained via TokenFlowManager")
                 return
 
-        # Fallback to old flow (for backward compatibility)
-        logger.info("Using legacy authentication for lazy auth")
-        self.bearer_token = self.authenticator.get_bearer_token()
-        # Note: Legacy flow might not set persona_token
+        # Fallback: try to get persona token from authenticator
+        persona_token = self.authenticator.get_persona_token()
+        if persona_token:
+            self.persona_token = persona_token
+            logger.info("✓ Persona token obtained via authenticator")
+            return
+
+        # Last resort: force authentication
+        logger.warning("No persona token available, forcing authentication")
+        self.authenticate(force_refresh=True)
+        persona_token = self.authenticator.get_persona_token()
+        if persona_token:
+            self.persona_token = persona_token
+            logger.info("✓ Persona token obtained after forced authentication")
+        else:
+            logger.error("✗ Failed to obtain persona token after forced authentication")
 
     def get_dynamic_manifest_params(self, channel: StreamingChannel, **kwargs) -> Optional[str]:
         return None
