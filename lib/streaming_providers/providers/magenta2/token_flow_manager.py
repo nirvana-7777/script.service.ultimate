@@ -83,7 +83,7 @@ class TokenFlowManager:
 
     @staticmethod
     def _extract_jwt_claims(jwt_token: str) -> Dict[str, Any]:
-        """Extract claims from JWT token"""
+        """Extract claims from JWT token with correct claim names"""
         try:
             parts = jwt_token.split('.')
             if len(parts) != 3:
@@ -100,6 +100,12 @@ class TokenFlowManager:
             claims = json.loads(payload_json)
 
             logger.debug(f"JWT claims extracted: {list(claims.keys())}")
+
+            # Log ALL persona-related claims for debugging
+            persona_claims = {k: v for k, v in claims.items() if 'persona' in k.lower()}
+            if persona_claims:
+                logger.debug(f"Persona-related claims: {persona_claims}")
+
             return claims
 
         except Exception as e:
@@ -108,18 +114,36 @@ class TokenFlowManager:
 
     def _compose_persona_token(self, access_token: str) -> Optional[str]:
         """
-        Compose persona token from access_token JWT claims
+        Compose persona token from access_token JWT claims with correct claim names
         """
         try:
             # Import here to avoid circular imports
             from .config_models import ProviderConfig
 
-            # Extract dc_cts_persona_token from JWT
+            # Extract claims from JWT
             claims = self._extract_jwt_claims(access_token)
-            dc_cts_persona_token = claims.get('dc_cts_persona_token')
+
+            # CORRECTED: Use the actual claim name from your logs
+            dc_cts_persona_token = claims.get('dc_cts_personaToken')  # Capital T!
 
             if not dc_cts_persona_token:
-                logger.error("No dc_cts_persona_token found in JWT claims")
+                # Try alternative names
+                alternative_names = [
+                    'dc_cts_persona_token',  # underscore
+                    'personaToken',  # simple
+                    'urn:telekom:ott:dc_cts_persona_token'  # URN format
+                ]
+
+                for alt_name in alternative_names:
+                    if alt_name in claims:
+                        dc_cts_persona_token = claims[alt_name]
+                        logger.debug(f"Found persona token using alternative name: {alt_name}")
+                        break
+
+            if not dc_cts_persona_token:
+                logger.error("No persona token found in JWT claims")
+                logger.error(
+                    f"Available persona-related claims: {[k for k in claims.keys() if 'persona' in k.lower()]}")
                 return None
 
             # Use the discovered account URI from ProviderConfig
@@ -132,13 +156,14 @@ class TokenFlowManager:
                 logger.error(f"provider_config is not ProviderConfig: {type(self.provider_config)}")
                 return None
 
-            # CORRECTED: Use get_mpx_account_uri() method from ProviderConfig
+            # Get account URI
             account_uri = self.provider_config.get_mpx_account_uri()
             if not account_uri:
                 logger.error("No account URI available from provider_config")
                 return None
 
             logger.debug(f"Using discovered account URI: {account_uri}")
+            logger.debug(f"Persona token length: {len(dc_cts_persona_token)}")
 
             # Compose: account_uri + ":" + dc_cts_persona_token
             raw_token = f"{account_uri}:{dc_cts_persona_token}"
@@ -148,6 +173,7 @@ class TokenFlowManager:
 
             logger.info("✓ Persona token composed successfully")
             logger.debug(f"Account URI: {account_uri}")
+            logger.debug(f"Raw token length: {len(raw_token)}")
             logger.debug(f"Persona token preview: {persona_token[:50]}...")
 
             return persona_token
