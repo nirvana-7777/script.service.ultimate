@@ -114,19 +114,20 @@ class TokenFlowManager:
 
     def _compose_persona_token(self, access_token: str) -> Optional[str]:
         """
-        Compose persona token from access_token JWT claims with fallback logic
+        Compose persona token from access_token JWT claims
+        Format: Base64(account_uri + ":" + persona_jwt_token)
         """
         try:
             # Extract claims from JWT
             claims = self._extract_jwt_claims(access_token)
 
-            # Get persona token
-            dc_cts_persona_token = claims.get('dc_cts_personaToken')
-            if not dc_cts_persona_token:
-                logger.error("No persona token found in JWT claims")
+            # Get persona JWT token (this is the nested JWT)
+            persona_jwt_token = claims.get('dc_cts_personaToken')
+            if not persona_jwt_token:
+                logger.error("No persona JWT token found in JWT claims")
                 return None
 
-            # Get account URI - try multiple sources
+            # Get account URI
             account_uri = None
 
             # 1. Try provider_config first
@@ -141,35 +142,30 @@ class TokenFlowManager:
                 if account_uri:
                     logger.debug("Using account URI from JWT claims")
 
-            # 3. Try to construct from MPX account PID in JWT
-            if not account_uri:
-                # Look for account-related claims
-                account_pid = claims.get('oid')  # From your JWT: 'oid': '2709353023'
-                if account_pid:
-                    account_uri = f"http://access.auth.theplatform.com/data/Account/{account_pid}"
-                    logger.debug(f"Constructed account URI from oid: {account_uri}")
-
-            # 4. Final fallback - hardcoded (should match your MPX account)
+            # 3. Final fallback - use the same format as your valid example
             if not account_uri:
                 account_uri = "http://access.auth.theplatform.com/data/Account/2709353023"
-                logger.warning(f"Using fallback account URI: {account_uri}")
+                logger.debug("Using fallback account URI")
 
             if not account_uri:
                 logger.error("No account URI available from any source")
                 return None
 
             logger.debug(f"Using account URI: {account_uri}")
-            logger.debug(f"Persona token length: {len(dc_cts_persona_token)}")
+            logger.debug(f"Persona JWT token length: {len(persona_jwt_token)}")
+            logger.debug(f"Persona JWT token preview: {persona_jwt_token[:50]}...")
 
-            # Compose: account_uri + ":" + dc_cts_persona_token
-            raw_token = f"{account_uri}:{dc_cts_persona_token}"
+            # CRITICAL: Compose raw token as account_uri + ":" + persona_jwt_token
+            raw_token = f"{account_uri}:{persona_jwt_token}"
+
+            logger.debug(f"Raw token length before encoding: {len(raw_token)}")
 
             # Base64 encode
             persona_token = base64.b64encode(raw_token.encode('utf-8')).decode('utf-8')
 
             logger.info("✓ Persona token composed successfully")
-            logger.debug(f"Raw token length: {len(raw_token)}")
-            logger.debug(f"Persona token preview: {persona_token[:50]}...")
+            logger.debug(f"Final persona token length: {len(persona_token)}")
+            logger.debug(f"Final persona token preview: {persona_token[:50]}...")
 
             return persona_token
 
