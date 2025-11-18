@@ -1275,6 +1275,7 @@ class Magenta2Provider(StreamingProvider):
 
             # Decode the base64 persona token
             decoded = base64.b64decode(self.persona_token).decode('utf-8')
+            logger.debug(f"Decoded persona token: {decoded[:100]}...")
 
             # Split by colon to get account_uri:persona_jwt
             parts = decoded.split(':', 1)
@@ -1282,9 +1283,11 @@ class Magenta2Provider(StreamingProvider):
             if len(parts) == 2:
                 persona_jwt = parts[1]
                 logger.debug(f"Extracted persona JWT token length: {len(persona_jwt)}")
+                logger.debug(f"Persona JWT token preview: {persona_jwt[:50]}...")
                 return persona_jwt
             else:
-                logger.error("Invalid persona token format - expected account_uri:persona_jwt")
+                logger.error(f"Invalid persona token format - expected account_uri:persona_jwt, got {len(parts)} parts")
+                logger.debug(f"Decoded token: {decoded}")
                 return None
 
         except Exception as e:
