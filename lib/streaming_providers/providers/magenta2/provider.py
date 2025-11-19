@@ -720,6 +720,8 @@ class Magenta2Provider(StreamingProvider):
         # Add required parameters
         params = {
             **call_params,  # client=ftp22
+            'x': '120',
+            'y': '42',
             'ar': 'keep',  # aspect ratio
             'src': original_url  # original image URL
         }
