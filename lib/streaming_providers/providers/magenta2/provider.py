@@ -622,19 +622,25 @@ class Magenta2Provider(StreamingProvider):
                     continue
 
                 # Extract logo URLs from station info
-                logo_url = None
+                original_logo_url = None
                 if station_info:
                     thumbnails = station_info.get('thumbnails', {})
                     if 'stationLogo' in thumbnails:
-                        logo_url = thumbnails['stationLogo'].get('url')
+                        original_logo_url = thumbnails['stationLogo'].get('url')
                     elif 'stationLogoColored' in thumbnails:
-                        logo_url = thumbnails['stationLogoColored'].get('url')
+                        original_logo_url = thumbnails['stationLogoColored'].get('url')
 
-                # Create channel object with clean title (no channel number, no quality suffix)
+                # BUILD SCALED LOGO URL
+                logo_url = None
+                if original_logo_url:
+                    logo_url = self._build_scaled_image_url(original_logo_url)
+                    logger.debug(f"Logo URL scaled: {original_logo_url} -> {logo_url}")
+
+                # Create channel object with scaled logo URL
                 magenta2_channel = Magenta2Channel(
-                    name=title,  # Clean title like "RNF HD"
-                    channel_id=channel_id,  # Correct ID from era$mediaPids
-                    logo_url=logo_url,
+                    name=title,
+                    channel_id=channel_id,
+                    logo_url=logo_url,  # Use scaled URL
                     mode=MODE_LIVE,
                     content_type=CONTENT_TYPE_LIVE,
                     country=self.country,
@@ -687,6 +693,42 @@ class Magenta2Provider(StreamingProvider):
             logger.warning(f"Error extracting channel ID from entry: {e}")
             return None
 
+    def _build_scaled_image_url(self, original_url: str) -> Optional[str]:
+        """Build scaled image URL using image scaling service"""
+        if not original_url:
+            return None
+
+        if not self.provider_config or not self.provider_config.manifest:
+            return original_url  # Fallback to original URL
+
+        image_config = self.provider_config.manifest.image_config
+
+        # Check if we have the required scaling parameters
+        if not image_config.scaling_base_url or not image_config.scaling_call_parameter:
+            return original_url
+
+        # Parse the call parameter (e.g., "client=ftp22")
+        call_params = {}
+        for param in image_config.scaling_call_parameter.split('&'):
+            if '=' in param:
+                key, value = param.split('=', 1)
+                call_params[key] = value
+
+        # Build the scaling URL
+        base_url = image_config.scaling_base_url.rstrip('/')
+
+        # Add required parameters
+        params = {
+            **call_params,  # client=ftp22
+            'ar': 'keep',  # aspect ratio
+            'src': original_url  # original image URL
+        }
+
+        # Build query string
+        query_string = '&'.join([f"{k}={self._url_encode(v)}" for k, v in params.items()])
+
+        return f"{base_url}/iss?{query_string}"
+
     def fetch_channels(self,
                        time_window_hours: int = DEFAULT_EPG_WINDOW_HOURS,
                        fetch_manifests: bool = False,
@@ -714,6 +756,8 @@ class Magenta2Provider(StreamingProvider):
             # Final fallback
             if not url:
                 url = "https://feed.entertainment.tv.theplatform.eu/f/mdeprod/mdeprod-channel-stations-main"
+
+            url += "?lang=short-de&sort=dt%24displayChannelNumber&range=1-1000"
 
             logger.debug(f"Fetching channels from: {url}")
             response = self.http_manager.get(

@@ -147,6 +147,33 @@ class MpxConfig:
         # Fallback to constructed format
         return "http://access.auth.theplatform.com/data/Account/2709353023"
 
+@dataclass
+class ImageConfig:
+    """Image scaling configuration from manifest"""
+    scaling_base_url: Optional[str] = None
+    scaling_call_parameter: Optional[str] = None
+
+    @classmethod
+    def from_manifest_data(cls, manifest_data: Dict[str, Any]) -> 'ImageConfig':
+        """Create ImageConfig from manifest data"""
+
+        def get_param(key: str) -> Optional[str]:
+            """Helper to get value from parameters array"""
+            if 'settings' not in manifest_data:
+                return None
+            settings = manifest_data['settings']
+            if 'parameters' not in settings:
+                return None
+            for param in settings['parameters']:
+                if param.get('key') == key:
+                    value = param.get('value')
+                    return value if value and value != 'unused' else None
+            return None
+
+        return cls(
+            scaling_base_url=get_param('imageScalingBasicUrl'),
+            scaling_call_parameter=get_param('imageScalingCallParameter')
+        )
 
 @dataclass
 class DrmConfig:
@@ -267,6 +294,7 @@ class ManifestConfig:
     mpx: MpxConfig
     drm: DrmConfig
     tv_hubs: TvHubConfig
+    image_config: ImageConfig
     youbora_config: Dict[str, Any] = field(default_factory=dict)
     npvr_config: Dict[str, Any] = field(default_factory=dict)
     raw_data: Dict[str, Any] = field(default_factory=dict)
@@ -278,6 +306,7 @@ class ManifestConfig:
             mpx=MpxConfig.from_manifest_data(manifest_data),
             drm=DrmConfig.from_manifest_data(manifest_data),
             tv_hubs=TvHubConfig.from_manifest_data(manifest_data),
+            image_config=ImageConfig.from_manifest_data(manifest_data),
             youbora_config=manifest_data.get('youbora', {}),
             npvr_config=manifest_data.get('npvr', {}),
             raw_data=manifest_data
