@@ -2,8 +2,6 @@
 # -*- coding: utf-8 -*-
 import uuid
 import time
-import base64
-import json
 from typing import Dict, Optional, Any
 from dataclasses import dataclass, field
 
@@ -18,6 +16,7 @@ from .sam3_client import Sam3Client
 from .sso_client import SsoClient
 from .taa_client import TaaClient, TaaAuthResult
 from .token_flow_manager import TokenFlowManager
+from .token_utils import JWTParser, PersonaTokenComposer
 
 from .constants import (
     SUPPORTED_COUNTRIES,
@@ -194,66 +193,17 @@ class Magenta2AuthToken(BaseAuthToken):
 
         return base_dict
 
+
     def compose_persona_token(self) -> Optional[str]:
-        """
-        Compose final persona token from account URI and dc_cts_persona_token
-        This is the CRITICAL step matching the C++ implementation:
-
-        C++: rawToken = accountUri + ":" + dc_cts_personaToken
-             personaToken = base64_encode(rawToken)
-
-        Format: Base64(accountUri + ":" + dc_cts_personaToken)
-        Example: Base64("urn:theplatform:auth:root:mdeprod:abcd1234-5678-90ef")
-        """
-        if not self.account_uri or not self.dc_cts_persona_token:
-            logger.warning(
-                f"Cannot compose persona token - "
-                f"account_uri: {bool(self.account_uri)}, "
-                f"dc_cts_persona_token: {bool(self.dc_cts_persona_token)}"
-            )
-            return None
-
-        try:
-            # Compose: accountUri + ":" + dc_cts_persona_token
-            raw_token = f"{self.account_uri}:{self.dc_cts_persona_token}"
-
-            # Base64 encode
-            self.composed_persona_token = base64.b64encode(
-                raw_token.encode('utf-8')
-            ).decode('utf-8')
-
-            logger.info("✓ Persona token composed successfully")
-            logger.debug(f"Account URI: {self.account_uri}")
-            logger.debug(f"Composed token preview: {self.composed_persona_token[:50]}...")
-
-            return self.composed_persona_token
-
-        except Exception as e:
-            logger.error(f"Failed to compose persona token: {e}")
-            return None
+        self.composed_persona_token = PersonaTokenComposer.compose_from_components(
+            account_uri=self.account_uri,
+            dc_cts_persona_token=self.dc_cts_persona_token
+        )
+        return self.composed_persona_token
 
     def get_jwt_claims(self) -> Optional[Dict[str, Any]]:
-        """Extract JWT claims from access token for classification"""
-        try:
-            if not self.access_token:
-                return None
-
-            parts = self.access_token.split('.')
-            if len(parts) != 3:
-                return None
-
-            payload_b64 = parts[1]
-            padding = len(payload_b64) % 4
-            if padding:
-                payload_b64 += '=' * (4 - padding)
-
-            payload_json = base64.b64decode(payload_b64).decode('utf-8')
-            return json.loads(payload_json)
-
-        except Exception as e:
-            logger.debug(f"Failed to extract JWT claims: {e}")
-            return None
-
+        claims = JWTParser.parse(self.access_token)
+        return claims.raw_claims if claims else None
 
 class Magenta2AuthConfig:
     """Configuration object for Magenta2 authentication"""
@@ -1504,111 +1454,23 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
             logger.error(f"TAA authentication failed: {e}")
             raise
 
-    def _parse_taa_jwt_complete(self, jwt_token: str) -> Dict[str, Any]:
-        """
-        ENHANCED: Complete JWT parsing extracting ALL required fields
-        This is critical for persona token composition
-        """
-        try:
-            parts = jwt_token.split('.')
-            if len(parts) != 3:
-                logger.warning("Invalid JWT format")
-                return {}
-
-            # Decode payload
-            payload_b64 = parts[1]
-            padding = len(payload_b64) % 4
-            if padding:
-                payload_b64 += '=' * (4 - padding)
-
-            payload_json = base64.b64decode(payload_b64).decode('utf-8')
-            claims = json.loads(payload_json)
-
-            logger.debug(f"JWT claims found: {list(claims.keys())}")
-
-            result = {}
-
-            # Enhanced claim mappings - ALL fields from C++ implementation
-            claim_mappings = {
-                # Core persona token (most important!)
-                'dc_cts_persona_token': [
-                    'dc_cts_persona_token',
-                    'personaToken',
-                    'urn:telekom:ott:dc_cts_persona_token'
-                ],
-
-                # Account URI (needed for composition!)
-                'account_uri': [
-                    'dc_cts_account_uri',
-                    'accountUri',
-                    'urn:telekom:ott:dc_cts_account_uri',
-                    'mpxAccountUri'
-                ],
-
-                # IDs
-                'persona_id': [
-                    'dc_cts_personaId',
-                    'personaId',
-                    'urn:telekom:ott:dc_cts_personaId'
-                ],
-                'account_id': [
-                    'dc_cts_accountId',
-                    'accountId',
-                    'urn:telekom:ott:dc_cts_accountId'
-                ],
-                'consumer_id': [
-                    'dc_cts_consumerId',
-                    'consumerId',
-                    'urn:telekom:ott:dc_cts_consumerId'
-                ],
-                'tv_account_id': [
-                    'dc_tvAccountId',
-                    'tvAccountId',
-                    'urn:telekom:ott:dc_tvAccountId'
-                ],
-
-                # Account token
-                'account_token': [
-                    'dc_cts_account_token',
-                    'accountToken',
-                    'urn:telekom:ott:dc_cts_account_token'
-                ],
-            }
-
-            # Extract all claims
-            for target_key, source_keys in claim_mappings.items():
-                for source_key in source_keys:
-                    if source_key in claims:
-                        result[target_key] = claims[source_key]
-                        logger.debug(f"Extracted {target_key} from {source_key}")
-                        break
-
-            # Extract token expiration
-            if 'exp' in claims:
-                result['token_exp'] = claims['exp']
-                logger.debug(f"Token expires at: {claims['exp']}")
-
-            # CRITICAL CHECK: Verify we have the essential fields
-            if 'dc_cts_persona_token' not in result:
-                logger.error("CRITICAL: dc_cts_persona_token not found in JWT!")
-                logger.debug(f"Available claims: {list(claims.keys())}")
-
-            if 'account_uri' not in result:
-                logger.warning("account_uri not found in JWT - will try to construct from MPX account PID")
-
-                # Try to construct from MPX account PID if available
-                if self._mpx_account_pid:
-                    result['account_uri'] = f"urn:theplatform:auth:root:{self._mpx_account_pid}"
-                    logger.info(f"✓ Constructed account_uri from MPX PID: {result['account_uri']}")
-                elif 'mpxAccountPid' in claims:
-                    result['account_uri'] = f"urn:theplatform:auth:root:{claims['mpxAccountPid']}"
-                    logger.info(f"✓ Constructed account_uri from JWT mpxAccountPid: {result['account_uri']}")
-
-            return result
-
-        except Exception as e:
-            logger.error(f"Failed to parse TAA JWT completely: {e}")
+    @staticmethod
+    def _parse_taa_jwt_complete(jwt_token: str) -> Dict[str, Any]:
+        claims = JWTParser.parse(jwt_token)
+        if not claims:
             return {}
+
+        # Return as dict for backward compatibility
+        return {
+            'dc_cts_persona_token': claims.dc_cts_persona_token,
+            'account_uri': claims.account_uri,
+            'persona_id': claims.persona_id,
+            'account_id': claims.account_id,
+            'consumer_id': claims.consumer_id,
+            'tv_account_id': claims.tv_account_id,
+            'account_token': claims.account_token,
+            'token_exp': claims.token_exp
+        }
 
     def _classify_token(self, token: BaseAuthToken) -> TokenAuthLevel:
         """

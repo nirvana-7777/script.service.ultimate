@@ -68,20 +68,7 @@
     </category>
 
     <category id="magenta2" label="Magenta TV 2.0 (DE)">
-        <setting id="magenta2_username" type="text" label="Username" default="">
-            <level>0</level>
-            <constraints>
-                <allowempty>false</allowempty>
-            </constraints>
-        </setting>
-
-        <setting id="magenta2_password" type="text" label="Password" default="" option="hidden">
-            <level>0</level>
-            <constraints>
-                <allowempty>false</allowempty>
-            </constraints>
-        </setting>
-
+        <setting id="enable_magenta2" type="bool" label="Enable Magenta TV 2.0 (DE)" default="false" />
         <setting id="magenta2_proxy_enabled" type="bool" label="Enable Proxy" default="false" />
         <setting id="magenta2_proxy_host" type="text" label="Proxy Host" visible="eq(-1,true)" />
         <setting id="magenta2_proxy_port" type="number" label="Proxy Port" visible="eq(-2,true)" />

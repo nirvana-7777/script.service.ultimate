@@ -6,15 +6,15 @@ yo_digital → taa → tvhubs → line_auth/remote_login
 """
 
 import time
-import base64
-import json
 from typing import Optional, Dict, Any
 from dataclasses import dataclass
 
+from .constants import MAGENTA2_FALLBACK_ACCOUNT_URI
 from ...base.utils.logger import logger
 from ...base.auth.session_manager import SessionManager
 from .sam3_client import Sam3Client
 from .taa_client import TaaClient
+from .token_utils import PersonaTokenComposer
 
 
 @dataclass
@@ -88,91 +88,11 @@ class TokenFlowManager:
                      (f" ({country})" if country else ""))
 
     @staticmethod
-    def _extract_jwt_claims(jwt_token: str) -> Dict[str, Any]:
-        """Extract claims from JWT token with correct claim names"""
-        try:
-            parts = jwt_token.split('.')
-            if len(parts) != 3:
-                logger.warning("Invalid JWT format")
-                return {}
-
-            # Decode payload
-            payload_b64 = parts[1]
-            padding = len(payload_b64) % 4
-            if padding:
-                payload_b64 += '=' * (4 - padding)
-
-            payload_json = base64.b64decode(payload_b64).decode('utf-8')
-            claims = json.loads(payload_json)
-
-            logger.debug(f"JWT claims extracted: {list(claims.keys())}")
-
-            return claims
-
-        except Exception as e:
-            logger.error(f"Failed to extract JWT claims: {e}")
-            return {}
-
-    def _compose_persona_token(self, access_token: str) -> Optional[str]:
-        """
-        Compose persona token from access_token JWT claims
-        Format: Base64(account_uri + ":" + persona_jwt_token)
-        """
-        try:
-            # Extract claims from JWT
-            claims = self._extract_jwt_claims(access_token)
-
-            # Get persona JWT token (this is the nested JWT)
-            persona_jwt_token = claims.get('dc_cts_personaToken')
-            if not persona_jwt_token:
-                logger.error("No persona JWT token found in JWT claims")
-                return None
-
-            # Get account URI
-            account_uri = None
-
-            # 1. Try provider_config first
-            if hasattr(self, 'provider_config') and self.provider_config:
-                account_uri = self.provider_config.get_mpx_account_uri()
-                if account_uri:
-                    logger.debug("Using account URI from provider_config")
-
-            # 2. Try to extract from JWT claims
-            if not account_uri:
-                account_uri = claims.get('dc_cts_account_uri') or claims.get('accountUri')
-                if account_uri:
-                    logger.debug("Using account URI from JWT claims")
-
-            # 3. Final fallback - use the same format as your valid example
-            if not account_uri:
-                account_uri = "http://access.auth.theplatform.com/data/Account/2709353023"
-                logger.debug("Using fallback account URI")
-
-            if not account_uri:
-                logger.error("No account URI available from any source")
-                return None
-
-            logger.debug(f"Using account URI: {account_uri}")
-            logger.debug(f"Persona JWT token length: {len(persona_jwt_token)}")
-            logger.debug(f"Persona JWT token preview: {persona_jwt_token[:50]}...")
-
-            # CRITICAL: Compose raw token as account_uri + ":" + persona_jwt_token
-            raw_token = f"{account_uri}:{persona_jwt_token}"
-
-            logger.debug(f"Raw token length before encoding: {len(raw_token)}")
-
-            # Base64 encode
-            persona_token = base64.b64encode(raw_token.encode('utf-8')).decode('utf-8')
-
-            logger.info("✓ Persona token composed successfully")
-            logger.debug(f"Final persona token length: {len(persona_token)}")
-            logger.debug(f"Final persona token preview: {persona_token[:50]}...")
-
-            return persona_token
-
-        except Exception as e:
-            logger.error(f"Failed to compose persona token: {e}")
-            return None
+    def _compose_persona_token(access_token: str) -> Optional[str]:
+        return PersonaTokenComposer.compose_from_jwt(
+            jwt_token=access_token,
+            fallback_account_uri=MAGENTA2_FALLBACK_ACCOUNT_URI
+        )
 
     def get_persona_token(self, force_refresh: bool = False) -> PersonaResult:
         """
