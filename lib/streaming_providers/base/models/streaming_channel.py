@@ -16,6 +16,10 @@ class StreamingChannel:
     # Visual elements
     logo_url: Optional[str] = None
 
+    # Channel metadata
+    channel_number: Optional[int] = None  # Display channel number (e.g., 1, 3, 99)
+    quality: Optional[str] = None  # 'SD', 'HD', 'UHD', '4K'
+
     # Streaming configuration
     mode: str = "live"  # "live" or "vod"
     session_manifest: bool = False
@@ -55,6 +59,8 @@ class StreamingChannel:
             'Id': self.channel_id,
             'Provider': self.provider,
             'LogoUrl': self.logo_url,
+            'ChannelNumber': self.channel_number,
+            'Quality': self.quality,
             'Mode': self.mode,
             'SessionManifest': self.session_manifest,
             'Manifest': self.manifest,
