@@ -132,7 +132,6 @@ class Magenta2Provider(StreamingProvider):
             platform=platform,
             config_dir=config_dir,
             http_manager=self.http_manager,
-            proxy_config=self.proxy_config,
             credentials=credentials,
             endpoints={},  # Empty initially, will be updated after discovery
             client_model=f"ftv-{platform}",  # Use fallback initially
@@ -642,12 +641,130 @@ class Magenta2Provider(StreamingProvider):
 
         return f"{base_url}/iss?{query_string}"
 
+    @staticmethod
+    def _filter_channels_by_quality(
+            channels: List[StreamingChannel],
+            prefer_highest_quality: bool = True
+    ) -> List[StreamingChannel]:
+        """
+        Filter duplicate channels by quality preference.
+
+        When multiple channels share the same channel number (dt$displayChannelNumber),
+        keeps only the one with preferred quality.
+
+        Quality hierarchy: UHD > HD > SD
+
+        Args:
+            channels: List of channels to filter
+            prefer_highest_quality: If True, prefer UHD>HD>SD. If False, prefer SD>HD>UHD
+
+        Returns:
+            Filtered list of channels with duplicates removed based on quality preference
+        """
+        # Define quality ranking (higher number = better quality)
+        quality_rank = {
+            'SD': 1,
+            'HD': 2,
+            'UHD': 3
+        }
+
+        # Group channels by display channel number
+        channels_by_number = {}
+
+        for channel in channels:
+            # Extract display channel number from raw_data
+            display_number = None
+            if hasattr(channel, 'raw_data') and channel.raw_data:
+                display_number = channel.raw_data.get('dt$displayChannelNumber')
+
+            if display_number is None:
+                # If no display number, keep the channel (don't filter it)
+                # Use a unique key to ensure it's not grouped with others
+                unique_key = f"_no_number_{id(channel)}"
+                channels_by_number[unique_key] = [channel]
+                continue
+
+            if display_number not in channels_by_number:
+                channels_by_number[display_number] = []
+            channels_by_number[display_number].append(channel)
+
+        # Filter each group, keeping only the channel with preferred quality
+        filtered_channels = []
+
+        for display_number, channel_group in channels_by_number.items():
+            if len(channel_group) == 1:
+                # Only one channel with this number, keep it
+                filtered_channels.append(channel_group[0])
+                continue
+
+            # Multiple channels with same number - select by quality
+            best_channel = None
+            best_quality_rank = -1 if prefer_highest_quality else float('inf')
+
+            for channel in channel_group:
+                # Extract quality from station data in raw_data
+                quality = None
+                if hasattr(channel, 'raw_data') and channel.raw_data:
+                    stations = channel.raw_data.get('stations', {})
+                    if stations:
+                        # Get first station
+                        station_id = next(iter(stations.keys()))
+                        station_info = stations[station_id]
+                        quality = station_info.get('dt$quality')
+
+                # Get quality rank (default to SD if not found)
+                current_rank = quality_rank.get(quality, quality_rank['SD'])
+
+                # Select based on preference
+                if prefer_highest_quality:
+                    # Want highest quality (highest rank)
+                    if current_rank > best_quality_rank:
+                        best_quality_rank = current_rank
+                        best_channel = channel
+                else:
+                    # Want lowest quality (lowest rank)
+                    if current_rank < best_quality_rank:
+                        best_quality_rank = current_rank
+                        best_channel = channel
+
+            if best_channel:
+                filtered_channels.append(best_channel)
+                logger.debug(
+                    f"Channel number {display_number}: Selected quality "
+                    f"{'UHD' if best_quality_rank == 3 else 'HD' if best_quality_rank == 2 else 'SD'} "
+                    f"from {len(channel_group)} variants"
+                )
+
+        logger.info(
+            f"Quality filtering: {len(channels)} channels → {len(filtered_channels)} channels "
+            f"(removed {len(channels) - len(filtered_channels)} duplicates, "
+            f"preference: {'highest' if prefer_highest_quality else 'lowest'} quality)"
+        )
+
+        return filtered_channels
+
+    # Update the fetch_channels method signature and implementation:
+
     def fetch_channels(self,
                        time_window_hours: int = DEFAULT_EPG_WINDOW_HOURS,
                        fetch_manifests: bool = False,
                        populate_streaming_data: bool = True,
+                       prefer_highest_quality: bool = True,
                        **kwargs) -> List[StreamingChannel]:
-        """Fetch available channels from Magenta2 API"""
+        """
+        Fetch available channels from Magenta2 API
+
+        Args:
+            time_window_hours: EPG time window in hours
+            fetch_manifests: Whether to fetch manifests
+            populate_streaming_data: Whether to populate streaming data
+            prefer_highest_quality: If True, prefer UHD>HD>SD when multiple qualities exist
+                                   for same channel number. If False, prefer SD>HD>UHD.
+            **kwargs: Additional arguments
+
+        Returns:
+            List of StreamingChannel objects, filtered by quality preference
+        """
         try:
             # Get headers WITHOUT requiring auth (lazy auth will happen later if needed)
             headers = self._get_api_headers(require_auth=False)
@@ -684,6 +801,9 @@ class Magenta2Provider(StreamingProvider):
 
             # Process the channel stations feed response
             channels = self._process_channel_stations_response(channels_data)
+
+            # Apply quality-based filtering
+            channels = self._filter_channels_by_quality(channels, prefer_highest_quality)
 
             logger.info(f"Successfully fetched {len(channels)} channels for country {self.country}")
             return channels

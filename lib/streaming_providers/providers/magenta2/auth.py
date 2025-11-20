@@ -1,20 +1,30 @@
 # streaming_providers/providers/magenta2/auth.py
 # -*- coding: utf-8 -*-
+"""
+Magenta2 Authenticator - Migrated to BaseAuthenticator
+
+This authenticator manages Magenta2's proprietary token hierarchy:
+yo_digital → taa → tvhubs → line_auth/remote_login
+
+Key components:
+- TokenFlowManager: Handles hierarchical token acquisition and refresh
+- SAM3Client: OAuth2 token management (tvhubs/taa scopes)
+- TaaClient: TAA authentication and yo_digital token exchange
+- SsoClient: SSO operations (user authentication)
+"""
 import uuid
 import time
 from typing import Dict, Optional, Any
 from dataclasses import dataclass, field
 
-from ...base.auth.base_oauth2_auth import BaseOAuth2Authenticator
-from ...base.auth.base_auth import BaseAuthToken, TokenAuthLevel
+from ...base.auth.base_auth import BaseAuthenticator, BaseAuthToken, TokenAuthLevel
 from ...base.auth.credentials import ClientCredentials
-from ...base.models.proxy_models import ProxyConfig
 from ...base.utils.logger import logger
 
-# PHASE 2 & 3: Import new components
+# Import Magenta2-specific components
 from .sam3_client import Sam3Client
 from .sso_client import SsoClient
-from .taa_client import TaaClient, TaaAuthResult
+from .taa_client import TaaClient
 from .token_flow_manager import TokenFlowManager
 from .token_utils import JWTParser, PersonaTokenComposer
 
@@ -22,16 +32,11 @@ from .constants import (
     SUPPORTED_COUNTRIES,
     DEFAULT_COUNTRY,
     DEFAULT_PLATFORM,
-    DEFAULT_REQUEST_TIMEOUT,
     MAGENTA2_CLIENT_IDS,
-    MAGENTA2_OAUTH_SCOPE,
-    MAGENTA2_REDIRECT_URI,
-    MAGENTA2_FALLBACK_ENDPOINTS,
     MAGENTA2_PLATFORMS,
     IDM,
     APPVERSION2,
     TAA_REQUEST_TEMPLATE,
-    GRANT_TYPES,
     SSO_USER_AGENT
 )
 
@@ -139,6 +144,7 @@ class Magenta2UserCredentials(Magenta2Credentials):
     def credential_type(self) -> str:
         return "magenta2_user_credentials"
 
+
 @dataclass
 class Magenta2AuthToken(BaseAuthToken):
     """
@@ -193,8 +199,8 @@ class Magenta2AuthToken(BaseAuthToken):
 
         return base_dict
 
-
     def compose_persona_token(self) -> Optional[str]:
+        """Compose persona token from components"""
         self.composed_persona_token = PersonaTokenComposer.compose_from_components(
             account_uri=self.account_uri,
             dc_cts_persona_token=self.dc_cts_persona_token
@@ -202,8 +208,10 @@ class Magenta2AuthToken(BaseAuthToken):
         return self.composed_persona_token
 
     def get_jwt_claims(self) -> Optional[Dict[str, Any]]:
+        """Extract JWT claims from access token"""
         claims = JWTParser.parse(self.access_token)
         return claims.raw_claims if claims else None
+
 
 class Magenta2AuthConfig:
     """Configuration object for Magenta2 authentication"""
@@ -259,10 +267,20 @@ class Magenta2AuthConfig:
         return headers
 
 
-class Magenta2Authenticator(BaseOAuth2Authenticator):
+class Magenta2Authenticator(BaseAuthenticator):
     """
-    ENHANCED: Magenta2 authenticator with complete SAM3 + SSO + TAA flow
-    Now supports both user credentials and client credentials flows
+    Magenta2 authenticator with complete SAM3 + SSO + TAA flow
+
+    Token Hierarchy:
+    1. yo_digital tokens (persona token base) - managed by TokenFlowManager
+    2. taa access_token (from SAM3)
+    3. tvhubs access_token (from line_auth/remote_login)
+    4. Shared refresh_token (at provider level)
+
+    Authentication Flows:
+    - Line Authentication: Device token → tvhubs tokens
+    - Remote Login: QR code/backchannel → tvhubs tokens
+    - Token Exchange: refresh_token → taa → yo_digital
     """
 
     def __init__(self, country: str = DEFAULT_COUNTRY,
@@ -271,7 +289,6 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
                  credentials=None,
                  config_dir: Optional[str] = None,
                  http_manager=None,
-                 proxy_config: Optional[ProxyConfig] = None,
                  endpoints: Optional[Dict[str, str]] = None,
                  client_model: Optional[str] = None,
                  device_model: Optional[str] = None,
@@ -280,7 +297,22 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
                  device_id: Optional[str] = None,
                  provider_config: Optional[Any] = None):
         """
-        Enhanced authenticator with complete authentication flow support
+        Initialize Magenta2 authenticator
+
+        Args:
+            country: Country code (e.g., 'de')
+            platform: Platform identifier (e.g., 'firetv')
+            settings_manager: Settings manager instance
+            credentials: Optional credentials override
+            config_dir: Configuration directory
+            http_manager: HTTP manager for requests
+            endpoints: Dynamically discovered endpoints
+            client_model: Client model identifier
+            device_model: Device model identifier
+            sam3_client_id: SAM3 OAuth client ID
+            session_id: Session identifier
+            device_id: Device identifier
+            provider_config: Provider configuration object
         """
         if country not in SUPPORTED_COUNTRIES:
             raise ValueError(f"Unsupported country: {country}. Must be one of: {SUPPORTED_COUNTRIES}")
@@ -298,7 +330,7 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
         # Store dynamically discovered endpoints
         self._dynamic_endpoints = endpoints or {}
 
-        # Store bootstrap parameters as instance attributes
+        # Store bootstrap parameters
         self._client_model = client_model
         self._device_model = device_model
         self._sam3_client_id = sam3_client_id
@@ -308,17 +340,17 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
         self._device_id = device_id or str(uuid.uuid4())
         self.provider_config = provider_config
 
-        # NEW: Store MPX account info for persona token composition
+        # MPX account info for persona token composition
         self._mpx_account_pid: Optional[str] = None
         self._device_token: Optional[str] = None
         self._authorize_tokens_url: Optional[str] = None
 
-        # NEW: SAM3 and SSO clients
+        # SAM3 and SSO clients
         self._sam3_client: Optional[Sam3Client] = None
         self._sso_client: Optional[SsoClient] = None
         self._openid_config: Optional[Dict[str, Any]] = None
 
-        # Setup Magenta2-specific config with endpoints and parameters
+        # Setup Magenta2-specific config
         self._config = Magenta2AuthConfig(
             self.country,
             self.platform,
@@ -327,7 +359,7 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
             self._device_model
         )
 
-        # Extract and cache client_id (use SAM3 client ID from bootstrap if available)
+        # Extract and cache client_id
         self._client_id = self._sam3_client_id or MAGENTA2_CLIENT_IDS.get(
             self.platform,
             MAGENTA2_CLIENT_IDS[DEFAULT_PLATFORM]
@@ -337,22 +369,21 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
         if credentials is None:
             credentials = self.get_fallback_credentials()
 
-        # Initialize SAM3 and SSO clients if we have the required info
+        # Initialize SAM3 and SSO clients
         self._initialize_sam3_sso_clients()
 
+        # Initialize TAA client
         self._taa_client: Optional[TaaClient] = None
         self._initialize_taa_client()
 
-        # Initialize parent
+        # Initialize parent BaseAuthenticator
         super().__init__(
             provider_name='magenta2',
             settings_manager=settings_manager,
             credentials=credentials,
             country=country,
             config_dir=config_dir,
-            enable_kodi_integration=True,
-            http_manager=self._http_manager,
-            proxy_config=proxy_config
+            enable_kodi_integration=True
         )
 
         # Initialize TokenFlowManager
@@ -361,334 +392,9 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
 
         logger.info("Magenta2 authenticator initialization completed successfully")
 
-    def update_sam3_client_id(self, client_id: str) -> None:
-        """Public method to update SAM3 client ID"""
-        old_client_id = self._sam3_client_id
-        self._sam3_client_id = client_id
-
-        # Also update the SAM3 client if it exists
-        if self._sam3_client:
-            self._sam3_client.update_sam3_client_id(client_id)
-            logger.info(f"✓ Updated SAM3 client ID: {old_client_id[:8]}... -> {client_id[:8]}...")
-        else:
-            logger.debug(f"Updated SAM3 client ID (no client to update yet): {client_id}")
-
-    def update_client_model(self, client_model: str) -> None:
-        """Public method to update client model"""
-        self._client_model = client_model
-        logger.debug(f"Updated client model: {client_model}")
-
-    def update_device_model(self, device_model: str) -> None:
-        """Public method to update device model"""
-        self._device_model = device_model
-        logger.debug(f"Updated device model: {device_model}")
-
-    def update_dynamic_endpoints(self, endpoints: Dict[str, str]) -> None:
-        """Public method to update dynamic endpoints"""
-        self._dynamic_endpoints.update(endpoints)
-        logger.debug(f"Updated dynamic endpoints with {len(endpoints)} entries")
-
-    def update_endpoints(self, endpoints: Dict[str, str]) -> None:
-        """Public method to update endpoints (alias for compatibility)"""
-        self.update_dynamic_endpoints(endpoints)
-
-    def _initialize_taa_client(self) -> None:
-        """Initialize TAA client"""
-        self._taa_client = TaaClient(
-            http_manager=self._http_manager,
-            platform=self.platform
-        )
-        logger.debug("TAA client initialized")
-
-    def _initialize_sam3_sso_clients(self) -> None:
-        """Initialize SAM3 and SSO clients with all endpoints"""
-        try:
-            # Initialize SSO client (always available)
-            self._sso_client = SsoClient(
-                http_manager=self._http_manager,
-                session_id=self._session_id,
-                device_id=self._device_id
-            )
-
-            # Initialize SAM3 client if we have client ID
-            if self._sam3_client_id:
-                # GET ALL ENDPOINTS
-                issuer_url = None
-                oauth_endpoint = None
-                line_auth_endpoint = self._authorize_tokens_url  # From manifest
-                backchannel_start_url = None
-                qr_code_url_template = None  # NEW: Get from dynamic endpoints
-
-                # NEW: Get QR code URL from dynamic endpoints (bootstrap)
-                if 'login_qr_code' in self._dynamic_endpoints:
-                    qr_code_url_template = self._dynamic_endpoints['login_qr_code']
-                    logger.debug(f"QR code URL from dynamic endpoints: {qr_code_url_template}")
-
-                if self._openid_config:
-                    issuer_url = self._openid_config.get('issuer')
-                    oauth_endpoint = self._openid_config.get('token_endpoint')
-                    # Get backchannel from OpenID config
-                    backchannel_start_url = self._openid_config.get('backchannel_auth_start')
-
-                self._sam3_client = Sam3Client(
-                    http_manager=self._http_manager,
-                    session_id=self._session_id,
-                    device_id=self._device_id,
-                    sam3_client_id=self._sam3_client_id,
-                    issuer_url=issuer_url,
-                    oauth_token_endpoint=oauth_endpoint,
-                    line_auth_endpoint=line_auth_endpoint,
-                    backchannel_start_url=backchannel_start_url,
-                    qr_code_url_template=qr_code_url_template  # PASS THE QR CODE URL
-                )
-
-                logger.info(
-                    f"SAM3 client initialized - "
-                    f"Issuer: {bool(issuer_url)}, "
-                    f"OAuth: {bool(oauth_endpoint)}, "
-                    f"Line: {bool(line_auth_endpoint)}, "
-                    f"Backchannel: {bool(backchannel_start_url)}, "
-                    f"QR URL: {bool(qr_code_url_template)}"
-                )
-
-        except Exception as e:
-            logger.warning(f"Failed to initialize SAM3/SSO clients: {e}")
-
-    def _perform_remote_login_flow(self) -> Optional[Dict[str, Any]]:
-        """
-        Helper method for TokenFlowManager to perform remote login
-        Returns token data dict or None
-        """
-        if not self._sam3_client:
-            return None
-
-        try:
-            return self._sam3_client.remote_login(scope="tvhubs offline_access")
-        except Exception as e:
-            logger.error(f"Remote login flow failed: {e}")
-            return None
-
-    def _initialize_token_flow_manager(self) -> None:
-        """Initialize token flow manager after SAM3 and TAA clients are ready"""
-        if self._sam3_client and self._taa_client:
-            from .token_flow_manager import TokenFlowManager
-
-            session_manager = getattr(self.settings_manager, 'session_manager', None)
-            if not session_manager:
-                logger.error("Cannot initialize TokenFlowManager: No session_manager available")
-                return
-
-            self.token_flow_manager = TokenFlowManager(
-                session_manager=session_manager,
-                sam3_client=self._sam3_client,
-                taa_client=self._taa_client,
-                provider_name=self.provider_name,
-                country=self.country,
-                provider_config=self.provider_config,
-                # NEW: Pass callbacks to break circular dependency
-                line_auth_callback=self._perform_line_auth_with_response,
-                remote_login_callback=self._perform_remote_login_flow
-            )
-            logger.debug("TokenFlowManager initialized with auth callbacks")
-
-    def get_yo_digital_token(self, force_refresh: bool = False) -> Optional[str]:
-        """
-        Public method to get yo_digital access token
-
-        Returns:
-            yo_digital access token or None
-        """
-        if not self.token_flow_manager:
-            logger.warning("TokenFlowManager not initialized")
-            return None
-
-        result = self.token_flow_manager.get_yo_digital_token(force_refresh)
-
-        if result.success:
-            logger.info(f"✓ Got yo_digital token via: {result.flow_path}")
-            return result.access_token
-        else:
-            logger.error(f"✗ Failed to get yo_digital token: {result.error}")
-            return None
-
-    def update_sam3_qr_code_url(self, qr_code_url: str) -> bool:
-        """
-        Public method to update SAM3 client with QR code URL
-        Returns True if successful, False otherwise
-        """
-        if not self._sam3_client:
-            logger.warning("Cannot update QR code URL - SAM3 client not initialized")
-            return False
-
-        # Use public method instead of direct assignment
-        self._sam3_client.set_qr_code_url(qr_code_url)
-        logger.info(f"✓ Updated SAM3 client with QR code URL: {qr_code_url}")
-        return True
-
-    def get_sam3_client_status(self) -> Dict[str, Any]:
-        """
-        Public method to get SAM3 client status for debugging
-        """
-        if not self._sam3_client:
-            return {'initialized': False}
-
-        # Use public method instead of accessing protected members
-        return self._sam3_client.get_client_status()
-
-    def can_use_line_auth(self) -> bool:
-        """Check if line auth components are available"""
-        return (
-                self._device_token is not None and
-                self._authorize_tokens_url is not None and
-                self._sam3_client is not None
-        )
-
-    def can_use_remote_login(self) -> bool:
-        """Check if remote login components are available"""
-        return (
-                self._sam3_client is not None and
-                self._sam3_client.can_use_remote_login()
-        )
-
-    def set_mpx_account_pid(self, account_pid: str):
-        """
-        Set MPX account PID for account URI construction
-        This is CRITICAL for persona token composition
-
-        Args:
-            account_pid: MPX account PID (e.g., 'mdeprod')
-        """
-        self._mpx_account_pid = account_pid
-        logger.debug(f"MPX account PID set: {account_pid}")
-
-    def set_remote_login_urls(self, qr_code_url_template: str, backchannel_start_url: str = None):
-        """
-        Set remote login URLs for backchannel authentication
-
-        Args:
-            qr_code_url_template: QR code URL template with {code} placeholder
-            backchannel_start_url: Optional backchannel start endpoint (from OpenID)
-        """
-        if self._sam3_client:
-            self._sam3_client.qr_code_url_template = qr_code_url_template
-            if backchannel_start_url:
-                self._sam3_client.backchannel_start_url = backchannel_start_url
-            logger.info(f"✓ Remote login URLs configured for SAM3 client")
-        else:
-            logger.warning("Cannot set remote login URLs - SAM3 client not initialized")
-
-    # PHASE 4: Enhanced device token management
-    def set_device_token(self, device_token: str, authorize_tokens_url: str = None):
-        """
-        Enhanced device token setup with both endpoints
-        """
-        self._device_token = device_token
-        self._authorize_tokens_url = authorize_tokens_url
-
-        # UPDATE SAM3 CLIENT WITH LINE AUTH ENDPOINT
-        if self._sam3_client and authorize_tokens_url:
-            self._sam3_client.line_auth_endpoint = authorize_tokens_url
-            self._sam3_client.token_endpoint = authorize_tokens_url  # Backwards compat
-            logger.info(f"✓ Updated SAM3 client with line auth endpoint: {authorize_tokens_url}")
-
-        logger.debug("Device token configured with line authentication support")
-
-    def perform_device_authentication(self) -> bool:
-        """
-        PHASE 4: Perform device-based authentication using device token
-        This can be called independently for device registration flows
-        """
-        return self._perform_line_auth()
-
-    def validate_taa_token(self, taa_token: str) -> bool:
-        """
-        PHASE 4: Validate TAA token using TaaClient
-        """
-        if not self._taa_client:
-            return False
-        return self._taa_client.validate_taa_token(taa_token)
-
-    def debug_taa_token(self, taa_token: str) -> Dict[str, Any]:
-        """
-        PHASE 4: Debug TAA token using TaaClient
-        """
-        if not self._taa_client:
-            return {'error': 'TAA client not initialized'}
-        return self._taa_client.debug_taa_token(taa_token)
-
-    def get_authentication_flow_info(self) -> Dict[str, Any]:
-        """
-        Enhanced with TAA client info
-        """
-        base_info = {
-            'user_credentials_available': isinstance(self.credentials, Magenta2UserCredentials) and self.credentials.has_user_credentials(),
-            'client_credentials_available': True,
-            'sam3_client_available': self._sam3_client is not None,
-            'sso_client_available': self._sso_client is not None,
-            'taa_client_available': self._taa_client is not None,
-            'device_token_available': bool(self._device_token),
-            'mpx_account_pid_available': bool(self._mpx_account_pid),
-            'preferred_flow': 'USER' if (isinstance(self.credentials, Magenta2UserCredentials) and self.credentials.has_user_credentials()) else 'CLIENT'
-        }
-
-        # Add TAA-specific info if available
-        if self._taa_client and self._current_token:
-            base_info['taa_token_valid'] = self.validate_taa_token(self._current_token.access_token)
-
-        return base_info
-
-    def set_openid_config(self, openid_config: Dict[str, Any]):
-        """
-        Set OpenID configuration for SAM3 client
-
-        Args:
-            openid_config: OpenID configuration dictionary
-        """
-        self._openid_config = openid_config
-        if self._sam3_client:
-            self._sam3_client.update_endpoints(openid_config)
-        logger.debug("OpenID configuration updated")
-
-    def get_current_token(self) -> Optional[BaseAuthToken]:
-        """Get the current authentication token"""
-        return self._current_token
-
-    def _get_endpoint(self, endpoint_key: str, fallback_key: str = None) -> str:
-        """
-        Get endpoint URL, preferring dynamically discovered ones
-
-        Args:
-            endpoint_key: Key in dynamic endpoints dict
-            fallback_key: Key in MAGENTA2_FALLBACK_ENDPOINTS if dynamic lookup fails
-        """
-        # Try dynamic endpoint first
-        if endpoint_key in self._dynamic_endpoints:
-            url = self._dynamic_endpoints[endpoint_key]
-            logger.debug(f"Using dynamic endpoint for {endpoint_key}: {url}")
-            return url
-
-        # Fall back to hardcoded if available
-        if fallback_key and fallback_key in MAGENTA2_FALLBACK_ENDPOINTS:
-            url = MAGENTA2_FALLBACK_ENDPOINTS[fallback_key]
-            logger.debug(f"Using fallback endpoint for {endpoint_key}: {url}")
-            return url
-
-        raise ValueError(f"No endpoint found for {endpoint_key}")
-
-    @property
-    def oauth_client_id(self) -> str:
-        """Get OAuth2 client ID"""
-        return self._client_id
-
-    @property
-    def oauth_scope(self) -> str:
-        """OAuth2 scopes"""
-        return MAGENTA2_OAUTH_SCOPE
-
-    @property
-    def oauth_redirect_uri(self) -> str:
-        """OAuth2 redirect URI"""
-        return MAGENTA2_REDIRECT_URI
+    # ========================================================================
+    # BaseAuthenticator Required Methods
+    # ========================================================================
 
     @property
     def auth_endpoint(self) -> str:
@@ -700,21 +406,14 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
         return self._config.get_base_headers()
 
     def _build_auth_payload(self) -> Dict[str, Any]:
-        """Build authentication payload for client credentials flow"""
-        if not self.credentials:
-            self.credentials = self.get_fallback_credentials()
-
-        # For initial SAM3 client credentials auth
-        return {
-            'client_id': self.credentials.client_id,
-            'grant_type': GRANT_TYPES['CLIENT_CREDENTIALS'],
-            'scope': MAGENTA2_OAUTH_SCOPE
-        }
+        """Build authentication payload - not directly used in Magenta2 flow"""
+        # This method is required by BaseAuthenticator but not used in our flow
+        # TokenFlowManager handles all token acquisition
+        return {}
 
     def _create_token_from_response(self, response_data: Dict[str, Any]) -> BaseAuthToken:
         """
-        ENHANCED: Create token object from API response and compose persona token
-        This is where the final persona token composition happens
+        Create token object from API response and compose persona token
         """
         # Handle different response key formats
         access_token = response_data.get('access_token', response_data.get('accessToken'))
@@ -744,7 +443,7 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
             sso_display_name=response_data.get('sso_display_name')
         )
 
-        # CRITICAL: Compose final persona token
+        # Compose final persona token
         if token.dc_cts_persona_token and token.account_uri:
             composed = token.compose_persona_token()
             if composed:
@@ -766,7 +465,7 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
                 if composed:
                     logger.info("✓ Persona token composed using constructed account_uri")
 
-        # NEW: Only classify token if it's NOT from line_auth
+        # Classify token if it's NOT from line_auth
         if not response_data.get('auth_source') == 'line_auth':
             token.auth_level = self._classify_token(token)
             logger.debug(f"Token created and classified as: {token.auth_level.value}")
@@ -774,563 +473,48 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
             token.auth_level = TokenAuthLevel.UNKNOWN
             logger.debug("Line auth token - skipping classification")
 
-        # NEW: Save ONLY the access token data under 'tvhubs' scope
-        scoped_token_data = {
-            'access_token': token.access_token,
-            'token_type': token.token_type,
-            'expires_in': token.expires_in,
-            'issued_at': token.issued_at
-        }
-
-        # Save scoped token (access_token under 'tvhubs' scope)
-        self.settings_manager.save_scoped_token(
-            self.provider_name,
-            'tvhubs',
-            scoped_token_data,
-            self.country
-        )
-
-        # NEW: Clear the main provider-level token data (no backward compatibility)
-        # Only keep refresh_token and device_id
-        provider_session_data = {
-            'refresh_token': token.refresh_token,
-            'device_id': getattr(self, '_device_id', '')
-        }
-
-        # Save provider session data without access_token and without persona fields
-        self.settings_manager.session_manager.save_session(
-            self.provider_name,
-            provider_session_data,
-            self.country
-        )
-
-        logger.info(
-            "✓ Access token saved under 'tvhubs' scope, only refresh_token and device_id saved at provider level")
+        # Save scoped token data
+        self._save_scoped_token_data(token)
 
         return token
-
-    def _create_token_from_combined_data(self, sso_data: Dict[str, Any], taa_data: Dict[str, Any]) -> BaseAuthToken:
-        """
-        NEW: Create token from combined SSO and TAA data for complete user flow
-        """
-        # Start with TAA data as base
-        token_data = taa_data.copy()
-
-        # Enhance with SSO data
-        token_data.update({
-            'sso_user_id': sso_data.get('userId'),
-            'sso_display_name': sso_data.get('displayName'),
-            # Use SSO persona token if TAA doesn't provide one
-            'dc_cts_persona_token': taa_data.get('dc_cts_persona_token') or sso_data.get('personaToken')
-        })
-
-        return self._create_token_from_response(token_data)
 
     def get_fallback_credentials(self) -> Magenta2Credentials:
         """Get fallback credentials when no user credentials are available"""
         return Magenta2Credentials(
             client_id=self._client_id,
             platform=self.platform,
-            country=self.country
+            country=self.country,
+            device_id=self._device_id
         )
 
-    def _should_try_line_auth_first(self) -> bool:
-        """Check if we should attempt line auth first"""
-        return (
-                self._device_token is not None and
-                self._authorize_tokens_url is not None and
-                self._sam3_client is not None
-        )
-
-    def _process_line_auth_success(self, line_response_data: Dict[str, Any]) -> BaseAuthToken:
+    def _perform_authentication(self) -> BaseAuthToken:
         """
-        Process successful line auth or remote login response
-        (Extracted from original _perform_line_auth_flow)
+        Main authentication entry point
+        Delegates to TokenFlowManager for the actual token acquisition
         """
-        # Check if we have SettingsManager with scoped token support
-        if not hasattr(self.settings_manager, 'save_scoped_token'):
-            logger.warning("SettingsManager doesn't support scoped tokens, falling back to TAA")
-            raise Exception("Scoped token support not available")
+        if not self.token_flow_manager:
+            raise Exception("TokenFlowManager not initialized")
 
-        # Save the TVHUBS token
-        tvhubs_token_data = {
-            'access_token': line_response_data.get('access_token'),
-            'token_type': line_response_data.get('token_type', 'Bearer'),
-            'expires_in': line_response_data.get('expires_in', 7200),
-            'issued_at': time.time()
-        }
+        logger.info("Performing Magenta2 authentication via TokenFlowManager")
 
-        success = self.settings_manager.save_scoped_token(
-            self.provider_name,
-            'tvhubs',
-            tvhubs_token_data,
-            self.country
+        # Get persona token through the complete hierarchical flow
+        persona_result = self.token_flow_manager.get_persona_token(force_refresh=False)
+
+        if not persona_result.success:
+            raise Exception(f"Authentication failed: {persona_result.error}")
+
+        # Create a simplified token wrapper
+        # The actual tokens are managed by TokenFlowManager in scoped storage
+        token = Magenta2AuthToken(
+            access_token=persona_result.persona_token,
+            token_type='Basic',
+            expires_in=3600,  # Default expiry
+            issued_at=time.time(),
+            auth_level=TokenAuthLevel.USER_AUTHENTICATED
         )
 
-        if not success:
-            logger.error("Failed to save TVHUBS scoped token")
-            raise Exception("Failed to save TVHUBS token")
-
-        logger.info("✓ TVHUBS access token saved from authentication")
-
-        # Extract refresh token for token exchange
-        line_refresh_token = line_response_data.get('refresh_token')
-        if not line_refresh_token:
-            logger.warning("No refresh token in response, using access token directly")
-            return self._create_token_from_line_auth_response(line_response_data)
-
-        # Try token exchange for TAA scope
-        try:
-            taa_token_data = self._exchange_refresh_token_for_taa_scope(line_refresh_token)
-            if taa_token_data:
-                # Save TAA token under taa scope
-                self.settings_manager.save_scoped_token(
-                    self.provider_name,
-                    'taa',
-                    taa_token_data,
-                    self.country
-                )
-                logger.info("✓ TAA access token saved from token exchange")
-
-                # Save the NEW refresh token at provider level
-                provider_session_data = {
-                    'refresh_token': taa_token_data['refresh_token'],
-                    'device_id': getattr(self, '_device_id', '')
-                }
-
-                self.settings_manager.session_manager.save_session(
-                    self.provider_name,
-                    provider_session_data,
-                    self.country
-                )
-                logger.info("✓ Updated refresh token saved at provider level")
-
-                # Create token object with TAA token
-                token = Magenta2AuthToken(
-                    access_token=taa_token_data['access_token'],
-                    refresh_token=taa_token_data['refresh_token'],
-                    token_type=taa_token_data['token_type'],
-                    expires_in=taa_token_data['expires_in'],
-                    issued_at=taa_token_data['issued_at'],
-                    auth_level=TokenAuthLevel.UNKNOWN
-                )
-            else:
-                logger.warning("Token exchange failed, using line auth token directly")
-                token = self._create_token_from_line_auth_response(line_response_data)
-
-        except Exception as e:
-            logger.warning(f"Token exchange failed: {e}, using line auth token directly")
-            token = self._create_token_from_line_auth_response(line_response_data)
-
-        logger.info("✓ Authentication flow completed successfully")
+        logger.info("✓ Magenta2 authentication successful")
         return token
-
-    def _exchange_refresh_token_for_taa_scope(self, refresh_token: str) -> Optional[Dict[str, Any]]:
-        """
-        Exchange line auth refresh token for TAA-scoped tokens
-        """
-        try:
-            logger.debug("Exchanging refresh token for TAA scope")
-
-            # Get token endpoint and client ID
-            token_endpoint = self._get_endpoint('oauth_token', 'OPENID_CONFIG')
-            if token_endpoint.endswith('/.well-known/openid-configuration'):
-                token_endpoint = token_endpoint.replace('/.well-known/openid-configuration', '/oauth2/tokens')
-
-            client_id = self._sam3_client_id or self.oauth_client_id
-            if not client_id:
-                raise Exception("No client ID available for token exchange")
-
-            # Build form-encoded payload
-            payload = {
-                'grant_type': GRANT_TYPES['REFRESH_TOKEN'],
-                'refresh_token': refresh_token,
-                'client_id': client_id,
-                'scope': 'taa offline_access'
-            }
-
-            headers = {
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'User-Agent': self._config.user_agent
-            }
-
-            logger.debug(f"Token exchange request to: {token_endpoint}")
-            logger.debug(f"Client ID: {client_id}")
-
-            # Perform token exchange
-            response = self.http_manager.post(
-                token_endpoint,
-                operation='token_exchange',
-                headers=headers,
-                data=payload,
-                timeout=DEFAULT_REQUEST_TIMEOUT
-            )
-            response.raise_for_status()
-
-            exchange_data = response.json()
-
-            # Extract token data from response
-            taa_token_data = {
-                'access_token': exchange_data.get('access_token'),
-                'refresh_token': exchange_data.get('refresh_token', ''),
-                'token_type': exchange_data.get('token_type', 'Bearer'),
-                'expires_in': exchange_data.get('expires_in', 3600),
-                'issued_at': time.time()
-            }
-
-            # Validate required fields
-            if not taa_token_data['access_token']:
-                raise Exception("No access token in token exchange response")
-
-            logger.info(
-                f"✓ Token exchange successful: "
-                f"type={taa_token_data['token_type']}, "
-                f"expires_in={taa_token_data['expires_in']}"
-            )
-
-            return taa_token_data
-
-        except Exception as e:
-            logger.error(f"Token exchange for TAA scope failed: {e}")
-            return None
-
-    def _perform_line_auth_with_response(self) -> Optional[Dict[str, Any]]:
-        """
-        Perform line authentication and store refresh token for SAM3 requests
-        """
-        try:
-            if not self._sam3_client:
-                raise Exception("SAM3 client not initialized")
-
-            # Perform line auth
-            line_success = self._sam3_client.line_auth(self._device_token)
-            if not line_success:
-                return None
-
-            # Get the response data
-            response_data = self._sam3_client.get_last_line_auth_response()
-
-            # CRITICAL: Store refresh token for SAM3 token requests
-            if response_data and 'refresh_token' in response_data:
-                self._line_auth_refresh_token = response_data['refresh_token']
-                logger.info(f"✓ Stored refresh token from line auth for SAM3 requests")
-                logger.debug(f"Refresh token preview: {self._line_auth_refresh_token[:20]}...")
-
-            return response_data
-
-        except Exception as e:
-            logger.error(f"Line authentication failed: {e}")
-            return None
-
-    @staticmethod
-    def _are_line_auth_tokens_sufficient(line_response_data: Dict[str, Any]) -> bool:
-        """
-        Check if line auth tokens provide enough access for our needs
-        """
-        if not line_response_data:
-            return False
-
-        # Check if we have a valid access token
-        access_token = line_response_data.get('access_token')
-        if not access_token:
-            return False
-
-        # Check if token has reasonable expiration
-        expires_in = line_response_data.get('expires_in', 0)
-        if expires_in < 300:  # Less than 5 minutes
-            logger.warning("Line auth token expires too soon, continuing to TAA")
-            return False
-
-        # Optional: Check token type
-        token_type = line_response_data.get('token_type', '').lower()
-        if token_type != 'bearer':
-            logger.warning(f"Line auth token type '{token_type}' not supported, continuing to TAA")
-            return False
-
-        return True
-
-    def _create_token_from_line_auth_response(self, line_response_data: Dict[str, Any]) -> BaseAuthToken:
-        """
-        Create authentication token from actual line auth response data
-        """
-        # Use ACTUAL values from the response, not hardcoded ones
-        token_data = {
-            'access_token': line_response_data.get('access_token'),
-            'refresh_token': line_response_data.get('refresh_token', ''),
-            'token_type': line_response_data.get('token_type', 'Bearer'),  # FROM RESPONSE
-            'expires_in': line_response_data.get('expires_in', 7200),  # FROM RESPONSE
-            'issued_at': time.time(),
-            'auth_source': 'line_auth'  # NEW: Mark as line_auth to skip classification
-        }
-
-        # Validate required fields
-        if not token_data['access_token']:
-            raise Exception("No access token in line auth response")
-
-        logger.info(
-            f"✓ Created token from line auth: type={token_data['token_type']}, expires_in={token_data['expires_in']}")
-
-        # NEW: This will automatically save the access token under 'tvhubs' scope
-        # and skip classification due to auth_source='line_auth'
-        return self._create_token_from_response(token_data)
-
-    def _continue_to_taa_after_line_auth(self) -> BaseAuthToken:
-        """
-        Continue with TAA flow when line auth tokens are insufficient
-        """
-        logger.debug("Continuing to TAA authentication after line auth")
-
-        # Step 1: Get SAM3 token for TAA using established line auth session
-        if not self._sam3_client:
-            raise Exception("SAM3 client not initialized")
-
-        sam3_token = self._sam3_client.get_access_token("taa")
-        if not sam3_token:
-            raise Exception("Could not obtain SAM3 token after line auth")
-
-        # Step 2: Perform TAA authentication
-        if not self._taa_client:
-            raise Exception("TAA client not initialized")
-
-        taa_result = self._taa_client.authenticate(
-            sam3_token=sam3_token,
-            device_id=self._device_id,
-            client_model=self._client_model,
-            device_model=None,
-            taa_endpoint=self._get_endpoint('taa_auth', 'TAA_AUTH')
-        )
-
-        if taa_result.device_limit_exceeded:
-            from .models import DeviceLimitExceededException
-            raise DeviceLimitExceededException("Device limit exceeded for Magenta2")
-
-        # Step 3: Create final token from TAA
-        token = self._create_token_from_taa_result(taa_result)
-        logger.info("✓ TAA authentication completed successfully after line auth")
-        return token
-
-    def _get_user_credentials(self) -> tuple[str, str]:
-        """
-        Safely get username and password from credentials
-        Raises exception if user credentials are not available
-        """
-        if not isinstance(self.credentials, Magenta2UserCredentials):
-            raise Exception("User credentials not available")
-
-        if not self.credentials.has_user_credentials():
-            raise Exception("Username/password not provided")
-
-        return self.credentials.username, self.credentials.password
-
-    def _create_token_from_taa_result(self, taa_result: TaaAuthResult) -> BaseAuthToken:
-        """
-        Create authentication token from TaaAuthResult
-        """
-        token_data = {
-            'access_token': taa_result.access_token,
-            'refresh_token': taa_result.refresh_token or "",
-            'token_type': 'Bearer',
-            'expires_in': 3600,  # Default, will be overridden by JWT exp if available
-            'issued_at': time.time(),
-
-            # TAA-specific fields
-            'dc_cts_persona_token': taa_result.dc_cts_persona_token,
-            'persona_id': taa_result.persona_id,
-            'account_id': taa_result.account_id,
-            'consumer_id': taa_result.consumer_id,
-            'tv_account_id': taa_result.tv_account_id,
-            'account_token': taa_result.account_token,
-            'account_uri': taa_result.account_uri,
-            'token_exp': taa_result.token_exp
-        }
-
-        # Add raw response if available
-        if taa_result.raw_response:
-            token_data['raw_response'] = taa_result.raw_response
-
-        return self._create_token_from_response(token_data)
-
-    def _perform_line_auth(self) -> bool:
-        """
-        PHASE 4: Device token line authentication
-        Matching C++ Sam3Client::LineAuth()
-        """
-        try:
-            if not self._device_token or not self._authorize_tokens_url:
-                logger.warning("Line auth skipped - missing device token or authorize URL")
-                return False
-
-            if not self._sam3_client:
-                logger.warning("Line auth skipped - SAM3 client not available")
-                return False
-
-            logger.debug("Performing line authentication with device token")
-
-            # Use SAM3 client for line authentication
-            success = self._sam3_client.line_auth(self._device_token)
-
-            if success:
-                logger.info("✓ Line authentication successful")
-                return True
-            else:
-                logger.warning("Line authentication failed")
-                return False
-
-        except Exception as e:
-            logger.error(f"Line authentication failed: {e}")
-            return False
-
-    def _get_sam3_token_for_taa(self) -> str:
-        """
-        ENHANCED: Get SAM3 token specifically for TAA scope in user flow
-        Uses device token line authentication if available
-        """
-        try:
-            # PHASE 4: Try line authentication first if device token is available
-            if self._device_token and self._perform_line_auth():
-                logger.debug("Line authentication successful, getting TAA token")
-                # Now get token for TAA scope using the established session
-                if self._sam3_client:
-                    taa_token = self._sam3_client.get_access_token("taa")
-                    if taa_token:
-                        return taa_token
-
-            # Fall back to standard client credentials
-            return self._get_sam3_token()
-
-        except Exception as e:
-            logger.warning(f"Enhanced SAM3 token acquisition failed: {e}")
-            return self._get_sam3_token()
-
-    def _get_sam3_token(self) -> str:
-        """
-        Get SAM3 access token using discovered endpoints
-        """
-        try:
-            headers = {
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'User-Agent': self._config.user_agent
-            }
-
-            # Determine payload based on available tokens
-            if hasattr(self, '_line_auth_refresh_token') and self._line_auth_refresh_token:
-                payload = {
-                    'grant_type': 'refresh_token',
-                    'client_id': self._sam3_client_id,
-                    'refresh_token': self._line_auth_refresh_token,
-                    'scope': 'taa offline_access'
-                }
-            else:
-                payload = {
-                    'grant_type': 'client_credentials',
-                    'client_id': self._sam3_client_id,
-                    'scope': 'taa offline_access'
-                }
-
-            # Use the existing endpoint discovery system
-            token_endpoint = self._get_endpoint('oauth_token', 'OPENID_CONFIG')
-
-            # If we got the OpenID config URL, convert it to token endpoint
-            if token_endpoint.endswith('/.well-known/openid-configuration'):
-                token_endpoint = token_endpoint.replace('/.well-known/openid-configuration', '/oauth2/tokens')
-                logger.debug(f"Converted OpenID config URL to token endpoint: {token_endpoint}")
-
-            logger.debug(f"SAM3 token request to: {token_endpoint}")
-
-            # Form-encode the data
-            form_data = '&'.join([f"{k}={self._url_encode(str(v))}" for k, v in payload.items()])
-
-            response = self.http_manager.post(
-                token_endpoint,
-                operation='auth',
-                headers=headers,
-                data=form_data
-            )
-
-            if response.status_code >= 400:
-                logger.error(f"SAM3 token request failed: {response.status_code}")
-                logger.error(f"Response: {response.text}")
-                response.raise_for_status()
-
-            token_data = response.json()
-            access_token = token_data.get('access_token')
-
-            if not access_token:
-                raise ValueError("No access token in SAM3 response")
-
-            logger.debug("SAM3 token obtained successfully")
-            return access_token
-
-        except Exception as e:
-            logger.error(f"Failed to get SAM3 token: {e}")
-            raise Exception(f"SAM3 token request failed: {e}")
-
-    @staticmethod
-    def _url_encode(value: str) -> str:
-        """URL encode a string"""
-        from urllib.parse import quote
-        return quote(value)
-
-    def _perform_taa_authentication(self, sam3_token: str) -> Dict[str, Any]:
-        """
-        LEGACY: Kept for backward compatibility, now uses TaaClient internally
-        """
-        try:
-            if not self._taa_client:
-                raise Exception("TAA client not initialized")
-
-            taa_result = self._taa_client.authenticate(
-                sam3_token=sam3_token,
-                device_id=self._device_id,
-                client_model=self._client_model,
-                device_model=None,
-                taa_endpoint=self.auth_endpoint
-            )
-
-            if taa_result.device_limit_exceeded:
-                from .models import DeviceLimitExceededException
-                raise DeviceLimitExceededException("Device limit exceeded for Magenta2")
-
-            # Convert to legacy format
-            result = {
-                'access_token': taa_result.access_token,
-                'refresh_token': taa_result.refresh_token,
-                'dc_cts_persona_token': taa_result.dc_cts_persona_token,
-                'persona_id': taa_result.persona_id,
-                'account_id': taa_result.account_id,
-                'consumer_id': taa_result.consumer_id,
-                'tv_account_id': taa_result.tv_account_id,
-                'account_token': taa_result.account_token,
-                'account_uri': taa_result.account_uri,
-                'token_exp': taa_result.token_exp
-            }
-
-            if taa_result.raw_response:
-                result.update(taa_result.raw_response)
-
-            return result
-
-        except Exception as e:
-            logger.error(f"TAA authentication failed: {e}")
-            raise
-
-    @staticmethod
-    def _parse_taa_jwt_complete(jwt_token: str) -> Dict[str, Any]:
-        claims = JWTParser.parse(jwt_token)
-        if not claims:
-            return {}
-
-        # Return as dict for backward compatibility
-        return {
-            'dc_cts_persona_token': claims.dc_cts_persona_token,
-            'account_uri': claims.account_uri,
-            'persona_id': claims.persona_id,
-            'account_id': claims.account_id,
-            'consumer_id': claims.consumer_id,
-            'tv_account_id': claims.tv_account_id,
-            'account_token': claims.account_token,
-            'token_exp': claims.token_exp
-        }
 
     def _classify_token(self, token: BaseAuthToken) -> TokenAuthLevel:
         """
@@ -1379,75 +563,511 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
             logger.error(f"Error classifying token: {e}")
             return TokenAuthLevel.UNKNOWN
 
-    def _refresh_oauth_token(self) -> Optional[BaseAuthToken]:
-        """Magenta2 token refresh implementation using HTTP manager"""
-        if not self._current_token or not self._current_token.refresh_token:
-            logger.debug(f"No refresh token available for {self.provider_name}")
+    def _refresh_token(self) -> Optional[BaseAuthToken]:
+        """
+        Refresh token implementation
+        Delegates to TokenFlowManager for hierarchical token refresh
+        """
+        if not self.token_flow_manager:
+            logger.warning("TokenFlowManager not initialized, cannot refresh token")
             return None
 
         try:
-            logger.debug(f"Refreshing OAuth2 token for {self.provider_name}")
+            logger.info("Refreshing Magenta2 token via TokenFlowManager")
 
-            headers = self._config.get_oauth_headers()
+            # Force refresh through TokenFlowManager
+            persona_result = self.token_flow_manager.get_persona_token(force_refresh=True)
 
-            payload = {
-                'grant_type': GRANT_TYPES['REFRESH_TOKEN'],
-                'refresh_token': self._current_token.refresh_token,
-                'client_id': self.oauth_client_id
-            }
+            if persona_result.success:
+                token = Magenta2AuthToken(
+                    access_token=persona_result.persona_token,
+                    token_type='Basic',
+                    expires_in=3600,
+                    issued_at=time.time(),
+                    auth_level=TokenAuthLevel.USER_AUTHENTICATED
+                )
+                logger.info("✓ Token refresh successful")
+                return token
 
-            # Use discovered token endpoint for refresh
-            token_endpoint = self._get_endpoint('oauth_token', 'OPENID_CONFIG')
-            if token_endpoint.endswith('/.well-known/openid-configuration'):
-                token_endpoint = token_endpoint.replace('/.well-known/openid-configuration', '/oauth2/tokens')
-
-            # USE HTTP MANAGER for token refresh
-            response = self.http_manager.post(
-                token_endpoint,
-                operation='auth',
-                headers=headers,
-                data=payload
-            )
-
-            response.raise_for_status()
-            new_token_data = response.json()
-            refreshed_token = self._create_token_from_response(new_token_data)
-            logger.info(f"OAuth2 token refresh successful for {self.provider_name}")
-            return refreshed_token
+            logger.warning(f"Token refresh failed: {persona_result.error}")
+            return None
 
         except Exception as e:
-            logger.warning(f"OAuth2 token refresh failed for {self.provider_name}: {e}")
+            logger.warning(f"Token refresh failed: {e}")
             return None
 
-    def get_persona_token(self) -> Optional[str]:
+    # ========================================================================
+    # Component Initialization
+    # ========================================================================
+
+    def _initialize_sam3_sso_clients(self) -> None:
+        """Initialize SAM3 and SSO clients with all endpoints"""
+        try:
+            # Initialize SSO client (always available)
+            self._sso_client = SsoClient(
+                http_manager=self._http_manager,
+                session_id=self._session_id,
+                device_id=self._device_id
+            )
+
+            # Initialize SAM3 client if we have client ID
+            if self._sam3_client_id:
+                issuer_url = None
+                oauth_endpoint = None
+                line_auth_endpoint = self._authorize_tokens_url
+                backchannel_start_url = None
+                qr_code_url_template = None
+
+                # Get QR code URL from dynamic endpoints
+                if 'login_qr_code' in self._dynamic_endpoints:
+                    qr_code_url_template = self._dynamic_endpoints['login_qr_code']
+                    logger.debug(f"QR code URL from dynamic endpoints: {qr_code_url_template}")
+
+                if self._openid_config:
+                    issuer_url = self._openid_config.get('issuer')
+                    oauth_endpoint = self._openid_config.get('token_endpoint')
+                    backchannel_start_url = self._openid_config.get('backchannel_auth_start')
+
+                self._sam3_client = Sam3Client(
+                    http_manager=self._http_manager,
+                    session_id=self._session_id,
+                    device_id=self._device_id,
+                    sam3_client_id=self._sam3_client_id,
+                    issuer_url=issuer_url,
+                    oauth_token_endpoint=oauth_endpoint,
+                    line_auth_endpoint=line_auth_endpoint,
+                    backchannel_start_url=backchannel_start_url,
+                    qr_code_url_template=qr_code_url_template
+                )
+
+                logger.info(
+                    f"SAM3 client initialized - "
+                    f"Issuer: {bool(issuer_url)}, "
+                    f"OAuth: {bool(oauth_endpoint)}, "
+                    f"Line: {bool(line_auth_endpoint)}, "
+                    f"Backchannel: {bool(backchannel_start_url)}, "
+                    f"QR URL: {bool(qr_code_url_template)}"
+                )
+
+        except Exception as e:
+            logger.warning(f"Failed to initialize SAM3/SSO clients: {e}")
+
+    def _initialize_taa_client(self) -> None:
+        """Initialize TAA client"""
+        self._taa_client = TaaClient(
+            http_manager=self._http_manager,
+            platform=self.platform
+        )
+        logger.debug("TAA client initialized")
+
+    def _initialize_token_flow_manager(self) -> None:
+        """Initialize token flow manager after SAM3 and TAA clients are ready"""
+        if self._sam3_client and self._taa_client:
+            session_manager = getattr(self.settings_manager, 'session_manager', None)
+            if not session_manager:
+                logger.error("Cannot initialize TokenFlowManager: No session_manager available")
+                return
+
+            self.token_flow_manager = TokenFlowManager(
+                session_manager=session_manager,
+                sam3_client=self._sam3_client,
+                taa_client=self._taa_client,
+                provider_name=self.provider_name,
+                country=self.country,
+                provider_config=self.provider_config,
+                line_auth_callback=self._perform_line_auth_with_response,
+                remote_login_callback=self._perform_remote_login_flow
+            )
+            logger.debug("TokenFlowManager initialized with auth callbacks")
+
+    # ========================================================================
+    # Public API - Token Management
+    # ========================================================================
+
+    def get_persona_token(self, force_refresh: bool = False) -> str:
         """
-        Get the composed persona token for API calls
-        Returns the Base64-encoded persona token or None
+        Get persona token - PRIMARY authentication entry point
+
+        This is the main method that should be called by the provider
+        to get a valid persona token for API requests.
+
+        Args:
+            force_refresh: Force token refresh even if cached token is valid
+
+        Returns:
+            Base64-encoded persona token
+
+        Raises:
+            Exception: If persona token cannot be obtained
+        """
+        if not self.token_flow_manager:
+            raise Exception("TokenFlowManager not initialized")
+
+        persona_result = self.token_flow_manager.get_persona_token(
+            force_refresh=force_refresh
+        )
+
+        if not persona_result.success:
+            raise Exception(f"Failed to get persona token: {persona_result.error}")
+
+        return persona_result.persona_token
+
+    def get_yo_digital_token(self, force_refresh: bool = False) -> Optional[str]:
+        """
+        Get yo_digital access token
+
+        Args:
+            force_refresh: Force token refresh
+
+        Returns:
+            yo_digital access token or None
+        """
+        if not self.token_flow_manager:
+            logger.warning("TokenFlowManager not initialized")
+            return None
+
+        result = self.token_flow_manager.get_yo_digital_token(force_refresh)
+
+        if result.success:
+            logger.info(f"✓ Got yo_digital token via: {result.flow_path}")
+            return result.access_token
+        else:
+            logger.error(f"✗ Failed to get yo_digital token: {result.error}")
+            return None
+
+    # ========================================================================
+    # Public API - Configuration Management
+    # ========================================================================
+
+    def update_sam3_client_id(self, client_id: str) -> None:
+        """Update SAM3 client ID"""
+        old_client_id = self._sam3_client_id
+        self._sam3_client_id = client_id
+
+        if self._sam3_client:
+            self._sam3_client.update_sam3_client_id(client_id)
+            logger.info(f"✓ Updated SAM3 client ID: {old_client_id[:8]}... -> {client_id[:8]}...")
+        else:
+            logger.debug(f"Updated SAM3 client ID (no client to update yet): {client_id}")
+
+    def update_client_model(self, client_model: str) -> None:
+        """Update client model"""
+        self._client_model = client_model
+        logger.debug(f"Updated client model: {client_model}")
+
+    def update_device_model(self, device_model: str) -> None:
+        """Update device model"""
+        self._device_model = device_model
+        logger.debug(f"Updated device model: {device_model}")
+
+    def update_dynamic_endpoints(self, endpoints: Dict[str, str]) -> None:
+        """Update dynamic endpoints"""
+        self._dynamic_endpoints.update(endpoints)
+        logger.debug(f"Updated dynamic endpoints with {len(endpoints)} entries")
+
+    def update_endpoints(self, endpoints: Dict[str, str]) -> None:
+        """Update endpoints (alias for compatibility)"""
+        self.update_dynamic_endpoints(endpoints)
+
+    def set_mpx_account_pid(self, account_pid: str) -> None:
+        """
+        Set MPX account PID for account URI construction
+        This is CRITICAL for persona token composition
+
+        Args:
+            account_pid: MPX account PID (e.g., 'mdeprod')
+        """
+        self._mpx_account_pid = account_pid
+        logger.debug(f"MPX account PID set: {account_pid}")
+
+    def set_device_token(self, device_token: str, authorize_tokens_url: str = None) -> None:
+        """
+        Enhanced device token setup with both endpoints
+
+        Args:
+            device_token: Device token for line authentication
+            authorize_tokens_url: Line authentication endpoint URL
+        """
+        self._device_token = device_token
+        self._authorize_tokens_url = authorize_tokens_url
+
+        # Update SAM3 client with line auth endpoint
+        if self._sam3_client and authorize_tokens_url:
+            self._sam3_client.line_auth_endpoint = authorize_tokens_url
+            self._sam3_client.token_endpoint = authorize_tokens_url  # Backwards compat
+            logger.info(f"✓ Updated SAM3 client with line auth endpoint: {authorize_tokens_url}")
+
+        logger.debug("Device token configured with line authentication support")
+
+    def set_openid_config(self, openid_config: Dict[str, Any]) -> None:
+        """
+        Set OpenID configuration for SAM3 client
+
+        Args:
+            openid_config: OpenID configuration dictionary
+        """
+        self._openid_config = openid_config
+        if self._sam3_client:
+            self._sam3_client.update_endpoints(openid_config)
+        logger.debug("OpenID configuration updated")
+
+    def set_remote_login_urls(self, qr_code_url_template: str, backchannel_start_url: str = None) -> None:
+        """
+        Set remote login URLs for backchannel authentication
+
+        Args:
+            qr_code_url_template: QR code URL template with {code} placeholder
+            backchannel_start_url: Optional backchannel start endpoint (from OpenID)
+        """
+        if self._sam3_client:
+            self._sam3_client.qr_code_url_template = qr_code_url_template
+            if backchannel_start_url:
+                self._sam3_client.backchannel_start_url = backchannel_start_url
+            logger.info(f"✓ Remote login URLs configured for SAM3 client")
+        else:
+            logger.warning("Cannot set remote login URLs - SAM3 client not initialized")
+
+    def update_sam3_qr_code_url(self, qr_code_url: str) -> bool:
+        """
+        Update SAM3 client with QR code URL
+
+        Args:
+            qr_code_url: QR code URL
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self._sam3_client:
+            logger.warning("Cannot update QR code URL - SAM3 client not initialized")
+            return False
+
+        self._sam3_client.set_qr_code_url(qr_code_url)
+        logger.info(f"✓ Updated SAM3 client with QR code URL: {qr_code_url}")
+        return True
+
+    # ========================================================================
+    # Public API - Authentication Capabilities
+    # ========================================================================
+
+    def can_use_line_auth(self) -> bool:
+        """Check if line auth components are available"""
+        return (
+                self._device_token is not None and
+                self._authorize_tokens_url is not None and
+                self._sam3_client is not None
+        )
+
+    def can_use_remote_login(self) -> bool:
+        """Check if remote login components are available"""
+        return (
+                self._sam3_client is not None and
+                self._sam3_client.can_use_remote_login()
+        )
+
+    def get_authentication_capabilities(self) -> Dict[str, Any]:
+        """Get authentication capabilities information"""
+        line_auth_available = self.can_use_line_auth()
+        remote_login_available = self.can_use_remote_login()
+
+        return {
+            'line_auth_available': line_auth_available,
+            'remote_login_available': remote_login_available,
+            'user_credentials_available': isinstance(self.credentials,
+                                                     Magenta2UserCredentials) and self.credentials.has_user_credentials(),
+            'client_credentials_available': True,
+            'preferred_flow': 'LINE_AUTH' if line_auth_available else
+            'REMOTE_LOGIN' if remote_login_available else
+            'USER' if (isinstance(self.credentials,
+                                  Magenta2UserCredentials) and self.credentials.has_user_credentials()) else
+            'CLIENT'
+        }
+
+    def get_authentication_flow_info(self) -> Dict[str, Any]:
+        """Get authentication flow information"""
+        base_info = {
+            'user_credentials_available': isinstance(self.credentials,
+                                                     Magenta2UserCredentials) and self.credentials.has_user_credentials(),
+            'client_credentials_available': True,
+            'sam3_client_available': self._sam3_client is not None,
+            'sso_client_available': self._sso_client is not None,
+            'taa_client_available': self._taa_client is not None,
+            'device_token_available': bool(self._device_token),
+            'mpx_account_pid_available': bool(self._mpx_account_pid),
+            'preferred_flow': 'USER' if (isinstance(self.credentials,
+                                                    Magenta2UserCredentials) and self.credentials.has_user_credentials()) else 'CLIENT'
+        }
+
+        # Add TAA-specific info if available
+        if self._taa_client and self._current_token:
+            base_info['taa_token_valid'] = self.validate_taa_token(self._current_token.access_token)
+
+        return base_info
+
+    # ========================================================================
+    # Device Authentication
+    # ========================================================================
+
+    def perform_device_authentication(self) -> bool:
+        """
+        Perform device-based authentication using device token
+        This can be called independently for device registration flows
+
+        Returns:
+            True if successful, False otherwise
+        """
+        return self._perform_line_auth()
+
+    def _perform_line_auth(self) -> bool:
+        """
+        Device token line authentication
+        Matching C++ Sam3Client::LineAuth()
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            if not self._device_token or not self._authorize_tokens_url:
+                logger.warning("Line auth skipped - missing device token or authorize URL")
+                return False
+
+            if not self._sam3_client:
+                logger.warning("Line auth skipped - SAM3 client not available")
+                return False
+
+            logger.debug("Performing line authentication with device token")
+
+            # Use SAM3 client for line authentication
+            success = self._sam3_client.line_auth(self._device_token)
+
+            if success:
+                logger.info("✓ Line authentication successful")
+                return True
+            else:
+                logger.warning("Line authentication failed")
+                return False
+
+        except Exception as e:
+            logger.error(f"Line authentication failed: {e}")
+            return False
+
+    def _perform_line_auth_with_response(self) -> Optional[Dict[str, Any]]:
+        """
+        Perform line authentication and return response data
+        Used by TokenFlowManager callback
+
+        Returns:
+            Line authentication response data or None
+        """
+        try:
+            if not self._sam3_client:
+                raise Exception("SAM3 client not initialized")
+
+            # Perform line auth
+            line_success = self._sam3_client.line_auth(self._device_token)
+            if not line_success:
+                return None
+
+            # Get the response data
+            response_data = self._sam3_client.get_last_line_auth_response()
+
+            # Store refresh token for SAM3 token requests
+            if response_data and 'refresh_token' in response_data:
+                self._line_auth_refresh_token = response_data['refresh_token']
+                logger.info(f"✓ Stored refresh token from line auth for SAM3 requests")
+                logger.debug(f"Refresh token preview: {self._line_auth_refresh_token[:20]}...")
+
+            return response_data
+
+        except Exception as e:
+            logger.error(f"Line authentication failed: {e}")
+            return None
+
+    def _perform_remote_login_flow(self) -> Optional[Dict[str, Any]]:
+        """
+        Perform remote login flow
+        Used by TokenFlowManager callback
+
+        Returns:
+            Token data dict or None
+        """
+        if not self._sam3_client:
+            return None
+
+        try:
+            return self._sam3_client.remote_login(scope="tvhubs offline_access")
+        except Exception as e:
+            logger.error(f"Remote login flow failed: {e}")
+            return None
+
+    # ========================================================================
+    # TAA Validation and Debugging
+    # ========================================================================
+
+    def validate_taa_token(self, taa_token: str) -> bool:
+        """
+        Validate TAA token using TaaClient
+
+        Args:
+            taa_token: TAA token to validate
+
+        Returns:
+            True if valid, False otherwise
+        """
+        if not self._taa_client:
+            return False
+        return self._taa_client.validate_taa_token(taa_token)
+
+    def debug_taa_token(self, taa_token: str) -> Dict[str, Any]:
+        """
+        Debug TAA token using TaaClient
+
+        Args:
+            taa_token: TAA token to debug
+
+        Returns:
+            Debug information dictionary
+        """
+        if not self._taa_client:
+            return {'error': 'TAA client not initialized'}
+        return self._taa_client.debug_taa_token(taa_token)
+
+    def get_sam3_client_status(self) -> Dict[str, Any]:
+        """Get SAM3 client status for debugging"""
+        if not self._sam3_client:
+            return {'initialized': False}
+
+        return self._sam3_client.get_client_status()
+
+    def debug_authentication_state(self) -> Dict[str, Any]:
+        """
+        Enhanced debug method to verify complete authentication state
+
+        Returns:
+            Comprehensive authentication state information
         """
         if not self._current_token:
-            return None
+            return {'error': 'No current token'}
 
-        if isinstance(self._current_token, Magenta2AuthToken):
-            # Return the composed token if available
-            if self._current_token.composed_persona_token:
-                return self._current_token.composed_persona_token
+        token = self._current_token
 
-            # Try to compose it now if we have the components
-            if self._current_token.dc_cts_persona_token and self._current_token.account_uri:
-                return self._current_token.compose_persona_token()
-
-        return None
-
-    # Backward compatibility
-    def is_authenticated(self) -> bool:
-        return self._current_token is not None and not self._current_token.is_expired
-
-    def invalidate_token(self) -> None:
-        self._current_token = None
-        try:
-            self.settings_manager.clear_token(self.provider_name)
-        except Exception:
-            pass
+        return {
+            'has_access_token': bool(token.access_token),
+            'has_dc_cts_persona_token': bool(getattr(token, 'dc_cts_persona_token', None)),
+            'has_account_uri': bool(getattr(token, 'account_uri', None)),
+            'has_composed_persona_token': bool(getattr(token, 'composed_persona_token', None)),
+            'persona_token_preview': getattr(token, 'composed_persona_token', '')[:50] + '...' if getattr(token,
+                                                                                                          'composed_persona_token',
+                                                                                                          None) else None,
+            'account_uri': getattr(token, 'account_uri', None),
+            'persona_id': getattr(token, 'persona_id', None),
+            'account_id': getattr(token, 'account_id', None),
+            'sso_user_id': getattr(token, 'sso_user_id', None),
+            'sso_display_name': getattr(token, 'sso_display_name', None),
+            'token_expires_at': getattr(token, 'token_exp', None),
+            'is_expired': token.is_expired,
+            'auth_level': token.auth_level.value,
+            'flow_used': 'USER' if getattr(token, 'sso_user_id', None) else 'CLIENT'
+        }
 
     def debug_token_classification(self) -> Dict[str, Any]:
         """Debug method to analyze current token classification"""
@@ -1476,73 +1096,108 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
             },
             'clients_initialized': {
                 'sam3': self._sam3_client is not None,
-                'sso': self._sso_client is not None
+                'sso': self._sso_client is not None,
+                'taa': self._taa_client is not None
             }
         }
 
-    def _perform_oauth_authorization_code_flow(self, username: str, password: str) -> Dict[str, Any]:
+    # ========================================================================
+    # Helper Methods
+    # ========================================================================
+
+    def _get_endpoint(self, endpoint_key: str, fallback_key: str = None) -> str:
         """
-        OAuth2 authorization code flow - now implemented via SAM3 + SSO
+        Get endpoint URL, preferring dynamically discovered ones
+
+        Args:
+            endpoint_key: Key in dynamic endpoints dict
+            fallback_key: Key in fallback endpoints if dynamic lookup fails
+
+        Returns:
+            Endpoint URL
+
+        Raises:
+            ValueError: If no endpoint found
         """
+        # Try dynamic endpoint first
+        if endpoint_key in self._dynamic_endpoints:
+            url = self._dynamic_endpoints[endpoint_key]
+            logger.debug(f"Using dynamic endpoint for {endpoint_key}: {url}")
+            return url
+
+        # Fall back to hardcoded if available
+        if fallback_key:
+            from .constants import MAGENTA2_FALLBACK_ENDPOINTS
+            if fallback_key in MAGENTA2_FALLBACK_ENDPOINTS:
+                url = MAGENTA2_FALLBACK_ENDPOINTS[fallback_key]
+                logger.debug(f"Using fallback endpoint for {endpoint_key}: {url}")
+                return url
+
+        raise ValueError(f"No endpoint found for {endpoint_key}")
+
+    def _save_scoped_token_data(self, token: Magenta2AuthToken) -> None:
+        """
+        Save token data to scoped storage
+
+        Saves:
+        - tvhubs scope: access_token only
+        - Provider level: refresh_token and device_id only
+        """
+        # Save ONLY the access token data under 'tvhubs' scope
+        scoped_token_data = {
+            'access_token': token.access_token,
+            'token_type': token.token_type,
+            'expires_in': token.expires_in,
+            'issued_at': token.issued_at
+        }
+
+        # Save scoped token (access_token under 'tvhubs' scope)
+        self.settings_manager.save_scoped_token(
+            self.provider_name,
+            'tvhubs',
+            scoped_token_data,
+            self.country
+        )
+
+        # Save provider session data without access_token and without persona fields
+        # Only keep refresh_token and device_id
+        provider_session_data = {
+            'refresh_token': token.refresh_token,
+            'device_id': self._device_id
+        }
+
+        # Save provider session data
+        self.settings_manager.session_manager.save_session(
+            self.provider_name,
+            provider_session_data,
+            self.country
+        )
+
+        logger.info(
+            "✓ Access token saved under 'tvhubs' scope, only refresh_token and device_id saved at provider level")
+
+    @staticmethod
+    def _url_encode(value: str) -> str:
+        """URL encode a string"""
+        from urllib.parse import quote
+        return quote(value)
+
+    # ========================================================================
+    # Backward Compatibility Methods
+    # ========================================================================
+
+    def get_current_token(self) -> Optional[BaseAuthToken]:
+        """Get the current authentication token"""
+        return self._current_token
+
+    def is_authenticated(self) -> bool:
+        """Check if currently authenticated with valid token"""
+        return self._current_token is not None and not self._current_token.is_expired
+
+    def invalidate_token(self) -> None:
+        """Invalidate current token"""
+        self._current_token = None
         try:
-            # Use our complete user authentication flow
-            persona_token = self.get_persona_token()
-            if not persona_token:
-                raise Exception("Failed to get persona token")
-
-            # Return in the expected OAuth2 response format
-            return {
-                'access_token': persona_token,
-                'token_type': 'Basic',
-                'expires_in': 3600,  # Default expiration
-                'issued_at': time.time()
-            }
-        except Exception as e:
-            logger.error(f"OAuth2 authorization code flow failed: {e}")
-            raise
-
-    def get_authentication_capabilities(self) -> Dict[str, Any]:
-        """
-        Public method to check authentication capabilities
-        """
-        line_auth_available = self.can_use_line_auth()
-        remote_login_available = self.can_use_remote_login()  # NEW
-
-        return {
-            'line_auth_available': line_auth_available,
-            'remote_login_available': remote_login_available,  # NEW
-            'user_credentials_available': isinstance(self.credentials,
-                                                     Magenta2UserCredentials) and self.credentials.has_user_credentials(),
-            'client_credentials_available': True,
-            'preferred_flow': 'LINE_AUTH' if line_auth_available else
-            'REMOTE_LOGIN' if remote_login_available else  # NEW
-            'USER' if (isinstance(self.credentials,
-                                  Magenta2UserCredentials) and self.credentials.has_user_credentials()) else
-            'CLIENT'
-        }
-
-    def debug_authentication_state(self) -> Dict[str, Any]:
-        """
-        Enhanced debug method to verify complete authentication state
-        """
-        if not self._current_token:
-            return {'error': 'No current token'}
-
-        token = self._current_token
-
-        return {
-            'has_access_token': bool(token.access_token),
-            'has_dc_cts_persona_token': bool(getattr(token, 'dc_cts_persona_token', None)),
-            'has_account_uri': bool(getattr(token, 'account_uri', None)),
-            'has_composed_persona_token': bool(getattr(token, 'composed_persona_token', None)),
-            'persona_token_preview': getattr(token, 'composed_persona_token', '')[:50] + '...' if getattr(token, 'composed_persona_token', None) else None,
-            'account_uri': getattr(token, 'account_uri', None),
-            'persona_id': getattr(token, 'persona_id', None),
-            'account_id': getattr(token, 'account_id', None),
-            'sso_user_id': getattr(token, 'sso_user_id', None),
-            'sso_display_name': getattr(token, 'sso_display_name', None),
-            'token_expires_at': getattr(token, 'token_exp', None),
-            'is_expired': token.is_expired,
-            'auth_level': token.auth_level.value,
-            'flow_used': 'USER' if getattr(token, 'sso_user_id', None) else 'CLIENT'
-        }
+            self.settings_manager.clear_token(self.provider_name, self.country)
+        except Exception:
+            pass
