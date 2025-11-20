@@ -565,196 +565,102 @@ class Magenta2Provider(StreamingProvider):
 
         return f"{base_url}/iss?{query_string}"
 
-    def _process_channel_stations_response(self, response_data: Dict, prefer_highest_quality: bool = True) -> List[
-        StreamingChannel]:
-        """Process channel stations feed response with quality filtering"""
-        channels = []
-        raw_entries = []
+    def _process_channel_stations_response_optimized(
+            self,
+            response_data: Dict,
+            prefer_highest_quality: bool = True
+    ) -> List[StreamingChannel]:
+        """Ultra-optimized single-pass processing"""
 
         if 'entries' not in response_data:
-            logger.warning("No entries found in channel stations response")
-            return channels
+            return []
 
-        # First pass: collect all raw entries with their metadata
+        quality_rank = {'SD': 1, 'HD': 2, 'UHD': 3, '4K': 3}
+        best_entries = {}
+        channels = []
+
         for entry in response_data['entries']:
             try:
-                # Extract station information first
                 stations = entry.get('stations', {})
                 if not stations:
                     continue
 
-                station_id = next(iter(stations.keys()))
-                station_info = stations[station_id]
-
-                # Extract display channel number and quality
+                station_info = next(iter(stations.values()))
                 display_number = entry.get('dt$displayChannelNumber')
-                quality = station_info.get('dt$quality', 'SD')
 
-                # PREFER station title over entry title (cleaner name)
-                title = station_info.get('title') if station_info else None
-                if not title:
-                    title = entry.get('title', 'Unknown Channel')
-
-                # Remove "- Main" suffix if present
-                if title and " - Main" in title:
-                    title = title.replace(" - Main", "")
-
-                # Extract CORRECT channel ID from era$mediaPids
-                channel_id = self._extract_channel_id_from_entry(entry)
-                if not channel_id:
-                    logger.warning(f"No channel ID found for entry: {title}")
+                if display_number is None:
+                    # Process immediately if no number (no filtering needed)
+                    channel = self._create_channel_from_entry(entry, station_info, display_number)
+                    if channel:
+                        channels.append(channel)
                     continue
 
-                # Extract logo URLs from station info
-                original_logo_url = None
-                if station_info:
-                    thumbnails = station_info.get('thumbnails', {})
-                    if 'stationLogo' in thumbnails:
-                        original_logo_url = thumbnails['stationLogo'].get('url')
-                    elif 'stationLogoColored' in thumbnails:
-                        original_logo_url = thumbnails['stationLogoColored'].get('url')
+                # Extract quality for comparison
+                quality = station_info.get('dt$quality', 'SD')
+                current_rank = quality_rank.get(quality, 1)
 
-                # BUILD SCALED LOGO URL
-                logo_url = None
-                if original_logo_url:
-                    logo_url = self._build_scaled_image_url(original_logo_url)
+                # Check if we need to replace existing entry
+                existing = best_entries.get(display_number)
+                if not existing:
+                    best_entries[display_number] = (entry, station_info, current_rank)
+                else:
+                    _, _, existing_rank = existing
+                    if (prefer_highest_quality and current_rank > existing_rank) or \
+                            (not prefer_highest_quality and current_rank < existing_rank):
+                        best_entries[display_number] = (entry, station_info, current_rank)
 
-                # Store raw entry with metadata for filtering
-                raw_entries.append({
-                    'entry': entry,
-                    'title': title,
-                    'channel_id': channel_id,
-                    'logo_url': logo_url,
-                    'display_number': display_number,
-                    'quality': quality,
-                    'station_info': station_info
-                })
+            except Exception:
+                continue
 
-            except Exception as e:
-                logger.warning(f"Error processing channel station entry: {e}")
+        # Convert best entries to channels
+        for display_number, (entry, station_info, _) in best_entries.items():
+            channel = self._create_channel_from_entry(entry, station_info, display_number)
+            if channel:
+                channels.append(channel)
 
-        # Second pass: filter by quality
-        filtered_entries = self._filter_entries_by_quality(raw_entries, prefer_highest_quality)
-
-        # Third pass: convert filtered entries to StreamingChannel objects
-        for entry_data in filtered_entries:
-            try:
-                magenta2_channel = Magenta2Channel(
-                    name=entry_data['title'],
-                    channel_id=entry_data['channel_id'],
-                    logo_url=entry_data['logo_url'],
-                    mode=MODE_LIVE,
-                    content_type=CONTENT_TYPE_LIVE,
-                    country=self.country,
-                    raw_data=entry_data['entry']
-                )
-
-                streaming_channel = magenta2_channel.to_streaming_channel(
-                    provider_name=self.provider_name
-                )
-
-                # ✅ SET CHANNEL NUMBER AND QUALITY on StreamingChannel
-                streaming_channel.channel_number = entry_data['display_number']
-                streaming_channel.quality = entry_data['quality']
-
-                channels.append(streaming_channel)
-
-                logger.debug(
-                    f"Processed channel: {entry_data['title']} "
-                    f"(ID: {entry_data['channel_id']}, Number: {entry_data['display_number']}, Quality: {entry_data['quality']})"
-                )
-
-            except Exception as e:
-                logger.warning(f"Error converting channel entry: {e}")
-
-        logger.info(f"Successfully processed {len(channels)} channels from channel stations feed")
         return channels
 
-    @staticmethod
-    def _filter_entries_by_quality(
-            entries: List[Dict],
-            prefer_highest_quality: bool = True
-    ) -> List[Dict]:
-        """
-        Filter duplicate channel entries by quality preference.
+    def _create_channel_from_entry(self, entry, station_info, display_number):
+        """Helper to create StreamingChannel from entry data"""
+        try:
+            title = station_info.get('title') or entry.get('title', 'Unknown Channel')
+            title = title.replace(" - Main", "")
 
-        When multiple entries share the same channel number (display_number),
-        keeps only the one with preferred quality.
+            channel_id = self._extract_channel_id_from_entry(entry)
+            if not channel_id:
+                return None
 
-        Quality hierarchy: UHD > HD > SD
+            # Logo processing
+            logo_url = None
+            thumbnails = station_info.get('thumbnails', {})
+            for logo_type in ['stationLogo', 'stationLogoColored']:
+                if logo_type in thumbnails:
+                    original_url = thumbnails[logo_type].get('url')
+                    if original_url:
+                        logo_url = self._build_scaled_image_url(original_url)
+                        break
 
-        Args:
-            entries: List of entry dictionaries with 'display_number' and 'quality' keys
-            prefer_highest_quality: If True, prefer UHD>HD>SD. If False, prefer SD>HD>UHD
-
-        Returns:
-            Filtered list of entry dictionaries
-        """
-        if not entries:
-            return entries
-
-        # Define quality ranking (higher number = better quality)
-        quality_rank = {
-            'SD': 1,
-            'HD': 2,
-            'UHD': 3,
-            '4K': 3  # Treat 4K same as UHD
-        }
-
-        # Group entries by display channel number
-        entries_by_number = {}
-        entries_without_number = []
-
-        for entry in entries:
-            display_number = entry.get('display_number')
-
-            if display_number is None:
-                entries_without_number.append(entry)
-                continue
-
-            if display_number not in entries_by_number:
-                entries_by_number[display_number] = []
-
-            # Add quality rank for easier comparison
-            quality = entry.get('quality', 'SD')
-            entry['quality_rank'] = quality_rank.get(quality, quality_rank['SD'])
-            entries_by_number[display_number].append(entry)
-
-        # Filter each group, keeping only the entry with preferred quality
-        filtered_entries = []
-        duplicate_count = 0
-
-        for display_number, entry_group in entries_by_number.items():
-            if len(entry_group) == 1:
-                filtered_entries.append(entry_group[0])
-                continue
-
-            # Multiple entries with same number - select by quality
-            if prefer_highest_quality:
-                best = max(entry_group, key=lambda x: x['quality_rank'])
-            else:
-                best = min(entry_group, key=lambda x: x['quality_rank'])
-
-            filtered_entries.append(best)
-            duplicate_count += len(entry_group) - 1
-
-            # Log which variant was selected
-            qualities = ', '.join(e['quality'] or 'Unknown' for e in entry_group)
-            logger.debug(
-                f"Channel #{display_number} ('{best['title']}'): "
-                f"Selected {best['quality']} from {len(entry_group)} variants ({qualities})"
+            magenta2_channel = Magenta2Channel(
+                name=title,
+                channel_id=channel_id,
+                logo_url=logo_url,
+                mode=MODE_LIVE,
+                content_type=CONTENT_TYPE_LIVE,
+                country=self.country,
+                raw_data=entry
             )
 
-        # Add back entries without display numbers
-        filtered_entries.extend(entries_without_number)
-
-        if duplicate_count > 0:
-            logger.info(
-                f"Quality filtering: {len(entries)} entries → {len(filtered_entries)} entries "
-                f"(removed {duplicate_count} duplicates, preference: {'highest' if prefer_highest_quality else 'lowest'} quality)"
+            streaming_channel = magenta2_channel.to_streaming_channel(
+                provider_name=self.provider_name
             )
+            streaming_channel.channel_number = display_number
+            streaming_channel.quality = station_info.get('dt$quality', 'SD')
 
-        return filtered_entries
+            return streaming_channel
+
+        except Exception as e:
+            logger.warning(f"Error creating channel from entry: {e}")
+            return None
 
     def fetch_channels(self,
                        time_window_hours: int = DEFAULT_EPG_WINDOW_HOURS,
@@ -764,31 +670,16 @@ class Magenta2Provider(StreamingProvider):
                        **kwargs) -> List[StreamingChannel]:
         """
         Fetch available channels from Magenta2 API
-
-        Args:
-            time_window_hours: EPG time window in hours
-            fetch_manifests: Whether to fetch manifests
-            populate_streaming_data: Whether to populate streaming data
-            prefer_highest_quality: If True, prefer UHD>HD>SD when multiple qualities exist
-                                   for same channel number. If False, prefer SD>HD>UHD.
-            **kwargs: Additional arguments
-
-        Returns:
-            List of StreamingChannel objects with channel_number and quality populated,
-            filtered by quality preference
         """
         try:
-            # Get headers WITHOUT requiring auth (lazy auth will happen later if needed)
             headers = self._get_api_headers(require_auth=False)
 
             # Use the discovered channel stations endpoint
             url = None
             if self.endpoint_manager:
                 url = self.endpoint_manager.get_endpoint('channel_stations')
-
                 if not url:
                     url = self.endpoint_manager.get_endpoint('channel_list')
-
                 if not url and self.endpoint_manager.has_endpoint('mpx_feed_entitledChannelsFeed'):
                     url = self.endpoint_manager.get_endpoint('mpx_feed_entitledChannelsFeed')
 
@@ -808,8 +699,8 @@ class Magenta2Provider(StreamingProvider):
             response.raise_for_status()
             channels_data = response.json()
 
-            # Process response with quality filtering (populates channel_number and quality)
-            channels = self._process_channel_stations_response(channels_data, prefer_highest_quality)
+            # ✅ USE OPTIMIZED SINGLE-PASS PROCESSING
+            channels = self._process_channel_stations_response_optimized(channels_data, prefer_highest_quality)
 
             logger.info(
                 f"Successfully fetched {len(channels)} channels for country {self.country} "
