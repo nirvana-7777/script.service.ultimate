@@ -14,7 +14,6 @@ from ...base.utils.logger import logger
 from ...base.auth.session_manager import SessionManager
 from .sam3_client import Sam3Client
 from .taa_client import TaaClient
-from .token_utils import PersonaTokenComposer
 
 
 @dataclass
@@ -87,61 +86,113 @@ class TokenFlowManager:
         logger.debug(f"TokenFlowManager initialized for {provider_name}" +
                      (f" ({country})" if country else ""))
 
-    @staticmethod
-    def _compose_persona_token(access_token: str) -> Optional[str]:
-        return PersonaTokenComposer.compose_from_jwt(
-            jwt_token=access_token,
-            fallback_account_uri=MAGENTA2_FALLBACK_ACCOUNT_URI
-        )
-
     def get_persona_token(self, force_refresh: bool = False) -> PersonaResult:
-        """
-        Get persona token - compose from successful yo_digital token result
-        """
+        """Get persona token with proper JWT expiry caching"""
         logger.debug("=== GET_PERSONA_TOKEN START ===")
 
-        # Get TokenFlowResult from existing method
-        token_result = self.get_yo_digital_token(force_refresh)
-        logger.debug(f"token_result.success: {token_result.success}")
-        logger.debug(f"token_result.access_token present: {bool(token_result.access_token)}")
+        # Check for cached persona token with proper expiry validation
+        if not force_refresh:
+            cached_result = self._get_cached_persona_token()
+            if cached_result.success:
+                logger.debug("=== GET_PERSONA_TOKEN SUCCESS (cached) ===")
+                return cached_result
 
-        # If it failed, return the failure
-        if not token_result.success:
+        # Get the yo_digital token
+        token_result = self.get_yo_digital_token(force_refresh)
+
+        if not token_result.success or not token_result.access_token:
             logger.debug("=== GET_PERSONA_TOKEN FAILED (token_result failed) ===")
             return PersonaResult(
                 success=False,
-                error=token_result.error,
+                error=token_result.error or "No access token"
             )
 
-        # We have success - extract access_token and compose persona_token
-        access_token = token_result.access_token
+        # Compose persona token with expiry information using existing method
+        from .token_utils import PersonaTokenComposer
+        composition_result = PersonaTokenComposer.compose_from_jwt(
+            token_result.access_token,
+            MAGENTA2_FALLBACK_ACCOUNT_URI
+        )
 
-        if not access_token:
-            logger.debug("=== GET_PERSONA_TOKEN FAILED (no access_token) ===")
-            return PersonaResult(
-                success=False,
-                error="Failed to get yo_digital access token"
-            )
-
-        logger.debug(f"About to call _compose_persona_token with access_token: {access_token[:50]}...")
-
-        # Compose persona_token
-        persona_token = self._compose_persona_token(access_token)
-
-        logger.debug(f"_compose_persona_token returned: {persona_token is not None}")
-
-        if not persona_token:
+        if not composition_result:
             logger.debug("=== GET_PERSONA_TOKEN FAILED (composition failed) ===")
             return PersonaResult(
                 success=False,
                 error="Failed to compose persona token"
             )
 
+        # Cache with the correct expiry (from persona JWT)
+        self._cache_persona_composition(composition_result)
+
         logger.debug("=== GET_PERSONA_TOKEN SUCCESS ===")
         return PersonaResult(
             success=True,
-            persona_token=persona_token
+            persona_token=composition_result.persona_token
         )
+
+    def _get_cached_persona_token(self) -> PersonaResult:
+        """Check for cached persona token using the actual persona JWT expiry"""
+        try:
+            persona_data = self.session_manager.load_scoped_token(
+                self.provider_name,
+                'persona',
+                self.country
+            )
+
+            if (persona_data and
+                    'persona_token' in persona_data and
+                    'persona_jwt' in persona_data and
+                    'expires_at' in persona_data):
+
+                current_time = time.time()
+                expires_at = persona_data['expires_at']
+
+                # Check if cached token is still valid using the actual persona JWT expiry
+                if current_time < (expires_at - 300):  # 5-minute buffer
+                    logger.debug(f"Using cached persona token (expires at {time.ctime(expires_at)})")
+                    return PersonaResult(
+                        success=True,
+                        persona_token=persona_data['persona_token']
+                    )
+                else:
+                    logger.debug(f"Cached persona token expired at {time.ctime(expires_at)}")
+
+        except Exception as e:
+            logger.debug(f"Error checking cached persona token: {e}")
+
+        return PersonaResult(success=False, error="No valid cached token")
+
+    def _cache_persona_composition(self, composition_result) -> None:
+        """Cache persona composition with proper expiry"""
+        persona_data = {
+            'persona_token': composition_result.persona_token,
+            'persona_jwt': composition_result.persona_jwt,  # Store for validation
+            'expires_at': composition_result.expires_at,
+            'composed_at': composition_result.composed_at
+        }
+
+        success = self.session_manager.save_scoped_token(
+            self.provider_name,
+            'persona',
+            persona_data,
+            self.country
+        )
+
+        if success:
+            logger.debug(f"✓ Persona token cached until {time.ctime(composition_result.expires_at)}")
+        else:
+            logger.debug("✗ Failed to cache persona token")
+
+    # Keep the existing _compose_persona_token method for backward compatibility
+    @staticmethod
+    def _compose_persona_token(access_token: str) -> Optional[str]:
+        """Backward compatibility method - delegates to new composition"""
+        from .token_utils import PersonaTokenComposer
+        result = PersonaTokenComposer.compose_from_jwt(
+            access_token,
+            MAGENTA2_FALLBACK_ACCOUNT_URI
+        )
+        return result.persona_token if result else None
 
     def get_yo_digital_token(self, force_refresh: bool = False) -> TokenFlowResult:
         """

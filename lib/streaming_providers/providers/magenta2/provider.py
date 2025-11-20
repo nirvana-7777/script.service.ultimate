@@ -233,6 +233,7 @@ class Magenta2Provider(StreamingProvider):
 
         # Initialize auth tokens (lazy - populated on first use)
         self.device_token = None
+        self._persona_cache = None
 
         logger.info("Magenta2 provider initialization completed successfully")
 
@@ -469,21 +470,30 @@ class Magenta2Provider(StreamingProvider):
             return False
 
     def get_persona_token(self, force_refresh: bool = False) -> str:
-        """
-        Get persona token - ONLY authentication entry point
-
-        Raises:
-            Exception: If persona token cannot be obtained
-        """
+        """Get persona token with simple provider-level caching"""
         if not self.authenticator.token_flow_manager:
             raise Exception("TokenFlowManager not initialized")
 
+        # Optional: Add simple time-based caching at provider level
+        if not force_refresh and hasattr(self, '_persona_cache'):
+            cache_time, cached_token = self._persona_cache
+            # Cache for 5 minutes at provider level (TokenFlowManager has proper JWT expiry)
+            if time.time() - cache_time < 300:
+                return cached_token
+
+        # Get from TokenFlowManager (which has proper JWT expiry caching)
         persona_result = self.authenticator.token_flow_manager.get_persona_token(
             force_refresh=force_refresh
         )
 
         if not persona_result.success:
             raise Exception(f"Failed to get persona token: {persona_result.error}")
+
+        # Optional: Cache in provider (simple time-based)
+        if not hasattr(self, '_persona_cache'):
+            self._persona_cache = (time.time(), persona_result.persona_token)
+        else:
+            self._persona_cache = (time.time(), persona_result.persona_token)
 
         return persona_result.persona_token
 

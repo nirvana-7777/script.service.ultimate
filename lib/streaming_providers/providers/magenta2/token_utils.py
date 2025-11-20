@@ -7,6 +7,7 @@ Consolidates all JWT parsing and persona token composition logic
 
 import base64
 import json
+import time
 from typing import Dict, Any, Optional
 from dataclasses import dataclass
 
@@ -181,104 +182,90 @@ class JWTParser:
             logger.debug(f"Failed to extract raw JWT claims: {e}")
             return None
 
+@dataclass
+class PersonaCompositionResult:
+    persona_token: str
+    persona_jwt: str  # The actual dc_cts_personaToken JWT
+    expires_at: float  # Expiry from persona JWT
+    composed_at: float
+
+    def __init__(self, persona_token: str, persona_jwt: str, expires_at: float):
+        self.persona_token = persona_token
+        self.persona_jwt = persona_jwt
+        self.expires_at = expires_at
+        self.composed_at = time.time()
 
 class PersonaTokenComposer:
-    """Unified persona token composition"""
-
     @staticmethod
-    def compose_from_jwt(jwt_token: str,
-                         fallback_account_uri: Optional[str] = None) -> Optional[str]:
-        """
-        Compose persona token from JWT access token
-
-        This is the PRIMARY method for persona token composition.
-        Format: Base64(account_uri + ":" + dc_cts_persona_token)
-
-        Args:
-            jwt_token: JWT access token containing persona claims
-            fallback_account_uri: Optional fallback account URI if not in JWT
-
-        Returns:
-            Base64-encoded persona token or None
-        """
+    def compose_from_jwt(jwt_token: str, fallback_account_uri: str = None) -> Optional[PersonaCompositionResult]:
+        """Compose persona token and return with expiry information"""
         try:
-            # Parse JWT to extract claims
             claims = JWTParser.parse(jwt_token)
             if not claims:
-                logger.error("Failed to parse JWT for persona token composition")
                 return None
 
-            # Get persona JWT token (the nested JWT)
+            # Extract the dc_cts_personaToken (this is the actual persona JWT)
             persona_jwt = claims.dc_cts_persona_token
             if not persona_jwt:
-                logger.error("No dc_cts_persona_token found in JWT claims")
+                logger.warning("JWT missing dc_cts_personaToken")
                 return None
 
-            # Get account URI (prefer JWT, then fallback)
+            # Get account_uri from claims or use fallback
             account_uri = claims.account_uri or fallback_account_uri
             if not account_uri:
-                logger.error("No account_uri available for persona token composition")
+                logger.warning("JWT missing account_uri and no fallback provided")
                 return None
 
-            # Compose raw token
-            raw_token = f"{account_uri}:{persona_jwt}"
+            # Compose the persona token
+            composed_token = PersonaTokenComposer._compose_token(account_uri, persona_jwt)
+            if not composed_token:
+                return None
 
-            # Base64 encode
-            persona_token = base64.b64encode(
-                raw_token.encode('utf-8')
-            ).decode('utf-8')
+            # Extract expiry from the PERSONA JWT (dc_cts_personaToken), not the original JWT
+            persona_expiry = PersonaTokenComposer._get_jwt_expiry(persona_jwt)
+            if not persona_expiry:
+                logger.warning("Could not extract expiry from persona JWT")
+                return None
 
-            logger.info("✓ Persona token composed successfully")
-            logger.debug(f"Account URI: {account_uri}")
-            logger.debug(f"Persona token length: {len(persona_token)}")
-            logger.debug(f"Persona token preview: {persona_token[:50]}...")
-
-            return persona_token
+            return PersonaCompositionResult(
+                persona_token=composed_token,
+                persona_jwt=persona_jwt,
+                expires_at=persona_expiry
+            )
 
         except Exception as e:
-            logger.error(f"Failed to compose persona token from JWT: {e}")
+            logger.error(f"Error composing persona token: {e}")
             return None
 
     @staticmethod
-    def compose_from_components(account_uri: str,
-                                dc_cts_persona_token: str) -> Optional[str]:
-        """
-        Compose persona token from explicit components
-
-        Use this when you already have extracted components.
-
-        Args:
-            account_uri: Account URI (e.g., "http://access.auth.theplatform.com/...")
-            dc_cts_persona_token: The persona JWT token
-
-        Returns:
-            Base64-encoded persona token or None
-        """
+    def _get_jwt_expiry(jwt_token: str) -> Optional[float]:
+        """Extract expiry from any JWT token using existing JWTParser"""
         try:
-            if not account_uri or not dc_cts_persona_token:
-                logger.warning(
-                    f"Cannot compose persona token - "
-                    f"account_uri: {bool(account_uri)}, "
-                    f"dc_cts_persona_token: {bool(dc_cts_persona_token)}"
-                )
-                return None
-
-            # Compose raw token
-            raw_token = f"{account_uri}:{dc_cts_persona_token}"
-
-            # Base64 encode
-            persona_token = base64.b64encode(
-                raw_token.encode('utf-8')
-            ).decode('utf-8')
-
-            logger.info("✓ Persona token composed from components")
-            logger.debug(f"Composed token preview: {persona_token[:50]}...")
-
-            return persona_token
-
+            claims = JWTParser.parse(jwt_token)
+            if claims and claims.raw_claims and 'exp' in claims.raw_claims:
+                return float(claims.raw_claims['exp'])
         except Exception as e:
-            logger.error(f"Failed to compose persona token from components: {e}")
+            logger.debug(f"Failed to extract expiry from JWT: {e}")
+        return None
+
+    @staticmethod
+    def _compose_token(account_uri: str, persona_jwt: str) -> Optional[str]:
+        """Compose the actual persona token (base64 encoded)"""
+        try:
+            import base64
+            # Format: account_uri:persona_jwt
+            token_string = f"{account_uri}:{persona_jwt}"
+            # Base64 encode
+            encoded = base64.b64encode(token_string.encode('utf-8')).decode('utf-8')
+            return encoded
+        except Exception as e:
+            logger.error(f"Error composing token: {e}")
             return None
+
+    @staticmethod
+    def compose_from_components(account_uri: str, dc_cts_persona_token: str) -> Optional[str]:
+        """Original method - for backward compatibility"""
+        return PersonaTokenComposer._compose_token(account_uri, dc_cts_persona_token)
 
     @staticmethod
     def extract_components_from_persona_token(persona_token: str) -> Optional[Dict[str, str]]:
