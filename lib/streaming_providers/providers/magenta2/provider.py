@@ -672,10 +672,11 @@ class Magenta2Provider(StreamingProvider):
         channels_by_number = {}
 
         for channel in channels:
-            # Extract display channel number from raw_data
             display_number = None
             if hasattr(channel, 'raw_data') and channel.raw_data:
                 display_number = channel.raw_data.get('dt$displayChannelNumber')
+                logger.debug(
+                    f"Channel: {channel.name}, Display Number: {display_number}, Has raw_data: {channel.raw_data is not None}")
 
             if display_number is None:
                 # If no display number, keep the channel (don't filter it)
