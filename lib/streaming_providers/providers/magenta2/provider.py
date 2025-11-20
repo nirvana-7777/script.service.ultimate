@@ -233,8 +233,6 @@ class Magenta2Provider(StreamingProvider):
                         logger.warning("✗ Failed to update SAM3 client with QR code URL")
 
         # Initialize auth tokens (lazy - populated on first use)
-        self.bearer_token = None  # TAA access token (JWT)
-        self.persona_token = None  # COMPOSED persona token (Base64) for API calls
         self.device_token = None
 
         logger.info("Magenta2 provider initialization completed successfully")
@@ -366,30 +364,16 @@ class Magenta2Provider(StreamingProvider):
         }
 
     def _get_api_headers(self, require_auth: bool = False) -> Dict[str, str]:
-        """
-        Get headers for API requests with persona_token Basic auth
-        """
+        """Get headers for API requests"""
         headers = {
             'User-Agent': self.platform_config['user_agent'],
             'Accept': 'application/json',
             'Content-Type': 'application/json'
         }
 
-        # Lazy authentication - only authenticate if required and not already done
-        if require_auth and not self.persona_token:
-            try:
-                self._ensure_authenticated()
-            except Exception as e:
-                logger.warning(f"Could not authenticate for API headers: {e}")
-
-        # Use persona token for Basic auth when available
-        if require_auth and self.persona_token:
-            headers['Authorization'] = f'Basic {self.persona_token}'
-            logger.debug("Using persona token (Basic auth) for API call")
-        elif self.bearer_token:
-            # Fallback to Bearer token for backward compatibility
-            headers['Authorization'] = f'Bearer {self.bearer_token}'
-            logger.debug("Using TAA bearer token (fallback)")
+        if require_auth:
+            persona_token = self._ensure_authenticated()
+            headers['Authorization'] = f'Basic {persona_token}'
 
         return headers
 
@@ -486,100 +470,27 @@ class Magenta2Provider(StreamingProvider):
             return False
 
     def get_persona_token(self, force_refresh: bool = False) -> str:
-        """Get persona token for ALL API calls"""
-        persona_token = self.authenticator.get_persona_token()
-        if persona_token:
-            logger.info("✓ Got persona token")
-            return persona_token
+        """
+        Get persona token - ONLY authentication entry point
 
-        # Fallback to legacy authentication if persona token fails
-        logger.info("Using legacy authentication flow as fallback")
-        return self.authenticate(force_refresh=force_refresh)
+        Raises:
+            Exception: If persona token cannot be obtained
+        """
+        if not self.authenticator.token_flow_manager:
+            raise Exception("TokenFlowManager not initialized")
 
-    def authenticate(self, **kwargs) -> str:
-        """Authenticate and get access token"""
-        force_refresh = kwargs.get('force_refresh', False)
-
-        # Try new yo_digital flow first (unless force_legacy is set)
-        if not kwargs.get('force_legacy', False):
-            yo_digital_token = self.authenticator.get_yo_digital_token(force_refresh)
-
-            if yo_digital_token:
-                self.bearer_token = yo_digital_token
-                logger.info("✓ Authentication via yo_digital")
-                return self.bearer_token
-
-        # Fallback to existing line_auth + TAA flow
-        logger.info("Using legacy authentication flow")
-
-        line_auth_available = (
-                hasattr(self.authenticator, 'can_use_line_auth') and
-                self.authenticator.can_use_line_auth()
+        persona_result = self.authenticator.token_flow_manager.get_persona_token(
+            force_refresh=force_refresh
         )
 
-        if line_auth_available and not kwargs.get('force_client_credentials', False):
-            logger.info("Line auth components available, attempting line auth flow")
+        if not persona_result.success:
+            raise Exception(f"Failed to get persona token: {persona_result.error}")
 
-        # Continue with existing logic (which should now try line auth first in auth.py)
-        self.bearer_token = self.authenticator.get_bearer_token(
-            force_refresh=kwargs.get('force_refresh', False)
-        )
+        return persona_result.persona_token
 
-        # CRITICAL: Extract the COMPOSED persona token
-        self.persona_token = self.authenticator.get_persona_token()
-
-        if not self.persona_token:
-            logger.error("Authentication succeeded but no composed persona token available!")
-            auth_state = self.authenticator.debug_authentication_state()
-            logger.error(f"Auth state: {json.dumps(auth_state, indent=2)}")
-            raise Exception(
-                "Failed to compose persona token. "
-                "TAA JWT may be missing dc_cts_persona_token or account_uri claims."
-            )
-
-        logger.info("✓ Authentication complete with composed persona token")
-        return self.bearer_token
-
-    def refresh_authentication(self) -> str:
-        """FIXED: Force refresh authentication and get new persona token"""
-        self.bearer_token = self.authenticator.get_bearer_token(force_refresh=True)
-        self.persona_token = self.authenticator.get_persona_token()
-
-        if not self.persona_token:
-            raise Exception("Failed to compose persona token after refresh")
-
-        logger.info("✓ Authentication refreshed with new persona token")
-        return self.bearer_token
-
-    def _ensure_authenticated(self) -> None:
-        """Ensure we have valid persona token for API calls"""
-        if self.persona_token:
-            return  # Already have persona token
-
-        # Get persona token via TokenFlowManager
-        if hasattr(self.authenticator, 'token_flow_manager') and self.authenticator.token_flow_manager:
-            persona_result = self.authenticator.token_flow_manager.get_persona_token()
-            if persona_result.success:
-                self.persona_token = persona_result.persona_token
-                logger.info("✓ Persona token obtained via TokenFlowManager")
-                return
-
-        # Fallback: try to get persona token from authenticator
-        persona_token = self.authenticator.get_persona_token()
-        if persona_token:
-            self.persona_token = persona_token
-            logger.info("✓ Persona token obtained via authenticator")
-            return
-
-        # Last resort: force authentication
-        logger.warning("No persona token available, forcing authentication")
-        self.authenticate(force_refresh=True)
-        persona_token = self.authenticator.get_persona_token()
-        if persona_token:
-            self.persona_token = persona_token
-            logger.info("✓ Persona token obtained after forced authentication")
-        else:
-            logger.error("✗ Failed to obtain persona token after forced authentication")
+    def _ensure_authenticated(self) -> str:
+        """Ensure we have a valid persona token"""
+        return self.get_persona_token(force_refresh=False)
 
     def get_dynamic_manifest_params(self, channel: StreamingChannel, **kwargs) -> Optional[str]:
         return None
@@ -1239,9 +1150,9 @@ class Magenta2Provider(StreamingProvider):
         """Get SMIL content for a channel to extract releasePid and release concurrency lock"""
         try:
             # Reuse the same logic as get_manifest but return the raw SMIL content
-            self._ensure_authenticated()
+            persona_token = self._ensure_authenticated()
 
-            if not self.persona_token:
+            if not persona_token:
                 return None
 
             selector_service = self.endpoint_manager.get_endpoint('mpx_selector')
@@ -1256,8 +1167,10 @@ class Magenta2Provider(StreamingProvider):
             client_id = "a8198f31-b406-4177-8dee-f6216c356c75"
             smil_url = f"{selector_service}{account_pid}/media/{channel_id}?format=smil&formats=MPEG-DASH&tracking=true&clientId={client_id}"
 
+            persona_token = self._ensure_authenticated()
+
             headers = {
-                'Authorization': f'Basic {self.persona_token}',
+                'Authorization': f'Basic {persona_token}',
                 'User-Agent': self.platform_config['user_agent'],  # Platform user agent
                 'Accept': 'application/smil+xml, application/xml;q=0.9, */*;q=0.8'
             }
@@ -1327,41 +1240,29 @@ class Magenta2Provider(StreamingProvider):
             logger.error(f"Error extracting releasePid from SMIL: {e}")
             return None
 
-    def _extract_persona_jwt_token(self) -> Optional[str]:
-        """Extract the raw persona JWT token from the composed persona token"""
+    @staticmethod
+    def _extract_persona_jwt_from_token(persona_token: str) -> Optional[str]:
+        """
+        Extract the raw persona JWT token from Base64-encoded persona token
+
+        The persona token format is: Base64(account_uri + ":" + persona_jwt)
+        This method decodes it and extracts just the persona_jwt part.
+        """
         try:
-            if not self.persona_token:
-                return None
-
-            # Decode the base64 persona token
-            decoded = base64.b64decode(self.persona_token).decode('utf-8')
-            logger.debug(f"Decoded persona token: {decoded[:100]}...")
-
-            # The format is: account_uri:persona_jwt
-            # But account_uri contains colons (http://), so we need to split carefully
-
-            # Find the last colon (after the account URI)
+            decoded = base64.b64decode(persona_token).decode('utf-8')
             last_colon_index = decoded.rfind(':')
 
-            if last_colon_index != -1:
-                account_uri = decoded[:last_colon_index]
-                persona_jwt = decoded[last_colon_index + 1:]
-
-                logger.debug(f"Account URI: {account_uri}")
-                logger.debug(f"Extracted persona JWT token length: {len(persona_jwt)}")
-                logger.debug(f"Persona JWT token preview: {persona_jwt[:50]}...")
-
-                # Verify it's a JWT token (should start with eyJ)
-                if persona_jwt.startswith('eyJ'):
-                    return persona_jwt
-                else:
-                    logger.error(f"Extracted token doesn't look like a JWT: {persona_jwt[:20]}...")
-                    return None
-            else:
+            if last_colon_index == -1:
                 logger.error("No colon found in decoded persona token")
-                logger.debug(f"Decoded token: {decoded}")
                 return None
 
+            persona_jwt = decoded[last_colon_index + 1:]
+
+            if not persona_jwt.startswith('eyJ'):
+                logger.error(f"Extracted token doesn't look like a JWT")
+                return None
+
+            return persona_jwt
         except Exception as e:
             logger.error(f"Error extracting persona JWT token: {e}")
             return None
@@ -1370,7 +1271,6 @@ class Magenta2Provider(StreamingProvider):
                               **kwargs) -> List[DRMConfig]:
         """Get DRM configuration using unified SMIL data"""
         try:
-            # Get SMIL data with releasePid
             smil_data = self._get_smil_data(channel_id)
             if not smil_data or not smil_data['release_pid']:
                 logger.error(f"No releasePid found in SMIL for channel {channel_id}")
@@ -1378,30 +1278,33 @@ class Magenta2Provider(StreamingProvider):
 
             release_pid = smil_data['release_pid']
 
-            # Rest of the DRM logic remains the same...
-            self._ensure_authenticated()
-            if not self.persona_token:
+            # Get persona token
+            persona_token = self._ensure_authenticated()
+
+            # Extract the persona JWT from the Base64-encoded persona token
+            raw_persona_jwt = self._extract_persona_jwt_from_token(persona_token)
+            if not raw_persona_jwt:
+                logger.error("Failed to extract persona JWT from persona token")
                 return []
 
-            raw_persona_token = self._extract_persona_jwt_token()
-            if not raw_persona_token:
-                return []
-
-            # ... continue with existing DRM logic
+            # Get widevine endpoint
             widevine_endpoint = self.endpoint_manager.get_endpoint('widevine_license')
             if not widevine_endpoint:
+                logger.error("No widevine license endpoint available")
                 return []
 
+            # Get account URI
             account_uri = self._get_account_uri()
             encoded_account_uri = self._url_encode(account_uri)
 
+            # Build license URL with the extracted JWT
             license_url = (f"{widevine_endpoint}?"
                            f"schema=1.0&"
                            f"releasePid={release_pid}&"
-                           f"token={raw_persona_token}&"
+                           f"token={raw_persona_jwt}&"
                            f"account={encoded_account_uri}")
 
-            # Create DRM config...
+            # Create DRM config
             drm_config = DRMConfig(
                 system=DRMSystem.WIDEVINE,
                 priority=1,
@@ -1470,35 +1373,74 @@ class Magenta2Provider(StreamingProvider):
 
     def debug_authentication(self) -> Dict[str, Any]:
         """
-        Enhanced debug method with authentication capabilities
+        Debug authentication state and token flow
+
+        Returns comprehensive information about the current authentication state,
+        token availability, and TokenFlowManager status.
         """
-        result = {
+        result: Dict[str, Any] = {
             'provider': {
-                'has_bearer_token': bool(self.bearer_token),
-                'has_persona_token': bool(self.persona_token),
-                'persona_token_preview': self.persona_token[:50] + '...' if self.persona_token else None,
+                'provider_name': self.provider_name,
+                'country': self.country,
+                'platform': self.platform
             }
         }
 
+        # Try to get current persona token status
+        try:
+            persona_token = self.get_persona_token(force_refresh=False)
+            persona_info: Dict[str, Any] = {
+                'available': True,
+                'length': len(persona_token),
+                'preview': persona_token[:50] + '...'
+            }
+
+            # Try to extract and verify the JWT inside
+            try:
+                persona_jwt = self._extract_persona_jwt_from_token(persona_token)
+                persona_info['jwt_available'] = bool(persona_jwt)
+                if persona_jwt:
+                    persona_info['jwt_length'] = len(persona_jwt)
+                    persona_info['jwt_preview'] = persona_jwt[:50] + '...'
+            except Exception as e:
+                persona_info['jwt_extraction_error'] = str(e)
+
+            result['persona_token'] = persona_info
+
+        except Exception as e:
+            result['persona_token'] = {
+                'available': False,
+                'error': str(e)
+            }
+
+        # TokenFlowManager status
+        if hasattr(self.authenticator, 'token_flow_manager') and self.authenticator.token_flow_manager:
+            result['token_flow_manager'] = {
+                'available': True,
+                'token_status': self.authenticator.token_flow_manager.get_token_status()
+            }
+        else:
+            result['token_flow_manager'] = {
+                'available': False,
+                'error': 'TokenFlowManager not initialized'
+            }
+
+        # Authenticator capabilities
         if hasattr(self.authenticator, 'get_authentication_capabilities'):
             result['authentication_capabilities'] = self.authenticator.get_authentication_capabilities()
 
-        if hasattr(self.authenticator, 'debug_authentication_state'):
-            result['authenticator'] = self.authenticator.debug_authentication_state()
-
+        # Endpoint manager info
         if self.endpoint_manager:
             result['endpoints'] = {
                 'has_taa_auth': self.endpoint_manager.has_endpoint('taa_auth'),
                 'has_entitlement': self.endpoint_manager.has_endpoint('entitlement'),
+                'has_widevine_license': self.endpoint_manager.has_endpoint('widevine_license'),
+                'has_mpx_selector': self.endpoint_manager.has_endpoint('mpx_selector'),
                 'total_endpoints': len(self.endpoint_manager.get_all_endpoints()),
             }
 
-        # PHASE 4: Add TAA token analysis if bearer token is available
-        if self.bearer_token and hasattr(self.authenticator, 'debug_taa_token'):
-            result['taa_token_analysis'] = self.authenticator.debug_taa_token(self.bearer_token)
-
-        # PHASE 4: Add authentication flow info
-        if hasattr(self.authenticator, 'get_authentication_flow_info'):
-            result['authentication_flow'] = self.authenticator.get_authentication_flow_info()
+        # SAM3 client status
+        if hasattr(self.authenticator, 'get_sam3_client_status'):
+            result['sam3_client'] = self.authenticator.get_sam3_client_status()
 
         return result

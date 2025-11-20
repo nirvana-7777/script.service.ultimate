@@ -42,7 +42,7 @@ def extract_and_release_lock(smil_content: str, http_manager: HTTPManager,
             return False
 
         # Build release URL with the same client_id formatted as player_{client_id}
-        base_url = lock_params['concurrencyServiceUrl'].rstrip('/') + "/web/Concurrency/release"
+        base_url = lock_params['concurrencyServiceUrl'].rstrip('/') + "/web/Concurrency/unlock"
         formatted_client_id = f"player_{client_id}"
 
         params = {
@@ -65,18 +65,32 @@ def extract_and_release_lock(smil_content: str, http_manager: HTTPManager,
         }
 
         # Release the lock immediately
+        # Release the lock immediately
         response = http_manager.get(
             release_url,
-            operation='concurrency_release',
+            operation='concurrency_unlock',
             headers=headers,
             timeout=10
         )
 
+        # Log the response for debugging
+        logger.debug(f"Concurrency unlock response: Status={response.status_code}, Content={response.text}")
+
         if response.status_code == 200:
-            logger.info(f"✓ Concurrency lock released successfully with client: {formatted_client_id}")
-            return True
+            try:
+                # Parse JSON response to verify it contains unlockResponse
+                response_data = response.json()
+                if 'unlockResponse' in response_data:
+                    logger.info(f"✓ Concurrency lock released successfully with client: {formatted_client_id}")
+                    return True
+                else:
+                    logger.warning(f"Concurrency lock release failed - missing unlockResponse: {response_data}")
+                    return False
+            except Exception as e:
+                logger.warning(f"Concurrency lock release - invalid JSON response: {e}, Content: {response.text}")
+                return False
         else:
-            logger.warning(f"Concurrency lock release failed: {response.status_code}")
+            logger.warning(f"Concurrency lock release failed with status: {response.status_code}")
             return False
 
     except Exception as e:

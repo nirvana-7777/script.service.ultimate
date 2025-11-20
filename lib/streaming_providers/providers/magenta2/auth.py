@@ -834,26 +834,6 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
             country=self.country
         )
 
-    def _perform_authentication(self) -> BaseAuthToken:
-        """
-        ENHANCED: Perform Magenta2 authentication with line auth priority
-        """
-        # NEW: Try line auth first if we have the required components
-        if self._should_try_line_auth_first():
-            logger.info("Attempting line authentication first (device token available)")
-            try:
-                return self._perform_line_auth_flow()
-            except Exception as e:
-                logger.warning(f"Line auth failed, falling back to standard flow: {e}")
-
-        # Continue with existing logic
-        if isinstance(self.credentials, Magenta2UserCredentials) and self.credentials.has_user_credentials():
-            logger.info(f"Using complete user authentication flow for {self.provider_name}")
-            return self._perform_user_authentication_flow()
-        else:
-            logger.info(f"Using client credentials TAA flow for {self.provider_name}")
-            return self._perform_taa_flow()
-
     def _should_try_line_auth_first(self) -> bool:
         """Check if we should attempt line auth first"""
         return (
@@ -861,46 +841,6 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
                 self._authorize_tokens_url is not None and
                 self._sam3_client is not None
         )
-
-    def _perform_line_auth_flow(self) -> BaseAuthToken:
-        """
-        Complete authentication flow starting with line auth with automatic remote login fallback
-        """
-        logger.debug("Starting line authentication flow with remote login fallback")
-
-        # Step 1: Try line authentication first
-        try:
-            line_response_data = self._perform_line_auth_with_response()
-            if line_response_data:
-                logger.info("✓ Line auth succeeded")
-                return self._process_line_auth_success(line_response_data)
-        except Exception as e:
-            logger.warning(f"Line auth failed: {e}")
-
-        # Step 2: Line auth failed, try remote login fallback
-        logger.info("Line auth failed, attempting remote login fallback")
-
-        if not self._sam3_client or not self._sam3_client.can_use_remote_login():
-            logger.error("Remote login not available as fallback")
-            raise Exception("Line auth failed and remote login not available")
-
-        try:
-            # Perform remote login (notifier handled internally)
-            remote_token_data = self._sam3_client.remote_login(
-                scope="tvhubs offline_access"
-            )
-
-            if not remote_token_data:
-                raise Exception("Remote login failed or timed out")
-
-            logger.info("✓ Remote login fallback successful")
-
-            # Process remote login token same as line auth
-            return self._process_line_auth_success(remote_token_data)
-
-        except Exception as e:
-            logger.error(f"Remote login fallback failed: {e}")
-            raise Exception(f"Both line auth and remote login failed: {e}")
 
     def _process_line_auth_success(self, line_response_data: Dict[str, Any]) -> BaseAuthToken:
         """
@@ -1181,86 +1121,6 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
             raise Exception("Username/password not provided")
 
         return self.credentials.username, self.credentials.password
-
-    def _perform_user_authentication_flow(self) -> BaseAuthToken:
-        """
-        COMPLETE USER FLOW: SAM3 → SSO → TAA
-        """
-        try:
-            logger.debug("Starting complete Magenta2 user authentication flow")
-
-            # Step 1: SAM3 login with username/password
-            if not self._sam3_client:
-                raise Exception("SAM3 client not initialized")
-
-            # FIXED: Use safe credential access
-            username, password = self._get_user_credentials()
-
-            sam3_result = self._sam3_client.sam3_login(username, password)
-
-            # Step 2: SSO authentication with code/state
-            if not self._sso_client:
-                raise Exception("SSO client not initialized")
-
-            sso_result = self._sso_client.sso_authenticate(
-                code=sam3_result['code'],
-                state=sam3_result['state']
-            )
-
-            # Step 3: Get SAM3 access token for TAA scope
-            sam3_taa_token = self._get_sam3_token_for_taa()
-
-            # Step 4: Perform TAA authentication with SAM3 token
-            taa_result = self._perform_taa_authentication(sam3_taa_token)
-
-            # Step 5: Create final token with combined data
-            token = self._create_token_from_combined_data(sso_result, taa_result)
-
-            logger.info("✓ Complete user authentication flow successful")
-            return token
-
-        except Exception as e:
-            logger.error(f"User authentication flow failed: {e}")
-            # Fall back to TAA-only flow if user auth fails
-            logger.warning("Falling back to TAA-only authentication")
-            return self._perform_taa_flow()
-
-    def _perform_taa_flow(self) -> BaseAuthToken:
-        """
-        Perform TAA authentication flow using dedicated TaaClient
-        """
-        try:
-            logger.debug("Starting Magenta2 TAA authentication flow")
-
-            # Step 1: Get SAM3 access token for TAA
-            sam3_token = self._get_sam3_token()
-            if not sam3_token:
-                raise Exception("Could not obtain SAM3 token for TAA")
-
-            # Step 2: Perform TAA authentication using TaaClient
-            if not self._taa_client:
-                raise Exception("TAA client not initialized")
-
-            taa_result = self._taa_client.authenticate(
-                sam3_token=sam3_token,
-                device_id=self._device_id,
-                client_model=self._client_model,
-                device_model=None,
-                taa_endpoint=self._get_endpoint('taa_auth', 'TAA_AUTH')
-            )
-
-            # Check for device limit
-            if taa_result.device_limit_exceeded:
-                from .models import DeviceLimitExceededException
-                raise DeviceLimitExceededException("Device limit exceeded for Magenta2")
-
-            # Step 3: Convert TaaAuthResult to BaseAuthToken
-            token = self._create_token_from_taa_result(taa_result)
-            return token
-
-        except Exception as e:
-            logger.error(f"TAA authentication flow failed: {e}")
-            raise Exception(f"TAA authentication failed: {e}")
 
     def _create_token_from_taa_result(self, taa_result: TaaAuthResult) -> BaseAuthToken:
         """
@@ -1620,15 +1480,23 @@ class Magenta2Authenticator(BaseOAuth2Authenticator):
             }
         }
 
-    # Required abstract method from BaseOAuth2Authenticator
     def _perform_oauth_authorization_code_flow(self, username: str, password: str) -> Dict[str, Any]:
         """
         OAuth2 authorization code flow - now implemented via SAM3 + SSO
         """
         try:
             # Use our complete user authentication flow
-            token = self._perform_user_authentication_flow()
-            return token.to_dict()
+            persona_token = self.get_persona_token()
+            if not persona_token:
+                raise Exception("Failed to get persona token")
+
+            # Return in the expected OAuth2 response format
+            return {
+                'access_token': persona_token,
+                'token_type': 'Basic',
+                'expires_in': 3600,  # Default expiration
+                'issued_at': time.time()
+            }
         except Exception as e:
             logger.error(f"OAuth2 authorization code flow failed: {e}")
             raise
