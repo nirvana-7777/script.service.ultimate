@@ -19,6 +19,7 @@ from .auth import Magenta2Authenticator, Magenta2Credentials, Magenta2UserCreden
 from .discovery import DiscoveryService
 from .endpoint_manager import EndpointManager
 from .config_models import ProviderConfig
+from .token_flow_manager import PersonaResult
 from .constants import (
     SUPPORTED_COUNTRIES,
     DEFAULT_COUNTRY,
@@ -233,7 +234,7 @@ class Magenta2Provider(StreamingProvider):
 
         # Initialize auth tokens (lazy - populated on first use)
         self.device_token = None
-        self._persona_cache = None
+        self._persona_cache: Optional[PersonaResult] = None
         self._smil_cache: Dict[str, Tuple[float, Dict]] = {}  # channel_id -> (timestamp, smil_data)
         self._smil_cache_ttl = 3600
 
@@ -472,45 +473,41 @@ class Magenta2Provider(StreamingProvider):
             return False
 
     def get_persona_token(self, force_refresh: bool = False) -> str:
-        """
-        Get persona token - PRIMARY authentication entry point
-        """
-        logger.debug(f"🟢 get_persona_token START (force_refresh: {force_refresh})")
+        """Get persona token with accurate expiry-based caching"""
+        # Check in-memory cache first
+        if not force_refresh and self._persona_cache and self._persona_cache.success:
+            current_time = time.time()
+            # Check if cached token is still valid (with 1-minute buffer)
+            if current_time < (self._persona_cache.expires_at - 60):
+                logger.debug(f"Using in-memory cached persona token (expires at {time.ctime(self._persona_cache.expires_at)})")
+                return self._persona_cache.persona_token
+            else:
+                # Cache expired
+                self._persona_cache = None
+                logger.debug("In-memory persona cache expired")
 
-        if not self.authenticator.token_flow_manager:
-            logger.error("🔴 TokenFlowManager not initialized")
-            raise Exception("TokenFlowManager not initialized")
+        # Get from TokenFlowManager (now returns PersonaResult with expiry)
+        persona_result = self.authenticator.token_flow_manager.get_persona_token(
+            force_refresh=force_refresh
+        )
 
-        try:
-            persona_result = self.authenticator.token_flow_manager.get_persona_token(
-                force_refresh=force_refresh
-            )
+        if not persona_result.success:
+            raise Exception(f"Failed to get persona token: {persona_result.error}")
 
-            if not persona_result.success:
-                logger.error(f"🔴 get_persona_token FAILED: {persona_result.error}")
-                raise Exception(f"Failed to get persona token: {persona_result.error}")
+        # Cache the entire PersonaResult with expiry
+        self._persona_cache = persona_result
+        logger.debug(f"Cached persona token in memory (expires at {time.ctime(persona_result.expires_at)})")
 
-            logger.debug(f"🟢 get_persona_token SUCCESS, token length: {len(persona_result.persona_token)}")
-            return persona_result.persona_token
-
-        except Exception as e:
-            logger.error(f"🔴 get_persona_token EXCEPTION: {type(e).__name__}: {e}")
-            import traceback
-            logger.error(f"🔴 FULL TRACEBACK: {traceback.format_exc()}")
-            raise
+        return persona_result.persona_token
 
     def _ensure_authenticated(self) -> str:
-        """Ensure we have a valid persona token"""
-        logger.debug("🟢 _ensure_authenticated START")
-        try:
-            token = self.get_persona_token(force_refresh=False)
-            logger.debug(f"🟢 _ensure_authenticated SUCCESS, token length: {len(token)}")
-            return token
-        except Exception as e:
-            logger.error(f"🔴 _ensure_authenticated FAILED: {type(e).__name__}: {e}")
-            import traceback
-            logger.error(f"🔴 FULL TRACEBACK: {traceback.format_exc()}")
-            raise
+        """Ensure we have a valid persona token with accurate caching"""
+        return self.get_persona_token(force_refresh=False)
+
+    def clear_persona_cache(self):
+        """Clear in-memory persona cache"""
+        self._persona_cache = None
+        logger.debug("Cleared in-memory persona cache")
 
     def get_dynamic_manifest_params(self, channel: StreamingChannel, **kwargs) -> Optional[str]:
         return None

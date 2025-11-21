@@ -31,8 +31,8 @@ class TokenFlowResult:
 class PersonaResult:
     success: bool
     persona_token: Optional[str] = None
+    expires_at: Optional[float] = None
     error: Optional[str] = None
-
 
 class TokenFlowManager:
     """
@@ -98,7 +98,7 @@ class TokenFlowManager:
                 return cached_result
 
         # Get the yo_digital token
-        token_result = self.get_yo_digital_token(force_refresh)  # 🚨 This might return None!
+        token_result = self.get_yo_digital_token(force_refresh)
 
         if not token_result.success or not token_result.access_token:
             logger.debug("=== GET_PERSONA_TOKEN FAILED (token_result failed) ===")
@@ -109,7 +109,7 @@ class TokenFlowManager:
 
         # Compose persona token with expiry information using existing method
         from .token_utils import PersonaTokenComposer
-        composition_result = PersonaTokenComposer.compose_from_jwt(  # 🚨 This might return None!
+        composition_result = PersonaTokenComposer.compose_from_jwt(
             token_result.access_token,
             MAGENTA2_FALLBACK_ACCOUNT_URI
         )
@@ -127,7 +127,8 @@ class TokenFlowManager:
         logger.debug("=== GET_PERSONA_TOKEN SUCCESS ===")
         return PersonaResult(
             success=True,
-            persona_token=composition_result.persona_token
+            persona_token=composition_result.persona_token,
+            expires_at=composition_result.expires_at  # 🆕 Return expiry
         )
 
     def _get_cached_persona_token(self) -> PersonaResult:
@@ -157,7 +158,8 @@ class TokenFlowManager:
                     logger.debug(f"🟡 Using cached persona token (expires at {time.ctime(expires_at)})")
                     return PersonaResult(
                         success=True,
-                        persona_token=persona_data['persona_token']
+                        persona_token=persona_data['persona_token'],
+                        expires_at=expires_at  # 🆕 Return expiry
                     )
                 else:
                     logger.debug(f"🟡 Cached persona token expired at {time.ctime(expires_at)}")
