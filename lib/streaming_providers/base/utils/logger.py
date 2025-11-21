@@ -28,7 +28,7 @@ class XBMCLogger:
     def warning(self, message: str) -> None:
         self.log(message, xbmc.LOGWARNING)
 
-    def error(self, message: str) -> None:
+    def error(self, message: str, exc_info=False) -> None:
         self.log(message, xbmc.LOGERROR)
 
     def critical(self, message: str) -> None:
