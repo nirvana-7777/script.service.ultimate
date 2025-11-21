@@ -611,7 +611,8 @@ class SessionManager:
 
         safe_data = {}
         for key, value in data.items():
-            if key in ['access_token', 'refresh_token', 'client_secret', 'password']:
+            if key in ['access_token', 'refresh_token', 'client_secret', 'password',
+                       'persona_token', 'persona_jwt']:  # ← ADD THESE TWO FIELDS
                 safe_data[key] = f"<present>" if value else f"<missing>"
             elif isinstance(value, dict):
                 # Recursively handle nested dicts (for scoped tokens)
