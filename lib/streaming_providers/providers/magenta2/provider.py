@@ -1200,9 +1200,12 @@ class Magenta2Provider(StreamingProvider):
 
     def _get_smil_content(self, channel_id: str) -> Optional[str]:
         """Get SMIL content for a channel to extract releasePid and release concurrency lock"""
+        logger.debug(f"🔵 ENTER _get_smil_content for channel: {channel_id}")
+
         try:
-            # Reuse the same logic as get_manifest but return the raw SMIL content
+            logger.debug("🔵 Step 1: Calling _ensure_authenticated()")
             persona_token = self._ensure_authenticated()
+            logger.debug(f"🔵 _ensure_authenticated() SUCCESS, token length: {len(persona_token)}")
 
             if not persona_token:
                 logger.error(f"No persona token!:")
