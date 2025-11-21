@@ -1225,6 +1225,23 @@ class Magenta2Provider(StreamingProvider):
                 'Accept': 'application/smil+xml, application/xml;q=0.9, */*;q=0.8'
             }
 
+            logger.debug(f"SMIL Request URL: {smil_url}")
+            logger.debug(f"SMIL Request Headers:")
+            for key, value in headers.items():
+                if key == 'Authorization':
+                    # Don't log full auth token for security, but show it exists
+                    logger.debug(f"  {key}: Basic [REDACTED] (length: {len(persona_token)})")
+                else:
+                    logger.debug(f"  {key}: {value}")
+
+            # Also debug the persona token structure
+            try:
+                # Try to decode to see what's in there
+                decoded = base64.b64decode(persona_token).decode('utf-8')
+                logger.debug(f"Decoded persona token preview: {decoded[:100]}...")
+            except Exception as decode_error:
+                logger.debug(f"Could not decode persona token: {decode_error}")
+
             response = self.http_manager.get(
                 smil_url,
                 operation='manifest_smil_drm',
