@@ -1,6 +1,6 @@
 # streaming_providers/providers/magenta2/provider.py
 # -*- coding: utf-8 -*-
-from typing import Dict, Optional, List, Any
+from typing import Dict, Optional, List, Any, Tuple
 import json
 import base64
 import time
@@ -234,6 +234,8 @@ class Magenta2Provider(StreamingProvider):
         # Initialize auth tokens (lazy - populated on first use)
         self.device_token = None
         self._persona_cache = None
+        self._smil_cache: Dict[str, Tuple[float, Dict]] = {}  # channel_id -> (timestamp, smil_data)
+        self._smil_cache_ttl = 3600
 
         logger.info("Magenta2 provider initialization completed successfully")
 
@@ -1154,7 +1156,18 @@ class Magenta2Provider(StreamingProvider):
         return smil_data['mpd_url']
 
     def _get_smil_data(self, channel_id: str) -> Optional[Dict[str, Any]]:
-        """Get complete SMIL data including content, MPD URL, and releasePid"""
+        """Get complete SMIL data with caching"""
+        # Check cache first
+        now = time.time()
+        if channel_id in self._smil_cache:
+            timestamp, cached_data = self._smil_cache[channel_id]
+            if now - timestamp < self._smil_cache_ttl:
+                logger.debug(f"Using cached SMIL data for {channel_id}")
+                return cached_data
+            else:
+                # Cache expired
+                del self._smil_cache[channel_id]
+
         try:
             smil_content = self._get_smil_content(channel_id)
             if not smil_content:
@@ -1163,18 +1176,22 @@ class Magenta2Provider(StreamingProvider):
             mpd_url = self._parse_smil_for_mpd(smil_content, channel_id)
             release_pid = self._extract_release_pid_from_smil(smil_content)
 
-            return {
+            smil_data = {
                 'content': smil_content,
                 'mpd_url': mpd_url,
                 'release_pid': release_pid,
                 'channel_id': channel_id
             }
 
+            # Cache the result
+            self._smil_cache[channel_id] = (now, smil_data)
+            logger.debug(f"Cached SMIL data for {channel_id}")
+
+            return smil_data
+
         except Exception as e:
             logger.error(f"Error getting SMIL data for channel {channel_id}: {e}")
             return None
-
-    # In provider.py - update _get_smil_content method
 
     def _get_smil_content(self, channel_id: str) -> Optional[str]:
         """Get SMIL content for a channel to extract releasePid and release concurrency lock"""
