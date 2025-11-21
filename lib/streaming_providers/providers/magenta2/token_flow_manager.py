@@ -98,7 +98,7 @@ class TokenFlowManager:
                 return cached_result
 
         # Get the yo_digital token
-        token_result = self.get_yo_digital_token(force_refresh)
+        token_result = self.get_yo_digital_token(force_refresh)  # 🚨 This might return None!
 
         if not token_result.success or not token_result.access_token:
             logger.debug("=== GET_PERSONA_TOKEN FAILED (token_result failed) ===")
@@ -109,7 +109,7 @@ class TokenFlowManager:
 
         # Compose persona token with expiry information using existing method
         from .token_utils import PersonaTokenComposer
-        composition_result = PersonaTokenComposer.compose_from_jwt(
+        composition_result = PersonaTokenComposer.compose_from_jwt(  # 🚨 This might return None!
             token_result.access_token,
             MAGENTA2_FALLBACK_ACCOUNT_URI
         )

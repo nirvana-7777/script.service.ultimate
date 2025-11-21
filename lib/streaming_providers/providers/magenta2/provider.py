@@ -472,36 +472,45 @@ class Magenta2Provider(StreamingProvider):
             return False
 
     def get_persona_token(self, force_refresh: bool = False) -> str:
-        """Get persona token with simple provider-level caching"""
+        """
+        Get persona token - PRIMARY authentication entry point
+        """
+        logger.debug(f"🟢 get_persona_token START (force_refresh: {force_refresh})")
+
         if not self.authenticator.token_flow_manager:
+            logger.error("🔴 TokenFlowManager not initialized")
             raise Exception("TokenFlowManager not initialized")
 
-        # Optional: Add simple time-based caching at provider level
-        if not force_refresh and hasattr(self, '_persona_cache'):
-            cache_time, cached_token = self._persona_cache
-            # Cache for 5 minutes at provider level (TokenFlowManager has proper JWT expiry)
-            if time.time() - cache_time < 300:
-                return cached_token
+        try:
+            persona_result = self.authenticator.token_flow_manager.get_persona_token(
+                force_refresh=force_refresh
+            )
 
-        # Get from TokenFlowManager (which has proper JWT expiry caching)
-        persona_result = self.authenticator.token_flow_manager.get_persona_token(
-            force_refresh=force_refresh
-        )
+            if not persona_result.success:
+                logger.error(f"🔴 get_persona_token FAILED: {persona_result.error}")
+                raise Exception(f"Failed to get persona token: {persona_result.error}")
 
-        if not persona_result.success:
-            raise Exception(f"Failed to get persona token: {persona_result.error}")
+            logger.debug(f"🟢 get_persona_token SUCCESS, token length: {len(persona_result.persona_token)}")
+            return persona_result.persona_token
 
-        # Optional: Cache in provider (simple time-based)
-        if not hasattr(self, '_persona_cache'):
-            self._persona_cache = (time.time(), persona_result.persona_token)
-        else:
-            self._persona_cache = (time.time(), persona_result.persona_token)
-
-        return persona_result.persona_token
+        except Exception as e:
+            logger.error(f"🔴 get_persona_token EXCEPTION: {type(e).__name__}: {e}")
+            import traceback
+            logger.error(f"🔴 FULL TRACEBACK: {traceback.format_exc()}")
+            raise
 
     def _ensure_authenticated(self) -> str:
         """Ensure we have a valid persona token"""
-        return self.get_persona_token(force_refresh=False)
+        logger.debug("🟢 _ensure_authenticated START")
+        try:
+            token = self.get_persona_token(force_refresh=False)
+            logger.debug(f"🟢 _ensure_authenticated SUCCESS, token length: {len(token)}")
+            return token
+        except Exception as e:
+            logger.error(f"🔴 _ensure_authenticated FAILED: {type(e).__name__}: {e}")
+            import traceback
+            logger.error(f"🔴 FULL TRACEBACK: {traceback.format_exc()}")
+            raise
 
     def get_dynamic_manifest_params(self, channel: StreamingChannel, **kwargs) -> Optional[str]:
         return None

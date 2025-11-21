@@ -199,34 +199,40 @@ class PersonaTokenComposer:
     @staticmethod
     def compose_from_jwt(jwt_token: str, fallback_account_uri: str = None) -> Optional[PersonaCompositionResult]:
         """Compose persona token and return with expiry information"""
+        logger.debug(f"🟢 PersonaTokenComposer.compose_from_jwt START")
         try:
+            logger.debug(f"🟢 Input JWT token length: {len(jwt_token) if jwt_token else 0}")
+
             claims = JWTParser.parse(jwt_token)
             if not claims:
+                logger.error("🔴 JWTParser.parse returned None")
                 return None
 
             # Extract the dc_cts_personaToken (this is the actual persona JWT)
             persona_jwt = claims.dc_cts_persona_token
             if not persona_jwt:
-                logger.warning("JWT missing dc_cts_personaToken")
+                logger.warning("🔴 JWT missing dc_cts_personaToken")
                 return None
 
             # Get account_uri from claims or use fallback
             account_uri = claims.account_uri or fallback_account_uri
             if not account_uri:
-                logger.warning("JWT missing account_uri and no fallback provided")
+                logger.warning("🔴 JWT missing account_uri and no fallback provided")
                 return None
 
             # Compose the persona token
             composed_token = PersonaTokenComposer._compose_token(account_uri, persona_jwt)
             if not composed_token:
+                logger.error("🔴 _compose_token returned None")
                 return None
 
             # Extract expiry from the PERSONA JWT (dc_cts_personaToken), not the original JWT
             persona_expiry = PersonaTokenComposer._get_jwt_expiry(persona_jwt)
             if not persona_expiry:
-                logger.warning("Could not extract expiry from persona JWT")
+                logger.warning("🔴 Could not extract expiry from persona JWT")
                 return None
 
+            logger.debug(f"🟢 PersonaTokenComposer.compose_from_jwt SUCCESS")
             return PersonaCompositionResult(
                 persona_token=composed_token,
                 persona_jwt=persona_jwt,
@@ -234,7 +240,9 @@ class PersonaTokenComposer:
             )
 
         except Exception as e:
-            logger.error(f"Error composing persona token: {e}")
+            logger.error(f"🔴 Error in PersonaTokenComposer.compose_from_jwt: {e}")
+            import traceback
+            logger.error(f"🔴 FULL TRACEBACK: {traceback.format_exc()}")
             return None
 
     @staticmethod
