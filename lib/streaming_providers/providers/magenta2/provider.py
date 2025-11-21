@@ -1163,6 +1163,16 @@ class Magenta2Provider(StreamingProvider):
         try:
             smil_content = self._get_smil_content(channel_id)
             if not smil_content:
+                logger.error(f"No SMIL content received for channel {channel_id}")
+                return None
+
+            # 🚨 ADD VALIDATION: Check if we got actual SMIL content
+            if len(smil_content.strip()) == 0:
+                logger.error(f"Empty SMIL content for channel {channel_id}")
+                return None
+
+            if '<smil' not in smil_content.lower():
+                logger.error(f"Invalid SMIL content for channel {channel_id}: {smil_content[:200]}...")
                 return None
 
             mpd_url = self._parse_smil_for_mpd(smil_content, channel_id)
@@ -1175,9 +1185,12 @@ class Magenta2Provider(StreamingProvider):
                 'channel_id': channel_id
             }
 
-            # Cache the result
-            self._smil_cache[channel_id] = (now, smil_data)
-            logger.debug(f"Cached SMIL data for {channel_id}")
+            # Only cache if we have valid data
+            if mpd_url or release_pid:
+                self._smil_cache[channel_id] = (now, smil_data)
+                logger.debug(f"Cached SMIL data for {channel_id}")
+            else:
+                logger.warning(f"No MPD URL or releasePid found for {channel_id}, not caching")
 
             return smil_data
 
@@ -1206,8 +1219,6 @@ class Magenta2Provider(StreamingProvider):
             client_id = "a8198f31-b406-4177-8dee-f6216c356c75"
             smil_url = f"{selector_service}{account_pid}/media/{channel_id}?format=smil&formats=MPEG-DASH&tracking=true&clientId={client_id}"
 
-            persona_token = self._ensure_authenticated()
-
             headers = {
                 'Authorization': f'Basic {persona_token}',
                 'User-Agent': self.platform_config['user_agent'],  # Platform user agent
@@ -1223,6 +1234,10 @@ class Magenta2Provider(StreamingProvider):
 
             if response.status_code == 200:
                 smil_content = response.text
+
+                if not smil_content:
+                    logger.error("Empty SMIL content received")
+                    return None
 
                 # RELEASE CONCURRENCY LOCK IMMEDIATELY AFTER GETTING SMIL
                 from .concurrency import extract_and_release_lock
@@ -1311,11 +1326,19 @@ class Magenta2Provider(StreamingProvider):
         """Get DRM configuration using unified SMIL data"""
         try:
             smil_data = self._get_smil_data(channel_id)
-            if not smil_data or not smil_data.get('release_pid'):
-                logger.error(f"No releasePid found in SMIL for channel {channel_id}")
+            if not smil_data:
+                logger.error(f"No SMIL data found for channel {channel_id}")
                 return []
 
-            release_pid = smil_data.get('release_pid')
+            if not smil_data.get('release_pid'):
+                logger.error(f"No releasePid found in SMIL for channel {channel_id}")
+                # Debug what we do have
+                logger.debug(f"SMIL data keys: {list(smil_data.keys())}")
+                if 'content' in smil_data and smil_data['content']:
+                    logger.debug(f"SMIL content preview: {smil_data['content'][:500]}...")
+                return []
+
+            release_pid = smil_data['release_pid']
 
             # Get persona token
             persona_token = self._ensure_authenticated()
