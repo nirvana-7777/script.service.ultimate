@@ -128,12 +128,16 @@ class QRCodeDialog:
             dialog_x = (screen_width - dialog_width) // 2
             dialog_y = (screen_height - dialog_height) // 2
 
-            # Background
-            bg = self.xbmcgui.ControlImage(
+            # Background - Use a solid color label instead of ControlImage
+            bg = self.xbmcgui.ControlLabel(
                 dialog_x, dialog_y, dialog_width, dialog_height,
-                aspectRatio=0  # Scale to fit
+                label=''
             )
-            bg.setColorDiffuse('0xE0000000')  # Semi-transparent black
+            # Set semi-transparent black background
+            try:
+                bg.setColorDiffuse('0xE0000000')
+            except:
+                pass  # Ignore if method not available
             self.dialog.addControl(bg)
 
             # Title
