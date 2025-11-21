@@ -1205,14 +1205,17 @@ class Magenta2Provider(StreamingProvider):
             persona_token = self._ensure_authenticated()
 
             if not persona_token:
+                logger.error(f"No persona token!:")
                 return None
 
             selector_service = self.endpoint_manager.get_endpoint('mpx_selector')
             if not selector_service:
+                logger.error(f"No selector service!:")
                 return None
 
             account_pid = self.provider_config.manifest.mpx.account_pid
             if not account_pid:
+                logger.error(f"No account pid!:")
                 return None
 
             # Use the same client_id as in the original SMIL request
