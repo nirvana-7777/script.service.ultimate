@@ -235,19 +235,6 @@ class SessionManager:
                           country: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Load token data for a specific scope (ENHANCED VERSION)
-
-        Args:
-            provider: Provider name
-            scope: Token scope (e.g., 'line_auth', 'taa', 'yo_digital')
-            country: Optional country code
-
-        Returns:
-            Token data dictionary or None
-
-        Enhanced:
-            - Returns token even if access_token expired (for refresh attempts)
-            - Properly handles yo_digital tokens with separate expiry times
-            - Logs detailed expiration status
         """
         country_str = f" (country: {country})" if country else ""
 
@@ -266,7 +253,17 @@ class SessionManager:
 
         token_data = session_data[scope]
 
-        # Validate it's actually token data
+        # 🚨 FIX: Special handling for persona scope
+        if scope == 'persona':
+            if not isinstance(token_data, dict) or 'persona_token' not in token_data:
+                logger.warning(f"Persona scope exists but doesn't contain valid persona token data")
+                return None
+
+            # Persona tokens don't expire in the same way - they use expires_at field
+            logger.info(f"Loaded persona token for {provider}{country_str}")
+            return token_data
+
+        # Validate it's actually token data (for other scopes)
         if not isinstance(token_data, dict) or 'access_token' not in token_data:
             logger.warning(f"Scope '{scope}' exists but doesn't contain valid token data")
             return None
