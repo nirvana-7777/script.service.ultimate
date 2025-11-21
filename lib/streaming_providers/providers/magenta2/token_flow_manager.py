@@ -133,11 +133,14 @@ class TokenFlowManager:
     def _get_cached_persona_token(self) -> PersonaResult:
         """Check for cached persona token using the actual persona JWT expiry"""
         try:
+            logger.debug("🟡 Checking cached persona token...")
             persona_data = self.session_manager.load_scoped_token(
                 self.provider_name,
                 'persona',
                 self.country
             )
+
+            logger.debug(f"🟡 Loaded persona_data: {persona_data}")
 
             if (persona_data and
                     'persona_token' in persona_data and
@@ -147,18 +150,23 @@ class TokenFlowManager:
                 current_time = time.time()
                 expires_at = persona_data['expires_at']
 
+                logger.debug(f"🟡 Current time: {current_time}, Expires at: {expires_at}")
+
                 # Check if cached token is still valid using the actual persona JWT expiry
                 if current_time < (expires_at - 300):  # 5-minute buffer
-                    logger.debug(f"Using cached persona token (expires at {time.ctime(expires_at)})")
+                    logger.debug(f"🟡 Using cached persona token (expires at {time.ctime(expires_at)})")
                     return PersonaResult(
                         success=True,
                         persona_token=persona_data['persona_token']
                     )
                 else:
-                    logger.debug(f"Cached persona token expired at {time.ctime(expires_at)}")
+                    logger.debug(f"🟡 Cached persona token expired at {time.ctime(expires_at)}")
+
+            else:
+                logger.debug("🟡 No valid persona data in cache")
 
         except Exception as e:
-            logger.debug(f"Error checking cached persona token: {e}")
+            logger.debug(f"🟡 Error checking cached persona token: {e}")
 
         return PersonaResult(success=False, error="No valid cached token")
 
