@@ -141,7 +141,13 @@ class TokenFlowManager:
                 self.country
             )
 
-            logger.debug(f"🟡 Loaded persona_data: {persona_data}")
+            safe_persona_data = {
+                'has_persona_token': 'persona_token' in persona_data,
+                'has_persona_jwt': 'persona_jwt' in persona_data,
+                'expires_at': persona_data.get('expires_at'),
+                'composed_at': persona_data.get('composed_at')
+            }
+            logger.debug(f"🟡 Loaded persona_data: {safe_persona_data}")
 
             if (persona_data and
                     'persona_token' in persona_data and
