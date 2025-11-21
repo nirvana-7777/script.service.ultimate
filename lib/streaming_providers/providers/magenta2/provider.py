@@ -1143,17 +1143,9 @@ class Magenta2Provider(StreamingProvider):
             return None
 
     def get_manifest(self, channel_id: str, content_type: str = CONTENT_TYPE_LIVE, **kwargs) -> Optional[str]:
-        """Get MPD manifest URL using unified SMIL data"""
+        """Get MPD manifest URL using cached SMIL data"""
         smil_data = self._get_smil_data(channel_id)
-
-        if not smil_data or not smil_data['mpd_url']:
-            logger.error(f"No MPD URL found in SMIL for channel {channel_id}")
-            return None
-
-        logger.info(f"✓ MPD manifest URL extracted for channel {channel_id}")
-        logger.debug(f"MPD URL: {smil_data['mpd_url']}")
-
-        return smil_data['mpd_url']
+        return smil_data.get('mpd_url') if smil_data else None
 
     def _get_smil_data(self, channel_id: str) -> Optional[Dict[str, Any]]:
         """Get complete SMIL data with caching"""
@@ -1319,11 +1311,11 @@ class Magenta2Provider(StreamingProvider):
         """Get DRM configuration using unified SMIL data"""
         try:
             smil_data = self._get_smil_data(channel_id)
-            if not smil_data or not smil_data['release_pid']:
+            if not smil_data or not smil_data.get('release_pid'):
                 logger.error(f"No releasePid found in SMIL for channel {channel_id}")
                 return []
 
-            release_pid = smil_data['release_pid']
+            release_pid = smil_data.get('release_pid')
 
             # Get persona token
             persona_token = self._ensure_authenticated()
