@@ -208,6 +208,13 @@ class RemoteLoginHandler:
                         target_url = query_params['target'][0]
                         # URL decode it
                         decoded_url = unquote(target_url)
+
+                        # Truncate at the last dot in the URL
+                        if '.' in decoded_url:
+                            shortened_url = decoded_url.rsplit('.', 1)[0]
+                            logger.info(f"Extracted QR target URL: {shortened_url}")
+                            return shortened_url
+
                         logger.info(f"Extracted QR target URL: {decoded_url}")
                         return decoded_url
                     else:
