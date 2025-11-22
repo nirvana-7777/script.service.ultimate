@@ -14,7 +14,8 @@ from ...base.network import HTTPManager
 from ...base.utils.logger import logger
 from ...base.ui import NotificationFactory, NotificationInterface, NotificationResult
 from .constants import (
-    SSO_USER_AGENT,
+    MAGENTA2_PLATFORMS,
+    DEFAULT_PLATFORM,
     DEFAULT_REQUEST_TIMEOUT,
     GRANT_TYPES,
 )
@@ -64,6 +65,8 @@ class RemoteLoginHandler:
         self.backchannel_start_url = backchannel_start_url
         self.token_endpoint = token_endpoint
         self.qr_code_url_template = qr_code_url_template
+        self.platform_config = MAGENTA2_PLATFORMS.get(MAGENTA2_PLATFORMS[DEFAULT_PLATFORM])
+        self.user_agent = self.platform_config['user_agent']
 
         # Get or create notifier with http_manager
         if notifier:
@@ -103,7 +106,7 @@ class RemoteLoginHandler:
 
             headers = {
                 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                'User-Agent': SSO_USER_AGENT
+                'User-Agent': self.user_agent
             }
 
             logger.debug(f"Backchannel auth request:")
@@ -252,7 +255,7 @@ class RemoteLoginHandler:
 
             headers = {
                 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                'User-Agent': SSO_USER_AGENT
+                'User-Agent': self.user_agent
             }
 
             payload = {
@@ -268,7 +271,7 @@ class RemoteLoginHandler:
             while True:
                 current_time = time.time()
                 elapsed = current_time - start_time
-                remaining = max(0, session.expires_in - elapsed)
+                remaining = max(0, int(session.expires_in - elapsed))
 
                 # Check if session expired
                 if elapsed >= session.expires_in:
@@ -440,7 +443,7 @@ class RemoteLoginHandler:
 
         session = self._current_session
         elapsed = time.time() - session.started_at
-        remaining = max(0, session.expires_in - elapsed)
+        remaining = max(0, int(session.expires_in - elapsed))
 
         return {
             'login_code': session.initial_login_code,

@@ -60,7 +60,7 @@ class StreamingProvider(ABC):
         pass
 
     @abstractmethod
-    def fetch_channels(self, **kwargs) -> List[StreamingChannel]:
+    def get_channels(self, **kwargs) -> List[StreamingChannel]:
         """
         Fetch channels from the provider
 
@@ -82,7 +82,8 @@ class StreamingProvider(ABC):
      #   """
       #  return []
 
-    def get_drm_configs_by_id(self, channel_id: str, **kwargs) -> List[DRMConfig]:
+    @abstractmethod
+    def get_drm(self, channel_id: str, **kwargs) -> List[DRMConfig]:
         """
         Get all DRM configurations for a channel by ID
 

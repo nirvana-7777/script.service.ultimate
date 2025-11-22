@@ -115,7 +115,7 @@ class MagentaProvider(StreamingProvider):
         self.bearer_token = self.authenticator.get_bearer_token(force_refresh=True)
         return self.bearer_token
 
-    def fetch_channels(self, **kwargs) -> List[StreamingChannel]:
+    def get_channels(self, **kwargs) -> List[StreamingChannel]:
         """Fetch available channels from Magenta TV - no authentication required"""
         try:
             # USE AUTHENTICATOR'S SESSION IDs (single source of truth)
@@ -248,7 +248,7 @@ class MagentaProvider(StreamingProvider):
                     return channel.manifest
         return None
 
-    def get_drm_configs_by_id(self, channel_id: str, **kwargs) -> List[DRMConfig]:
+    def get_drm(self, channel_id: str, **kwargs) -> List[DRMConfig]:
         """Get DRM configurations for channel by ID"""
         logger.info(f"=== get_drm_configs_by_id CALLED for channel_id: {channel_id} ===")
 

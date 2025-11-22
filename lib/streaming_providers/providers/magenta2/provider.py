@@ -680,7 +680,7 @@ class Magenta2Provider(StreamingProvider):
             logger.warning(f"Error creating channel from entry: {e}")
             return None
 
-    def fetch_channels(self,
+    def get_channels(self,
                        time_window_hours: int = DEFAULT_EPG_WINDOW_HOURS,
                        fetch_manifests: bool = False,
                        populate_streaming_data: bool = True,
@@ -1350,8 +1350,8 @@ class Magenta2Provider(StreamingProvider):
             logger.error(f"Error extracting persona JWT token: {e}")
             return None
 
-    def get_drm_configs_by_id(self, channel_id: str, content_type: str = CONTENT_TYPE_LIVE,
-                              **kwargs) -> List[DRMConfig]:
+    def get_drm(self, channel_id: str, content_type: str = CONTENT_TYPE_LIVE,
+                **kwargs) -> List[DRMConfig]:
         """Get DRM configuration using unified SMIL data"""
         try:
             smil_data = self._get_smil_data(channel_id)

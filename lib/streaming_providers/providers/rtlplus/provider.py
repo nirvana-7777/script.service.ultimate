@@ -75,7 +75,7 @@ class RTLPlusProvider(StreamingProvider):
         bearer_token = self.auth.get_bearer_token(force_upgrade=True)
         return self.rtl_config.get_api_headers(access_token=bearer_token)
 
-    def fetch_channels(self, **kwargs) -> List[StreamingChannel]:
+    def get_channels(self, **kwargs) -> List[StreamingChannel]:
         """
         Fetch channels from RTL+ GraphQL API with authentication
         """
@@ -200,7 +200,7 @@ class RTLPlusProvider(StreamingProvider):
                 channel.set_static_manifest(manifest_url)
 
                 # Check if this channel has DRM
-                drm_configs = self.get_drm_configs_by_id(channel.channel_id, **kwargs)
+                drm_configs = self.get_drm(channel.channel_id, **kwargs)
                 if drm_configs:
                     # Set DRM configuration
                     channel.use_cdm = True
@@ -309,7 +309,7 @@ class RTLPlusProvider(StreamingProvider):
         except Exception:
             return manifest_data
 
-    def get_drm_configs_by_id(self, channel_id: str, **kwargs) -> List[DRMConfig]:
+    def get_drm(self, channel_id: str, **kwargs) -> List[DRMConfig]:
         """
         Get DRM configurations for a channel from RTL+ streaming API
         """
@@ -415,7 +415,7 @@ class RTLPlusProvider(StreamingProvider):
         """
         Get license URL for a DRM-protected channel
         """
-        drm_configs = self.get_drm_configs_by_id(channel.channel_id, **kwargs)
+        drm_configs = self.get_drm(channel.channel_id, **kwargs)
         if drm_configs:
             # Return the first license URL found
             return drm_configs[0].license.server_url

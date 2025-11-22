@@ -193,7 +193,7 @@ class JoynProvider(StreamingProvider):
         self.bearer_token = self.authenticator.get_bearer_token(force_refresh=True)
         return self.bearer_token
 
-    def fetch_channels(self,
+    def get_channels(self,
                        time_window_hours: int = DEFAULT_EPG_WINDOW_HOURS,
                        fetch_manifests: bool = False,
                        populate_streaming_data: bool = True,
@@ -632,11 +632,11 @@ class JoynProvider(StreamingProvider):
             logger.error(f"Error getting manifest for channel {channel_id}: {e}")
             return None
 
-    def get_drm_configs_by_id(self,
-                              channel_id: str,
-                              content_type: str = CONTENT_TYPE_LIVE,
-                              video_config: Optional[Dict] = None,
-                              **kwargs) -> List[DRMConfig]:
+    def get_drm(self,
+                channel_id: str,
+                content_type: str = CONTENT_TYPE_LIVE,
+                video_config: Optional[Dict] = None,
+                **kwargs) -> List[DRMConfig]:
         """
         Get all DRM configurations for a channel by ID
 
