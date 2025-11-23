@@ -247,7 +247,7 @@ class ProviderManager:
             raise ValueError(f"Provider '{provider_name}' not found")
 
         logger.debug(f"ProviderManager: Fetching channels from provider '{provider_name}' (fetch_manifests={fetch_manifests})")
-        channels = provider.fetch_channels(**kwargs)
+        channels = provider.get_channels(**kwargs)
         logger.info(f"ProviderManager: Retrieved {len(channels)} channels from provider '{provider_name}'")
 
         if fetch_manifests and not provider.uses_dynamic_manifests:
@@ -347,7 +347,7 @@ class ProviderManager:
         logger.debug(f"ProviderManager: Getting DRM configs for channel '{channel_id}' from provider '{provider_name}'")
 
         # Get raw DRM configs from provider
-        drm_configs = provider.get_drm_configs_by_id(channel_id, **kwargs)
+        drm_configs = provider.get_drm(channel_id, **kwargs)
         logger.debug(f"ProviderManager: Retrieved {len(drm_configs)} raw DRM configs")
 
         # Check if we need PSSH data at all
