@@ -69,6 +69,8 @@
 
     <category id="magenta2" label="Magenta TV 2.0 (DE)">
         <setting id="enable_magenta2" type="bool" label="Enable Magenta TV 2.0 (DE)" default="false" />
+        <setting id="magenta2_client_id" default="true" visible="false" />
+        <setting id="magenta2_client_secret" default="true" visible="false" />
         <setting id="magenta2_proxy_enabled" type="bool" label="Enable Proxy" default="false" />
         <setting id="magenta2_proxy_host" type="text" label="Proxy Host" visible="eq(-1,true)" />
         <setting id="magenta2_proxy_port" type="number" label="Proxy Port" visible="eq(-2,true)" />
