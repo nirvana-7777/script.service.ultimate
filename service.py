@@ -353,10 +353,25 @@ class UltimateService:
         @self.app.route('/api/providers')
         def list_providers():
             try:
-                providers = self.manager.list_providers()
+                provider_names = self.manager.list_providers()
                 default_country = ADDON.getSetting('default_country') or 'DE'
+
+                # Enhanced response with provider details including labels
+                providers_details = []
+                for provider_name in provider_names:
+                    provider_instance = self.manager.get_provider(provider_name)
+                    if provider_instance:
+                        provider_label = getattr(provider_instance, 'provider_label', provider_name)
+                        country = getattr(provider_instance, 'country', default_country)
+
+                        providers_details.append({
+                            'name': provider_name,
+                            'label': provider_label,
+                            'country': country
+                        })
+
                 return {
-                    'providers': providers,
+                    'providers': providers_details,  # Now includes labels and countries
                     'default_country': default_country
                 }
             except Exception as api_err:
