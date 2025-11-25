@@ -496,6 +496,7 @@ class SettingsManager:
                 'provider_name': provider_name,
                 'country': country,
                 'is_registered': False,
+                'is_enabled': self.is_provider_enabled(provider_name, country),
                 'error': 'Provider not registered'
             }
 
@@ -518,6 +519,7 @@ class SettingsManager:
             'provider_name': provider_name,
             'country': country,
             'is_registered': True,
+            'is_enabled': self.is_provider_enabled(provider_name, country),
             'registered_at': registration.registered_at,
             'supports_countries': registration.supports_countries,
             'credentials': {
@@ -1315,6 +1317,44 @@ class SettingsManager:
                 status['refresh_token_valid'] = None  # Cannot determine
 
         return status
+
+    def is_provider_enabled(self, provider_name: str, country: Optional[str] = None) -> bool:
+        """
+        Check if a provider is enabled via Kodi settings.
+
+        Args:
+            provider_name: Name of the provider (e.g., 'joyn', 'magenta2')
+            country: Optional country code (e.g., 'de', 'at')
+
+        Returns:
+            True if provider is enabled, False if disabled, True by default if no setting found
+        """
+        if not self.kodi_bridge or not self.kodi_bridge.is_kodi_environment():
+            return True  # Default to enabled if not in Kodi environment
+
+        try:
+            # Priority 1: Check provider_country specific enable setting (e.g., enable_joyn_de)
+            if country:
+                enable_setting_country = f"enable_{provider_name}_{country}"
+                if self.kodi_bridge.addon.getSetting(enable_setting_country):
+                    enabled = self.kodi_bridge.addon.getSetting(enable_setting_country)
+                    logger.debug(f"Found country-specific enable setting '{enable_setting_country}': {enabled}")
+                    return enabled.lower() in ['true', '1', 'yes']
+
+            # Priority 2: Check general provider enable setting (e.g., enable_joyn)
+            enable_setting_general = f"enable_{provider_name}"
+            if self.kodi_bridge.addon.getSetting(enable_setting_general):
+                enabled = self.kodi_bridge.addon.getSetting(enable_setting_general)
+                logger.debug(f"Found general enable setting '{enable_setting_general}': {enabled}")
+                return enabled.lower() in ['true', '1', 'yes']
+
+            # No enable setting found - default to enabled
+            logger.debug(f"No enable setting found for '{provider_name}', defaulting to enabled")
+            return True
+
+        except Exception as e:
+            logger.warning(f"Error checking enable status for '{provider_name}': {e}, defaulting to enabled")
+            return True
 
 # For imports that expect the old interface
 UnifiedSettingsManager = SettingsManager  # Backward compatibility alias

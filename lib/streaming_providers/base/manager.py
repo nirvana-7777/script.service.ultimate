@@ -17,6 +17,27 @@ class ProviderManager:
         self.drm_plugin_manager = DRMPluginManager()
         logger.info("ProviderManager: Initialized with DRM plugin manager")
 
+    @staticmethod
+    def _is_provider_enabled(provider_name: str, country: Optional[str] = None) -> bool:
+        """
+        Check if a provider is enabled via settings manager.
+
+        Args:
+            provider_name: Name of the provider
+            country: Optional country code
+
+        Returns:
+            True if provider is enabled, False otherwise
+        """
+        try:
+            from .settings.settings_manager import SettingsManager
+            # Create or get existing settings manager
+            settings_manager = SettingsManager()
+            return settings_manager.is_provider_enabled(provider_name, country)
+        except Exception as e:
+            logger.warning(f"Could not check enable status for '{provider_name}': {e}, defaulting to enabled")
+            return True
+
     def register_provider(self, provider: StreamingProvider) -> None:
         """
         Register a single provider instance.
@@ -43,17 +64,6 @@ class ProviderManager:
             self.register_provider(provider)
 
     def discover_providers(self, country: str = 'DE', detected_providers: Dict[str, List[str]] = None) -> List[str]:
-        """
-        Discover and register all available providers for a country.
-
-        Args:
-            country: Country code for provider configuration (used as fallback)
-            detected_providers: Optional dict mapping provider names to country lists.
-                              If None, falls back to discovering all AVAILABLE_PROVIDERS.
-
-        Returns:
-            List of discovered provider names (without country suffixes for compatibility)
-        """
         from streaming_providers import AVAILABLE_PROVIDERS
 
         # Backward compatibility: if no detected_providers, use original discovery logic
@@ -64,6 +74,11 @@ class ProviderManager:
 
             for provider_name, provider_class in AVAILABLE_PROVIDERS.items():
                 if provider_name not in self.providers:
+                    # CHECK ENABLED STATUS
+                    if not self._is_provider_enabled(provider_name):
+                        logger.debug(f"ProviderManager: Provider '{provider_name}' is disabled, skipping")
+                        continue
+
                     try:
                         provider = provider_class(country=country)
                         self.register_provider(provider)
@@ -90,21 +105,36 @@ class ProviderManager:
 
             try:
                 if countries:  # Multi-country provider
+                    enabled_countries = []
                     for country_code in countries:
+                        # CHECK COUNTRY-SPECIFIC ENABLED STATUS
+                        if not self._is_provider_enabled(provider_name, country_code):
+                            logger.debug(
+                                f"ProviderManager: Provider '{provider_name}_{country_code}' is disabled, skipping")
+                            continue
+
                         provider_key = f"{provider_name}_{country_code}"
                         if provider_key not in self.providers:
                             provider = provider_class(country=country_code.lower())
                             self.providers[provider_key] = provider
+                            enabled_countries.append(country_code)
                             logger.debug(f"ProviderManager: Registered {provider_key}")
 
-                    # Return base provider name once for backward compatibility
-                    if provider_name not in registered:
+                    # Only add to registered list if at least one country is enabled
+                    if enabled_countries and provider_name not in registered:
                         registered.append(provider_name)
+
                 else:  # Single country provider (fallback to default country)
+                    # CHECK ENABLED STATUS
+                    if not self._is_provider_enabled(provider_name):
+                        logger.debug(f"ProviderManager: Provider '{provider_name}' is disabled, skipping")
+                        continue
+
                     if provider_name not in self.providers:
                         provider = provider_class(country=country.lower())
                         self.providers[provider_name] = provider
                         registered.append(provider_name)
+
             except Exception as e:
                 failed.append((provider_name, str(e)))
                 logger.warning(f"ProviderManager: Could not initialize provider '{provider_name}': {e}")
