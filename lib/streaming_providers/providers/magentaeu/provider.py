@@ -20,6 +20,7 @@ from .constants import (
     DEFAULT_MAX_RETRIES,
     DRM_SYSTEM_WIDEVINE,
     DRM_REQUEST_HEADERS,
+    MAGENTA_TV_PL_LOGO,
     WV_URL,
     CONTENT_TYPE_LIVE,
     STREAMING_FORMAT_DASH,
@@ -27,7 +28,7 @@ from .constants import (
     get_natco_key,
     get_guest_headers,
     get_base_url,
-    get_language
+    get_language, MAX_TV_LOGO
 )
 
 
@@ -95,11 +96,19 @@ class MagentaProvider(StreamingProvider):
 
     @property
     def provider_label(self) -> str:
-        return f'Magenta TV ({self.country.upper()})'
+        if self.country.lower() == 'hr':
+            return "Max TV (HR)"
+        else:
+            return f'Magenta TV ({self.country.upper()})'
 
     @property
     def provider_logo(self) -> str:
-        return ''
+        if self.country.lower() == 'hr':
+            return MAX_TV_LOGO
+        elif self.country.lower() == 'pl':
+            return MAGENTA_TV_PL_LOGO
+        else:
+            return ''
 
     @property
     def uses_dynamic_manifests(self) -> bool:

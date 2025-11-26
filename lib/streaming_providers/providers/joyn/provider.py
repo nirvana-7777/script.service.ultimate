@@ -46,7 +46,7 @@ from .constants import (
     GRAPHQL_LIVE_CHANNELS_FILTER,
     GRAPHQL_MAX_RESULTS,
     GRAPHQL_OFFSET,
-    GRAPHQL_QUERY_HASHES
+    GRAPHQL_QUERY_HASHES, JOYN_LOGO
 )
 
 
@@ -166,7 +166,7 @@ class JoynProvider(StreamingProvider):
 
     @property
     def provider_logo(self) -> str:
-        return ''
+        return JOYN_LOGO
 
     @property
     def uses_dynamic_manifests(self) -> bool:

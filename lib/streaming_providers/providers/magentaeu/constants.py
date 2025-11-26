@@ -11,6 +11,9 @@ SUPPORTED_COUNTRIES = ['hr', 'pl', 'me', 'at', 'hu']
 # Default country
 DEFAULT_COUNTRY = 'at'
 
+MAX_TV_LOGO = 'https://www.lyngsat.com/logo/corp/mm/max-tv-hr.png'
+MAGENTA_TV_PL_LOGO = 'https://magentatv.pl/client/assets/6700c91b4408a2abe2a4.webp'
+
 # Country-specific configuration
 COUNTRY_CONFIG = {
     'hr': {

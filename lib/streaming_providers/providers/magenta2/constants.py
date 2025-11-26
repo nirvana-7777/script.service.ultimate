@@ -9,7 +9,7 @@ SUPPORTED_COUNTRIES = ['de']
 # Default country
 DEFAULT_COUNTRY = 'de'
 
-MAGENTA2_LOGO = 'https://upload.wikimedia.org/wikipedia/commons/thumb/1/13/Magenta_TV_Logo_%282021%29.svg/2560px-Magenta_TV_Logo_%282021%29.svg.png'
+MAGENTA2_LOGO = 'https://upload.wikimedia.org/wikipedia/commons/thumb/e/e4/Magenta_TV_Logo_2024.svg/2339px-Magenta_TV_Logo_2024.svg.png'
 
 # Platform configuration
 DEFAULT_PLATFORM = 'android-tv'

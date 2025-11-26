@@ -6,6 +6,8 @@
 # SSO endpoints discovery URL
 JOYN_SSO_DISCOVERY_URL = 'https://auth.joyn.de/sso/endpoints'
 
+JOYN_LOGO = 'https://upload.wikimedia.org/wikipedia/de/thumb/7/74/Joyn_%28Streaminganbieter%29_logo.svg/2560px-Joyn_%28Streaminganbieter%29_logo.svg.png'
+
 # Default client IDs for different platforms (fallback)
 DEVICE_IDS = {
     'web': '709115c2-f87e-4bad-9b94-28ac08d72cd9',
