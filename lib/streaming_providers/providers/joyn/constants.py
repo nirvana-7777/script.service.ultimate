@@ -41,7 +41,7 @@ JOYN_CIDAAS_BASE_URL = 'https://auth.7pass.de'
 
 # Cidaas API endpoints
 JOYN_CIDAAS_ENDPOINTS = {
-    'LOGIN': f'{JOYN_CIDAAS_BASE_URL}/login-srv/login',
+    'LOGIN': f'{JOYN_CIDAAS_BASE_URL}/login-srv/verification/login',
     'VERIFICATION_INITIATE': f'{JOYN_CIDAAS_BASE_URL}/verification-srv/v2/authenticate/initiate/PASSWORD',
     'VERIFICATION_AUTHENTICATE': f'{JOYN_CIDAAS_BASE_URL}/verification-srv/v2/authenticate/authenticate/PASSWORD',
     'REGISTRATION_SETUP': f'{JOYN_CIDAAS_BASE_URL}/registration-setup-srv/public/list',
