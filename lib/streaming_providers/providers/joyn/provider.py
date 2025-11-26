@@ -165,6 +165,10 @@ class JoynProvider(StreamingProvider):
         return f'Joyn ({self.country})'
 
     @property
+    def provider_logo(self) -> str:
+        return ''
+
+    @property
     def uses_dynamic_manifests(self) -> bool:
         return False
 

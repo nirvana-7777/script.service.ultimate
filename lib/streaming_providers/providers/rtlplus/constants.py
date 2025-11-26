@@ -6,6 +6,7 @@ RTL+ provider constants and default configurations
 
 class RTLPlusDefaults:
     """Default values for RTL+ provider"""
+    RTLPLUS_LOGO = 'https://upload.wikimedia.org/wikipedia/commons/thumb/f/f4/RTL%2B_Logo_2021.svg/2560px-RTL%2B_Logo_2021.svg.png'
 
     # Client and version information
     CLIENT_VERSION = '2025.6.26.0'
@@ -109,6 +110,8 @@ class RTLPlusConfig:
     def __init__(self, config_dict: dict = None):
         """Initialize with optional configuration overrides"""
         config = config_dict or {}
+
+        self.logo = config.get('logo', RTLPlusDefaults.RTLPLUS_LOGO)
 
         # Core settings (can be overridden)
         self.client_version = config.get('client_version', RTLPlusDefaults.CLIENT_VERSION)

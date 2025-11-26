@@ -35,7 +35,7 @@ from .constants import (
     DEFAULT_REQUEST_TIMEOUT,
     DEFAULT_MAX_RETRIES,
     DEFAULT_EPG_WINDOW_HOURS,
-    ERROR_CODES
+    ERROR_CODES, MAGENTA2_LOGO
 )
 
 
@@ -386,7 +386,11 @@ class Magenta2Provider(StreamingProvider):
 
     @property
     def provider_label(self) -> str:
-        return f'Magenta2 ({self.country})'
+        return 'Magenta TV 2.0'
+
+    @property
+    def provider_logo(self) -> str:
+        return MAGENTA2_LOGO
 
     @property
     def uses_dynamic_manifests(self) -> bool:

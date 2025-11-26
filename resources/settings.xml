@@ -48,6 +48,7 @@
 
     <!-- RTL+ Provider Settings -->
     <category id="rtlplus" label="30100">
+        <setting id="enable_rtlplus" type="bool" label="Enable RTL+" default="false" />
         <setting id="rtlplus_username" type="text" label="30101" default="">
             <level>0</level>
             <constraints>

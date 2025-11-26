@@ -60,6 +60,9 @@ class RTLPlusProvider(StreamingProvider):
     def provider_label(self) -> str:
         return 'RTL+'
 
+    @property
+    def provider_logo(self) -> str:
+        return self.rtl_config.logo
 
     @property
     def uses_dynamic_manifests(self) -> bool:

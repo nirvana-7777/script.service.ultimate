@@ -363,10 +363,12 @@ class UltimateService:
                     if provider_instance:
                         provider_label = getattr(provider_instance, 'provider_label', provider_name)
                         country = getattr(provider_instance, 'country', default_country)
+                        provider_logo = getattr(provider_instance, 'provider_logo', '')
 
                         providers_details.append({
                             'name': provider_name,
                             'label': provider_label,
+                            'logo': provider_logo,
                             'country': country
                         })
 

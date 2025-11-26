@@ -49,6 +49,11 @@ class StreamingProvider(ABC):
         """Return the provider label (e.g., 'JOYN', 'ZDF', 'RTL+')"""
         pass
 
+    @property
+    @abstractmethod
+    def provider_logo(self) -> str:
+        """Return the provider logo (e.g., 'https://www.domain.com/logo')"""
+        pass
 
     @property
     @abstractmethod
