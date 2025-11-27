@@ -2,8 +2,7 @@
 # [file content begin]
 # streaming_providers/providers/hrti/models.py
 from dataclasses import dataclass
-from typing import Dict, Any, Optional, List
-from datetime import datetime
+from typing import Dict, Any, Optional
 
 from ...base.auth.base_auth import BaseAuthToken
 from ...base.auth.credentials import UserPasswordCredentials
@@ -18,7 +17,7 @@ class HRTiCredentials(UserPasswordCredentials):
 
     def __init__(self, username: str, password: str):
         super().__init__(username=username, password=password)
-        self.credential_type = 'hrti_user'
+        # credential_type is not a property in base class, so we don't set it
 
     def to_auth_payload(self) -> Dict[str, Any]:
         """Convert to authentication payload for HRTi"""
@@ -41,6 +40,7 @@ class HRTiAuthToken(BaseAuthToken):
     def __init__(self, access_token: str, token_type: str, expires_in: int,
                  issued_at: float, user_id: str = '', valid_from: str = '',
                  valid_to: str = '', refresh_token: Optional[str] = None):
+
         super().__init__(
             access_token=access_token,
             token_type=token_type,
@@ -53,17 +53,29 @@ class HRTiAuthToken(BaseAuthToken):
         self.user_id = user_id
         self.valid_from = valid_from
         self.valid_to = valid_to
-        self.credential_type = 'hrti'
+        # Don't set credential_type - it's not in base class
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert token to dictionary"""
-        base_dict = super().to_dict()
+        base_dict = {
+            'access_token': self.access_token,
+            'token_type': self.token_type,
+            'expires_in': self.expires_in,
+            'issued_at': self.issued_at,
+            'refresh_token': self.refresh_token or ""
+        }
+
+        # Add HRTi specific fields
         base_dict.update({
             'user_id': self.user_id,
             'valid_from': self.valid_from,
-            'valid_to': self.valid_to,
-            'credential_type': self.credential_type
+            'valid_to': self.valid_to
         })
+
+        # Add auth_level if available
+        if hasattr(self, 'auth_level') and self.auth_level:
+            base_dict['auth_level'] = self.auth_level.value
+
         return base_dict
 
     @classmethod
