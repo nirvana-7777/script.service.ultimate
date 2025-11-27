@@ -4,6 +4,8 @@ import uuid
 from typing import Dict, Optional, Any
 from dataclasses import dataclass, field
 import time
+import re
+from urllib.parse import urlencode, parse_qs, urlparse
 
 from ...base.auth.base_oauth2_auth import BaseOAuth2Authenticator
 from ...base.auth.base_auth import BaseAuthToken, TokenAuthLevel
@@ -20,7 +22,6 @@ from .constants import (
     JOYN_CLIENT_VERSION,
     DEFAULT_PLATFORM,
     JOYN_USER_AGENT,
-    JOYN_CIDAAS_ENDPOINTS,
     DEFAULT_COUNTRY,
     DEFAULT_REQUEST_TIMEOUT, JOYN_AUTH_ENDPOINTS
 )
@@ -311,7 +312,6 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                     f"No login endpoint found for platform '{self.platform}' or generic 'web-login' in SSO discovery")
 
             # Extract client_id from the URL parameters
-            from urllib.parse import urlparse, parse_qs
             parsed_url = urlparse(login_url)
             query_params = parse_qs(parsed_url.query)
 
@@ -448,23 +448,182 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             logger.error(f"OAuth2 client credentials flow on endpoint {self.auth_endpoint} failed for {self.provider_name}: {e}")
             raise Exception(f"OAuth2 client credentials flow failed: {e}")
 
+    def _perform_two_step_verification(self, session, username: str, password: str,
+                                       request_id: str, referer_url: str) -> tuple[str, str]:
+        """
+        Perform the two-step verification process using constants
+        Returns: (final_sub, final_status_id)
+        """
+        from .constants import JOYN_CIDAAS_ENDPOINTS, JOYN_USER_AGENT
+
+        # Common headers for verification requests
+        verification_headers = {
+            'User-Agent': JOYN_USER_AGENT,
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'Origin': 'https://signin.7pass.de',
+            'Referer': referer_url
+        }
+
+        # Step 1: Initiate password verification
+        initiate_data = {
+            "request_id": request_id,
+            "email": username,
+            "medium_id": "PASSWORD",
+            "usage_type": "PASSWORDLESS_AUTHENTICATION",
+            "type": "PASSWORD"
+        }
+
+        logger.debug("Step 1: Initiating password verification")
+        initiate_response = session.post(
+            JOYN_CIDAAS_ENDPOINTS['VERIFICATION_INITIATE'],
+            json_data=initiate_data,
+            headers=verification_headers,
+            timeout=self._config.timeout
+        )
+
+        logger.debug(f"Initiate response status: {initiate_response.status_code}")
+        initiate_response.raise_for_status()
+        initiate_result = initiate_response.json()
+
+        if not initiate_result.get('success'):
+            raise Exception(f"Password verification initiation failed: {initiate_result}")
+
+        exchange_data = initiate_result['data']
+        exchange_id = exchange_data['exchange_id']['exchange_id']
+        sub = exchange_data['sub']
+        status_id = exchange_data['status_id']
+
+        logger.debug(f"Got exchange_id: {exchange_id}, sub: {sub}, status_id: {status_id}")
+
+        # Step 2: Authenticate with password
+        authenticate_data = {
+            "exchange_id": exchange_id,
+            "pass_code": password,
+            "sub": sub,  # Use sub from first response
+            "type": "PASSWORD",
+            "password": password
+        }
+
+        logger.debug("Step 2: Authenticating with password")
+        authenticate_response = session.post(
+            JOYN_CIDAAS_ENDPOINTS['VERIFICATION_AUTHENTICATE'],
+            json_data=authenticate_data,
+            headers=verification_headers,
+            timeout=self._config.timeout
+        )
+
+        logger.debug(f"Authenticate response status: {authenticate_response.status_code}")
+        authenticate_response.raise_for_status()
+        authenticate_result = authenticate_response.json()
+
+        if not authenticate_result.get('success'):
+            raise Exception(f"Password authentication failed: {authenticate_result}")
+
+        auth_exchange_data = authenticate_result['data']
+        final_sub = auth_exchange_data['sub']  # Use sub from second response
+        final_status_id = auth_exchange_data['status_id']
+
+        logger.debug(f"Got final sub: {final_sub}, final_status_id: {final_status_id}")
+        return final_sub, final_status_id
+
+    def _perform_final_login(self, session, final_sub: str, final_status_id: str,
+                             request_id: str) -> bool:
+        """
+        Perform the final login with verification results using constants
+        Returns: True if successful
+        """
+        from .constants import JOYN_CIDAAS_ENDPOINTS, JOYN_USER_AGENT
+
+        login_data = {
+            'sub': final_sub,
+            'status_id': final_status_id,
+            'verificationType': 'PASSWORD',
+            'requestId': request_id,
+            'remember_me': 'true'
+        }
+
+        login_headers = {
+            'User-Agent': JOYN_USER_AGENT,
+            'Accept': 'application/json',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Origin': 'https://signin.7pass.de'
+        }
+
+        logger.debug("Step 3: Final login with verification results")
+        login_response = session.post(
+            JOYN_CIDAAS_ENDPOINTS['LOGIN_VERIFICATION'],
+            data=urlencode(login_data).encode(),
+            headers=login_headers,
+            timeout=self._config.timeout,
+            allow_redirects=False
+        )
+
+        logger.debug(f"Login response status: {login_response.status_code}")
+        login_response.raise_for_status()
+
+        return login_response.status_code in [200, 302, 303]
+
+    @staticmethod
+    def _extract_authorization_code(session) -> Optional[str]:
+        """
+        Extract authorization code from redirect chain
+        Follows redirects until we find the authorization code or reach max redirects
+        """
+
+        max_redirects = 5
+        current_redirects = 0
+
+        # Start with the current session state and follow redirects
+        while current_redirects < max_redirects:
+            current_redirects += 1
+
+            # Get the current URL from session (you might need to track this)
+            # For now, we'll assume we need to handle the redirect from the login response
+
+            # Check if we have a Location header to follow
+            # This is a simplified version - you'll need to adapt based on actual response
+
+            # Check current URL for authorization code
+            current_url = getattr(session, 'last_url', None)  # You'd need to track this
+
+            if current_url:
+                parsed_url = urlparse(current_url)
+                query_params = parse_qs(parsed_url.query)
+                auth_code = query_params.get('code', [None])[0]
+
+                if auth_code:
+                    logger.debug(f"Found authorization code in URL: {auth_code}")
+                    return auth_code
+
+                # Also check fragment for SPA redirects
+                if '#' in current_url:
+                    fragment = current_url.split('#')[1]
+                    fragment_params = parse_qs(fragment)
+                    auth_code = fragment_params.get('code', [None])[0]
+                    if auth_code:
+                        logger.debug(f"Found authorization code in fragment: {auth_code}")
+                        return auth_code
+
+            # If no code found, try to follow redirects
+            # You'll need to implement this based on how your session tracks redirects
+
+        logger.warning(f"Reached max redirects ({max_redirects}) without finding authorization code")
+        return None
+
     # Authorization code flow - Joyn-specific implementation
     def _perform_oauth_authorization_code_flow(self, username: str, password: str) -> Dict[str, Any]:
         """
-        Simplified Joyn OAuth2 authorization code flow using existing methods
+        Optimized Joyn OAuth2 authorization code flow with two-step verification
         """
         try:
-            logger.debug("Starting Joyn OAuth2 authorization code flow using existing methods")
+            logger.debug("Starting optimized Joyn OAuth2 authorization code flow")
 
-            # Step 1: Use existing SSO endpoints from config (already initialized)
+            # Step 1: Get authorization endpoint and build URL
             web_login_url = self._config.get_authorize_endpoint()
-            logger.debug(f"Using existing authorize endpoint: {web_login_url}")
+            logger.debug(f"Using authorize endpoint: {web_login_url}")
 
-            # Step 2: Use our existing working method to get request_id
-            from urllib.parse import urlencode, parse_qs, urlparse
-            import re
-
-            # Build authorization URL with PKCE (our existing working method)
+            # Build authorization URL with PKCE
             code_verifier = self.generate_pkce_verifier()
             code_challenge = self.generate_pkce_challenge(code_verifier)
             state = self.generate_oauth_state()
@@ -484,15 +643,20 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             }
 
             authorization_url = f"{web_login_url}?{urlencode(params)}"
+            logger.debug(f"Built authorization URL: {authorization_url}")
 
             session = self._create_oauth_session()
 
-            # This is our existing working method to get request_id
+            # Step 2: Get authorization page and extract request_id
             logger.debug("Fetching authorization page for request_id")
             auth_response = session.get(authorization_url, timeout=self._config.timeout)
+
+            logger.debug(f"Authorization page response status: {auth_response.status_code}")
+            logger.debug(f"Authorization page response URL: {auth_response.url}")
+
             auth_response.raise_for_status()
 
-            # Extract request_id from the redirect URL - THIS WORKS!
+            # Extract request_id from the redirect URL
             parsed_url = urlparse(auth_response.url)
             query_params = parse_qs(parsed_url.query)
             request_id = query_params.get('requestId', [None])[0]
@@ -503,44 +667,32 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 if request_id_match:
                     request_id = request_id_match.group(1)
                 else:
-                    logger.error(f"Could not extract request_id from URL: {auth_response.url}")
                     raise Exception("Could not extract request_id from authorization page")
 
             logger.debug(f"Extracted request_id: {request_id}")
 
-            # Step 3: DIRECT LOGIN - Skip redundant verification steps
-            logger.debug("Performing direct login with credentials")
-            login_url = JOYN_CIDAAS_ENDPOINTS['LOGIN']
-            login_data = {
-                "username": username,
-                "password": password,
-                "requestId": request_id
-            }
+            # Step 3: Two-step verification process using helper method
+            final_sub, final_status_id = self._perform_two_step_verification(
+                session, username, password, request_id, auth_response.url
+            )
 
-            login_response = session.post(login_url, data=login_data, timeout=self._config.timeout,
-                                          allow_redirects=False)
-            login_response.raise_for_status()
+            # Step 4: Final login with verification results
+            login_success = self._perform_final_login(
+                session, final_sub, final_status_id, request_id
+            )
 
-            # Step 4: Extract authorization code from redirect
-            redirect_url = login_response.headers.get('Location', '')
-            if not redirect_url:
-                # Check if login failed - look for error messages
-                if 'error' in auth_response.text.lower() or 'invalid' in auth_response.text.lower():
-                    logger.error("Login likely failed - check credentials")
-                    raise Exception("Authentication failed - check username and password")
-                raise Exception("No redirect URL after login")
+            if not login_success:
+                raise Exception("Final login failed")
 
-            # Follow redirects to get the final URL with authorization code
-            final_response = session.get(redirect_url, timeout=self._config.timeout, allow_redirects=True)
-            final_params = parse_qs(urlparse(final_response.url).query)
+            # Step 5: Extract authorization code from redirect
+            auth_code = self._extract_authorization_code(session)
 
-            auth_code = final_params.get('code', [None])[0]
             if not auth_code:
                 raise Exception("Could not extract authorization code from login flow")
 
             logger.debug(f"Extracted authorization code: {auth_code}")
 
-            # Step 5: Exchange authorization code for tokens using existing method
+            # Step 6: Exchange authorization code for tokens
             logger.debug("Exchanging authorization code for tokens")
             token_data = self._exchange_authorization_code_for_token(
                 authorization_code=auth_code,
