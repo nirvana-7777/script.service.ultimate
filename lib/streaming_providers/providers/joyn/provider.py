@@ -332,6 +332,8 @@ class JoynProvider(StreamingProvider):
             'joyn-country': self.country.upper(),
             'joyn-distribution-tenant': self.distribution_tenant,
             'joyn-platform': self.platform,
+            'joyn-b2b-context':'UNKNOWN',
+            'joyn-client-os':'UNKNOWN',
             'origin': JOYN_DOMAINS.get(self.country, JOYN_DOMAINS['de'])
         })
         headers['Authorization'] = f'Bearer {self.bearer_token}'

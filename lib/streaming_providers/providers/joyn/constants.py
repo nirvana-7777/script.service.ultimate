@@ -63,7 +63,7 @@ JOYN_BASE_URLS = {
 # ============================================================================
 
 # Client version used in API requests
-JOYN_CLIENT_VERSION = '5.1261.0'
+JOYN_CLIENT_VERSION = '5.1344.1'
 
 # Platform identifier
 DEFAULT_PLATFORM = 'web'
