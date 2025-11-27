@@ -143,4 +143,17 @@
         <setting id="magentaeu_hu_proxy_port" type="number" label="Proxy Port" default="8080" visible="eq(-2,true)" />
     </category>
 
+        <!-- HRTi Provider Settings -->
+    <category label="HRTi (HR)">
+        <setting id="enable_hrti" type="bool" label="Enable HRTi" default="false" />
+        <setting id="hrti_country" type="text" label="Country Code" default="hr" visible="false" />
+        <setting id="hrti_username" type="text" label="Username" default="" enable="eq(-2,true)" />
+        <setting id="hrti_password" type="text" label="Password" option="hidden" default="" enable="eq(-3,true)" />
+        <setting id="hrti_ipaddress" type="ipaddress" label="IP Address" default="" enable="eq(-4,true)" />
+
+        <!-- Optional: Proxy settings for HRTi -->
+        <setting id="hrti_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-5,true)" />
+        <setting id="hrti_proxy_host" type="text" label="Proxy Host" default="" visible="eq(-1,true)" />
+        <setting id="hrti_proxy_port" type="number" label="Proxy Port" default="8080" visible="eq(-2,true)" />
+    </category>
 </settings>
