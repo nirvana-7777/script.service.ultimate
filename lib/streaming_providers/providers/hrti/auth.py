@@ -1,0 +1,406 @@
+# [file name]: auth.py
+# [file content begin]
+# streaming_providers/providers/hrti/auth.py
+import json
+import base64
+import time
+from typing import Dict, Any, Optional
+from datetime import datetime, timedelta
+
+from ...base.auth.base_auth import BaseAuthenticator, BaseAuthToken, TokenAuthLevel
+from ...base.utils.logger import logger
+from .models import HRTiCredentials, HRTiAuthToken
+from .constants import HRTiConfig
+from ...base.models.proxy_models import ProxyConfig
+
+
+class HRTiAuthenticator(BaseAuthenticator):
+    def __init__(self, credentials=None, config_dir=None,
+                 proxy_config: Optional[ProxyConfig] = None, http_manager=None):
+
+        # Initialize configuration FIRST
+        self._config = HRTiConfig()
+
+        # Get proxy_config if not provided
+        if proxy_config is None:
+            from ...base.network import ProxyConfigManager
+            proxy_mgr = ProxyConfigManager(config_dir)
+            proxy_config = proxy_mgr.get_proxy_config('hrti')
+
+        # Store HTTP manager and proxy config locally (like MagentaEU)
+        self._http_manager = http_manager
+        self._proxy_config = proxy_config
+
+        # Require http_manager like MagentaEU does
+        if http_manager is None:
+            raise ValueError("http_manager is required for HRTiAuthenticator")
+
+        # Call parent init WITHOUT proxy_config and http_manager (like MagentaEU)
+        super().__init__(
+            provider_name='hrti',
+            credentials=credentials,
+            country='HR',  # Default country for HRTi
+            config_dir=config_dir
+            # NO proxy_config or http_manager passed to parent
+        )
+
+        # Initialize HRTi-specific properties
+        self._ip_address = None
+        self._device_id = None
+        self._user_id = None
+
+        # Load or initialize device ID
+        self._initialize_device()
+
+    @property
+    def config(self):
+        """Safe access to config"""
+        return self._config
+
+    @property
+    def http_manager(self):
+        """Safe access to http_manager - required by provider"""
+        if self._http_manager is None:
+            # This should never happen since we validate in __init__
+            raise ValueError("HTTP manager not available - this should have been set during initialization")
+        return self._http_manager
+
+    @http_manager.setter
+    def http_manager(self, value):
+        """Allow setting http_manager"""
+        self._http_manager = value
+
+    @property
+    def auth_endpoint(self) -> str:
+        """HRTi authentication endpoint"""
+        return self.config.api_endpoints['grant_access']
+
+    def _get_auth_headers(self) -> Dict[str, str]:
+        """Get headers for authentication requests"""
+        return self.config.get_base_headers()
+
+    def _build_auth_payload(self) -> Dict[str, Any]:
+        """Build authentication payload from credentials"""
+        return self.credentials.to_auth_payload()
+
+    def _create_token_from_response(self, response_data: Dict[str, Any]) -> HRTiAuthToken:
+        """Create HRTi-specific token from API response"""
+        result = response_data.get('Result', {})
+
+        # Store user ID if available
+        if 'Customer' in result:
+            self._user_id = result['Customer'].get('CustomerId', '')
+
+        return HRTiAuthToken(
+            access_token=result.get('Token', ''),
+            token_type='Client',
+            expires_in=86400,  # 24 hours default
+            issued_at=time.time(),
+            user_id=self._user_id,
+            valid_from=result.get('ValidFrom', ''),
+            valid_to=result.get('ValidTo', '')
+        )
+
+    def get_fallback_credentials(self):
+        """Get fallback credentials (anonymous access)"""
+        return HRTiCredentials(
+            username='anonymoushrt',
+            password='an0nPasshrt'
+        )
+
+    def _perform_authentication(self) -> HRTiAuthToken:
+        """Perform HRTi custom authentication flow"""
+        logger.info("Starting HRTi authentication flow")
+
+        # Step 1: Get IP address
+        self._get_ip_address()
+
+        # Step 2: Get environment configuration
+        self._get_environment_config()
+
+        # Step 3: Perform grant access
+        token_data = self._perform_grant_access()
+
+        # Step 4: Register device
+        self._register_device()
+
+        # Step 5: Get content rating and profiles
+        self._get_initial_data()
+
+        token = self._create_token_from_response(token_data)
+        logger.info("HRTi authentication successful")
+        return token
+
+    def _get_ip_address(self) -> str:
+        """Get public IP address"""
+        if self._ip_address:
+            return self._ip_address
+
+        try:
+            # Use the http_manager that's guaranteed to be available
+            response = self.http_manager.get(
+                self.config.api_endpoints['get_ip'],
+                operation='api'
+            )
+            response.raise_for_status()
+            self._ip_address = response.text.strip()
+            logger.debug(f"Retrieved IP address: {self._ip_address}")
+            return self._ip_address
+        except Exception as e:
+            logger.error(f"Error getting IP address: {e}")
+            self._ip_address = "0.0.0.0"  # Fallback
+            return self._ip_address
+
+    def _get_environment_config(self):
+        """Get HRTi environment configuration"""
+        try:
+            # Ensure we have http_manager
+            if not self.http_manager:
+                raise Exception("HTTP manager not available")
+
+            # Get env config
+            env_response = self.http_manager.get(
+                self.config.env_endpoint,
+                operation='api'
+            )
+            env_response.raise_for_status()
+            env_data = env_response.json()
+
+            # Get main config
+            config_response = self.http_manager.get(
+                self.config.config_endpoint,
+                operation='api'
+            )
+            config_response.raise_for_status()
+            config_data = config_response.json()
+
+            # Update config with retrieved values
+            self.config.update_from_api(env_data, config_data)
+            logger.debug("HRTi environment configuration loaded")
+
+        except Exception as e:
+            logger.warning(f"Error loading HRTi environment config: {e}")
+
+    def _perform_grant_access(self) -> Dict[str, Any]:
+        """Perform grant access authentication"""
+        try:
+            # Ensure we have http_manager
+            if not self.http_manager:
+                raise Exception("HTTP manager not available")
+
+            headers = self._get_auth_headers()
+            payload = self._build_auth_payload()
+
+            response = self.http_manager.post(
+                self.auth_endpoint,
+                operation='auth',
+                headers=headers,
+                data=json.dumps(payload)
+            )
+            response.raise_for_status()
+
+            result = response.json()
+            if 'Result' not in result:
+                raise Exception("No result in grant access response")
+
+            return result
+
+        except Exception as e:
+            logger.error(f"HRTi grant access failed: {e}")
+            # Try fallback credentials
+            if not isinstance(self.credentials, HRTiCredentials) or self.credentials.username != 'anonymoushrt':
+                logger.info("Falling back to anonymous credentials")
+                self.credentials = self.get_fallback_credentials()
+                return self._perform_grant_access()
+            else:
+                raise e
+
+    def _register_device(self):
+        """Register device with HRTi"""
+        try:
+            # Ensure we have http_manager
+            if not self.http_manager:
+                raise Exception("HTTP manager not available")
+
+            headers = self.config.get_auth_headers(
+                device_id=self._device_id,
+                ip_address=self._ip_address,
+                token=self._current_token.access_token if self._current_token else ''
+            )
+
+            payload = {
+                "DeviceSerial": self._device_id,
+                "DeviceReferenceId": self.config.device_reference_id,
+                "IpAddress": self._ip_address,
+                "ConnectionType": self.config.connection_type,
+                "ApplicationVersion": self.config.application_version,
+                "DrmId": self._device_id,
+                "OsVersion": self.config.os_version,
+                "ClientType": self.config.client_type
+            }
+
+            response = self.http_manager.post(
+                self.config.api_endpoints['register_device'],
+                operation='api',
+                headers=headers,
+                data=json.dumps(payload)
+            )
+            response.raise_for_status()
+            logger.debug("HRTi device registration successful")
+
+        except Exception as e:
+            logger.warning(f"HRTi device registration failed: {e}")
+
+    def _get_initial_data(self):
+        """Get initial content rating and profiles"""
+        try:
+            # Ensure we have http_manager
+            if not self.http_manager:
+                raise Exception("HTTP manager not available")
+
+            headers = self.config.get_auth_headers(
+                device_id=self._device_id,
+                ip_address=self._ip_address,
+                token=self._current_token.access_token if self._current_token else ''
+            )
+
+            # Get content ratings
+            content_response = self.http_manager.post(
+                self.config.api_endpoints['content_ratings'],
+                operation='api',
+                headers=headers,
+                data=json.dumps({})
+            )
+            content_response.raise_for_status()
+
+            # Get profiles
+            profiles_response = self.http_manager.post(
+                self.config.api_endpoints['profiles'],
+                operation='api',
+                headers=headers,
+                data=json.dumps({})
+            )
+            profiles_response.raise_for_status()
+
+            logger.debug("HRTi initial data loaded")
+
+        except Exception as e:
+            logger.debug(f"Error loading HRTi initial data: {e}")
+
+    def _initialize_device(self):
+        """Initialize or load device ID"""
+        try:
+            self._device_id = self.settings_manager.get_device_id(self.provider_name, self.country)
+            if not self._device_id:
+                import uuid
+                self._device_id = str(uuid.uuid4())
+                logger.debug(f"Generated new device ID: {self._device_id}")
+        except Exception as e:
+            logger.error(f"Error initializing device ID: {e}")
+            import uuid
+            self._device_id = str(uuid.uuid4())
+
+    def get_device_id(self) -> str:
+        """Get device ID"""
+        return self._device_id
+
+    def get_ip_address(self) -> str:
+        """Get IP address"""
+        if not self._ip_address:
+            self._get_ip_address()
+        return self._ip_address
+
+    def authorize_session(self, content_type: str, content_ref_id: str,
+                          channel_id: str = None, **kwargs) -> Optional[Dict[str, Any]]:
+        """Authorize a playback session"""
+        try:
+            # Ensure we have http_manager
+            if not self.http_manager:
+                raise Exception("HTTP manager not available")
+
+            headers = self.config.get_auth_headers(
+                device_id=self._device_id,
+                ip_address=self._ip_address,
+                token=self._current_token.access_token if self._current_token else ''
+            )
+
+            payload = {
+                "ContentType": content_type,
+                "ContentReferenceId": content_ref_id,
+                "ContentDrmId": f"{content_ref_id}_drm",
+                "VideostoreReferenceIds": kwargs.get('video_store_ids', []),
+                "ChannelReferenceId": channel_id,
+                "StartTime": kwargs.get('start_time'),
+                "EndTime": kwargs.get('end_time')
+            }
+
+            response = self.http_manager.post(
+                self.config.api_endpoints['authorize_session'],
+                operation='api',
+                headers=headers,
+                data=json.dumps(payload)
+            )
+            response.raise_for_status()
+
+            result = response.json()
+            if 'Result' in result:
+                logger.debug("HRTi session authorization successful")
+                return result['Result']
+            else:
+                logger.warning("No result in session authorization response")
+                return None
+
+        except Exception as e:
+            logger.error(f"HRTi session authorization failed: {e}")
+            return None
+
+    def get_license_data(self, session_id: str) -> str:
+        """Generate license data for DRM"""
+        try:
+            drm_license = {
+                'userId': self._user_id or '',
+                'sessionId': session_id,
+                'merchant': self.config.merchant
+            }
+
+            license_bytes = json.dumps(drm_license).encode('utf-8')
+            license_b64 = base64.b64encode(license_bytes).decode('utf-8')
+            return license_b64
+
+        except Exception as e:
+            logger.error(f"Error generating license data: {e}")
+            return ""
+
+    @staticmethod
+    def get_time_offset(hours_offset: int) -> int:
+        """Get timestamp with offset in milliseconds"""
+        target_time = datetime.now() + timedelta(hours=hours_offset)
+        return int(target_time.timestamp() * 1000)
+
+    def _classify_token(self, token: BaseAuthToken) -> TokenAuthLevel:
+        """Classify HRTi token authentication level"""
+        if not token or not token.access_token:
+            return TokenAuthLevel.ANONYMOUS
+
+        # Check if using anonymous credentials
+        if (hasattr(self.credentials, 'username') and
+                self.credentials.username == 'anonymoushrt'):
+            return TokenAuthLevel.ANONYMOUS
+
+        # If we have a valid token and user credentials, consider it user authenticated
+        if (hasattr(self.credentials, 'username') and
+                self.credentials.username and
+                self.credentials.username != 'anonymoushrt'):
+            return TokenAuthLevel.USER_AUTHENTICATED
+
+        return TokenAuthLevel.CLIENT_CREDENTIALS
+
+    def _refresh_token(self) -> Optional[BaseAuthToken]:
+        """Refresh HRTi token - reauthenticate since it's custom auth"""
+        logger.info("Refreshing HRTi token via reauthentication")
+        try:
+            return self._perform_authentication()
+        except Exception as e:
+            logger.error(f"HRTi token refresh failed: {e}")
+            return None
+# [file content end]
