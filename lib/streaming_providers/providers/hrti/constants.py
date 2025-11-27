@@ -10,7 +10,7 @@ class HRTiDefaults:
     """Default values for HRTi provider"""
 
     # Provider information
-    PROVIDER_LOGO = 'https://hrti.hrt.hr/assets/images/logo.png'
+    PROVIDER_LOGO = 'https://upload.wikimedia.org/wikipedia/en/thumb/9/9e/Logo_of_the_HRT.svg/2560px-Logo_of_the_HRT.svg.png'
     PROVIDER_NAME = 'HRTi'
 
     # Website and base URLs

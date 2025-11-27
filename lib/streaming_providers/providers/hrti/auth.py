@@ -91,7 +91,7 @@ class HRTiAuthenticator(BaseAuthenticator):
         if 'Customer' in result:
             self._user_id = result['Customer'].get('CustomerId', '')
 
-        return HRTiAuthToken(
+        token = HRTiAuthToken(
             access_token=result.get('Token', ''),
             token_type='Client',
             expires_in=86400,  # 24 hours default
@@ -100,6 +100,11 @@ class HRTiAuthenticator(BaseAuthenticator):
             valid_from=result.get('ValidFrom', ''),
             valid_to=result.get('ValidTo', '')
         )
+
+        # Classify the token immediately after creation
+        token.auth_level = self._classify_token(token)
+
+        return token
 
     def get_fallback_credentials(self):
         """Get fallback credentials (anonymous access)"""
@@ -128,7 +133,7 @@ class HRTiAuthenticator(BaseAuthenticator):
         self._get_initial_data()
 
         token = self._create_token_from_response(token_data)
-        logger.info("HRTi authentication successful")
+        logger.info(f"HRTi authentication successful - user_id: {token.user_id}, auth_level: {token.auth_level.value}")
         return token
 
     def _get_ip_address(self) -> str:
@@ -154,10 +159,6 @@ class HRTiAuthenticator(BaseAuthenticator):
     def _get_environment_config(self):
         """Get HRTi environment configuration"""
         try:
-            # Ensure we have http_manager
-            if not self.http_manager:
-                raise Exception("HTTP manager not available")
-
             # Get env config
             env_response = self.http_manager.get(
                 self.config.env_endpoint,
@@ -182,14 +183,14 @@ class HRTiAuthenticator(BaseAuthenticator):
             logger.warning(f"Error loading HRTi environment config: {e}")
 
     def _perform_grant_access(self) -> Dict[str, Any]:
-        """Perform grant access authentication"""
+        """Perform grant access authentication with better logging"""
         try:
-            # Ensure we have http_manager
-            if not self.http_manager:
-                raise Exception("HTTP manager not available")
-
             headers = self._get_auth_headers()
             payload = self._build_auth_payload()
+
+            # Log which credentials we're using
+            if hasattr(self.credentials, 'username'):
+                logger.debug(f"Performing grant access with username: {self.credentials.username}")
 
             response = self.http_manager.post(
                 self.auth_endpoint,
@@ -203,11 +204,12 @@ class HRTiAuthenticator(BaseAuthenticator):
             if 'Result' not in result:
                 raise Exception("No result in grant access response")
 
+            logger.debug(f"Grant access successful - has Result: {'Result' in result}")
             return result
 
         except Exception as e:
             logger.error(f"HRTi grant access failed: {e}")
-            # Try fallback credentials
+            # Only fallback to anonymous if we're not already using it
             if not isinstance(self.credentials, HRTiCredentials) or self.credentials.username != 'anonymoushrt':
                 logger.info("Falling back to anonymous credentials")
                 self.credentials = self.get_fallback_credentials()
@@ -218,10 +220,6 @@ class HRTiAuthenticator(BaseAuthenticator):
     def _register_device(self):
         """Register device with HRTi"""
         try:
-            # Ensure we have http_manager
-            if not self.http_manager:
-                raise Exception("HTTP manager not available")
-
             headers = self.config.get_auth_headers(
                 device_id=self._device_id,
                 ip_address=self._ip_address,
@@ -254,10 +252,6 @@ class HRTiAuthenticator(BaseAuthenticator):
     def _get_initial_data(self):
         """Get initial content rating and profiles"""
         try:
-            # Ensure we have http_manager
-            if not self.http_manager:
-                raise Exception("HTTP manager not available")
-
             headers = self.config.get_auth_headers(
                 device_id=self._device_id,
                 ip_address=self._ip_address,
@@ -314,10 +308,6 @@ class HRTiAuthenticator(BaseAuthenticator):
                           channel_id: str = None, **kwargs) -> Optional[Dict[str, Any]]:
         """Authorize a playback session"""
         try:
-            # Ensure we have http_manager
-            if not self.http_manager:
-                raise Exception("HTTP manager not available")
-
             headers = self.config.get_auth_headers(
                 device_id=self._device_id,
                 ip_address=self._ip_address,
@@ -382,18 +372,138 @@ class HRTiAuthenticator(BaseAuthenticator):
         if not token or not token.access_token:
             return TokenAuthLevel.ANONYMOUS
 
+        # Check if it's an HRTiAuthToken and has user_id attribute
+        if isinstance(token, HRTiAuthToken):
+            # Check if it's an anonymous token by user_id
+            if token.user_id == 'anonymoushrt':
+                return TokenAuthLevel.ANONYMOUS
+
+            # Check if we have user credentials available
+            from ...base.auth.credentials import UserPasswordCredentials
+
+            # Check stored credentials first
+            try:
+                stored_creds = self.settings_manager.get_provider_credentials(self.provider_name, self.country)
+            except TypeError:
+                stored_creds = self.settings_manager.get_provider_credentials(self.provider_name)
+
+            has_user_creds = isinstance(stored_creds, UserPasswordCredentials) and stored_creds.validate()
+
+            # Check current credentials
+            if not has_user_creds:
+                has_user_creds = isinstance(self.credentials, UserPasswordCredentials) and self.credentials.validate()
+
+            # If we have user credentials and token has a real user_id, it's user authenticated
+            if has_user_creds and token.user_id and token.user_id != 'anonymoushrt':
+                return TokenAuthLevel.USER_AUTHENTICATED
+
         # Check if using anonymous credentials
         if (hasattr(self.credentials, 'username') and
                 self.credentials.username == 'anonymoushrt'):
             return TokenAuthLevel.ANONYMOUS
 
-        # If we have a valid token and user credentials, consider it user authenticated
+        # If we have user credentials, consider it user authenticated
         if (hasattr(self.credentials, 'username') and
                 self.credentials.username and
                 self.credentials.username != 'anonymoushrt'):
             return TokenAuthLevel.USER_AUTHENTICATED
 
         return TokenAuthLevel.CLIENT_CREDENTIALS
+
+    def should_upgrade_token(self, token: BaseAuthToken) -> bool:
+        """
+        Determine if token should be upgraded from anonymous to user credentials
+        """
+        if not token:
+            return False
+
+        # Classify token if not already classified
+        if token.auth_level == TokenAuthLevel.UNKNOWN:
+            token.auth_level = self._classify_token(token)
+
+        # Check if token is anonymous and we have user credentials
+        if token.auth_level == TokenAuthLevel.ANONYMOUS:
+            from ...base.auth.credentials import UserPasswordCredentials
+
+            # Check if we have stored user credentials
+            try:
+                stored_creds = self.settings_manager.get_provider_credentials(self.provider_name, self.country)
+            except TypeError:
+                stored_creds = self.settings_manager.get_provider_credentials(self.provider_name)
+
+            has_stored_user_creds = isinstance(stored_creds, UserPasswordCredentials) and stored_creds.validate()
+
+            # Check current credentials
+            has_current_user_creds = isinstance(self.credentials,
+                                                UserPasswordCredentials) and self.credentials.validate()
+
+            # Upgrade if we have any user credentials
+            return has_stored_user_creds or has_current_user_creds
+
+        return False
+
+    def get_bearer_token(self, force_refresh: bool = False, force_upgrade: bool = False) -> str:
+        """
+        Get bearer token with automatic upgrade from anonymous to user credentials
+        """
+        logger.debug(f"HRTi get_bearer_token: force_refresh={force_refresh}, force_upgrade={force_upgrade}")
+
+        # Get current token (authenticate if needed)
+        current_token = self.authenticate(force_refresh=force_refresh)
+
+        # Check if upgrade is needed/requested
+        should_upgrade = force_upgrade or self.should_upgrade_token(current_token)
+
+        if should_upgrade:
+            logger.info(
+                f"HRTi token upgrade triggered (force={force_upgrade}, should_upgrade={self.should_upgrade_token(current_token)})")
+
+            # Store original credentials at the beginning
+            original_credentials = self.credentials
+
+            try:
+                # Get user credentials from settings manager
+                try:
+                    user_creds = self.settings_manager.get_provider_credentials(self.provider_name, self.country)
+                except TypeError:
+                    user_creds = self.settings_manager.get_provider_credentials(self.provider_name)
+
+                if not user_creds or not user_creds.validate():
+                    logger.debug("No valid user credentials available for upgrade")
+                    return current_token.bearer_token
+
+                # Switch to user credentials
+                self.credentials = user_creds
+
+                # Perform authentication with user credentials
+                logger.info("Performing authentication with user credentials for upgrade")
+                user_token = self._perform_authentication()
+
+                if user_token and not user_token.is_expired:
+                    # Verify it's actually a user token (not anonymous)
+                    user_token.auth_level = self._classify_token(user_token)
+
+                    if user_token.auth_level == TokenAuthLevel.USER_AUTHENTICATED:
+                        logger.info("Successfully upgraded to user token")
+                        self._current_token = user_token
+                        self._save_session()
+                        return user_token.bearer_token
+                    else:
+                        logger.warning("Authentication succeeded but token is still anonymous level")
+                        self.credentials = original_credentials
+                        return current_token.bearer_token
+                else:
+                    logger.warning("User authentication failed during upgrade")
+                    self.credentials = original_credentials
+                    return current_token.bearer_token
+
+            except Exception as e:
+                logger.error(f"Token upgrade failed: {e}")
+                # Restore original credentials on failure
+                self.credentials = original_credentials
+                return current_token.bearer_token
+
+        return current_token.bearer_token if current_token else ""
 
     def _refresh_token(self) -> Optional[BaseAuthToken]:
         """Refresh HRTi token - reauthenticate since it's custom auth"""
