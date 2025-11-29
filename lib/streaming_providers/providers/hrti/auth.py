@@ -78,7 +78,6 @@ class HRTiAuthenticator(BaseAuthenticator):
 
     def _get_auth_headers(self) -> Dict[str, str]:
         """Get headers specifically for authentication endpoint"""
-        # Get IP address and device ID first
         if not self._ip_address:
             self._get_ip_address()
 
@@ -91,11 +90,11 @@ class HRTiAuthenticator(BaseAuthenticator):
             'Content-Type': 'application/json',
             'deviceid': device_id,
             'devicetypeid': self.config.device_reference_id,
-            'host': 'hrti.hrt.hr',
+            # REMOVED: 'host': 'hrti.hrt.hr',  # Let HTTP library set this automatically
             'ipaddress': self._ip_address,
             'operatorreferenceid': self.config.operator_reference_id,
             'origin': self.config.base_website,
-            'referer': f'{self.config.base_website}/signin'  # Critical: Use /signin for auth
+            'referer': f'{self.config.base_website}/signin'
         }
 
         return headers
@@ -111,19 +110,19 @@ class HRTiAuthenticator(BaseAuthenticator):
             referer = f'{self.config.base_website}/login'
 
         headers = {
-            'connection': 'keep-alive',  # ← Add this
+            'connection': 'keep-alive',
             'User-Agent': self.config.user_agent,
-            'Accept': 'application/json, text/plain, */*',  # ← Broader accept
+            'Accept': 'application/json, text/plain, */*',
             'Content-Type': 'application/json',
             'deviceid': device_id,
             'devicetypeid': self.config.device_reference_id,
-            'host': 'hrti.hrt.hr',
+            # REMOVED: 'host': 'hrti.hrt.hr',  # Let HTTP library set this automatically
             'ipaddress': self._ip_address,
             'operatorreferenceid': self.config.operator_reference_id,
             'origin': self.config.base_website,
             'referer': referer,
-            'accept-encoding': 'gzip, deflate, br',  # ← Add this
-            'accept-language': 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7',  # ← Add this
+            'accept-encoding': 'gzip, deflate, br',
+            'accept-language': 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7',
         }
 
         # Add authorization header with Client prefix
@@ -336,17 +335,20 @@ class HRTiAuthenticator(BaseAuthenticator):
     def _register_device(self):
         """Register device with HRTi using API headers with proper authorization"""
         try:
-            # Get the bearer token from current token - THIS IS CRITICAL
             bearer_token = self._current_token.access_token if self._current_token else ''
             if not bearer_token:
                 logger.warning("No bearer token available for device registration")
                 return
 
             # Use API headers with proper authorization and referer
-            headers = self._get_api_headers(bearer_token)  # This should include authorization
+            headers = self._get_api_headers(bearer_token)
 
             # Update the referer to root path for device registration
             headers['referer'] = f'{self.config.base_website}/'
+
+            # Add cache-control and pragma headers to match working example
+            headers['cache-control'] = 'no-cache'
+            headers['pragma'] = 'no-cache'
 
             payload = {
                 "DeviceSerial": self._device_id,
@@ -359,15 +361,6 @@ class HRTiAuthenticator(BaseAuthenticator):
                 "ClientType": self.config.client_type
             }
 
-            # Log the request for debugging - include authorization this time
-            safe_headers = headers.copy()
-            if 'authorization' in safe_headers:
-                auth_value = safe_headers['authorization']
-                safe_headers['authorization'] = f"{auth_value[:20]}..." if auth_value else "MISSING"
-            else:
-                safe_headers['authorization'] = "MISSING"  # This will show if it's missing
-
-            logger.debug(f"HRTi Device Registration Headers: {safe_headers}")
             logger.debug(f"HRTi Device Registration Payload: {payload}")
 
             response = self.http_manager.post(
@@ -378,12 +371,8 @@ class HRTiAuthenticator(BaseAuthenticator):
             )
 
             logger.debug(f"Device registration response status: {response.status_code}")
-            logger.debug(f"Device registration response headers: {dict(response.headers)}")
-            logger.debug(f"Device registration response content: {response.text}")
-
             response.raise_for_status()
 
-            # Log successful response
             result = response.json()
             logger.debug(f"HRTi device registration successful: {result}")
 
