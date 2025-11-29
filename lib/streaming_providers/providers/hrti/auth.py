@@ -148,12 +148,24 @@ class HRTiAuthenticator(BaseAuthenticator):
         """Create HRTi-specific token from API response"""
         result = response_data.get('Result', {})
 
+        # Debug the response structure
+        logger.debug(f"GrantAccess response Result keys: {list(result.keys())}")
+
+        # Extract token
+        access_token = result.get('Token', '')
+        logger.debug(f"Extracted access_token: {'present' if access_token else 'MISSING'}")
+        if access_token:
+            logger.debug(f"Token length: {len(access_token)}, starts with: {access_token[:20]}...")
+
         # Store user ID if available
         if 'Customer' in result:
             self._user_id = result['Customer'].get('CustomerId', '')
+            logger.debug(f"Extracted user_id: {self._user_id}")
+        else:
+            logger.warning("No Customer data in response")
 
         token = HRTiAuthToken(
-            access_token=result.get('Token', ''),
+            access_token=access_token,
             token_type='Client',
             expires_in=86400,  # 24 hours default
             issued_at=time.time(),
@@ -164,6 +176,8 @@ class HRTiAuthenticator(BaseAuthenticator):
 
         # Classify the token immediately after creation
         token.auth_level = self._classify_token(token)
+
+        logger.debug(f"Created HRTiAuthToken - access_token: {bool(token.access_token)}, user_id: {token.user_id}")
 
         return token
 
@@ -187,14 +201,28 @@ class HRTiAuthenticator(BaseAuthenticator):
         # Step 3: Perform grant access
         token_data = self._perform_grant_access()
 
-        # Step 4: Register device
+        # Step 4: Create token and SET IT AS CURRENT TOKEN
+        token = self._create_token_from_response(token_data)
+        self._current_token = token  # THIS IS THE CRITICAL MISSING LINE
+
+        # Debug: Verify token is available
+        logger.debug(f"Token created - access_token present: {bool(token.access_token)}")
+        if token.access_token:
+            logger.debug(f"Token value: {token.access_token[:20]}...")
+        else:
+            logger.warning("Token created but access_token is empty!")
+
+        # Step 5: Register device (now with token available in self._current_token)
         self._register_device()
 
-        # Step 5: Get content rating and profiles
+        # Step 6: Get content rating and profiles
         self._get_initial_data()
 
-        token = self._create_token_from_response(token_data)
         logger.info(f"HRTi authentication successful - user_id: {token.user_id}, auth_level: {token.auth_level.value}")
+
+        # Save the session after successful authentication
+        self._save_session()
+
         return token
 
     def _get_ip_address(self) -> str:
