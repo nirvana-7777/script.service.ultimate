@@ -217,34 +217,90 @@ class HRTiProvider(StreamingProvider):
 
     def enrich_channel_data(self, channel: StreamingChannel, **kwargs) -> Optional[StreamingChannel]:
         """
-        Enrich channel with manifest URL and additional data
+        Enrich channel with manifest URL and DRM configuration
         """
         try:
-            # For HRTi, we need to authorize a session to get the manifest
-            manifest_url = self.get_manifest(channel.channel_id, **kwargs)
+            logger.debug(f"Enriching channel: {channel.name} ({channel.channel_id})")
 
+            # For live channels, we need to authorize a session first
+            content_type = "rlive" if channel.content_type == "AUDIO" else "tlive"
+
+            # Parse the streaming URL to get content DRM ID
+            from urllib.parse import urlparse
+            parts = urlparse(channel.manifest_script)
+            path_parts = parts.path.strip('/').split('/')
+
+            # Content DRM ID format: directory1_directory2
+            # Example: /cdn1oiv/hrtliveorigin/... -> cdn1oiv_hrtliveorigin
+            content_drm_id = None
+            if len(path_parts) >= 2:
+                content_drm_id = f"{path_parts[0]}_{path_parts[1]}"
+
+            logger.debug(f"Content DRM ID for {channel.name}: {content_drm_id}")
+
+            # Authorize session
+            session_data = self.auth.authorize_session(
+                content_type=content_type,
+                content_ref_id=channel.channel_id,
+                content_drm_id=content_drm_id,
+                video_store_ids=None,
+                channel_id=channel.channel_id,
+                start_time=None,
+                end_time=None
+            )
+
+            if not session_data:
+                logger.warning(f"Failed to authorize session for channel {channel.name}")
+                return channel
+
+            # Check if authorized
+            if not session_data.get('Authorized', False):
+                logger.warning(f"Session not authorized for channel {channel.name}")
+                return channel
+
+            logger.debug(f"Session authorized for {channel.name}")
+
+            # Report session event (play start)
+            session_id = session_data.get('SessionId') or session_data.get('DrmId')
+            if session_id:
+                self.auth.report_session_event(session_id, channel.channel_id)
+
+            # Set the manifest URL - use the streaming URL from channel data
+            manifest_url = channel.manifest_script
             if manifest_url:
-                # HRTi manifests are dynamic and session-based
                 channel.set_dynamic_manifest(manifest_url)
+                logger.debug(f"Set manifest for {channel.name}: {manifest_url}")
 
-                # Set DRM configuration
-                drm_configs = self.get_drm(channel.channel_id, **kwargs)
-                if drm_configs:
-                    channel.use_cdm = True
-                    channel.cdm_type = "widevine"
-                    # Set license URL from first Widevine config
-                    for config in drm_configs:
-                        if config.system == DRMSystem.WIDEVINE:
-                            channel.license_url = config.license.server_url
-                            break
-                else:
-                    channel.use_cdm = False
-                    channel.cdm_type = None
+            # Set DRM configuration with session data
+            drm_configs = self.get_drm(channel.channel_id, session_data, **kwargs)
+            if drm_configs:
+                channel.use_cdm = True
+                channel.cdm_type = "widevine"
 
-                return channel
+                # Set license URL from the first Widevine config
+                for config in drm_configs:
+                    if config.system == DRMSystem.WIDEVINE:
+                        channel.license_url = config.license.server_url
+
+                        # Build the complete license key for inputstream.adaptive
+                        # Format: server_url|req_headers|req_data|response_format
+                        license_key_parts = [
+                            config.license.server_url,
+                            config.license.req_headers,
+                            'R{SSM}',  # Placeholder - inputstream will replace with actual challenge
+                            'JBlicense'  # Response is JSON, extract 'license' field
+                        ]
+                        channel.license_key = '|'.join(license_key_parts)
+
+                        logger.debug(f"Set DRM config for {channel.name}")
+                        logger.debug(f"License URL: {config.license.server_url}")
+                        break
             else:
-                logger.warning(f"Could not fetch manifest for channel {channel.name} ({channel.channel_id})")
-                return channel
+                logger.warning(f"No DRM config for {channel.name}")
+                channel.use_cdm = False
+                channel.cdm_type = None
+
+            return channel
 
         except Exception as e:
             logger.error(f"Error enriching channel data for {channel.name}: {e}")

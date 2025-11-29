@@ -464,21 +464,38 @@ class HRTiAuthenticator(BaseAuthenticator):
             self._user_id = self._user_id or ''
 
     def authorize_session(self, content_type: str, content_ref_id: str,
-                          channel_id: str = None, **kwargs) -> Optional[Dict[str, Any]]:
+                          content_drm_id: str = None,
+                          video_store_ids: list = None,
+                          channel_id: str = None,
+                          start_time: str = None,
+                          end_time: str = None) -> Optional[Dict[str, Any]]:
         """Authorize a playback session"""
         try:
             bearer_token = self._current_token.access_token if self._current_token else ''
             headers = self._get_api_headers(bearer_token)
 
+            # Set referer based on content type
+            if channel_id is None:
+                headers['referer'] = f'{self.config.base_website}/videostore'
+            else:
+                if content_type == "tlive":
+                    headers['referer'] = f'{self.config.base_website}/live/tv?channel={channel_id}'
+                elif content_type == "rlive":
+                    headers['referer'] = f'{self.config.base_website}/live/radio'
+                else:
+                    headers['referer'] = f'{self.config.base_website}/live/'
+
             payload = {
                 "ContentType": content_type,
                 "ContentReferenceId": content_ref_id,
-                "ContentDrmId": f"{content_ref_id}_drm",
-                "VideostoreReferenceIds": kwargs.get('video_store_ids', []),
+                "ContentDrmId": content_drm_id or f"{content_ref_id}_drm",
+                "VideostoreReferenceIds": video_store_ids,
                 "ChannelReferenceId": channel_id,
-                "StartTime": kwargs.get('start_time'),
-                "EndTime": kwargs.get('end_time')
+                "StartTime": start_time,
+                "EndTime": end_time
             }
+
+            logger.debug(f"Authorizing session - type: {content_type}, ref: {content_ref_id}, drm: {content_drm_id}")
 
             response = self.http_manager.post(
                 self.config.api_endpoints['authorize_session'],
@@ -490,7 +507,9 @@ class HRTiAuthenticator(BaseAuthenticator):
 
             result = response.json()
             if 'Result' in result:
-                logger.debug("HRTi session authorization successful")
+                authorized = result['Result'].get('Authorized', False)
+                session_id = result['Result'].get('SessionId') or result['Result'].get('DrmId')
+                logger.debug(f"Session authorization result - authorized: {authorized}, session_id: {session_id}")
                 return result['Result']
             else:
                 logger.warning("No result in session authorization response")
@@ -500,8 +519,40 @@ class HRTiAuthenticator(BaseAuthenticator):
             logger.error(f"HRTi session authorization failed: {e}")
             return None
 
+    def report_session_event(self, session_id: str, channel_id: str = None) -> bool:
+        """Report session event (like play start)"""
+        try:
+            bearer_token = self._current_token.access_token if self._current_token else ''
+            headers = self._get_api_headers(bearer_token)
+
+            # Set referer based on channel
+            if channel_id is None:
+                headers['referer'] = f'{self.config.base_website}/videostore'
+            else:
+                headers['referer'] = f'{self.config.base_website}/live/tv?channel={channel_id}'
+
+            payload = {
+                "SessionEventId": 1,  # 1 = play start
+                "SessionId": session_id
+            }
+
+            response = self.http_manager.post(
+                self.config.api_endpoints['report_session'],
+                operation='api',
+                headers=headers,
+                data=json.dumps(payload)
+            )
+            response.raise_for_status()
+
+            logger.debug(f"Session event reported for session {session_id}")
+            return True
+
+        except Exception as e:
+            logger.warning(f"Session event reporting failed: {e}")
+            return False
+
     def get_license_data(self, session_id: str) -> str:
-        """Generate license data for DRM"""
+        """Generate license data for DRM - returns base64 encoded string"""
         try:
             drm_license = {
                 'userId': self._user_id or '',
@@ -509,8 +560,14 @@ class HRTiAuthenticator(BaseAuthenticator):
                 'merchant': self.config.merchant
             }
 
+            logger.debug(
+                f"Creating license data - userId: {self._user_id}, sessionId: {session_id}, merchant: {self.config.merchant}")
+
+            # Encode to JSON then to base64
             license_bytes = json.dumps(drm_license).encode('utf-8')
             license_b64 = base64.b64encode(license_bytes).decode('utf-8')
+
+            logger.debug(f"License data (base64, first 30 chars): {license_b64[:30]}...")
             return license_b64
 
         except Exception as e:

@@ -29,6 +29,7 @@ class HRTiDefaults:
         'channels': f'{BASE_URL}/api/api/ott/GetChannels',
         'programme': f'{BASE_URL}/api/api/ott/GetProgramme',
         'authorize_session': f'{BASE_URL}/api/api/ott/AuthorizeSession',
+        'report_session': f'{BASE_URL}/api/api/ott/ReportSessionEvent',
         'register_device': f'{HSAPI_BASE_URL}/RegisterDevice',
         'content_ratings': f'{HSAPI_BASE_URL}/ContentRatingsGet',
         'profiles': f'{HSAPI_BASE_URL}/ProfilesGet'
