@@ -126,12 +126,16 @@ class HRTiAuthenticator(BaseAuthenticator):
         return headers
 
     def _build_auth_payload(self) -> Dict[str, Any]:
-        """Build authentication payload from credentials"""
-        # Use HRTi-specific payload format, not the base class format
-        if hasattr(self.credentials, 'to_auth_payload'):
-            return self.credentials.to_auth_payload()
+        """Build HRTi-specific authentication payload"""
+        # HRTi uses specific format: {"Username":"...","Password":"...","OperatorReferenceId":"hrt"}
+        if hasattr(self.credentials, 'username') and hasattr(self.credentials, 'password'):
+            return {
+                "Username": self.credentials.username,
+                "Password": self.credentials.password,
+                "OperatorReferenceId": self.config.operator_reference_id
+            }
         else:
-            # Fallback for base credentials
+            # Fallback for any other credential type
             return {
                 "Username": getattr(self.credentials, 'username', ''),
                 "Password": getattr(self.credentials, 'password', ''),
@@ -262,16 +266,14 @@ class HRTiAuthenticator(BaseAuthenticator):
 
             safe_payload = payload.copy()
             if 'Password' in safe_payload:
-                safe_payload['Password'] = '***'
+                safe_payload['Password'] = '***' if safe_payload['Password'] else '<empty>'
             logger.debug(f"HRTi Auth Payload: {safe_payload}")
 
-            # Remove retries parameter as it's not supported by the HTTP manager
             response = self.http_manager.post(
                 self.auth_endpoint,
                 operation='auth',
                 headers=headers,
                 data=json.dumps(payload)
-                # Removed: retries=2, retry_delay=1
             )
 
             logger.debug(f"HRTi Auth Response - Status: {response.status_code}")
