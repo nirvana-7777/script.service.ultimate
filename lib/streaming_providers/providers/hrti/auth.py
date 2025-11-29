@@ -36,6 +36,11 @@ class HRTiAuthenticator(BaseAuthenticator):
         if http_manager is None:
             raise ValueError("http_manager is required for HRTiAuthenticator")
 
+        # Initialize HRTi-specific properties BEFORE calling parent init
+        self._ip_address = None
+        self._device_id = None
+        self._user_id = None  # Initialize _user_id here
+
         # Call parent init WITHOUT proxy_config and http_manager (like MagentaEU)
         super().__init__(
             provider_name='hrti',
@@ -44,11 +49,6 @@ class HRTiAuthenticator(BaseAuthenticator):
             config_dir=config_dir
             # NO proxy_config or http_manager passed to parent
         )
-
-        # Initialize HRTi-specific properties
-        self._ip_address = None
-        self._device_id = None
-        self._user_id = None
 
         # Load or initialize device ID
         self._initialize_device()
@@ -127,7 +127,16 @@ class HRTiAuthenticator(BaseAuthenticator):
 
     def _build_auth_payload(self) -> Dict[str, Any]:
         """Build authentication payload from credentials"""
-        return self.credentials.to_auth_payload()
+        # Use HRTi-specific payload format, not the base class format
+        if hasattr(self.credentials, 'to_auth_payload'):
+            return self.credentials.to_auth_payload()
+        else:
+            # Fallback for base credentials
+            return {
+                "Username": getattr(self.credentials, 'username', ''),
+                "Password": getattr(self.credentials, 'password', ''),
+                "OperatorReferenceId": self.config.operator_reference_id
+            }
 
     def _create_token_from_response(self, response_data: Dict[str, Any]) -> HRTiAuthToken:
         """Create HRTi-specific token from API response"""
@@ -142,7 +151,7 @@ class HRTiAuthenticator(BaseAuthenticator):
             token_type='Client',
             expires_in=86400,  # 24 hours default
             issued_at=time.time(),
-            user_id=self._user_id,
+            user_id=self._user_id or '',  # Ensure user_id is never None
             valid_from=result.get('ValidFrom', ''),
             valid_to=result.get('ValidTo', '')
         )
@@ -256,13 +265,13 @@ class HRTiAuthenticator(BaseAuthenticator):
                 safe_payload['Password'] = '***'
             logger.debug(f"HRTi Auth Payload: {safe_payload}")
 
+            # Remove retries parameter as it's not supported by the HTTP manager
             response = self.http_manager.post(
                 self.auth_endpoint,
                 operation='auth',
                 headers=headers,
-                data=json.dumps(payload),
-                retries=2,
-                retry_delay=1
+                data=json.dumps(payload)
+                # Removed: retries=2, retry_delay=1
             )
 
             logger.debug(f"HRTi Auth Response - Status: {response.status_code}")
@@ -379,6 +388,22 @@ class HRTiAuthenticator(BaseAuthenticator):
         if not self._ip_address:
             self._get_ip_address()
         return self._ip_address
+
+    def _load_session(self) -> None:
+        """Override to ensure _user_id is set when loading session"""
+        try:
+            # Call parent method first
+            super()._load_session()
+
+            # If we have a current token and it's an HRTiAuthToken, set _user_id
+            if self._current_token and isinstance(self._current_token, HRTiAuthToken):
+                self._user_id = self._current_token.user_id
+                logger.debug(f"Set _user_id from loaded session: {self._user_id}")
+
+        except Exception as e:
+            logger.error(f"Error in HRTi session loading: {e}")
+            # Ensure _user_id is at least an empty string
+            self._user_id = self._user_id or ''
 
     def authorize_session(self, content_type: str, content_ref_id: str,
                           channel_id: str = None, **kwargs) -> Optional[Dict[str, Any]]:
