@@ -370,6 +370,11 @@ class HRTiAuthenticator(BaseAuthenticator):
                 headers=headers,
                 data=json.dumps(payload)
             )
+
+            logger.debug(f"Device registration response status: {response.status_code}")
+            logger.debug(f"Device registration response headers: {dict(response.headers)}")
+            logger.debug(f"Device registration response content: {response.text}")
+
             response.raise_for_status()
 
             # Log successful response

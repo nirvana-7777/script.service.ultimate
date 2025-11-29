@@ -47,7 +47,7 @@ class HRTiDefaults:
     CLIENT_TYPE = 'Chrome 142'
 
     # User Agent
-    USER_AGENT = 'kodi plugin for hrti.hrt.hr (python)'
+    USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'
 
     # HTTP settings
     DEFAULT_TIMEOUT = 30
