@@ -100,16 +100,20 @@ class HRTiAuthenticator(BaseAuthenticator):
 
         return headers
 
-    def _get_api_headers(self, bearer_token: str = None) -> Dict[str, str]:
-        """Get headers for regular API endpoints"""
+    def _get_api_headers(self, bearer_token: str = None, referer: str = None) -> Dict[str, str]:
+        """Get headers for regular API endpoints with proper session support"""
         if not self._ip_address:
             self._get_ip_address()
 
         device_id = self.get_device_id()
 
+        if referer is None:
+            referer = f'{self.config.base_website}/login'
+
         headers = {
+            'connection': 'keep-alive',  # ← Add this
             'User-Agent': self.config.user_agent,
-            'Accept': 'application/json',
+            'Accept': 'application/json, text/plain, */*',  # ← Broader accept
             'Content-Type': 'application/json',
             'deviceid': device_id,
             'devicetypeid': self.config.device_reference_id,
@@ -117,10 +121,12 @@ class HRTiAuthenticator(BaseAuthenticator):
             'ipaddress': self._ip_address,
             'operatorreferenceid': self.config.operator_reference_id,
             'origin': self.config.base_website,
-            'referer': f'{self.config.base_website}/login'  # Use /login for API calls
+            'referer': referer,
+            'accept-encoding': 'gzip, deflate, br',  # ← Add this
+            'accept-language': 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7',  # ← Add this
         }
 
-        # CRITICAL: Add authorization header if token is provided
+        # Add authorization header with Client prefix
         if bearer_token:
             headers['authorization'] = f'Client {bearer_token}'
             logger.debug(f"Added authorization header with token: {bearer_token[:20]}...")
