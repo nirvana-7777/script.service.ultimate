@@ -38,7 +38,7 @@ class HRTiDefaults:
     LICENSE_URL = 'https://lic.drmtoday.com/license-proxy-widevine/cenc/'
 
     # Device information
-    DEVICE_REFERENCE_ID = '6'
+    DEVICE_REFERENCE_ID = '6'  # String '6' as required by headers
     OPERATOR_REFERENCE_ID = 'hrt'
     MERCHANT = 'aviion2'
     CONNECTION_TYPE = 'LAN/WiFi'
@@ -147,10 +147,10 @@ class HRTiConfig:
             headers['authorization'] = f'Client {token}'
 
         headers.update({
+            'devicetypeid': self.device_reference_id,  # Added devicetypeid
             'operatorreferenceid': self.operator_reference_id,
-            'devicetypeid': self.device_reference_id,
             'origin': self.base_website,
-            'referer': self.base_website
+            'referer': self.base_website,
         })
 
         return headers

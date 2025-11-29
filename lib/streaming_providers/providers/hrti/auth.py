@@ -4,6 +4,7 @@
 import json
 import base64
 import time
+import uuid
 from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
 
@@ -39,7 +40,7 @@ class HRTiAuthenticator(BaseAuthenticator):
         super().__init__(
             provider_name='hrti',
             credentials=credentials,
-            country=None,
+            country=None,  # Changed from 'HR' to None for flat credential structure
             config_dir=config_dir
             # NO proxy_config or http_manager passed to parent
         )
@@ -76,8 +77,53 @@ class HRTiAuthenticator(BaseAuthenticator):
         return self.config.api_endpoints['grant_access']
 
     def _get_auth_headers(self) -> Dict[str, str]:
-        """Get headers for authentication requests"""
-        return self.config.get_base_headers()
+        """Get headers specifically for authentication endpoint"""
+        # Get IP address and device ID first
+        if not self._ip_address:
+            self._get_ip_address()
+
+        device_id = self.get_device_id()
+
+        # Special headers for authentication endpoint with /signin referer
+        headers = {
+            'User-Agent': self.config.user_agent,
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'deviceid': device_id,
+            'devicetypeid': self.config.device_reference_id,
+            'host': 'hrti.hrt.hr',
+            'ipaddress': self._ip_address,
+            'operatorreferenceid': self.config.operator_reference_id,
+            'origin': self.config.base_website,
+            'referer': f'{self.config.base_website}/signin'  # Critical: Use /signin for auth
+        }
+
+        return headers
+
+    def _get_api_headers(self, bearer_token: str = None) -> Dict[str, str]:
+        """Get headers for regular API endpoints"""
+        if not self._ip_address:
+            self._get_ip_address()
+
+        device_id = self.get_device_id()
+
+        headers = {
+            'User-Agent': self.config.user_agent,
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'deviceid': device_id,
+            'devicetypeid': self.config.device_reference_id,
+            'host': 'hrti.hrt.hr',
+            'ipaddress': self._ip_address,
+            'operatorreferenceid': self.config.operator_reference_id,
+            'origin': self.config.base_website,
+            'referer': self.config.base_website  # Regular referer for API calls
+        }
+
+        if bearer_token:
+            headers['authorization'] = f'Client {bearer_token}'
+
+        return headers
 
     def _build_auth_payload(self) -> Dict[str, Any]:
         """Build authentication payload from credentials"""
@@ -148,7 +194,7 @@ class HRTiAuthenticator(BaseAuthenticator):
                 operation='api'
             )
             response.raise_for_status()
-            self._ip_address = response.text.strip()
+            self._ip_address = response.text.strip().strip('"')  # Remove quotes if present
             logger.debug(f"Retrieved IP address: {self._ip_address}")
             return self._ip_address
         except Exception as e:
@@ -183,28 +229,51 @@ class HRTiAuthenticator(BaseAuthenticator):
             logger.warning(f"Error loading HRTi environment config: {e}")
 
     def _perform_grant_access(self) -> Dict[str, Any]:
-        """Perform grant access authentication with better logging"""
+        """Perform grant access authentication with proper headers and debugging"""
         try:
+            # Ensure we have IP and device ID
+            if not self._ip_address:
+                self._get_ip_address()
+
+            device_id = self.get_device_id()
+
+            logger.debug(f"Performing grant access with username: {self.credentials.username}")
+            logger.debug(f"Using device ID: {device_id}")
+            logger.debug(f"Using IP address: {self._ip_address}")
+
+            # Use auth-specific headers with /signin referer
             headers = self._get_auth_headers()
             payload = self._build_auth_payload()
 
-            # Log which credentials we're using
-            if hasattr(self.credentials, 'username'):
-                logger.debug(f"Performing grant access with username: {self.credentials.username}")
+            # Log the request details (safely)
+            safe_headers = headers.copy()
+            if 'deviceid' in safe_headers:
+                safe_headers['deviceid'] = f"{safe_headers['deviceid'][:8]}..."
+            logger.debug(f"HRTi Auth Headers: {safe_headers}")
+
+            safe_payload = payload.copy()
+            if 'Password' in safe_payload:
+                safe_payload['Password'] = '***'
+            logger.debug(f"HRTi Auth Payload: {safe_payload}")
 
             response = self.http_manager.post(
                 self.auth_endpoint,
                 operation='auth',
                 headers=headers,
-                data=json.dumps(payload)
+                data=json.dumps(payload),
+                retries=2,
+                retry_delay=1
             )
+
+            logger.debug(f"HRTi Auth Response - Status: {response.status_code}")
             response.raise_for_status()
 
             result = response.json()
             if 'Result' not in result:
                 raise Exception("No result in grant access response")
 
-            logger.debug(f"Grant access successful - has Result: {'Result' in result}")
+            customer_id = result.get('Result', {}).get('Customer', {}).get('CustomerId', 'unknown')
+            logger.debug(f"Grant access successful - user: {customer_id}")
             return result
 
         except Exception as e:
@@ -218,13 +287,10 @@ class HRTiAuthenticator(BaseAuthenticator):
                 raise e
 
     def _register_device(self):
-        """Register device with HRTi"""
+        """Register device with HRTi using API headers"""
         try:
-            headers = self.config.get_auth_headers(
-                device_id=self._device_id,
-                ip_address=self._ip_address,
-                token=self._current_token.access_token if self._current_token else ''
-            )
+            bearer_token = self._current_token.access_token if self._current_token else ''
+            headers = self._get_api_headers(bearer_token)
 
             payload = {
                 "DeviceSerial": self._device_id,
@@ -250,13 +316,10 @@ class HRTiAuthenticator(BaseAuthenticator):
             logger.warning(f"HRTi device registration failed: {e}")
 
     def _get_initial_data(self):
-        """Get initial content rating and profiles"""
+        """Get initial content rating and profiles using API headers"""
         try:
-            headers = self.config.get_auth_headers(
-                device_id=self._device_id,
-                ip_address=self._ip_address,
-                token=self._current_token.access_token if self._current_token else ''
-            )
+            bearer_token = self._current_token.access_token if self._current_token else ''
+            headers = self._get_api_headers(bearer_token)
 
             # Get content ratings
             content_response = self.http_manager.post(
@@ -282,17 +345,30 @@ class HRTiAuthenticator(BaseAuthenticator):
             logger.debug(f"Error loading HRTi initial data: {e}")
 
     def _initialize_device(self):
-        """Initialize or load device ID"""
+        """Initialize or load device ID - ensure it's a proper UUID"""
         try:
             self._device_id = self.settings_manager.get_device_id(self.provider_name, self.country)
             if not self._device_id:
-                import uuid
                 self._device_id = str(uuid.uuid4())
                 logger.debug(f"Generated new device ID: {self._device_id}")
+
+            # Ensure it's a valid UUID format
+            if not self._validate_uuid(self._device_id):
+                logger.warning(f"Invalid device ID format, generating new one: {self._device_id}")
+                self._device_id = str(uuid.uuid4())
+
         except Exception as e:
             logger.error(f"Error initializing device ID: {e}")
-            import uuid
             self._device_id = str(uuid.uuid4())
+
+    @staticmethod
+    def _validate_uuid(uuid_string):
+        """Validate UUID format"""
+        try:
+            uuid.UUID(uuid_string)
+            return True
+        except ValueError:
+            return False
 
     def get_device_id(self) -> str:
         """Get device ID"""
@@ -308,11 +384,8 @@ class HRTiAuthenticator(BaseAuthenticator):
                           channel_id: str = None, **kwargs) -> Optional[Dict[str, Any]]:
         """Authorize a playback session"""
         try:
-            headers = self.config.get_auth_headers(
-                device_id=self._device_id,
-                ip_address=self._ip_address,
-                token=self._current_token.access_token if self._current_token else ''
-            )
+            bearer_token = self._current_token.access_token if self._current_token else ''
+            headers = self._get_api_headers(bearer_token)
 
             payload = {
                 "ContentType": content_type,

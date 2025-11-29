@@ -71,17 +71,29 @@ class HRTiProvider(StreamingProvider):
 
     def _get_authenticated_headers(self) -> Dict[str, str]:
         """
-        Get headers with HRTi authentication
+        Get headers with HRTi authentication for API requests
         """
         bearer_token = self.auth.get_bearer_token()
         device_id = self.auth.get_device_id()
         ip_address = self.auth.get_ip_address()
 
-        return self.hrti_config.get_auth_headers(
-            device_id=device_id,
-            ip_address=ip_address,
-            token=bearer_token
-        )
+        headers = {
+            'User-Agent': self.hrti_config.user_agent,
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'deviceid': device_id,
+            'devicetypeid': self.hrti_config.device_reference_id,
+            'host': 'hrti.hrt.hr',
+            'ipaddress': ip_address,
+            'operatorreferenceid': self.hrti_config.operator_reference_id,
+            'origin': self.hrti_config.base_website,
+            'referer': self.hrti_config.base_website
+        }
+
+        if bearer_token:
+            headers['authorization'] = f'Client {bearer_token}'
+
+        return headers
 
     def get_channels(self, **kwargs) -> List[StreamingChannel]:
         """
@@ -248,8 +260,6 @@ class HRTiProvider(StreamingProvider):
             logger.error(f"Error getting manifest for channel {channel_id}: {e}")
             return None
 
-    # In provider.py - fix the get_drm method:
-
     def get_drm(self, channel_id: str, **kwargs) -> List[DRMConfig]:
         """
         Get DRM configurations for a channel
@@ -280,7 +290,6 @@ class HRTiProvider(StreamingProvider):
             logger.error(f"Error getting DRM config for channel {channel_id}: {e}")
             return []
 
-
     def get_epg_data(self, channel_id: str, **kwargs) -> Optional[Dict]:
         """
         Get EPG data for a channel
@@ -298,7 +307,7 @@ class HRTiProvider(StreamingProvider):
                 "EndTime": f"/Date({end_time})/"
             }
 
-            response = self.http_manager.post(  # FIXED: Use http_manager
+            response = self.http_manager.post(
                 self.hrti_config.api_endpoints['programme'],
                 operation='api',
                 headers=headers,
