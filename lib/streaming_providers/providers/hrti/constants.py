@@ -42,9 +42,9 @@ class HRTiDefaults:
     OPERATOR_REFERENCE_ID = 'hrt'
     MERCHANT = 'aviion2'
     CONNECTION_TYPE = 'LAN/WiFi'
-    APPLICATION_VERSION = '5.62.5'
+    APPLICATION_VERSION = '5.97.6'
     OS_VERSION = 'Linux'
-    CLIENT_TYPE = 'Chrome 96'
+    CLIENT_TYPE = 'Chrome 142'
 
     # User Agent
     USER_AGENT = 'kodi plugin for hrti.hrt.hr (python)'

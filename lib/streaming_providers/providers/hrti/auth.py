@@ -298,10 +298,16 @@ class HRTiAuthenticator(BaseAuthenticator):
                 raise e
 
     def _register_device(self):
-        """Register device with HRTi using API headers"""
+        """Register device with HRTi using API headers with proper authorization"""
         try:
+            # Get the bearer token from current token
             bearer_token = self._current_token.access_token if self._current_token else ''
+
+            # Use API headers with proper authorization and referer
             headers = self._get_api_headers(bearer_token)
+
+            # Update the referer to root path for device registration
+            headers['referer'] = f'{self.config.base_website}/'
 
             payload = {
                 "DeviceSerial": self._device_id,
@@ -313,6 +319,13 @@ class HRTiAuthenticator(BaseAuthenticator):
                 "OsVersion": self.config.os_version,
                 "ClientType": self.config.client_type
             }
+
+            # Log the request for debugging
+            safe_headers = headers.copy()
+            if 'authorization' in safe_headers:
+                safe_headers['authorization'] = f"{safe_headers['authorization'][:20]}..."
+            logger.debug(f"HRTi Device Registration Headers: {safe_headers}")
+            logger.debug(f"HRTi Device Registration Payload: {payload}")
 
             response = self.http_manager.post(
                 self.config.api_endpoints['register_device'],
@@ -327,10 +340,13 @@ class HRTiAuthenticator(BaseAuthenticator):
             logger.warning(f"HRTi device registration failed: {e}")
 
     def _get_initial_data(self):
-        """Get initial content rating and profiles using API headers"""
+        """Get initial content rating and profiles using API headers with proper authorization"""
         try:
             bearer_token = self._current_token.access_token if self._current_token else ''
             headers = self._get_api_headers(bearer_token)
+
+            # Update the referer to root path for these API calls
+            headers['referer'] = f'{self.config.base_website}/'
 
             # Get content ratings
             content_response = self.http_manager.post(
