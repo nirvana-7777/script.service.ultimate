@@ -179,7 +179,8 @@ class HRTiProvider(StreamingProvider):
         """
         try:
             name = channel_data.get('Name', '')
-            channel_id = channel_data.get('ReferenceId', '')
+            # FIX: API returns 'ReferenceID' (capital ID), not 'ReferenceId'
+            channel_id = channel_data.get('ReferenceID', '')
             streaming_url = channel_data.get('StreamingURL', '')
             is_radio = channel_data.get('Radio', False)
             icon_url = channel_data.get('Icon', '')
