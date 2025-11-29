@@ -277,30 +277,57 @@ class HRTiProvider(StreamingProvider):
             logger.error(f"Error getting manifest for channel {channel_id}: {e}")
             return None
 
-    def get_drm(self, channel_id: str, **kwargs) -> List[DRMConfig]:
+    def get_drm(self, channel_id: str, session_data: Dict = None, **kwargs) -> List[DRMConfig]:
         """
-        Get DRM configurations for a channel
+        Get DRM configurations for a channel with proper license data
         """
         try:
-            # Use license URL from constants
-            license_url = self.hrti_config.license_url
+            if not session_data:
+                logger.warning(f"No session data provided for DRM config - channel {channel_id}")
+                return []
 
+            # Get session ID from authorization
+            session_id = session_data.get('SessionId') or session_data.get('DrmId')
+            if not session_id:
+                logger.error("No session ID in session data")
+                return []
+
+            # Generate license data (base64 encoded)
+            license_data = self.auth.get_license_data(session_id)
+            if not license_data:
+                logger.error("Failed to generate license data")
+                return []
+
+            logger.debug(f"Generated license data for session {session_id}")
+
+            # Build the license request headers in the format expected by inputstream.adaptive
+            # Format: Key1=Value1&Key2=Value2
+            license_headers = '&'.join([
+                f'User-Agent={self.hrti_config.user_agent}',
+                'Content-Type=text/plain',
+                f'origin={self.hrti_config.base_website}',
+                f'referer={self.hrti_config.base_website}/login',
+                f'dt-custom-data={license_data}'
+            ])
+
+            # Create the license configuration
+            license_config = LicenseConfig(
+                server_url=self.hrti_config.license_url,
+                use_http_get_request=False,
+                req_headers=license_headers,
+                req_data='{CHA-RAW}',  # Placeholder for license challenge - will be replaced by player
+                wrapper=None,
+                unwrapper=None
+            )
+
+            # Create the DRM configuration
             drm_config = DRMConfig(
                 system=DRMSystem.WIDEVINE,
                 priority=1,
-                license=LicenseConfig(
-                    server_url=license_url,
-                    req_headers=json.dumps({
-                        'User-Agent': self.hrti_config.user_agent,
-                        'Content-Type': 'text/plain',
-                        'origin': self.hrti_config.base_website,
-                        'referer': f'{self.hrti_config.base_website}/login'  # Use /login for DRM
-                    }),
-                    req_data="{CHA-RAW}",
-                    use_http_get_request=False
-                )
+                license=license_config
             )
 
+            logger.debug(f"Created DRM config for channel {channel_id}")
             return [drm_config]
 
         except Exception as e:
