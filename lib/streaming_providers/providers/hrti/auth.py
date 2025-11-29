@@ -39,7 +39,7 @@ class HRTiAuthenticator(BaseAuthenticator):
         super().__init__(
             provider_name='hrti',
             credentials=credentials,
-            country='HR',  # Default country for HRTi
+            country=None,
             config_dir=config_dir
             # NO proxy_config or http_manager passed to parent
         )
