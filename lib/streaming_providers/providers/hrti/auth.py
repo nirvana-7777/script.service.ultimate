@@ -120,8 +120,10 @@ class HRTiAuthenticator(BaseAuthenticator):
             'referer': f'{self.config.base_website}/login'  # Use /login for API calls
         }
 
+        # CRITICAL: Add authorization header if token is provided
         if bearer_token:
             headers['authorization'] = f'Client {bearer_token}'
+            logger.debug(f"Added authorization header with token: {bearer_token[:20]}...")
 
         return headers
 
@@ -300,11 +302,14 @@ class HRTiAuthenticator(BaseAuthenticator):
     def _register_device(self):
         """Register device with HRTi using API headers with proper authorization"""
         try:
-            # Get the bearer token from current token
+            # Get the bearer token from current token - THIS IS CRITICAL
             bearer_token = self._current_token.access_token if self._current_token else ''
+            if not bearer_token:
+                logger.warning("No bearer token available for device registration")
+                return
 
             # Use API headers with proper authorization and referer
-            headers = self._get_api_headers(bearer_token)
+            headers = self._get_api_headers(bearer_token)  # This should include authorization
 
             # Update the referer to root path for device registration
             headers['referer'] = f'{self.config.base_website}/'
@@ -320,10 +325,14 @@ class HRTiAuthenticator(BaseAuthenticator):
                 "ClientType": self.config.client_type
             }
 
-            # Log the request for debugging
+            # Log the request for debugging - include authorization this time
             safe_headers = headers.copy()
             if 'authorization' in safe_headers:
-                safe_headers['authorization'] = f"{safe_headers['authorization'][:20]}..."
+                auth_value = safe_headers['authorization']
+                safe_headers['authorization'] = f"{auth_value[:20]}..." if auth_value else "MISSING"
+            else:
+                safe_headers['authorization'] = "MISSING"  # This will show if it's missing
+
             logger.debug(f"HRTi Device Registration Headers: {safe_headers}")
             logger.debug(f"HRTi Device Registration Payload: {payload}")
 
@@ -334,7 +343,10 @@ class HRTiAuthenticator(BaseAuthenticator):
                 data=json.dumps(payload)
             )
             response.raise_for_status()
-            logger.debug("HRTi device registration successful")
+
+            # Log successful response
+            result = response.json()
+            logger.debug(f"HRTi device registration successful: {result}")
 
         except Exception as e:
             logger.warning(f"HRTi device registration failed: {e}")
