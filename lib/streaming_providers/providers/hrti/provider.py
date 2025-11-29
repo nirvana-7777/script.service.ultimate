@@ -87,12 +87,15 @@ class HRTiProvider(StreamingProvider):
             'ipaddress': ip_address,
             'operatorreferenceid': self.hrti_config.operator_reference_id,
             'origin': self.hrti_config.base_website,
-            'referer': self.hrti_config.base_website
+            'referer': f'{self.hrti_config.base_website}/login'  # Use /login for API calls
         }
 
+        # Add authorization header with Client prefix
         if bearer_token:
             headers['authorization'] = f'Client {bearer_token}'
 
+        logger.debug(
+            f"HRTi API Headers - deviceid: {device_id[:8]}..., auth: {'present' if bearer_token else 'missing'}")
         return headers
 
     def get_channels(self, **kwargs) -> List[StreamingChannel]:
@@ -101,6 +104,10 @@ class HRTiProvider(StreamingProvider):
         """
         try:
             headers = self._get_authenticated_headers()
+
+            # Log the request for debugging
+            logger.debug(
+                f"Fetching HRTi channels with authorization: {'Client ...' if 'authorization' in headers else 'NO AUTHORIZATION'}")
 
             response = self.http_manager.post(
                 self.hrti_config.api_endpoints['channels'],
@@ -111,7 +118,7 @@ class HRTiProvider(StreamingProvider):
             response.raise_for_status()
 
             channels_data = response.json()
-            if 'Result' in channels_data:
+            if 'Result' in channels_data and channels_data['Result']:
                 channels = []
                 for channel in channels_data['Result']:
                     streaming_channel = self._parse_channel_data(channel)
@@ -119,9 +126,12 @@ class HRTiProvider(StreamingProvider):
                         channels.append(streaming_channel)
 
                 self.channels = channels
+                logger.info(f"Successfully fetched {len(channels)} channels from HRTi")
                 return channels
             else:
                 logger.warning("No channels found in HRTi response")
+                if 'Result' in channels_data:
+                    logger.debug(f"HRTi channels response: {channels_data}")
                 return []
 
         except requests.RequestException as e:
@@ -141,7 +151,7 @@ class HRTiProvider(StreamingProvider):
                 response.raise_for_status()
 
                 channels_data = response.json()
-                if 'Result' in channels_data:
+                if 'Result' in channels_data and channels_data['Result']:
                     channels = []
                     for channel in channels_data['Result']:
                         streaming_channel = self._parse_channel_data(channel)
@@ -149,7 +159,11 @@ class HRTiProvider(StreamingProvider):
                             channels.append(streaming_channel)
 
                     self.channels = channels
+                    logger.info(f"Successfully fetched {len(channels)} channels from HRTi on retry")
                     return channels
+                else:
+                    logger.warning("No channels found in HRTi retry response")
+                    return []
 
             except Exception as retry_e:
                 logger.error(f"Retry failed: {retry_e}")
@@ -171,6 +185,7 @@ class HRTiProvider(StreamingProvider):
             icon_url = channel_data.get('Icon', '')
 
             if not name or not channel_id:
+                logger.debug(f"Skipping channel - missing name or ID: {channel_data}")
                 return None
 
             # Create channel object
@@ -192,6 +207,7 @@ class HRTiProvider(StreamingProvider):
             channel.use_cdm = True
             channel.cdm_type = "widevine"
 
+            logger.debug(f"Parsed HRTi channel: {name} ({channel_id}) - radio: {is_radio}")
             return channel
 
         except Exception as e:
@@ -277,7 +293,7 @@ class HRTiProvider(StreamingProvider):
                         'User-Agent': self.hrti_config.user_agent,
                         'Content-Type': 'text/plain',
                         'origin': self.hrti_config.base_website,
-                        'referer': self.hrti_config.base_website
+                        'referer': f'{self.hrti_config.base_website}/login'  # Use /login for DRM
                     }),
                     req_data="{CHA-RAW}",
                     use_http_get_request=False

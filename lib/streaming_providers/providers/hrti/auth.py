@@ -117,7 +117,7 @@ class HRTiAuthenticator(BaseAuthenticator):
             'ipaddress': self._ip_address,
             'operatorreferenceid': self.config.operator_reference_id,
             'origin': self.config.base_website,
-            'referer': self.config.base_website  # Regular referer for API calls
+            'referer': f'{self.config.base_website}/login'  # Use /login for API calls
         }
 
         if bearer_token:
