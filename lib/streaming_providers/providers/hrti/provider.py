@@ -420,9 +420,9 @@ class HRTiProvider(StreamingProvider):
             # Format: Key1=Value1&Key2=Value2
             license_headers = '&'.join([
                 f'User-Agent={self.hrti_config.user_agent}',
-                'Content-Type=text/plain',
+#                'Content-Type=text/plain',
                 f'origin={self.hrti_config.base_website}',
-                f'referer={self.hrti_config.base_website}/login',
+                f'referer={self.hrti_config.base_website}/',
                 f'dt-custom-data={license_data}'
             ])
 
