@@ -30,6 +30,7 @@ Currently supported:
 - 🇩🇪 **Magenta TV 2.0**
 - 🇦🇹 **Magenta TV (AT)**
 - 🇭🇷 **Max TV (HR)**
+- 🇭🇷 **HRTi (HR)**
 - 🇵🇱 **Magenta TV (PL)**
 - 🇲🇪 **Magenta TV (ME)**
 - 🇭🇺 **Magenta TV (HU)**

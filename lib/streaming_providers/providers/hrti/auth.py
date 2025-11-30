@@ -231,24 +231,62 @@ class HRTiAuthenticator(BaseAuthenticator):
         return token
 
     def _get_ip_address(self) -> str:
-        """Get public IP address"""
+        """Get public IP address - prefer configured IP from settings, fallback to API"""
         if self._ip_address:
             return self._ip_address
 
+        # Priority 1: Try to get configured IP from Kodi settings
         try:
-            # Use the http_manager that's guaranteed to be available
+            configured_ip = self._get_configured_ip_from_settings()
+            if configured_ip:
+                self._ip_address = configured_ip
+                logger.info(f"Using configured IP address from Kodi settings: {self._ip_address}")
+                return self._ip_address
+        except Exception as e:
+            logger.debug(f"Could not read configured IP from settings: {e}")
+
+        # Priority 2: Fall back to API fetch if no configured IP
+        try:
+            logger.debug("No configured IP found, fetching from API...")
             response = self.http_manager.get(
                 self.config.api_endpoints['get_ip'],
                 operation='api'
             )
             response.raise_for_status()
             self._ip_address = response.text.strip().strip('"')  # Remove quotes if present
-            logger.debug(f"Retrieved IP address: {self._ip_address}")
+            logger.info(f"Retrieved IP address from API: {self._ip_address}")
             return self._ip_address
         except Exception as e:
-            logger.error(f"Error getting IP address: {e}")
+            logger.error(f"Error getting IP address from API: {e}")
             self._ip_address = "0.0.0.0"  # Fallback
             return self._ip_address
+
+    def _get_configured_ip_from_settings(self) -> Optional[str]:
+        """
+        Get configured IP address from Kodi settings via settings_manager
+
+        Returns:
+            Configured IP address or None if not available
+        """
+        # Access settings_manager through parent class
+        if not hasattr(self, 'settings_manager') or not self.settings_manager:
+            logger.debug("Settings manager not available for IP configuration")
+            return None
+
+        kodi_bridge = self.settings_manager.kodi_bridge
+        if not kodi_bridge or not kodi_bridge.is_kodi_environment():
+            logger.debug("Kodi bridge not available or not in Kodi environment")
+            return None
+
+        # Try to read IP from Kodi settings
+        # HRTi doesn't use country in this implementation, pass None
+        configured_ip = kodi_bridge.read_ip_address_from_kodi('hrti', None)
+
+        if configured_ip:
+            logger.debug(f"Found configured IP in Kodi settings: {configured_ip}")
+            return configured_ip
+
+        return None
 
     def _get_environment_config(self):
         """Get HRTi environment configuration"""

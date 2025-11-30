@@ -406,6 +406,39 @@ class KodiSettingsBridge:
             logger.info(f"Synced proxy config from Kodi to file for {provider}")
         return success
 
+    def read_ip_address_from_kodi(self, provider: str, country: Optional[str] = None) -> Optional[str]:
+        """
+        Read IP address from Kodi settings for a provider.
+        Uses convention: {provider}_{country}_ipaddress or {provider}_ipaddress
+
+        Args:
+            provider: Provider name (e.g., 'hrti')
+            country: Optional country code
+
+        Returns:
+            Configured IP address or None if not set
+        """
+        if not self.is_kodi_environment():
+            return None
+
+        country_suffix = f"_{country}" if country else ""
+
+        try:
+            ip_address = self.addon.getSetting(f'{provider}{country_suffix}_ipaddress')
+
+            logger.debug(f"IP address setting for {provider}{country_suffix}: '{ip_address}'")
+
+            if ip_address and ip_address.strip():
+                logger.info(f"Found configured IP address for {provider}{country_suffix}: {ip_address}")
+                return ip_address.strip()
+
+            logger.debug(f"No IP address configured for {provider}{country_suffix}")
+            return None
+
+        except Exception as e:
+            logger.error(f"Error reading IP address from Kodi for {provider}: {e}")
+            return None
+
     # ============= Comparison Helpers =============
 
     @staticmethod
