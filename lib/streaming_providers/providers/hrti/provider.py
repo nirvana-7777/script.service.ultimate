@@ -261,8 +261,8 @@ class HRTiProvider(StreamingProvider):
 
             logger.debug(f"Session authorized for {channel.name}")
 
-            # Report session event (play start)
-            session_id = session_data.get('SessionId') or session_data.get('DrmId')
+            # Report session event (play start) - use full SessionId
+            session_id = session_data.get('SessionId')
             if session_id:
                 self.auth.report_session_event(session_id, channel.channel_id)
 
@@ -397,19 +397,26 @@ class HRTiProvider(StreamingProvider):
 
                 logger.debug(f"Session authorized for DRM - channel {channel_id}")
 
-                # Report session event
-                session_id = session_data.get('SessionId') or session_data.get('DrmId')
+                # Report session event (use full SessionId, not DrmId)
+                session_id = session_data.get('SessionId')
                 if session_id:
                     self.auth.report_session_event(session_id, channel_id)
 
-            # Get session ID from authorization
-            session_id = session_data.get('SessionId') or session_data.get('DrmId')
-            if not session_id:
-                logger.error("No session ID in session data")
+            # IMPORTANT: For license data, use DrmId (not SessionId)
+            # DrmId is the short random string for DRM
+            # SessionId is the full identifier like "6:hrt:userid:uuid"
+            drm_id = session_data.get('DrmId')
+            session_id = session_data.get('SessionId')  # Keep for session reporting
+
+            if not drm_id:
+                logger.error("No DRM ID in session data")
+                logger.debug(f"Session data keys: {list(session_data.keys())}")
                 return []
 
-            # Generate license data (base64 encoded)
-            license_data = self.auth.get_license_data(session_id)
+            logger.debug(f"Using DrmId for license: {drm_id[:20]}... (full SessionId: {session_id})")
+
+            # Generate license data (base64 encoded) - use DrmId not SessionId
+            license_data = self.auth.get_license_data(drm_id)
             if not license_data:
                 logger.error("Failed to generate license data")
                 return []
@@ -420,7 +427,6 @@ class HRTiProvider(StreamingProvider):
             # Format: Key1=Value1&Key2=Value2
             license_headers = '&'.join([
                 f'User-Agent={self.hrti_config.user_agent}',
-#                'Content-Type=text/plain',
                 f'origin={self.hrti_config.base_website}',
                 f'referer={self.hrti_config.base_website}/',
                 f'dt-custom-data={license_data}'
@@ -443,7 +449,7 @@ class HRTiProvider(StreamingProvider):
                 license=license_config
             )
 
-            logger.debug(f"Created DRM config for channel {channel_id} with session {session_id}")
+            logger.debug(f"Created DRM config for channel {channel_id} with DrmId {drm_id}")
             return [drm_config]
 
         except Exception as e:
