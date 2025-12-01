@@ -424,7 +424,8 @@ class HRTiProvider(StreamingProvider):
                 req_headers=license_headers,
                 req_data='{CHA-RAW}',  # Placeholder - inputstream will replace with actual challenge
                 wrapper=None,
-                unwrapper=None
+                unwrapper='json,base64',
+                unwrapper_params='{"path_data": "license"}'
             )
 
             # Create the DRM configuration
