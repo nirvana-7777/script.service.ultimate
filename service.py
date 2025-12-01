@@ -235,24 +235,36 @@ class UltimateService:
         Generate KODIPROP directives for DRM configuration.
 
         Args:
-            drm_configs: List of DRM configurations
+            drm_configs: DRM configurations as a dictionary (not list)
 
         Returns:
             DRM directives as string
         """
         directives = ""
 
+        # drm_configs is now a dictionary, not a list
+        if not isinstance(drm_configs, dict):
+            # For backward compatibility, handle list format
+            if isinstance(drm_configs, list):
+                # Convert list to dict
+                temp_dict = {}
+                for config in drm_configs:
+                    if hasattr(config, 'to_dict'):
+                        temp_dict.update(config.to_dict())
+                    elif isinstance(config, dict):
+                        temp_dict.update(config)
+                drm_configs = temp_dict
+            else:
+                return directives
+
+        # Rest of the method remains the same...
         # Prioritize: clearkey > widevine > playready
         selected_drm = None
         priority_order = ['org.w3.clearkey', 'com.widevine.alpha', 'com.microsoft.playready']
 
         for priority_system in priority_order:
-            for drm in drm_configs:
-                drm_dict = drm.to_dict() if hasattr(drm, 'to_dict') else drm
-                if priority_system in drm_dict:
-                    selected_drm = (priority_system, drm_dict[priority_system])
-                    break
-            if selected_drm:
+            if priority_system in drm_configs:
+                selected_drm = (priority_system, drm_configs[priority_system])
                 break
 
         if selected_drm:
@@ -704,11 +716,22 @@ class UltimateService:
                     country=request.query.get('country')
                 )
 
+                # Merge all DRM configs into a single dictionary
+                merged_drm_configs = {}
+                for config in drm_configs:
+                    if hasattr(config, 'to_dict'):
+                        config_dict = config.to_dict()
+                    else:
+                        config_dict = config
+
+                    # config_dict is something like {"com.widevine.alpha": {...}}
+                    # We need to merge it into the main dictionary
+                    merged_drm_configs.update(config_dict)
+
                 return {
                     'provider': provider,
                     'channel_id': channel_id,
-                    'drm_configs': [config.to_dict() if hasattr(config, 'to_dict') else config for config in
-                                    drm_configs]
+                    'drm_configs': merged_drm_configs  # Now an object, not an array
                 }
 
             except ValueError as val_err:
