@@ -5,7 +5,7 @@ from typing import Dict, List, Optional
 
 from ...base.provider import StreamingProvider, AuthType  # ← ADD AuthType import
 from ...base.models.streaming_channel import StreamingChannel
-from ...base.models import DRMConfig, LicenseConfig, DRMSystem
+from ...base.models import DRMConfig, LicenseConfig, DRMSystem, LicenseUnwrapperParams
 from .auth import HRTiAuthenticator
 from .constants import HRTiConfig
 from ...base.utils import logger
@@ -410,8 +410,6 @@ class HRTiProvider(StreamingProvider):
             # Format: Key1=Value1&Key2=Value2
             license_headers = '&'.join([
                 f'User-Agent={self.hrti_config.user_agent}',
-                'Accept=application/json',
-                'Content-Type=application/octet-stream',
                 f'origin={self.hrti_config.base_website}',
                 f'referer={self.hrti_config.base_website}/',
                 f'dt-custom-data={license_data}'
@@ -425,7 +423,7 @@ class HRTiProvider(StreamingProvider):
                 req_data='{CHA-RAW}',  # Placeholder - inputstream will replace with actual challenge
                 wrapper=None,
                 unwrapper='json,base64',
-                unwrapper_params='{"path_data": "license"}'
+                unwrapper_params=LicenseUnwrapperParams(path_data="license")
             )
 
             # Create the DRM configuration
