@@ -1403,14 +1403,14 @@ class Magenta2Provider(StreamingProvider):
             drm_config = DRMConfig(
                 system=DRMSystem.WIDEVINE,
                 priority=1,
-                license=LicenseConfig(
+                license=LicenseConfig.create_with_base64_req_data(
+                    req_data_template="{CHA-RAW}",
                     server_url=license_url,
                     server_certificate=None,
                     req_headers=json.dumps({
                         'User-Agent': self.platform_config['user_agent'],
                         'Content-Type': 'application/octet-stream'
                     }),
-                    req_data="{CHA-RAW}",
                     use_http_get_request=False
                 )
             )
