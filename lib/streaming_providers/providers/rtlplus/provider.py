@@ -10,7 +10,6 @@ from .auth import RTLPlusAuthenticator
 from .constants import RTLPlusDefaults, RTLPlusConfig
 from ...base.utils import logger
 from ...base.models.proxy_models import ProxyConfig
-from ...base.network import HTTPManagerFactory
 
 
 class RTLPlusProvider(StreamingProvider):
@@ -22,20 +21,7 @@ class RTLPlusProvider(StreamingProvider):
         self.rtl_config = RTLPlusConfig(config)
         self.channels_query_params = RTLPlusDefaults.CHANNELS_QUERY_PARAMS
 
-        # ✅ BEFORE: Manual HTTP manager setup (13 lines)
-        # if proxy_config is None:
-        #     from ...base.network import ProxyConfigManager
-        #     proxy_mgr = ProxyConfigManager()
-        #     proxy_config = proxy_mgr.get_proxy_config('rtlplus')
-        #
-        # self.http_manager = HTTPManagerFactory.create_for_provider(
-        #     'rtlplus',
-        #     proxy_config=proxy_config,
-        #     user_agent=self.rtl_config.user_agent,
-        #     timeout=self.rtl_config.timeout
-        # )
-
-        # ✅ AFTER: Using abstraction (5 lines)
+        # ✅ Using HTTP manager abstraction
         self.http_manager = self._setup_http_manager(
             provider_name='rtlplus',
             proxy_config=proxy_config,
@@ -44,7 +30,7 @@ class RTLPlusProvider(StreamingProvider):
         )
 
         # Initialize authenticator
-        self.auth = RTLPlusAuthenticator(
+        self.authenticator = RTLPlusAuthenticator(
             client_version=self.rtl_config.client_version,
             device_id=self.rtl_config.device_id,
             proxy_config=proxy_config,
@@ -52,11 +38,11 @@ class RTLPlusProvider(StreamingProvider):
         )
 
         # ✅ Share HTTP manager with authenticator
-        self.http_manager = self._share_http_manager_with_authenticator(self.auth)
+        self.http_manager = self._share_http_manager_with_authenticator(self.authenticator)
 
         # Try authentication
         try:
-            self.bearer_token = self.auth.get_bearer_token()
+            self.bearer_token = self.authenticator.get_bearer_token()
             logger.debug(f"RTL+ authentication successful during initialization")
         except Exception as e:
             logger.warning(f"RTL+ could not authenticate during initialization: {e}")
@@ -79,13 +65,16 @@ class RTLPlusProvider(StreamingProvider):
         # RTL+ provides relatively stable manifest URLs that can be fetched and cached
         return False
 
-    # In provider.py, modify the _get_authenticated_headers method:
-    def _get_authenticated_headers(self) -> Dict[str, str]:
+    # ============================================================================
+    # OPTION 1: Provider-specific method (RECOMMENDED - No signature conflict)
+    # ============================================================================
+    def _get_rtlplus_authenticated_headers(self) -> Dict[str, str]:
         """
         Get headers with authentication and RTL+ specific headers
+
+        This will automatically upgrade from anonymous to user token if possible
         """
-        # This will now automatically upgrade from anonymous to user token if possible
-        bearer_token = self.auth.get_bearer_token(force_upgrade=True)
+        bearer_token = self.authenticator.get_bearer_token(force_upgrade=True)
         return self.rtl_config.get_api_headers(access_token=bearer_token)
 
     def get_channels(self, **kwargs) -> List[StreamingChannel]:
@@ -93,9 +82,9 @@ class RTLPlusProvider(StreamingProvider):
         Fetch channels from RTL+ GraphQL API with authentication
         """
         try:
-            headers = self._get_authenticated_headers()
-            # OLD: response = requests.get(...)
-            # NEW:
+            # ✅ Use provider-specific method
+            headers = self._get_rtlplus_authenticated_headers()
+
             response = self.http_manager.get(
                 self.rtl_config.graphql_endpoint,
                 operation='api',
@@ -116,14 +105,13 @@ class RTLPlusProvider(StreamingProvider):
             return channels
 
         except requests.RequestException as e:
-            print(f"Error fetching RTL+ channels: {e}")
+            logger.error(f"Error fetching RTL+ channels: {e}")
             # Try to refresh auth token and retry once
             try:
-                print("Attempting to refresh authentication and retry...")
-                self.auth.invalidate_token()
-                headers = self._get_authenticated_headers()
-                # OLD: response = requests.get(...)
-                # NEW:
+                logger.info("Attempting to refresh authentication and retry...")
+                self.authenticator.invalidate_token()
+                headers = self._get_rtlplus_authenticated_headers()
+
                 response = self.http_manager.get(
                     self.rtl_config.graphql_endpoint,
                     operation='api',
@@ -143,10 +131,10 @@ class RTLPlusProvider(StreamingProvider):
                 self.channels = channels
                 return channels
             except Exception as retry_e:
-                print(f"Retry failed: {retry_e}")
+                logger.error(f"Retry failed: {retry_e}")
                 return []
         except Exception as e:
-            print(f"Error parsing RTL+ channels: {e}")
+            logger.error(f"Error parsing RTL+ channels: {e}")
             return []
 
     def _parse_station_to_channel(self, station: Dict) -> Optional[StreamingChannel]:
@@ -192,12 +180,12 @@ class RTLPlusProvider(StreamingProvider):
             # Set CDM settings for premium channels
             if is_premium:
                 channel.use_cdm = True
-                channel.cdm_type = "widevine"  # Assumption - may need adjustment
+                channel.cdm_type = "widevine"
 
             return channel
 
         except Exception as e:
-            print(f"Error parsing station {station}: {e}")
+            logger.warning(f"Error parsing station {station}: {e}")
             return None
 
     def enrich_channel_data(self, channel: StreamingChannel, **kwargs) -> Optional[StreamingChannel]:
@@ -221,8 +209,8 @@ class RTLPlusProvider(StreamingProvider):
 
                     # Set license URL from first Widevine config
                     for config in drm_configs:
-                        if config.get('type') == 'widevine':
-                            channel.license_url = config.get('license_url')
+                        if config.system == DRMSystem.WIDEVINE:
+                            channel.license_url = config.license.server_url
                             break
                 else:
                     channel.use_cdm = False
@@ -230,40 +218,35 @@ class RTLPlusProvider(StreamingProvider):
 
                 return channel
             else:
-                print(f"Could not fetch manifest for channel {channel.name} ({channel.channel_id})")
+                logger.warning(f"Could not fetch manifest for channel {channel.name} ({channel.channel_id})")
                 return channel
 
         except Exception as e:
-            print(f"Error enriching channel data for {channel.name}: {e}")
+            logger.error(f"Error enriching channel data for {channel.name}: {e}")
             return channel
 
     def get_manifest(self, channel_id: str, **kwargs) -> Optional[str]:
         manifest_url = self.rtl_config.get_manifest_url(channel_id)
 
         try:
-            # Log the request being made
             logger.debug(f"RTL+ Manifest Request: GET {manifest_url}")
 
             headers = self.rtl_config.get_base_headers()
-            # OLD: response = requests.get(...)
-            # NEW:
             response = self.http_manager.get(
                 manifest_url,
                 operation='manifest',
                 headers=headers
             )
 
-            # Log response status and headers
             logger.debug(f"RTL+ Manifest Response: Status={response.status_code}")
             logger.debug(f"RTL+ Response Headers: {dict(response.headers)}")
 
             response.raise_for_status()
             manifest_data = response.json()
 
-            # Log the full response (sanitized if needed)
             logger.debug(f"RTL+ Manifest Data: {self._sanitize_manifest_log(manifest_data)}")
 
-            # Process manifest data (same as before)
+            # Process manifest data
             quality_preference = ['dashhd', 'dashsd']
 
             for quality in quality_preference:
@@ -330,8 +313,6 @@ class RTLPlusProvider(StreamingProvider):
             # Fetch manifest data to get license information
             manifest_url = self.rtl_config.get_manifest_url(channel_id)
 
-            # OLD: response = requests.get(manifest_url, timeout=self.rtl_config.timeout)
-            # NEW:
             response = self.http_manager.get(
                 manifest_url,
                 operation='manifest'
@@ -342,7 +323,7 @@ class RTLPlusProvider(StreamingProvider):
             drm_configs = []
 
             # Get access token for license requests
-            access_token = self.auth.get_bearer_token()
+            access_token = self.authenticator.get_bearer_token()
 
             # Look for dashhd streams (preferred quality) and extract DRM info
             for stream in manifest_data:
@@ -354,66 +335,43 @@ class RTLPlusProvider(StreamingProvider):
                         if not license_url:
                             continue
 
+                        def create_drm_config(drm_system, priority, server_url, headers):
+                            return DRMConfig(
+                                system=drm_system,
+                                priority=priority,
+                                license=LicenseConfig(
+                                    server_url=server_url,
+                                    req_headers=json.dumps(headers),
+                                    req_data="{CHA-RAW}",
+                                    use_http_get_request=False
+                                )
+                            )
+
                         if license_info.get('type') == 'WIDEVINE':
-                            drm_config = DRMConfig(
-                                system=DRMSystem.WIDEVINE,
-                                priority=1,
-                                license=LicenseConfig(
-                                    server_url=license_url,
-                                    req_headers=json.dumps(
-                                        self.rtl_config.get_drm_headers(access_token)
-                                    ),
-                                    req_data="{CHA-RAW}",
-                                    use_http_get_request=False
-                                )
-                            )
-                            drm_configs.append(drm_config)
-
+                            drm_configs.append(create_drm_config(
+                                DRMSystem.WIDEVINE, 1, license_url,
+                                self.rtl_config.get_drm_headers(access_token)
+                            ))
                         elif license_info.get('type') == 'PLAYREADY':
-                            drm_config = DRMConfig(
-                                system=DRMSystem.PLAYREADY,
-                                priority=2,
-                                license=LicenseConfig(
-                                    server_url=license_url,
-                                    req_headers=json.dumps(
-                                        self.rtl_config.get_drm_headers(access_token)
-                                    ),
-                                    req_data="{CHA-RAW}",
-                                    use_http_get_request=False
-                                )
-                            )
-                            drm_configs.append(drm_config)
-
+                            drm_configs.append(create_drm_config(
+                                DRMSystem.PLAYREADY, 2, license_url,
+                                self.rtl_config.get_drm_headers(access_token)
+                            ))
                         elif license_info.get('type') == 'FAIRPLAY':
-                            drm_config = DRMConfig(
-                                system=DRMSystem.FAIRPLAY,
-                                priority=3,
-                                license=LicenseConfig(
-                                    server_url=license_url,
-                                    req_headers=json.dumps(
-                                        self.rtl_config.get_drm_headers(access_token)
-                                    ),
-                                    req_data="{CHA-RAW}",
-                                    use_http_get_request=False
-                                )
-                            )
-                            drm_configs.append(drm_config)
+                            drm_configs.append(create_drm_config(
+                                DRMSystem.FAIRPLAY, 3, license_url,
+                                self.rtl_config.get_drm_headers(access_token)
+                            ))
                     break
 
             return drm_configs
 
         except requests.RequestException as e:
-            print(f"Error fetching DRM configs for RTL+ channel {channel_id}: {e}")
+            logger.error(f"Error fetching DRM configs for RTL+ channel {channel_id}: {e}")
             return []
         except Exception as e:
-            print(f"Error parsing DRM configs for RTL+ channel {channel_id}: {e}")
+            logger.error(f"Error parsing DRM configs for RTL+ channel {channel_id}: {e}")
             return []
-
-#    def get_drm_configs(self, channel: StreamingChannel, **kwargs) -> List[DRMConfig]:
-#        """
-#        Get DRM configurations for a channel
-#        """
-#        return self.get_drm_configs_by_id(channel.channel_id, **kwargs)
 
     @staticmethod
     def get_epg_data(channel_id: str, **kwargs) -> Optional[Dict]:

@@ -631,7 +631,8 @@ class JoynProvider(StreamingProvider):
             drm_config = DRMConfig(
                 system=DRMSystem.WIDEVINE,
                 priority=1,
-                license=LicenseConfig(
+                license=LicenseConfig.create_with_base64_req_data(
+                    req_data_template="{CHA-RAW}",
                     server_url=license_url,
                     server_certificate=playlist_data.get('certificateUrl'),
                     req_headers=json.dumps({
@@ -639,7 +640,6 @@ class JoynProvider(StreamingProvider):
                         'Content-Type': DRM_REQUEST_HEADERS['Content-Type'],
                         'User-Agent': JOYN_USER_AGENT
                     }),
-                    req_data="{CHA-RAW}",
                     use_http_get_request=False
                 )
             )
