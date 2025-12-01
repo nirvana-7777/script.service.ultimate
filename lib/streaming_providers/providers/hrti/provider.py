@@ -416,11 +416,12 @@ class HRTiProvider(StreamingProvider):
             ])
 
             # Create the license configuration
-            license_config = LicenseConfig(
+            # Use the class method to create LicenseConfig with base64 encoded req_data
+            license_config = LicenseConfig.create_with_base64_req_data(
+                req_data_template='{CHA-RAW}',  # The placeholder string
                 server_url=self.hrti_config.license_url,
                 use_http_get_request=False,
                 req_headers=license_headers,
-                req_data='{CHA-RAW}',  # Placeholder - inputstream will replace with actual challenge
                 wrapper=None,
                 unwrapper='json,base64',
                 unwrapper_params=LicenseUnwrapperParams(path_data="license")

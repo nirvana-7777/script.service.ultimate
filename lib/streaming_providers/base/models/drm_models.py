@@ -124,6 +124,13 @@ class LicenseConfig:
                 if not all(c in "0123456789abcdefABCDEF" for c in key):
                     raise ValueError(f"Invalid KEY format: {key}")
 
+    @classmethod
+    def create_with_base64_req_data(cls, req_data_template: str, **kwargs):
+        """Helper to ensure req_data is base64 encoded"""
+        import base64
+        req_data_encoded = base64.b64encode(req_data_template.encode('utf-8')).decode('utf-8')
+        return cls(req_data=req_data_encoded, **kwargs)
+
 @dataclass
 class DRMConfig:
     system: DRMSystem
