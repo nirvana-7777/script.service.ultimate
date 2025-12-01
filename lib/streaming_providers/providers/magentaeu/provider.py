@@ -7,7 +7,7 @@ from ...base.auth import UserPasswordCredentials
 from ...base.provider import StreamingProvider
 from ...base.models import DRMConfig, LicenseConfig, DRMSystem
 from ...base.models.streaming_channel import StreamingChannel
-from ...base.network import HTTPManagerFactory, ProxyConfigManager
+from ...base.network import ProxyConfigManager
 from ...base.models.proxy_models import ProxyConfig
 from ...base.utils.logger import logger
 from .auth import MagentaAuthenticator
@@ -33,8 +33,6 @@ from .constants import (
 
 
 class MagentaProvider(StreamingProvider):
-    """Magenta TV streaming provider implementation"""
-
     def __init__(self, country: str = DEFAULT_COUNTRY,
                  config_dir: Optional[str] = None,
                  proxy_config: Optional[ProxyConfig] = None,
@@ -44,39 +42,48 @@ class MagentaProvider(StreamingProvider):
         super().__init__(country=country)
 
         if country not in SUPPORTED_COUNTRIES:
-            raise ValueError(f"Unsupported country: {country}. Must be one of: {SUPPORTED_COUNTRIES}")
+            raise ValueError(f"Unsupported country: {country}")
 
-        # Setup proxy configuration
-        self.proxy_config = (
-                proxy_config or
-                (ProxyConfig.from_url(proxy_url) if proxy_url else None) or
-                self._load_proxy_from_manager(config_dir)
-        )
+        # ✅ BEFORE: Complex proxy resolution logic (10+ lines)
+        # self.proxy_config = (
+        #     proxy_config or
+        #     (ProxyConfig.from_url(proxy_url) if proxy_url else None) or
+        #     self._load_proxy_from_manager(config_dir)
+        # )
+        #
+        # self.http_manager = HTTPManagerFactory.create_for_provider(
+        #     provider_name='magentaeu',
+        #     proxy_config=self.proxy_config,
+        #     user_agent=USER_AGENT,
+        #     timeout=DEFAULT_REQUEST_TIMEOUT,
+        #     max_retries=DEFAULT_MAX_RETRIES
+        # )
 
-        # Create HTTP manager
-        self.http_manager = HTTPManagerFactory.create_for_provider(
+        # ✅ AFTER: Using abstraction with automatic proxy resolution (6 lines)
+        self.http_manager = self._setup_http_manager(
             provider_name='magentaeu',
-            proxy_config=self.proxy_config,
+            proxy_config=proxy_config,
+            proxy_url=proxy_url,
+            config_dir=config_dir,
             user_agent=USER_AGENT,
             timeout=DEFAULT_REQUEST_TIMEOUT,
             max_retries=DEFAULT_MAX_RETRIES
         )
 
-        # Initialize ALL instance attributes
+        # Initialize attributes
         self._device_id = None
         self._session_id = None
         self.bearer_token = None
         self._channels_cache = None
         self._channels_cache_timestamp = 0
-        self._cache_ttl = 3600  # Cache TTL in seconds
+        self._cache_ttl = 3600
 
-        # Create authenticator - it will handle session initialization internally
+        # Create authenticator
         self.authenticator = MagentaAuthenticator(
             country=country,
             config_dir=config_dir,
             http_manager=self.http_manager,
-            proxy_config=self.proxy_config
-            # No need to pass device_id/session_id - authenticator handles this
+            proxy_config=self.http_manager.config.proxy_config  # Use resolved proxy
         )
 
         logger.info(f"=== MagentaProvider.__init__ COMPLETE ===")
@@ -393,7 +400,7 @@ class MagentaProvider(StreamingProvider):
                 config_dir=self.authenticator.settings_manager.config_dir if hasattr(
                     self.authenticator.settings_manager, 'config_dir') else None,
                 http_manager=self.http_manager,
-                proxy_config=self.proxy_config,
+                proxy_config=self.http_manager.config.proxy_config,
                 credentials=credentials
             )
 

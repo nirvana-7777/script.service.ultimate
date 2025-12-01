@@ -14,37 +14,47 @@ from ...base.network import HTTPManagerFactory
 
 
 class RTLPlusProvider(StreamingProvider):
-    def __init__(self, country: str = 'DE', config: Optional[Dict] = None, proxy_config: Optional[ProxyConfig] = None):
+    def __init__(self, country: str = 'DE', config: Optional[Dict] = None,
+                 proxy_config: Optional[ProxyConfig] = None):
         super().__init__(country)
 
-        # Initialize configuration with overrides
+        # Initialize configuration
         self.rtl_config = RTLPlusConfig(config)
         self.channels_query_params = RTLPlusDefaults.CHANNELS_QUERY_PARAMS
 
-        # Create HTTP manager FIRST (this is the single source of truth)
-        if proxy_config is None:
-            from ...base.network import ProxyConfigManager
-            proxy_mgr = ProxyConfigManager()
-            proxy_config = proxy_mgr.get_proxy_config('rtlplus')
+        # ✅ BEFORE: Manual HTTP manager setup (13 lines)
+        # if proxy_config is None:
+        #     from ...base.network import ProxyConfigManager
+        #     proxy_mgr = ProxyConfigManager()
+        #     proxy_config = proxy_mgr.get_proxy_config('rtlplus')
+        #
+        # self.http_manager = HTTPManagerFactory.create_for_provider(
+        #     'rtlplus',
+        #     proxy_config=proxy_config,
+        #     user_agent=self.rtl_config.user_agent,
+        #     timeout=self.rtl_config.timeout
+        # )
 
-        self.http_manager = HTTPManagerFactory.create_for_provider(
-            'rtlplus',
+        # ✅ AFTER: Using abstraction (5 lines)
+        self.http_manager = self._setup_http_manager(
+            provider_name='rtlplus',
             proxy_config=proxy_config,
             user_agent=self.rtl_config.user_agent,
             timeout=self.rtl_config.timeout
         )
 
-        # Initialize authenticator and SHARE the HTTP manager
+        # Initialize authenticator
         self.auth = RTLPlusAuthenticator(
             client_version=self.rtl_config.client_version,
             device_id=self.rtl_config.device_id,
             proxy_config=proxy_config,
-            http_manager=self.http_manager  # Share our HTTP manager instance
+            http_manager=self.http_manager
         )
 
-        # Share the HTTP manager with authenticator for consistency
-        self.http_manager = self.auth.http_manager
+        # ✅ Share HTTP manager with authenticator
+        self.http_manager = self._share_http_manager_with_authenticator(self.auth)
 
+        # Try authentication
         try:
             self.bearer_token = self.auth.get_bearer_token()
             logger.debug(f"RTL+ authentication successful during initialization")

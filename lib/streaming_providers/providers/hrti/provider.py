@@ -1,18 +1,15 @@
-# [file name]: provider.py
-# [file content begin]
 # lib/streaming_providers/providers/hrti/provider.py
 import json
 import requests
 from typing import Dict, List, Optional
 
-from ...base.provider import StreamingProvider
+from ...base.provider import StreamingProvider, AuthType  # ← ADD AuthType import
 from ...base.models.streaming_channel import StreamingChannel
 from ...base.models import DRMConfig, LicenseConfig, DRMSystem
 from .auth import HRTiAuthenticator
 from .constants import HRTiConfig
 from ...base.utils import logger
 from ...base.models.proxy_models import ProxyConfig
-from ...base.network import HTTPManagerFactory
 
 
 class HRTiProvider(StreamingProvider):
@@ -23,31 +20,26 @@ class HRTiProvider(StreamingProvider):
         self.hrti_config = HRTiConfig(config)
         self.channels_cache = None
 
-        # Create HTTP manager
-        if proxy_config is None:
-            from ...base.network import ProxyConfigManager
-            proxy_mgr = ProxyConfigManager()
-            proxy_config = proxy_mgr.get_proxy_config('hrti')
-
-        self.http_manager = HTTPManagerFactory.create_for_provider(
-            'hrti',
+        # ✅ Use abstraction for HTTP manager setup
+        self.http_manager = self._setup_http_manager(
+            provider_name='hrti',
             proxy_config=proxy_config,
             user_agent=self.hrti_config.user_agent,
             timeout=self.hrti_config.timeout
         )
 
         # Initialize authenticator and share HTTP manager
-        self.auth = HRTiAuthenticator(
+        self.authenticator = HRTiAuthenticator(
             proxy_config=proxy_config,
             http_manager=self.http_manager
         )
 
         # Share HTTP manager for consistency
-        self.http_manager = self.auth.http_manager
+        self.http_manager = self._share_http_manager_with_authenticator(self.authenticator)
 
         try:
             # Initialize authentication
-            bearer_token = self.auth.get_bearer_token()
+            bearer_token = self.authenticator.get_bearer_token()
             logger.debug(f"HRTi authentication successful during initialization")
         except Exception as e:
             logger.warning(f"HRTi could not authenticate during initialization: {e}")
@@ -69,41 +61,32 @@ class HRTiProvider(StreamingProvider):
         # HRTi requires session authorization for manifests
         return True
 
-    def _get_authenticated_headers(self) -> Dict[str, str]:
+    def _get_hrti_authenticated_headers(self) -> Dict[str, str]:
         """
         Get headers with HRTi authentication for API requests
+
+        This is a provider-specific wrapper that uses the base class abstraction.
         """
-        bearer_token = self.auth.get_bearer_token()
-        device_id = self.auth.get_device_id()
-        ip_address = self.auth.get_ip_address()
-
-        headers = {
-            'User-Agent': self.hrti_config.user_agent,
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-            'deviceid': device_id,
-            'devicetypeid': self.hrti_config.device_reference_id,
-            'host': 'hrti.hrt.hr',
-            'ipaddress': ip_address,
-            'operatorreferenceid': self.hrti_config.operator_reference_id,
-            'origin': self.hrti_config.base_website,
-            'referer': f'{self.hrti_config.base_website}/login'  # Use /login for API calls
-        }
-
-        # Add authorization header with Client prefix
-        if bearer_token:
-            headers['authorization'] = f'Client {bearer_token}'
-
-        logger.debug(
-            f"HRTi API Headers - deviceid: {device_id[:8]}..., auth: {'present' if bearer_token else 'missing'}")
-        return headers
+        return self._build_provider_headers(
+            auth_type=AuthType.CLIENT,  # ← Now properly imported
+            token_key='authorization',  # HRTi uses lowercase
+            provider_headers={
+                'deviceid': self.authenticator.get_device_id(),
+                'devicetypeid': self.hrti_config.device_reference_id,
+                'ipaddress': self.authenticator.get_ip_address(),
+                'operatorreferenceid': self.hrti_config.operator_reference_id,
+                'origin': self.hrti_config.base_website,
+                'referer': f'{self.hrti_config.base_website}/login'
+            }
+        )
 
     def get_channels(self, **kwargs) -> List[StreamingChannel]:
         """
         Fetch channels from HRTi API
         """
         try:
-            headers = self._get_authenticated_headers()
+            # ✅ Use provider-specific method
+            headers = self._get_hrti_authenticated_headers()
 
             # Log the request for debugging
             logger.debug(
@@ -139,8 +122,8 @@ class HRTiProvider(StreamingProvider):
             # Try to refresh auth and retry once
             try:
                 logger.info("Attempting to refresh authentication and retry...")
-                self.auth.invalidate_token()
-                headers = self._get_authenticated_headers()
+                self.authenticator.invalidate_token()
+                headers = self._get_hrti_authenticated_headers()
 
                 response = self.http_manager.post(
                     self.hrti_config.api_endpoints['channels'],
@@ -240,7 +223,7 @@ class HRTiProvider(StreamingProvider):
             logger.debug(f"Content DRM ID for {channel.name}: {content_drm_id}")
 
             # Authorize session
-            session_data = self.auth.authorize_session(
+            session_data = self.authenticator.authorize_session(
                 content_type=content_type,
                 content_ref_id=channel.channel_id,
                 content_drm_id=content_drm_id,
@@ -264,7 +247,7 @@ class HRTiProvider(StreamingProvider):
             # Report session event (play start) - use full SessionId
             session_id = session_data.get('SessionId')
             if session_id:
-                self.auth.report_session_event(session_id, channel.channel_id)
+                self.authenticator.report_session_event(session_id, channel.channel_id)
 
             # Set the manifest URL - use the streaming URL from channel data
             manifest_url = channel.manifest_script
@@ -316,7 +299,7 @@ class HRTiProvider(StreamingProvider):
         """
         try:
             # Authorize session for this channel
-            session_data = self.auth.authorize_session(
+            session_data = self.authenticator.authorize_session(
                 content_type="tlive",  # TV live
                 content_ref_id=channel_id,
                 channel_id=channel_id
@@ -376,7 +359,7 @@ class HRTiProvider(StreamingProvider):
                     f"Authorizing session for DRM - channel: {channel_id}, content_type: {content_type}, drm_id: {content_drm_id}")
 
                 # Authorize session
-                session_data = self.auth.authorize_session(
+                session_data = self.authenticator.authorize_session(
                     content_type=content_type,
                     content_ref_id=channel_id,
                     content_drm_id=content_drm_id,
@@ -400,7 +383,7 @@ class HRTiProvider(StreamingProvider):
                 # Report session event (use full SessionId, not DrmId)
                 session_id = session_data.get('SessionId')
                 if session_id:
-                    self.auth.report_session_event(session_id, channel_id)
+                    self.authenticator.report_session_event(session_id, channel_id)
 
             # IMPORTANT: For license data, use DrmId (not SessionId)
             # DrmId is the short random string for DRM
@@ -416,7 +399,7 @@ class HRTiProvider(StreamingProvider):
             logger.debug(f"Using DrmId for license: {drm_id[:20]}... (full SessionId: {session_id})")
 
             # Generate license data (base64 encoded) - use DrmId not SessionId
-            license_data = self.auth.get_license_data(drm_id)
+            license_data = self.authenticator.get_license_data(drm_id)
             if not license_data:
                 logger.error("Failed to generate license data")
                 return []
@@ -427,6 +410,8 @@ class HRTiProvider(StreamingProvider):
             # Format: Key1=Value1&Key2=Value2
             license_headers = '&'.join([
                 f'User-Agent={self.hrti_config.user_agent}',
+                'Accept=application/json',
+                'Content-Type=application/octet-stream',
                 f'origin={self.hrti_config.base_website}',
                 f'referer={self.hrti_config.base_website}/',
                 f'dt-custom-data={license_data}'
@@ -437,7 +422,7 @@ class HRTiProvider(StreamingProvider):
                 server_url=self.hrti_config.license_url,
                 use_http_get_request=False,
                 req_headers=license_headers,
-                req_data='{CHA-RAW}',  # Placeholder for license challenge - will be replaced by player
+                req_data='{CHA-RAW}',  # Placeholder - inputstream will replace with actual challenge
                 wrapper=None,
                 unwrapper=None
             )
@@ -463,11 +448,11 @@ class HRTiProvider(StreamingProvider):
         Get EPG data for a channel
         """
         try:
-            headers = self._get_authenticated_headers()
+            headers = self._get_hrti_authenticated_headers()
 
             # Get current time range (4 hours before and after)
-            start_time = self.auth.get_time_offset(-4)
-            end_time = self.auth.get_time_offset(4)
+            start_time = self.authenticator.get_time_offset(-4)
+            end_time = self.authenticator.get_time_offset(4)
 
             payload = {
                 "ChannelReferenceIds": [channel_id],
@@ -500,4 +485,3 @@ class HRTiProvider(StreamingProvider):
         if drm_configs:
             return drm_configs[0].license.server_url
         return None
-# [file content end]

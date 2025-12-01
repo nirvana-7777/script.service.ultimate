@@ -8,12 +8,10 @@ import urllib.parse
 from datetime import datetime, timedelta
 from base64 import b64decode
 from json import dumps
-#from urllib.parse import urlencode
 
-from ...base.provider import StreamingProvider
+from ...base.provider import StreamingProvider, AuthType
 from ...base.models import DRMConfig, LicenseConfig, DRMSystem
 from ...base.models.streaming_channel import StreamingChannel
-from ...base.network import HTTPManagerFactory, ProxyConfigManager
 from ...base.models.proxy_models import ProxyConfig
 from ...base.utils.logger import logger
 from .models import JoynChannel, PlaybackRestrictedException
@@ -46,14 +44,13 @@ from .constants import (
     GRAPHQL_LIVE_CHANNELS_FILTER,
     GRAPHQL_MAX_RESULTS,
     GRAPHQL_OFFSET,
-    GRAPHQL_QUERY_HASHES, JOYN_LOGO
+    GRAPHQL_QUERY_HASHES,
+    JOYN_LOGO
 )
 
 
 def create_video_payload(config: Optional[Dict] = None, compact: bool = True) -> str:
-    """
-    Create video data payload for requests
-    """
+    """Create video data payload for requests"""
     video_config = config or DEFAULT_VIDEO_CONFIG
     payload = dumps(video_config)
     return payload.replace(' ', '') if compact else payload
@@ -61,9 +58,7 @@ def create_video_payload(config: Optional[Dict] = None, compact: bool = True) ->
 
 def build_signature(entitlement_token: str, video_payload: Optional[str] = None,
                     secret_key: Optional[str] = None) -> str:
-    """
-    Build signature for video data requests
-    """
+    """Build signature for video data requests"""
     if video_payload is None:
         video_payload = create_video_payload()
 
@@ -89,9 +84,10 @@ class JoynProvider(StreamingProvider):
 
         Args:
             country: Country code ('de', 'at', 'ch')
+            platform: Platform identifier
             config_dir: Optional config directory override
-            proxy_config: Optional proxy configuration (overrides ProxyConfigManager)
-            proxy_url: Optional proxy URL string (converted to ProxyConfig)
+            proxy_config: Optional proxy configuration (highest priority)
+            proxy_url: Optional proxy URL string (medium priority)
         """
         super().__init__(country=country)
 
@@ -99,29 +95,38 @@ class JoynProvider(StreamingProvider):
             raise ValueError(f"Unsupported country: {country}. Must be one of: {SUPPORTED_COUNTRIES}")
 
         self.distribution_tenant = COUNTRY_TENANT_MAPPING[country]
+        self.platform = platform
 
-        # Setup proxy configuration with priority: proxy_config > proxy_url > ProxyConfigManager
-        self.proxy_config = (
-                proxy_config or
-                (ProxyConfig.from_url(proxy_url) if proxy_url else None) or
-                self._load_proxy_from_manager(config_dir)
-        )
+        # ✅ BEFORE: Manual proxy resolution and HTTP manager setup (15 lines)
+        # self.proxy_config = (
+        #     proxy_config or
+        #     (ProxyConfig.from_url(proxy_url) if proxy_url else None) or
+        #     self._load_proxy_from_manager(config_dir)
+        # )
+        #
+        # if self.proxy_config:
+        #     logger.info("Using proxy configuration for Joyn")
+        # else:
+        #     logger.debug("No proxy configuration found for Joyn")
+        #
+        # self.http_manager = HTTPManagerFactory.create_for_provider(
+        #     provider_name='joyn',
+        #     proxy_config=self.proxy_config,
+        #     user_agent=JOYN_USER_AGENT,
+        #     timeout=DEFAULT_REQUEST_TIMEOUT,
+        #     max_retries=DEFAULT_MAX_RETRIES
+        # )
 
-        if self.proxy_config:
-            logger.info("Using proxy configuration for Joyn")
-        else:
-            logger.debug("No proxy configuration found for Joyn")
-
-        # Create HTTP manager FIRST - single instance for all operations
-        self.http_manager = HTTPManagerFactory.create_for_provider(
+        # ✅ AFTER: Using abstraction (6 lines)
+        self.http_manager = self._setup_http_manager(
             provider_name='joyn',
-            proxy_config=self.proxy_config,
+            proxy_config=proxy_config,
+            proxy_url=proxy_url,
+            config_dir=config_dir,
             user_agent=JOYN_USER_AGENT,
             timeout=DEFAULT_REQUEST_TIMEOUT,
             max_retries=DEFAULT_MAX_RETRIES
         )
-
-        self.platform = platform
 
         # Create authenticator with shared HTTP manager
         self.authenticator = JoynAuthenticator(
@@ -129,32 +134,30 @@ class JoynProvider(StreamingProvider):
             platform=platform,
             config_dir=config_dir,
             http_manager=self.http_manager,
-            proxy_config=self.proxy_config
+            proxy_config=self.http_manager.config.proxy_config  # Use resolved proxy
         )
 
-        # Always authenticate through authenticator (no direct bearer_token parameter)
+        # ✅ Optional: Share HTTP manager (if authenticator might have its own)
+        # self.http_manager = self._share_http_manager_with_authenticator(self.authenticator)
+
+        # Authenticate
         try:
             self.bearer_token = self.authenticator.get_bearer_token()
         except Exception as e:
             logger.warning(f"Could not authenticate during initialization: {e}")
             self.bearer_token = None
 
-    def _load_proxy_from_manager(self, config_dir: Optional[str]) -> Optional[ProxyConfig]:
-        """
-        Load proxy configuration from ProxyConfigManager
+    # ✅ BEFORE: Had to implement this helper method (12 lines)
+    # def _load_proxy_from_manager(self, config_dir: Optional[str]) -> Optional[ProxyConfig]:
+    #     """Load proxy configuration from ProxyConfigManager"""
+    #     try:
+    #         proxy_manager = ProxyConfigManager(config_dir)
+    #         return proxy_manager.get_proxy_config('joyn', self.country)
+    #     except Exception as e:
+    #         logger.warning(f"Could not load proxy from ProxyConfigManager: {e}")
+    #         return None
 
-        Args:
-            config_dir: Optional config directory path
-
-        Returns:
-            ProxyConfig if found, None otherwise
-        """
-        try:
-            proxy_manager = ProxyConfigManager(config_dir)
-            return proxy_manager.get_proxy_config('joyn', self.country)
-        except Exception as e:
-            logger.warning(f"Could not load proxy from ProxyConfigManager: {e}")
-            return None
+    # ✅ AFTER: No longer needed - handled by abstraction!
 
     @property
     def provider_name(self) -> str:
@@ -174,7 +177,9 @@ class JoynProvider(StreamingProvider):
 
     def authenticate(self, **kwargs) -> str:
         """Authenticate and return bearer token"""
-        self.bearer_token = self.authenticator.get_bearer_token(force_refresh=kwargs.get('force_refresh', False))
+        self.bearer_token = self.authenticator.get_bearer_token(
+            force_refresh=kwargs.get('force_refresh', False)
+        )
         return self.bearer_token
 
     def get_dynamic_manifest_params(self, channel: StreamingChannel, **kwargs) -> Optional[str]:
@@ -182,15 +187,17 @@ class JoynProvider(StreamingProvider):
 
     def _get_graphql_headers(self) -> Dict[str, str]:
         """Get headers for GraphQL requests"""
-        headers = JOYN_GRAPHQL_BASE_HEADERS.copy()
-        headers.update({
-            'joyn-client-version': JOYN_CLIENT_VERSION,
-            'joyn-country': self.country.upper(),
-            'joyn-distribution-tenant': self.distribution_tenant,
-            'joyn-platform': self.platform,
-            'joyn-user-state': 'code=R_A'
-        })
-        return headers
+        return self._build_provider_headers(
+            base_headers=JOYN_GRAPHQL_BASE_HEADERS,
+            auth_type=AuthType.NONE,  # GraphQL queries don't need auth
+            provider_headers={
+                'joyn-client-version': JOYN_CLIENT_VERSION,
+                'joyn-country': self.country.upper(),
+                'joyn-distribution-tenant': self.distribution_tenant,
+                'joyn-platform': self.platform,
+                'joyn-user-state': 'code=R_A'
+            }
+        )
 
     def refresh_authentication(self) -> str:
         """Force refresh authentication"""
@@ -240,7 +247,7 @@ class JoynProvider(StreamingProvider):
 
             url = f"{JOYN_GRAPHQL_ENDPOINTS['LIVE_CHANNELS']}&variables={variables_encoded}&extensions={extensions_encoded}"
 
-            # Use http_manager instead of requests
+            # ✅ Already using http_manager correctly
             response = self.http_manager.get(
                 url,
                 operation='api',
@@ -326,17 +333,19 @@ class JoynProvider(StreamingProvider):
         Returns:
             Entitlement token string
         """
-        headers = JOYN_API_BASE_HEADERS.copy()
-        headers.update({
-            'joyn-client-version': JOYN_CLIENT_VERSION,
-            'joyn-country': self.country.upper(),
-            'joyn-distribution-tenant': self.distribution_tenant,
-            'joyn-platform': self.platform,
-            'joyn-b2b-context':'UNKNOWN',
-            'joyn-client-os':'UNKNOWN',
-            'origin': JOYN_DOMAINS.get(self.country, JOYN_DOMAINS['de'])
-        })
-        headers['Authorization'] = f'Bearer {self.bearer_token}'
+        headers = self._build_provider_headers(
+            base_headers=JOYN_API_BASE_HEADERS,
+            auth_type=AuthType.BEARER,
+            provider_headers={
+                'joyn-client-version': JOYN_CLIENT_VERSION,
+                'joyn-country': self.country.upper(),
+                'joyn-distribution-tenant': self.distribution_tenant,
+                'joyn-platform': self.platform,
+                'joyn-b2b-context': 'UNKNOWN',
+                'joyn-client-os': 'UNKNOWN',
+                'origin': JOYN_DOMAINS.get(self.country, JOYN_DOMAINS['de'])
+            }
+        )
 
         payload = {
             "content_id": content_id,
@@ -344,7 +353,7 @@ class JoynProvider(StreamingProvider):
         }
 
         try:
-            # Use http_manager instead of requests (proxy already configured)
+            # ✅ Already using http_manager correctly
             response = self.http_manager.post(
                 JOYN_STREAMING_ENDPOINTS['ENTITLEMENT'],
                 operation='auth',
@@ -365,7 +374,7 @@ class JoynProvider(StreamingProvider):
                         else:
                             raise Exception(f"Entitlement error for {content_id} ({code}): {msg}")
                 except (json.JSONDecodeError, KeyError, IndexError) as e:
-                    raise Exception(f"Bad response for {content_id} (400), and failed to parse error: {e}")
+                    raise Exception(f"Bad response for {content_id} (400), failed to parse error: {e}")
 
             response.raise_for_status()
             data = response.json()
@@ -401,7 +410,7 @@ class JoynProvider(StreamingProvider):
         headers['Authorization'] = f'Bearer {entitlement_token}'
 
         try:
-            # Use http_manager instead of requests (proxy already configured)
+            # ✅ Already using http_manager correctly
             response = self.http_manager.post(
                 url,
                 operation='manifest',
@@ -507,13 +516,11 @@ class JoynProvider(StreamingProvider):
             The enriched StreamingChannel with manifest and proper DRM config, or None if failed
         """
         try:
-            # First get entitlement token
             entitlement_token = self.get_entitlement_token(
                 content_id=channel.channel_id,
                 content_type=channel.content_type
             )
 
-            # Then get playlist data
             playlist_data = self.get_channel_playlist(
                 channel.channel_id,
                 entitlement_token,
@@ -524,14 +531,11 @@ class JoynProvider(StreamingProvider):
             if not manifest_url:
                 return None
 
-            # Update the channel with manifest
             channel.manifest = manifest_url
             channel.streaming_format = playlist_data.get('streamingFormat', 'dash')
 
-            # Only set up DRM if we have license information
             license_url = playlist_data.get('licenseUrl')
             if license_url:
-                # Create proper DRM configuration with Joyn-specific requirements
                 drm_config = DRMConfig(
                     system=DRMSystem.WIDEVINE,
                     priority=1,
@@ -556,51 +560,6 @@ class JoynProvider(StreamingProvider):
             logger.error(f"Error getting manifest for {channel.name}: {e}")
             return None
 
-#    def get_drm_configs(self,
-#                        channel: StreamingChannel,
-#                        needs_base64_wrap: bool = False,
-#                        **kwargs) -> List[DRMConfig]:
-#        """
-#        Get DRM configuration for Joyn channels (Widevine)
-
-#        Args:
-#            channel: StreamingChannel object
-#            needs_base64_wrap: Whether to wrap the license request in base64
-#            **kwargs: Additional parameters
-
-#        Returns:
-#            List of DRMConfig objects (typically contains one Widevine config)
-#        """
-#        if not channel.license_url:
-#            return []  # No DRM if no license URL
-
-#        try:
-#            # Get fresh auth token if needed
-#            if not self.authenticator.is_authenticated():
-#                self.bearer_token = self.authenticator.authenticate()
-
-#            # Prepare license headers
-#            license_headers = DRM_REQUEST_HEADERS.copy()
-#            license_headers['Authorization'] = f"Bearer {self.bearer_token}"
-
-#            return [
-#                DRMConfig(
-#                    system=DRMSystem.WIDEVINE,
-#                    priority=1,  # Highest priority for Widevine
-#                    license=LicenseConfig(
-#                        server_url=channel.license_url,
-#                        server_certificate=channel.certificate_url,
-#                        req_headers=urlencode(license_headers),
-#                        use_http_get_request=False,
-#                        wrapper="base64" if needs_base64_wrap else None
-#                    )
-#                )
-#            ]
-
-#        except Exception as e:
-#            logger.error(f"Error generating DRM config for {channel.name}: {e}")
-#            return []
-
     def get_manifest(self,
                      channel_id: str,
                      content_type: str = CONTENT_TYPE_LIVE,
@@ -613,19 +572,17 @@ class JoynProvider(StreamingProvider):
             channel_id: ID of the channel to get manifest for
             content_type: Content type ('LIVE' or 'VOD')
             video_config: Optional video configuration dictionary
-            **kwargs: Additional parameters (ignored for compatibility)
+            **kwargs: Additional parameters
 
         Returns:
             Manifest URL string, or None if not available
         """
         try:
-            # Get entitlement token
             entitlement_token = self.get_entitlement_token(
                 content_id=channel_id,
                 content_type=content_type
             )
 
-            # Get playlist data
             playlist_data = self.get_channel_playlist(
                 channel_id,
                 entitlement_token,
@@ -650,19 +607,17 @@ class JoynProvider(StreamingProvider):
             channel_id: ID of the channel to get DRM configs
             content_type: Content type ('LIVE' or 'VOD')
             video_config: Optional video configuration dictionary
-            **kwargs: Additional parameters (ignored for compatibility)
+            **kwargs: Additional parameters
 
         Returns:
             List of DRMConfig objects (can be empty if no DRM is used)
         """
         try:
-            # Get entitlement token
             entitlement_token = self.get_entitlement_token(
                 content_id=channel_id,
                 content_type=content_type
             )
 
-            # Get playlist data
             playlist_data = self.get_channel_playlist(
                 channel_id,
                 entitlement_token,
@@ -671,9 +626,8 @@ class JoynProvider(StreamingProvider):
 
             license_url = playlist_data.get('licenseUrl')
             if not license_url:
-                return []  # No DRM if no license URL
+                return []
 
-            # Create DRM configuration
             drm_config = DRMConfig(
                 system=DRMSystem.WIDEVINE,
                 priority=1,
@@ -711,12 +665,9 @@ class JoynProvider(StreamingProvider):
             **kwargs: Additional parameters
 
         Returns:
-            List of EPG entries (each containing start/end times, title, description, etc.)
+            List of EPG entries
         """
-        # Joyn EPG implementation would require additional GraphQL queries
-        # This is a stub implementation - would need specific Joyn EPG endpoints
         try:
-            # Default time window if not provided
             if start_time is None:
                 start_time = datetime.now()
             if end_time is None:
@@ -724,9 +675,7 @@ class JoynProvider(StreamingProvider):
 
             headers = self._get_graphql_headers()
 
-            # This would need the actual Joyn EPG GraphQL query
-            # For now, return empty list as EPG functionality would require
-            # additional endpoint investigation
+            # Joyn EPG would require additional GraphQL queries
             logger.info(f"EPG data requested for channel {channel_id} - not yet implemented")
             return []
 
