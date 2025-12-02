@@ -415,31 +415,23 @@ class UltimateService:
         @self.app.route('/api/providers/<provider>/channels/<channel_id>/manifest')
         def get_channel_manifest(provider, channel_id):
             """
-            Get channel manifest. If provider uses proxy, returns rewritten MPD content.
-            Otherwise returns manifest URL as JSON.
+            Get channel manifest. Always returns JSON with manifest_url pointing to stream endpoint.
             """
             try:
-                # Check if provider needs proxy
-                if self.manager.needs_proxy(provider):
-                    # Proxy mode: return rewritten MPD content
-                    return self._get_proxied_manifest(provider, channel_id)
-                else:
-                    # Direct mode: return manifest URL as JSON (existing behavior)
-                    manifest_url = self.manager.get_channel_manifest(
-                        provider_name=provider,
-                        channel_id=channel_id,
-                        country=request.query.get('country')
-                    )
+                # Build the stream URL (which will handle both proxy and non-proxy)
+                base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
+                stream_url = f"{base_url}/api/providers/{provider}/channels/{channel_id}/stream"
 
-                    if not manifest_url:
-                        response.status = 404
-                        return {'error': f'Manifest not available for channel "{channel_id}" from provider "{provider}"'}
+                # Add country parameter if provided
+                country = request.query.get('country')
+                if country:
+                    stream_url += f"?country={country}"
 
-                    return {
-                        'provider': provider,
-                        'channel_id': channel_id,
-                        'manifest_url': manifest_url
-                    }
+                return {
+                    'provider': provider,
+                    'channel_id': channel_id,
+                    'manifest_url': stream_url  # Always point to /stream endpoint
+                }
 
             except ValueError as val_err:
                 logger.error(f"API Error in /api/providers/{provider}/channels/{channel_id}/manifest: {str(val_err)}")
@@ -459,14 +451,9 @@ class UltimateService:
             try:
                 # Check if provider needs proxy
                 if self.manager.needs_proxy(provider):
-                    # Proxy mode: redirect to our manifest endpoint which serves rewritten MPD
-                    country = request.query.get('country')
-                    manifest_endpoint = f"/api/providers/{provider}/channels/{channel_id}/manifest"
-                    if country:
-                        manifest_endpoint += f"?country={country}"
-
-                    logger.debug(f"Redirecting to proxied manifest endpoint: {manifest_endpoint}")
-                    redirect(manifest_endpoint)
+                    # Proxy mode: return rewritten MPD content directly
+                    # (not redirect, because /manifest now returns JSON)
+                    return self._get_proxied_manifest(provider, channel_id)
                 else:
                     # Direct mode: redirect to original manifest URL
                     manifest_url = self.manager.get_channel_manifest(
