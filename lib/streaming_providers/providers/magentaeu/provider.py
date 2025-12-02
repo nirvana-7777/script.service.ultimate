@@ -19,7 +19,6 @@ from .constants import (
     DEFAULT_REQUEST_TIMEOUT,
     DEFAULT_MAX_RETRIES,
     DRM_SYSTEM_WIDEVINE,
-    DRM_REQUEST_HEADERS,
     MAGENTA_TV_PL_LOGO,
     WV_URL,
     CONTENT_TYPE_LIVE,
@@ -297,99 +296,61 @@ class MagentaProvider(StreamingProvider):
     def get_drm_config(self, channel: StreamingChannel, **kwargs) -> Optional[DRMConfig]:
         """Get DRM configuration for channel with correct authentication"""
         try:
+            from .auth import MagentaAuthToken, decode_jwt
+            from .constants import ACC_URL
             import json
             import base64
-            from .auth import MagentaAuthToken, decode_jwt
-            from .constants import ACC_URL  # Import ACC_URL
 
             pid = channel.cdm.replace("pid=", "") if channel.cdm else ""
-            logger.info(f"=== get_drm_config: Extracted PID: {pid} ===")
-
             if not pid:
-                logger.debug(f"No PID found for channel {channel.name}")
                 return None
 
-            license_url = f"{WV_URL}{pid}"
-
-            # Get access token (authenticate if needed)
+            # Get authentication
             if not self.bearer_token:
-                try:
-                    self.authenticate()
-                except Exception as e:
-                    logger.warning(f"Authentication failed for DRM config: {e}")
-                    return None
+                self.authenticate()
 
             access_token = self.bearer_token
-            if not access_token:
-                logger.warning("No bearer token available for DRM config")
-                return None
-
-            # Remove 'Bearer ' prefix if present
             if access_token.startswith('Bearer '):
                 access_token = access_token[7:]
 
-            # Decode JWT token to get account details
-            try:
-                # Get current token from authenticator
-                current_token = self.authenticator.current_token
-
-                # Use the helper method if token is MagentaAuthToken
-                if isinstance(current_token, MagentaAuthToken) and hasattr(current_token, 'get_jwt_claims'):
-                    decoded_payload = current_token.get_jwt_claims()
-                    if not decoded_payload:
-                        logger.warning("Failed to get JWT claims from token")
-                        return None
-                else:
-                    # Fallback: use decode_jwt helper
-                    decoded_payload = decode_jwt(access_token, verify=False)
-
-            except Exception as e:
-                logger.warning(f"Error decoding JWT token for DRM: {e}")
-                return None
-
-            # Extract account information from JWT payload
+            # Decode token
+            decoded_payload = decode_jwt(access_token, verify=False)
             account_id = decoded_payload.get('dc_cts_accountId', '')
             persona_token = decoded_payload.get('dc_cts_personaToken', '')
 
             if not account_id or not persona_token:
-                logger.warning("Missing account ID or persona token in JWT payload")
                 return None
 
-            # Create Basic auth string with ACC_URL
-            basic_auth_string = f"{ACC_URL}/{account_id}:{persona_token}"
-            basic_auth = base64.b64encode(basic_auth_string.encode()).decode()
+            # Build license URL with parameters (like the new code)
+            account_uri = f"{ACC_URL}/{account_id}"
+            encoded_account_uri = base64.b64encode(account_uri.encode()).decode()
 
-            logger.debug(f"Basic auth string created: {basic_auth_string[:50]}...")
+            # Persona token is already a JWT, so use it directly
+            license_url = (f"{WV_URL}{pid}&"
+                           f"token={persona_token}&"
+                           f"account={encoded_account_uri}")
 
-            # Build license headers
-            headers = {
-                'Authorization': f'Basic {basic_auth}',
-                'Content-Type': DRM_REQUEST_HEADERS.get('Content-Type', 'application/octet-stream'),
-                'Origin': get_base_url(self.country),
-                'Referer': f"{get_base_url(self.country)}/",
-                'User-Agent': USER_AGENT
-            }
-
-            # Remove any None values from headers
-            headers = {k: v for k, v in headers.items() if v is not None}
-
-            # Create DRM configuration using LicenseConfig
+            # Create DRM config with minimal headers
             drm_config = DRMConfig(
                 system=DRMSystem.WIDEVINE,
                 priority=1,
                 license=LicenseConfig.create_with_base64_req_data(
                     req_data_template="{CHA-RAW}",
                     server_url=license_url,
-                    req_headers=json.dumps(headers),
+                    req_headers=json.dumps({
+                        'User-Agent': USER_AGENT,
+                        'Content-Type': 'application/octet-stream',
+                        'Origin': get_base_url(self.country),
+                        'Referer': f"{get_base_url(self.country)}/"
+            }),
                     use_http_get_request=False
                 )
             )
 
-            logger.debug(f"DRM config created successfully for channel {channel.name}")
             return drm_config
 
         except Exception as e:
-            logger.warning(f"Error creating DRM config for {channel.name}: {e}")
+            logger.warning(f"Error creating DRM config: {e}")
             return None
 
     def validate_credentials(self, credentials: UserPasswordCredentials) -> bool:
