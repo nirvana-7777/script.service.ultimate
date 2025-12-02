@@ -296,39 +296,73 @@ class MagentaProvider(StreamingProvider):
     def get_drm_config(self, channel: StreamingChannel, **kwargs) -> Optional[DRMConfig]:
         """Get DRM configuration for channel with correct authentication"""
         try:
-            from .auth import MagentaAuthToken, decode_jwt
-            from .constants import ACC_URL
             import json
             import base64
+            from urllib.parse import quote  # For URL encoding
+            from .auth import MagentaAuthToken, decode_jwt
+            from .constants import ACC_URL
 
             pid = channel.cdm.replace("pid=", "") if channel.cdm else ""
+            logger.info(f"=== get_drm_config: Extracted PID: {pid} ===")
+
             if not pid:
+                logger.debug(f"No PID found for channel {channel.name}")
                 return None
 
-            # Get authentication
+            # Get access token (authenticate if needed)
             if not self.bearer_token:
-                self.authenticate()
+                try:
+                    self.authenticate()
+                except Exception as e:
+                    logger.warning(f"Authentication failed for DRM config: {e}")
+                    return None
 
             access_token = self.bearer_token
+            if not access_token:
+                logger.warning("No bearer token available for DRM config")
+                return None
+
+            # Remove 'Bearer ' prefix if present
             if access_token.startswith('Bearer '):
                 access_token = access_token[7:]
 
-            # Decode token
-            decoded_payload = decode_jwt(access_token, verify=False)
+            # Decode JWT token to get account details
+            try:
+                # Get current token from authenticator
+                current_token = self.authenticator.current_token
+
+                # Use the helper method if token is MagentaAuthToken
+                if isinstance(current_token, MagentaAuthToken) and hasattr(current_token, 'get_jwt_claims'):
+                    decoded_payload = current_token.get_jwt_claims()
+                    if not decoded_payload:
+                        logger.warning("Failed to get JWT claims from token")
+                        return None
+                else:
+                    # Fallback: use decode_jwt helper
+                    decoded_payload = decode_jwt(access_token, verify=False)
+
+            except Exception as e:
+                logger.warning(f"Error decoding JWT token for DRM: {e}")
+                return None
+
+            # Extract account information from JWT payload
             account_id = decoded_payload.get('dc_cts_accountId', '')
             persona_token = decoded_payload.get('dc_cts_personaToken', '')
 
             if not account_id or not persona_token:
+                logger.warning("Missing account ID or persona token in JWT payload")
                 return None
 
-            # Build license URL with parameters (like the new code)
+            # CORRECT: Build account URI and URL-encode it
             account_uri = f"{ACC_URL}/{account_id}"
-            encoded_account_uri = base64.b64encode(account_uri.encode()).decode()
+            encoded_account_uri = quote(account_uri, safe='')  # URL encode, NOT base64
 
-            # Persona token is already a JWT, so use it directly
+            # Build license URL with parameters
             license_url = (f"{WV_URL}{pid}&"
                            f"token={persona_token}&"
                            f"account={encoded_account_uri}")
+
+            logger.debug(f"License URL created: {license_url[:100]}...")
 
             # Create DRM config with minimal headers
             drm_config = DRMConfig(
@@ -342,15 +376,16 @@ class MagentaProvider(StreamingProvider):
                         'Content-Type': 'application/octet-stream',
                         'Origin': get_base_url(self.country),
                         'Referer': f"{get_base_url(self.country)}/"
-            }),
+                    }),
                     use_http_get_request=False
                 )
             )
 
+            logger.debug(f"DRM config created successfully for channel {channel.name}")
             return drm_config
 
         except Exception as e:
-            logger.warning(f"Error creating DRM config: {e}")
+            logger.warning(f"Error creating DRM config for {channel.name}: {e}")
             return None
 
     def validate_credentials(self, credentials: UserPasswordCredentials) -> bool:
