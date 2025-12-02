@@ -151,7 +151,7 @@ class MPDRewriter:
         Extract base URL from MPD or use manifest URL
 
         Priority:
-        1. First BaseURL element in MPD
+        1. First BaseURL element in MPD (resolved relative to manifest URL if relative)
         2. Manifest URL's directory
 
         Args:
@@ -164,9 +164,20 @@ class MPDRewriter:
         # Try to find BaseURL element
         base_url_elem = root.find('.//mpd:BaseURL', self.MPD_NAMESPACE)
         if base_url_elem is not None and base_url_elem.text:
-            base_url = base_url_elem.text.strip()
-            logger.debug(f"Using BaseURL from MPD: {base_url}")
-            return base_url
+            base_url_text = base_url_elem.text.strip()
+
+            # Check if the BaseURL is relative (doesn't start with http:// or https://)
+            if not base_url_text.startswith(('http://', 'https://')):
+                # It's a relative BaseURL, resolve it against the manifest URL's directory
+                parsed_manifest = urlparse(manifest_url)
+                manifest_dir = f"{parsed_manifest.scheme}://{parsed_manifest.netloc}{parsed_manifest.path.rsplit('/', 1)[0]}/"
+                resolved_base = urljoin(manifest_dir, base_url_text)
+                logger.debug(f"Resolved relative BaseURL '{base_url_text}' to: {resolved_base}")
+                return resolved_base
+            else:
+                # It's already an absolute URL
+                logger.debug(f"Using absolute BaseURL from MPD: {base_url_text}")
+                return base_url_text
 
         # Fall back to manifest URL directory
         parsed = urlparse(manifest_url)
