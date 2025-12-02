@@ -300,6 +300,7 @@ class MagentaProvider(StreamingProvider):
             import json
             import base64
             from .auth import MagentaAuthToken, decode_jwt
+            from .constants import ACC_URL  # Import ACC_URL
 
             pid = channel.cdm.replace("pid=", "") if channel.cdm else ""
             logger.info(f"=== get_drm_config: Extracted PID: {pid} ===")
@@ -354,10 +355,11 @@ class MagentaProvider(StreamingProvider):
                 logger.warning("Missing account ID or persona token in JWT payload")
                 return None
 
-            # Create reencoded session for Basic auth
-            import base64
-            reencoded_session = f"{get_base_url(self.country)}/{account_id}:{persona_token}"
-            basic_auth = base64.b64encode(reencoded_session.encode()).decode()
+            # Create Basic auth string with ACC_URL
+            basic_auth_string = f"{ACC_URL}/{account_id}:{persona_token}"
+            basic_auth = base64.b64encode(basic_auth_string.encode()).decode()
+
+            logger.debug(f"Basic auth string created: {basic_auth_string[:50]}...")
 
             # Build license headers
             headers = {
@@ -372,7 +374,6 @@ class MagentaProvider(StreamingProvider):
             headers = {k: v for k, v in headers.items() if v is not None}
 
             # Create DRM configuration using LicenseConfig
-            import json
             drm_config = DRMConfig(
                 system=DRMSystem.WIDEVINE,
                 priority=1,
