@@ -1,0 +1,42 @@
+{
+  "_comment": "EPG Channel Mapping - Maps provider/channel IDs to XMLTV EPG channel IDs",
+  "_format": "{ 'provider_name': { 'channel_id': 'epg_channel_id' } }",
+  "_note": "Provider names include country suffix for multi-country providers (e.g., joyn_de, joyn_ch)",
+
+  "rtlplus": {
+    "rtl": "de.rtl",
+    "vox": "de.vox",
+    "rtl2": "de.rtl2",
+    "nitro": "de.nitro",
+    "super_rtl": "de.superrtl"
+  },
+
+  "joyn_de": {
+    "prosieben": "de.prosieben",
+    "sat1": "de.sat1",
+    "kabel_eins": "de.kabeleins",
+    "sixx": "de.sixx",
+    "pro7_maxx": "de.pro7maxx",
+    "sat1_gold": "de.sat1gold"
+  },
+
+  "joyn_ch": {
+    "prosieben_schweiz": "ch.prosieben",
+    "sat1_schweiz": "ch.sat1",
+    "kabel_eins_schweiz": "ch.kabeleins"
+  },
+
+  "zattoo_de": {
+    "ard": "de.ard",
+    "zdf": "de.zdf",
+    "rtl": "de.rtl",
+    "sat1": "de.sat1",
+    "prosieben": "de.prosieben"
+  },
+
+  "example_provider": {
+    "channel1": "epg.channel.one",
+    "channel2": "epg.channel.two",
+    "channel3": "epg.channel.three"
+  }
+}
