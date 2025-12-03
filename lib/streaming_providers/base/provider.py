@@ -402,6 +402,20 @@ class StreamingProvider(ABC):
         """Return True if provider uses truly dynamic manifests"""
         pass
 
+    @property
+    @abstractmethod
+    def implements_epg(self) -> bool:
+        """
+        Indicates whether this provider has its own EPG implementation.
+        If False, the generic EPG manager will be used.
+
+        Override in subclass and return True if provider has native EPG.
+
+        Returns:
+            True if provider implements its own EPG, False to use generic EPG
+        """
+        pass
+
     @abstractmethod
     def get_channels(self, **kwargs) -> List[StreamingChannel]:
         """Fetch channels from the provider"""

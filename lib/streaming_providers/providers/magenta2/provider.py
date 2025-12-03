@@ -396,6 +396,10 @@ class Magenta2Provider(StreamingProvider):
     def uses_dynamic_manifests(self) -> bool:
         return False
 
+    @property
+    def implements_epg(self) -> bool:
+        return False
+
     def get_discovery_status(self) -> Dict[str, Any]:
         """Get discovery and configuration status"""
         if not self.discovery_service:

@@ -65,6 +65,10 @@ class RTLPlusProvider(StreamingProvider):
         # RTL+ provides relatively stable manifest URLs that can be fetched and cached
         return False
 
+    @property
+    def implements_epg(self) -> bool:
+        return False
+
     # ============================================================================
     # OPTION 1: Provider-specific method (RECOMMENDED - No signature conflict)
     # ============================================================================

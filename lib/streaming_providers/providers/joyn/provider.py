@@ -175,6 +175,10 @@ class JoynProvider(StreamingProvider):
     def uses_dynamic_manifests(self) -> bool:
         return False
 
+    @property
+    def implements_epg(self) -> bool:
+        return False
+
     def authenticate(self, **kwargs) -> str:
         """Authenticate and return bearer token"""
         self.bearer_token = self.authenticator.get_bearer_token(

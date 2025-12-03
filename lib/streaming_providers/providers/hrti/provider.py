@@ -61,6 +61,10 @@ class HRTiProvider(StreamingProvider):
         # HRTi requires session authorization for manifests
         return True
 
+    @property
+    def implements_epg(self) -> bool:
+        return False
+
     def _get_hrti_authenticated_headers(self) -> Dict[str, str]:
         """
         Get headers with HRTi authentication for API requests

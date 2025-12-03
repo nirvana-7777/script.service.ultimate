@@ -19,6 +19,7 @@ from .constants import (
     DEFAULT_REQUEST_TIMEOUT,
     DEFAULT_MAX_RETRIES,
     DRM_SYSTEM_WIDEVINE,
+    MAGENTA_TV_AT_LOGO,
     MAGENTA_TV_PL_LOGO,
     WV_URL,
     CONTENT_TYPE_LIVE,
@@ -109,6 +110,8 @@ class MagentaProvider(StreamingProvider):
 
     @property
     def provider_logo(self) -> str:
+        if self.country.lower() == 'at':
+            return MAGENTA_TV_AT_LOGO
         if self.country.lower() == 'hr':
             return MAX_TV_LOGO
         elif self.country.lower() == 'pl':
@@ -118,6 +121,10 @@ class MagentaProvider(StreamingProvider):
 
     @property
     def uses_dynamic_manifests(self) -> bool:
+        return False
+
+    @property
+    def implements_epg(self) -> bool:
         return False
 
     def authenticate(self, **kwargs) -> str:

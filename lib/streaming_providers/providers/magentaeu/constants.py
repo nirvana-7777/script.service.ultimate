@@ -13,6 +13,7 @@ DEFAULT_COUNTRY = 'at'
 
 MAX_TV_LOGO = 'https://www.lyngsat.com/logo/corp/mm/max-tv-hr.png'
 MAGENTA_TV_PL_LOGO = 'https://magentatv.pl/client/assets/6700c91b4408a2abe2a4.webp'
+MAGENTA_TV_AT_LOGO = 'https://m.media-amazon.com/images/I/51XY6Cq3ANL.png'
 
 # Country-specific configuration
 COUNTRY_CONFIG = {
