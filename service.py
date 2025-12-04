@@ -624,31 +624,54 @@ class UltimateService:
         @self.app.route('/api/providers/<provider>/channels/<channel_id>/epg')
         def get_channel_epg(provider, channel_id):
             try:
-                # Parse optional datetime parameters
+                # Parse optional parameters
                 kwargs = {'country': request.query.get('country')}
 
+                # Handle start_time - can be Unix timestamp (from Kodi) or datetime
                 if request.query.get('start_time'):
+                    start_time_str = request.query.get('start_time')
                     try:
-                        kwargs['start_time'] = datetime.fromisoformat(
-                            request.query.get('start_time').replace('Z', '+00:00'))
-                    except ValueError:
-                        response.status = 400
-                        return {'error': 'Invalid start_time format. Use ISO format (YYYY-MM-DDTHH:MM:SS)'}
+                        # Try to parse as Unix timestamp (integer from Kodi PVR)
+                        start_time_int = int(start_time_str)
+                        kwargs['start_time'] = datetime.fromtimestamp(start_time_int)
+                    except (ValueError, TypeError):
+                        # Try to parse as ISO format string (for manual API calls)
+                        try:
+                            kwargs['start_time'] = datetime.fromisoformat(
+                                start_time_str.replace('Z', '+00:00')
+                            )
+                        except ValueError:
+                            logger.warning(f"Invalid start_time format: {start_time_str}")
+                            # Continue without start_time filter
+                            pass
 
+                # Handle end_time - can be Unix timestamp or datetime
                 if request.query.get('end_time'):
+                    end_time_str = request.query.get('end_time')
                     try:
-                        kwargs['end_time'] = datetime.fromisoformat(
-                            request.query.get('end_time').replace('Z', '+00:00'))
-                    except ValueError:
-                        response.status = 400
-                        return {'error': 'Invalid end_time format. Use ISO format (YYYY-MM-DDTHH:MM:SS)'}
+                        # Try to parse as Unix timestamp (integer from Kodi PVR)
+                        end_time_int = int(end_time_str)
+                        kwargs['end_time'] = datetime.fromtimestamp(end_time_int)
+                    except (ValueError, TypeError):
+                        # Try to parse as ISO format string (for manual API calls)
+                        try:
+                            kwargs['end_time'] = datetime.fromisoformat(
+                                end_time_str.replace('Z', '+00:00')
+                            )
+                        except ValueError:
+                            logger.warning(f"Invalid end_time format: {end_time_str}")
+                            # Continue without end_time filter
+                            pass
 
+                # Get EPG data from manager
                 epg_data = self.manager.get_channel_epg(
                     provider_name=provider,
                     channel_id=channel_id,
                     **kwargs
                 )
 
+                # Return as JSON
+                response.content_type = 'application/json; charset=utf-8'
                 return {
                     'provider': provider,
                     'channel_id': channel_id,
@@ -659,10 +682,12 @@ class UltimateService:
                 # This handles the case where manager raises ValueError for unknown provider
                 logger.error(f"API Error in /api/providers/{provider}/channels/{channel_id}/epg: {str(val_err)}")
                 response.status = 404
+                response.content_type = 'application/json; charset=utf-8'
                 return {'error': str(val_err)}
             except Exception as api_err:
                 logger.error(f"API Error in /api/providers/{provider}/channels/{channel_id}/epg: {str(api_err)}")
                 response.status = 500
+                response.content_type = 'application/json; charset=utf-8'
                 return {'error': f'Internal server error: {str(api_err)}'}
 
         @self.app.route('/api/providers/<provider>/epg')
