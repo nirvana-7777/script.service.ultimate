@@ -159,7 +159,7 @@ class EPGMapping:
         return self._copy_default_to_user()
 
     @staticmethod
-    def _flatten_mapping(self, raw_mapping: Dict) -> tuple:
+    def _flatten_mapping(raw_mapping: Dict) -> tuple:
         """
         Flatten mapping format to simple provider->channel->epg_id format for lookups.
         Also extracts channel names for reference.
