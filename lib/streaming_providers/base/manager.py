@@ -3,6 +3,7 @@ from typing import Dict, List, Optional
 from .provider import StreamingProvider
 from .models import StreamingChannel, DRMSystem
 from .drm import DRMPluginManager
+from .epg import EPGManager
 from .utils.logger import logger
 
 class ProviderManager:
@@ -16,6 +17,10 @@ class ProviderManager:
         self.providers: Dict[str, StreamingProvider] = {}
         self.drm_plugin_manager = DRMPluginManager()
         logger.info("ProviderManager: Initialized with DRM plugin manager")
+
+        self.epg_manager = EPGManager()
+
+        logger.info("ProviderManager: Initialized with DRM plugin manager and EPG manager")
 
     @staticmethod
     def _is_provider_enabled(provider_name: str, country: Optional[str] = None) -> bool:
@@ -338,8 +343,23 @@ class ProviderManager:
             logger.error(f"ProviderManager: Cannot get EPG - provider '{provider_name}' not found")
             raise ValueError(f"Provider '{provider_name}' not found")
 
-        epg_data = provider.get_epg(channel_id, **kwargs)
-        logger.debug(f"ProviderManager: Retrieved {len(epg_data)} EPG entries for channel '{channel_id}' from provider '{provider_name}'")
+        # CHECK IF PROVIDER IMPLEMENTS ITS OWN EPG
+        if provider.implements_epg:
+            # Use provider's native EPG implementation
+            logger.debug(f"ProviderManager: Using native EPG for provider '{provider_name}'")
+            epg_data = provider.get_epg(channel_id, **kwargs)
+        else:
+            # Use generic EPG manager
+            logger.debug(f"ProviderManager: Using generic EPG for provider '{provider_name}'")
+            epg_data = self.epg_manager.get_epg(
+                provider_name=provider_name,
+                channel_id=channel_id,
+                start_time=kwargs.get('start_time'),
+                end_time=kwargs.get('end_time')
+            )
+
+        logger.debug(
+            f"ProviderManager: Retrieved {len(epg_data)} EPG entries for channel '{channel_id}' from provider '{provider_name}'")
         return epg_data
 
     def get_provider_epg_xmltv(self, provider_name: str, **kwargs) -> Optional[str]:
@@ -361,12 +381,74 @@ class ProviderManager:
             logger.error(f"ProviderManager: Cannot get XMLTV EPG - provider '{provider_name}' not found")
             raise ValueError(f"Provider '{provider_name}' not found")
 
-        xmltv_data = provider.get_epg_xmltv(**kwargs)
+        # Only use provider's XMLTV if it implements EPG
+        if provider.implements_epg:
+            logger.debug(f"ProviderManager: Using native XMLTV EPG for provider '{provider_name}'")
+            xmltv_data = provider.get_epg_xmltv(**kwargs)
+        else:
+            # For generic EPG, we don't generate XMLTV format
+            # (The EPG XML is already in XMLTV format, but it's global, not provider-specific)
+            logger.warning(
+                f"ProviderManager: Provider '{provider_name}' does not implement EPG, no provider-specific XMLTV available")
+            xmltv_data = None
+
         if xmltv_data:
             logger.info(f"ProviderManager: Retrieved XMLTV EPG data for provider '{provider_name}'")
         else:
             logger.warning(f"ProviderManager: No XMLTV EPG data available for provider '{provider_name}'")
+
         return xmltv_data
+
+    def clear_epg_cache(self) -> bool:
+        """
+        Clear the generic EPG cache.
+
+        Returns:
+            True if cleared successfully
+        """
+        logger.info("ProviderManager: Clearing EPG cache")
+        return self.epg_manager.clear_cache()
+
+    def reload_epg_mapping(self) -> bool:
+        """
+        Reload EPG channel mapping from file.
+
+        Returns:
+            True if reloaded successfully
+        """
+        logger.info("ProviderManager: Reloading EPG mapping")
+        return self.epg_manager.reload_mapping()
+
+    def get_epg_cache_info(self) -> Optional[Dict]:
+        """
+        Get information about EPG cache.
+
+        Returns:
+            Dictionary with cache info, or None if no cache
+        """
+        return self.epg_manager.get_cache_info()
+
+    def get_epg_mapping_stats(self) -> Dict:
+        """
+        Get statistics about EPG channel mapping.
+
+        Returns:
+            Dictionary with mapping statistics
+        """
+        return self.epg_manager.get_mapping_stats()
+
+    def has_epg_mapping(self, provider_name: str, channel_id: str) -> bool:
+        """
+        Check if EPG mapping exists for a specific channel.
+
+        Args:
+            provider_name: Name of provider
+            channel_id: Channel ID
+
+        Returns:
+            True if mapping exists
+        """
+        return self.epg_manager.has_mapping_for_channel(provider_name, channel_id)
 
     def get_channel_drm_configs(self, provider_name: str, channel_id: str, **kwargs) -> List:
         provider = self.get_provider(provider_name)

@@ -209,7 +209,7 @@ class UltimateService:
             provider_label = provider_name
 
         # Add M3U entry with extended info first
-        entry_content += f'#EXTINF:-1 tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
+        entry_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
 
         # Get DRM configs and add KODIPROP directives
         try:

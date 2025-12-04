@@ -2,10 +2,18 @@
 <settings>
     <category label="General">
         <setting id="server_port" type="number" label="30010" default="7777" />
+        <setting id="epg_xml_url" type="text" label="EPG XML URL" default="https://example.com/epg.xml.gz">
+            <level>1</level>
+            <help>URL to download XMLTV EPG data. Can be .xml or .xml.gz format. Leave empty to use default.</help>
+        </setting>
+
+        <!-- EPG Cache Management (optional buttons) -->
+        <setting id="epg_clear_cache" type="action" label="Clear EPG Cache">
+            <level>2</level>
+            <help>Force clear EPG cache and re-download on next request</help>
+            <data>RunScript(special://home/addons/YOUR_ADDON_ID/clear_epg_cache.py)</data>
+        </setting>
         <setting id="default_country" type="labelenum" label="30011" values="DE|AT|CH|EU" default="DE" />
-        <setting id="api_key" type="text" label="API Key" option="hidden" default="" />
-        <setting id="enable_cache" type="bool" label="Enable EPG Caching" default="true" />
-        <setting id="cache_duration" type="number" label="Cache Duration (hours)" default="6" visible="eq(-1,true)" />
     </category>
     
     <category label="Joyn (DE)">

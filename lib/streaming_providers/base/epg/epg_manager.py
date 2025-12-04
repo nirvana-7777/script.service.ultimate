@@ -17,32 +17,24 @@ class EPGManager:
     """
     Central manager for EPG operations.
     Coordinates cache management, channel mapping, and EPG parsing.
+
+    All file operations are handled transparently by VFS - works in both
+    Kodi and standard Python environments.
     """
 
     # Default EPG source URL (can be overridden by addon setting)
     DEFAULT_EPG_URL = "https://example.com/epg.xml.gz"
 
-    def __init__(
-            self,
-            addon_path: Optional[str] = None,
-            user_data_path: Optional[str] = None,
-            epg_url: Optional[str] = None
-    ):
+    def __init__(self, epg_url: Optional[str] = None):
         """
         Initialize EPG manager with all components.
 
         Args:
-            addon_path: Path to addon root (for default mapping)
-            user_data_path: Path to addon data directory (for user mapping and cache)
             epg_url: EPG source URL (defaults to setting or DEFAULT_EPG_URL)
         """
-        # Get paths if not provided
-        if addon_path is None or user_data_path is None:
-            addon_path, user_data_path = self._get_default_paths()
-
-        # Initialize components
+        # Initialize components - they handle paths internally
         self.cache = EPGCache(vfs_subdir="epg_cache")
-        self.mapping = EPGMapping(addon_path, user_data_path)
+        self.mapping = EPGMapping()  # No paths needed - handles internally
         self.parser = EPGParser()
 
         # Get EPG URL from settings or use default
@@ -51,47 +43,23 @@ class EPGManager:
         logger.info(f"EPGManager: Initialized with EPG URL: {self.epg_url}")
 
     @staticmethod
-    def _get_default_paths() -> tuple:
-        """
-        Get default paths for addon and user data.
-
-        Returns:
-            Tuple of (addon_path, user_data_path)
-        """
-        try:
-            import xbmcaddon
-            import xbmcvfs
-
-            addon = xbmcaddon.Addon()
-            addon_path = addon.getAddonInfo('path')
-            user_data_path = xbmcvfs.translatePath(
-                f"special://userdata/addon_data/{addon.getAddonInfo('id')}"
-            )
-
-            return addon_path, user_data_path
-
-        except Exception as e:
-            logger.warning(f"EPGManager: Could not get Kodi paths: {e}, using fallback")
-            # Fallback for testing outside Kodi
-            import os
-            return os.getcwd(), os.path.join(os.getcwd(), 'userdata')
-
-    @staticmethod
     def _get_epg_url_from_settings() -> Optional[str]:
         """
-        Get EPG URL from addon settings.
+        Get EPG URL from addon settings using SettingsManager.
 
         Returns:
             URL from settings, or None if not set
         """
         try:
-            import xbmcaddon
-            addon = xbmcaddon.Addon()
-            url = addon.getSetting('epg_xml_url')
+            from ..settings.kodi_settings_bridge import KodiSettingsBridge
 
-            if url and url.strip():
-                logger.info(f"EPGManager: Using EPG URL from settings: {url}")
-                return url.strip()
+            bridge = KodiSettingsBridge()
+            if bridge.is_kodi_environment():
+                url = bridge.addon.getSetting('epg_xml_url')
+
+                if url and url.strip():
+                    logger.info(f"EPGManager: Using EPG URL from settings: {url}")
+                    return url.strip()
 
         except Exception as e:
             logger.debug(f"EPGManager: Could not read EPG URL setting: {e}")
