@@ -9,7 +9,7 @@ import xml.etree.ElementTree as ET
 import gzip
 import hashlib
 from datetime import datetime
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 from ..utils.logger import logger
 
 
@@ -215,12 +215,12 @@ class EPGParser:
         # Generate broadcast ID
         broadcast_id = EPGParser.generate_broadcast_id(epg_channel_id, start_time)
 
-        # Build base EPG entry with required fields
-        epg_entry = {
+        # Build base EPG entry with required fields for C++ frontend
+        epg_entry: Dict[str, Any] = {  # Use Any to accept different types
             'broadcast_id': broadcast_id,
             'title': title.strip(),
-            'start_time': start_time,
-            'end_time': end_time
+            'start': start_time,  # C++ expects 'start'
+            'end': end_time,  # C++ expects 'end'
         }
 
         # Parse optional fields
@@ -234,7 +234,8 @@ class EPGParser:
         desc_elem = programme_elem.find('desc')
         if desc_elem is not None and desc_elem.text:
             plot = desc_elem.text.strip()
-            epg_entry['plot'] = plot
+            epg_entry['description'] = plot  # C++ expects 'description' for full plot
+
             # Use first sentence or first 100 chars as plot_outline
             outline = plot.split('.')[0] if '.' in plot else plot[:100]
             epg_entry['plot_outline'] = outline.strip()
@@ -242,45 +243,73 @@ class EPGParser:
         # Credits
         credits_elem = programme_elem.find('credits')
         if credits_elem is not None:
-            # Director
+            # Director - C++ expects 'directors' as array
             director_elem = credits_elem.find('director')
             if director_elem is not None and director_elem.text:
-                epg_entry['director'] = director_elem.text.strip()
+                director = director_elem.text.strip()
+                epg_entry['directors'] = [director]
 
-            # Actors (join with comma)
+            # Actors - C++ expects 'cast' as array
             actors = credits_elem.findall('actor')
             if actors:
                 cast_list = [actor.text.strip() for actor in actors if actor.text]
                 if cast_list:
-                    epg_entry['cast'] = ', '.join(cast_list)
+                    epg_entry['cast'] = cast_list
 
-            # Writer
+            # Writer - C++ expects 'writers' as array
             writer_elem = credits_elem.find('writer')
             if writer_elem is not None and writer_elem.text:
-                epg_entry['writer'] = writer_elem.text.strip()
+                writer = writer_elem.text.strip()
+                epg_entry['writers'] = [writer]
 
         # Year/Date
         date_elem = programme_elem.find('date')
         if date_elem is not None and date_elem.text:
             try:
-                year = int(date_elem.text.strip()[:4])  # Take first 4 chars
+                year = int(date_elem.text.strip()[:4])
                 epg_entry['year'] = year
             except ValueError:
                 pass
 
-        # Category (genre)
+        # Category (genre) - Convert to numeric genre type for C++
         category_elem = programme_elem.find('category')
         if category_elem is not None and category_elem.text:
-            epg_entry['genre_description'] = category_elem.text.strip()
+            genre_str = category_elem.text.strip().lower()
 
-        # Icon
+            # Convert to numeric genre type (Kodi expects 0-...)
+            genre_type = 0  # Unknown
+
+            if 'movie' in genre_str or 'film' in genre_str:
+                genre_type = 1  # Movie
+            elif 'news' in genre_str:
+                genre_type = 2  # News
+            elif 'show' in genre_str or 'series' in genre_str or 'serie' in genre_str:
+                genre_type = 3  # TV Show
+            elif 'sports' in genre_str or 'sport' in genre_str:
+                genre_type = 4  # Sports
+            elif 'children' in genre_str or 'kids' in genre_str or 'cartoon' in genre_str:
+                genre_type = 5  # Children's
+            elif 'documentary' in genre_str or 'dokumentation' in genre_str:
+                genre_type = 6  # Documentary
+            elif 'music' in genre_str:
+                genre_type = 7  # Music
+            elif 'comedy' in genre_str:
+                genre_type = 8  # Comedy
+            elif 'drama' in genre_str:
+                genre_type = 9  # Drama
+            elif 'educational' in genre_str or 'education' in genre_str:
+                genre_type = 10  # Educational
+
+            epg_entry['genre'] = genre_type
+
+        # Icon - C++ expects 'icon'
         icon_elem = programme_elem.find('icon')
         if icon_elem is not None:
             icon_src = icon_elem.get('src', '')
             if icon_src:
-                epg_entry['icon_path'] = icon_src
+                epg_entry['icon'] = icon_src
 
-        # Episode numbering (try all episode-num elements)
+        # Episode numbering
         episode_nums = programme_elem.findall('episode-num')
         series_num = episode_num = part_num = None
 
@@ -298,7 +327,7 @@ class EPGParser:
                     break
 
         if series_num is not None:
-            epg_entry['series_number'] = series_num
+            epg_entry['season_number'] = series_num  # C++ expects 'season_number'
         if episode_num is not None:
             epg_entry['episode_number'] = episode_num
         if part_num is not None:
