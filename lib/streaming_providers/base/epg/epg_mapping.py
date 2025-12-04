@@ -16,6 +16,17 @@ class EPGMapping:
     Manages mapping between provider channel IDs and EPG channel IDs.
     Supports user-editable mapping with default fallback.
 
+    Mapping format (human-editable with channel names):
+    {
+      "provider_name": {
+        "_provider_name": "Display Name",
+        "channel_id": {
+          "epg_id": "tkmde_404",
+          "name": "Channel Display Name"
+        }
+      }
+    }
+
     Uses VFS for all file operations. Automatically detects addon resources
     path for default mapping (only used on first run to copy defaults).
     """
@@ -31,7 +42,12 @@ class EPGMapping:
         # VFS for user data directory (where editable mapping lives)
         self.user_vfs = VFS(addon_subdir="")  # Root of addon data
 
+        # Store the raw mapping from file
+        self.raw_mapping: Dict = {}
+        # Store the flattened provider->channel->epg_id mapping for fast lookups
         self.mapping: Dict[str, Dict[str, str]] = {}
+        # Store channel names for reference
+        self.channel_names: Dict[str, Dict[str, str]] = {}
 
         logger.info(f"EPGMapping: User mapping path: {self.user_vfs.base_path}")
 
@@ -104,11 +120,23 @@ class EPGMapping:
                 logger.error(f"EPGMapping: Failed to read/copy default mapping: {e}")
                 # Fall through to create empty mapping
 
-        # No default found or copy failed - create empty mapping
+        # No default found or copy failed - create empty mapping with format info
         logger.warning("EPGMapping: No default mapping found, creating empty mapping")
-        empty_mapping = {}
+        empty_mapping = {
+            "_format_version": "1.0",
+            "_description": "EPG Channel Mapping - Maps provider channel IDs to XMLTV EPG channel IDs",
+            "_example": {
+                "provider_key": {
+                    "_provider_name": "Provider Display Name (optional)",
+                    "channel_id": {
+                        "epg_id": "xmltv_channel_id",
+                        "name": "Channel Display Name"
+                    }
+                }
+            }
+        }
         if self.user_vfs.write_json(self.MAPPING_FILE, empty_mapping):
-            logger.info("EPGMapping: Created empty user mapping file")
+            logger.info("EPGMapping: Created empty user mapping file with examples")
             return True
         else:
             logger.error("EPGMapping: Failed to create empty user mapping")
@@ -130,6 +158,85 @@ class EPGMapping:
         logger.info("EPGMapping: User mapping not found, initializing...")
         return self._copy_default_to_user()
 
+    @staticmethod
+    def _flatten_mapping(self, raw_mapping: Dict) -> tuple:
+        """
+        Flatten mapping format to simple provider->channel->epg_id format for lookups.
+        Also extracts channel names for reference.
+
+        Input format:
+        {
+          "provider_name": {
+            "_provider_name": "Display Name",
+            "channel_id": {
+              "epg_id": "tkmde_404",
+              "name": "Channel Name"
+            }
+          }
+        }
+
+        Output format:
+        (
+          {  # mapping
+            "provider_name": {
+              "channel_id": "tkmde_404"
+            }
+          },
+          {  # channel_names
+            "provider_name": {
+              "channel_id": "Channel Name"
+            }
+          }
+        )
+
+        Args:
+            raw_mapping: Raw mapping from JSON file
+
+        Returns:
+            Tuple of (flattened mapping dict, channel names dict)
+        """
+        flattened = {}
+        names = {}
+
+        for provider_name, provider_data in raw_mapping.items():
+            # Skip metadata entries (those starting with underscore)
+            if provider_name.startswith('_'):
+                continue
+
+            # Skip if not a dict (shouldn't happen, but be safe)
+            if not isinstance(provider_data, dict):
+                continue
+
+            # Initialize provider dicts if needed
+            if provider_name not in flattened:
+                flattened[provider_name] = {}
+                names[provider_name] = {}
+
+            # Process each channel in this provider
+            for channel_id, channel_data in provider_data.items():
+                # Skip metadata entries
+                if channel_id.startswith('_'):
+                    continue
+
+                # Handle both dict format and simple string format
+                if isinstance(channel_data, dict):
+                    # New format: { "epg_id": "...", "name": "..." }
+                    epg_id = channel_data.get('epg_id')
+                    name = channel_data.get('name', channel_id)
+                elif isinstance(channel_data, str):
+                    # Legacy simple format: just the epg_id string
+                    epg_id = channel_data
+                    name = channel_id
+                else:
+                    logger.warning(f"EPGMapping: Invalid format for {provider_name}/{channel_id}")
+                    continue
+
+                if epg_id:
+                    flattened[provider_name][channel_id] = epg_id
+                    names[provider_name][channel_id] = name
+
+        return flattened, names
+
     def _load_mapping(self) -> bool:
         """
         Load mapping from user file.
@@ -141,15 +248,25 @@ class EPGMapping:
         self._ensure_user_mapping_exists()
 
         # Load user mapping
-        user_mapping = self.user_vfs.read_json(self.MAPPING_FILE)
-        if user_mapping is not None:
-            self.mapping = user_mapping
-            logger.info(f"EPGMapping: Loaded mapping with {len(self.mapping)} providers")
+        raw_mapping = self.user_vfs.read_json(self.MAPPING_FILE)
+        if raw_mapping is not None:
+            self.raw_mapping = raw_mapping
+
+            # Flatten the mapping for easy lookups
+            self.mapping, self.channel_names = self._flatten_mapping(raw_mapping)
+
+            total_channels = sum(len(channels) for channels in self.mapping.values())
+            logger.info(
+                f"EPGMapping: Loaded mapping with {len(self.mapping)} providers "
+                f"and {total_channels} channels"
+            )
             return True
 
         # Failed to load mapping
         logger.warning("EPGMapping: Failed to load mapping, using empty mapping")
+        self.raw_mapping = {}
         self.mapping = {}
+        self.channel_names = {}
         return False
 
     def get_epg_channel_id(self, provider_name: str, channel_id: str) -> Optional[str]:
@@ -161,7 +278,7 @@ class EPGMapping:
             channel_id: Channel ID within provider
 
         Returns:
-            EPG channel ID (e.g., "de.rtl"), or None if not mapped
+            EPG channel ID (e.g., "tkmde_404"), or None if not mapped
         """
         # Get provider's mapping
         provider_mapping = self.mapping.get(provider_name)
@@ -177,6 +294,23 @@ class EPGMapping:
 
         logger.debug(f"EPGMapping: Mapped '{provider_name}/{channel_id}' -> '{epg_id}'")
         return epg_id
+
+    def get_channel_name(self, provider_name: str, channel_id: str) -> Optional[str]:
+        """
+        Get display name for a channel.
+
+        Args:
+            provider_name: Name of provider
+            channel_id: Channel ID within provider
+
+        Returns:
+            Channel display name, or None if not found
+        """
+        provider_names = self.channel_names.get(provider_name)
+        if not provider_names:
+            return None
+
+        return provider_names.get(channel_id)
 
     def get_provider_mapping(self, provider_name: str) -> Dict[str, str]:
         """
