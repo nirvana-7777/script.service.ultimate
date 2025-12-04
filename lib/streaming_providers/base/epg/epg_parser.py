@@ -100,20 +100,37 @@ class EPGParser:
         text = episode_elem.text or ''
 
         if system == 'xmltv_ns':
-            # Format: "season.episode.part/total_parts"
-            # Example: "4.11.0/1" means season 5, episode 12, part 1 of 1
+            # Format: "season.episode.part/total" but may have spaces like "11 . 6 . "
+            # Clean up spaces around dots
+            text = text.strip()
+            # Replace spaces around dots and remove multiple spaces
+            import re
+            text = re.sub(r'\s*\.\s*', '.', text)
+
             try:
+                # Remove trailing slash if present without numerator (e.g., "0.5.")
+                if text.endswith('.'):
+                    text = text[:-1]
+
                 parts = text.split('.')
                 if len(parts) >= 2:
-                    series_num = int(parts[0].split('/')[0]) + 1 if parts[0] else None  # 0-indexed, so +1
-                    episode_num = int(parts[1].split('/')[0]) + 1 if parts[1] else None
+                    # Handle season number
+                    season_str = parts[0].split('/')[0] if parts[0] else None
+                    series_num = int(season_str) + 1 if season_str and season_str.strip() else None
+
+                    # Handle episode number
+                    episode_str = parts[1].split('/')[0] if len(parts) > 1 and parts[1] else None
+                    episode_num = int(episode_str) + 1 if episode_str and episode_str.strip() else None
+
+                    # Handle part number (optional)
                     part_num = None
                     if len(parts) >= 3 and parts[2]:
                         part_str = parts[2].split('/')[0]
-                        part_num = int(part_str) + 1 if part_str else None
+                        part_num = int(part_str) + 1 if part_str and part_str.strip() else None
+
                     return series_num, episode_num, part_num
             except (ValueError, IndexError) as e:
-                logger.debug(f"Failed to parse xmltv_ns episode number '{text}': {e}")
+                logger.debug(f"Failed to parse xmltv_ns episode number '{episode_elem.text}': {e}")
 
         elif system == 'onscreen':
             # Format: "S05E12" or "5x12"
