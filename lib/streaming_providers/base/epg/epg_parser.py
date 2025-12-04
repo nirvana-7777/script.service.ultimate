@@ -216,11 +216,11 @@ class EPGParser:
         broadcast_id = EPGParser.generate_broadcast_id(epg_channel_id, start_time)
 
         # Build base EPG entry with required fields for C++ frontend
-        epg_entry: Dict[str, Any] = {  # Use Any to accept different types
+        epg_entry: Dict[str, Any] = {
             'broadcast_id': broadcast_id,
             'title': title.strip(),
-            'start': start_time,  # C++ expects 'start'
-            'end': end_time,  # C++ expects 'end'
+            'start': start_time,  # C++ expects 'start' key
+            'end': end_time,  # C++ expects 'end' key
         }
 
         # Parse optional fields
@@ -422,8 +422,8 @@ class EPGParser:
 
                             if epg_entry:
                                 # Filter by time range
-                                prog_start = epg_entry['start_time']
-                                prog_end = epg_entry['end_time']
+                                prog_start = epg_entry['start']  # Changed from 'start_time'
+                                prog_end = epg_entry['end']  # Changed from 'end_time'
 
                                 # Include if programme overlaps with requested range
                                 if start_time is not None and prog_end < start_time:
