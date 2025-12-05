@@ -89,10 +89,6 @@ class StreamingChannel:
 
     # NEW: Radio support (backward compatible - defaults to False)
     is_radio: bool = False
-    audio_only: bool = False
-    radio_frequency: Optional[str] = None  # e.g., "FM 98.5"
-    radio_station_id: Optional[str] = None
-    bitrate: Optional[str] = None  # e.g., "128kbps"
 
     def __post_init__(self):
         """
@@ -167,10 +163,6 @@ class StreamingChannel:
             'StreamingFormat': self.streaming_format,
             # NEW: Radio fields (backward compatible addition)
             'IsRadio': self.is_radio,
-            'AudioOnly': self.audio_only,
-            'RadioFrequency': self.radio_frequency,
-            'RadioStationId': self.radio_station_id,
-            'Bitrate': self.bitrate
         }
 
         # Add DRM config if present
@@ -241,7 +233,6 @@ class StreamingChannel:
             channel_id=channel_id,
             provider=provider,
             is_radio=True,
-            audio_only=True,
             content_type="RADIO",
             quality="AUDIO",
             **kwargs
@@ -293,7 +284,6 @@ class StreamingChannel:
 
         if any(radio_indicators):
             self.is_radio = True
-            self.audio_only = True
 
             # Update quality if not set
             if not self.quality or self.quality.upper() not in [q.value for q in Quality]:

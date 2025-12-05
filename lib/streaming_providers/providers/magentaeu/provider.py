@@ -204,6 +204,7 @@ class MagentaProvider(StreamingProvider):
                 station_id = channel_data.get('station_id', '')
                 channel_number = channel_data.get('channel_number', '')
                 media_pid = channel_data.get('media_pid', '')
+                is_audio = channel_data.get('is_audio', False)
 
                 # Build manifest script
                 manifest_script_parts = []
@@ -235,6 +236,7 @@ class MagentaProvider(StreamingProvider):
                     speed_up=True,
                     content_type=CONTENT_TYPE_LIVE,
                     country=self.country.upper(),
+                    is_radio=is_audio,
                     language=get_language(self.country),
                     streaming_format=STREAMING_FORMAT_DASH
                 )
