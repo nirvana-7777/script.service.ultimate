@@ -247,5 +247,145 @@
   "207381032335": {
     "epg_id": "tkmde_264",
     "name": "Sky Atlantic"
+  },
+    "206965288091": {
+    "epg_id": "tkmat_206965288091",
+    "name": "ORF 1 HD"
+  },
+  "206964776268": {
+    "epg_id": "tkmat_206964776268",
+    "name": "ORF III HD"
+  },
+  "206966824154": {
+    "epg_id": "tkmat_206966824154",
+    "name": "ORF Sport+ HD"
+  },
+  "207381032291": {
+    "epg_id": "tkmat_207381032291",
+    "name": "Sky Sport Austria 1"
+  },
+  "207382568157": {
+    "epg_id": "tkmat_207382568157",
+    "name": "Sky Sport Austria 2"
+  },
+  "207382568158": {
+    "epg_id": "tkmat_207382568158",
+    "name": "Sky Sport Austria 3"
+  },
+  "207381032387": {
+    "epg_id": "tkmat_207381032387",
+    "name": "Sky Sport Austria 4"
+  },
+  "215440936100": {
+    "epg_id": "tkmat_215440936100",
+    "name": "Sky Sport Austria 5"
+  },
+  "215440936101": {
+    "epg_id": "tkmat_215440936101",
+    "name": "Sky Sport Austria 6"
+  },
+  "215440936102": {
+    "epg_id": "tkmat_215440936102",
+    "name": "Sky Sport Austria 7"
+  },
+  "537285160086": {
+    "epg_id": "tkmat_537285160086",
+    "name": "Sky Sport Austria 8"
+  },
+    "206964776257": {
+    "epg_id": "tkmde_385",
+    "name": "VOX HD"
+  },
+  "206966312019": {
+    "epg_id": "tkmde_392",
+    "name": "3sat HD"
+  },
+  "206965800328": {
+    "epg_id": "tkmde_394",
+    "name": "arte HD"
+  },
+  "206966823973": {
+    "epg_id": "tkmde_479",
+    "name": "ARD alpha HD"
+  },
+  "206965800383": {
+    "epg_id": "tkmde_400",
+    "name": "tagesschau24 HD"
+  },
+  "206966312002": {
+    "epg_id": "tkmde_48",
+    "name": "TELE 5"
+  },
+  "206966312109": {
+    "epg_id": "tkmde_397",
+    "name": "WDR Fernsehen HD"
+  },
+  "206966823986": {
+    "epg_id": "tkmde_370",
+    "name": "MDR Fernsehen HD"
+  },
+  "206966823998": {
+    "epg_id": "tkmde_398",
+    "name": "SWR HD"
+  },
+  "206966312140": {
+    "epg_id": "tkmde_377",
+    "name": "NDR Fernsehen HD"
+  },
+  "206966312157": {
+    "epg_id": "tkmde_386",
+    "name": "hr-fernsehen HD"
+  },
+  "206966824018": {
+    "epg_id": "tkmde_384",
+    "name": "rbb HD"
+  },
+  "206966824037": {
+    "epg_id": "tkmde_379",
+    "name": "SR Fernsehen HD"
+  },
+  "206966824059": {
+    "epg_id": "tkmde_28",
+    "name": "Nickelodeon HD"
+  },
+  "206966312300": {
+    "epg_id": "tkmde_389",
+    "name": "Eurosport 1 HD"
+  },
+  "625596968369": {
+    "epg_id": "tkmde_18",
+    "name": "Eurosport 2 HD"
+  },
+  "537283623989": {
+    "epg_id": "tkmde_540",
+    "name": "Warner TV Film HD"
+  },
+  "206969383991": {
+    "epg_id": "tkmde_471",
+    "name": "13TH STREET HD"
+  },
+  "206969383998": {
+    "epg_id": "tkmde_462",
+    "name": "Universal TV HD"
+  },
+  "206969384001": {
+    "epg_id": "tkmde_465",
+    "name": "Syfy HD"
+  },
+  "206970408273": {
+    "epg_id": "tkmde_458",
+    "name": "Warner TV Serie HD"
+  },
+  "206966824377": {
+    "epg_id": "tkmde_461",
+    "name": "Warner TV Comedy HD"
+  },
+  "206969384018": {
+    "epg_id": "tkmde_137",
+    "name": "Kinowelt TV HD"
+  },
+  "206969384021": {
+    "epg_id": "tkmde_658",
+    "name": "Romance TV HD"
   }
 }
