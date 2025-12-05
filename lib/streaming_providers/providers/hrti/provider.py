@@ -188,7 +188,7 @@ class HRTiProvider(StreamingProvider):
                 manifest_script=streaming_url,  # Store streaming URL for manifest fetching
                 content_type="AUDIO" if is_radio else "LIVE",
                 country=self.country,
-                is_audio=is_radio,
+                is_radio=is_radio,
                 language="hr"  # Croatian
             )
 
