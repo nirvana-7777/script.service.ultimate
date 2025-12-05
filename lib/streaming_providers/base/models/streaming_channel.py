@@ -98,16 +98,9 @@ class StreamingChannel:
         # Run validation checks (warnings only for backward compatibility)
         self._validate_fields()
 
-        # Auto-set audio_only if is_radio is True
-        if self.is_radio:
-            self.audio_only = True
-
         # Auto-update content_type for radio
         if self.is_radio and self.content_type == 'LIVE':
             self.content_type = 'RADIO'
-
-        # Ensure quality is appropriate for audio content
-        if self.audio_only and not self.quality:
             self.quality = 'AUDIO'
 
     def _validate_fields(self):
@@ -128,14 +121,6 @@ class StreamingChannel:
                 f"Channel {self.name} ({self.channel_id}): "
                 f"session_manifest=True but manifest URL is set - manifest will be ignored"
             )
-
-        # Validate radio fields
-        if self.is_radio and not self.audio_only:
-            logger.info(
-                f"Channel {self.name} ({self.channel_id}): "
-                f"is_radio=True but audio_only=False - auto-setting audio_only=True"
-            )
-            self.audio_only = True
 
     def to_dict(self) -> Dict:
         """Convert to dictionary format - backward compatible with new fields added"""
@@ -264,7 +249,7 @@ class StreamingChannel:
         Check if this is audio-only content (radio or audio track)
         New method - doesn't affect backward compatibility
         """
-        return self.is_radio or self.audio_only
+        return self.is_radio
 
     def detect_and_set_radio(self) -> None:
         """
