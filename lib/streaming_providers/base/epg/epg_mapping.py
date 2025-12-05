@@ -3,10 +3,15 @@
 """
 EPG Channel Mapping Manager
 Maps provider/channel IDs to EPG channel IDs from XMLTV
+
+New provider-per-file format:
+- Each provider has its own file: {provider}_epg_mapping.json
+- File contains direct channel mappings without provider wrapper
 """
 
 import os
-from typing import Optional, Dict
+import glob
+from typing import List, Optional, Dict, Any
 from ..utils.logger import logger
 from ..utils.vfs import VFS
 
@@ -14,55 +19,48 @@ from ..utils.vfs import VFS
 class EPGMapping:
     """
     Manages mapping between provider channel IDs and EPG channel IDs.
-    Supports user-editable mapping with default fallback.
+    Uses separate JSON files per provider for better organization.
 
-    Mapping format (human-editable with channel names):
+    File format (per provider):
     {
-      "provider_name": {
-        "_provider_name": "Display Name",
-        "channel_id": {
-          "epg_id": "tkmde_404",
-          "name": "Channel Display Name"
-        }
+      "_provider_name": "Display Name (optional)",
+      "channel_id": {
+        "epg_id": "tkmde_404",
+        "name": "Channel Display Name"
       }
     }
 
-    Uses VFS for all file operations. Automatically detects addon resources
-    path for default mapping (only used on first run to copy defaults).
+    Fallback: If no mapping file exists or is corrupted, uses channel_id as epg_id.
     """
 
-    # Mapping filename
-    MAPPING_FILE = "epg_mapping.json"
+    # Mapping filename pattern
+    MAPPING_FILE_PATTERN = "*_epg_mapping.json"
+    MAPPING_FILE_SUFFIX = "_epg_mapping.json"
 
     def __init__(self):
         """
         Initialize EPG mapping manager.
-        Automatically detects environment and sets up paths.
+        Sets up VFS and copies default mapping files from addon resources.
         """
-        # VFS for user data directory (where editable mapping lives)
+        # VFS for user data directory
         self.user_vfs = VFS(addon_subdir="")  # Root of addon data
 
-        # Store the raw mapping from file
-        self.raw_mapping: Dict = {}
-        # Store the flattened provider->channel->epg_id mapping for fast lookups
-        self.mapping: Dict[str, Dict[str, str]] = {}
-        # Store channel names for reference
-        self.channel_names: Dict[str, Dict[str, str]] = {}
+        # Cache for loaded provider mappings
+        # Structure: {provider_name: {"mapping": {...}, "names": {...}}}
+        self._cache: Dict[str, Dict[str, Any]] = {}
 
-        logger.info(f"EPGMapping: User mapping path: {self.user_vfs.base_path}")
+        logger.info(f"EPGMapping: Initialized with user path: {self.user_vfs.base_path}")
 
-        # Load mapping on initialization
-        self._load_mapping()
+        # Copy default mapping files from addon resources
+        self._copy_default_mapping_files()
 
-    def _get_default_mapping_path(self) -> Optional[str]:
+    @staticmethod
+    def _get_default_mapping_files_dir() -> Optional[str]:
         """
-        Get path to default mapping in addon resources.
-        Only used on first run to copy defaults to user directory.
-
-        Uses settings manager to detect paths if available.
+        Get path to default mapping files directory in addon resources.
 
         Returns:
-            Path to default mapping file, or None if not found
+            Path to default mapping directory, or None if not found
         """
         try:
             # Try to use settings manager's kodi bridge to get addon path
@@ -73,148 +71,147 @@ class EPGMapping:
                 addon_info = bridge.get_addon_info()
                 addon_path = addon_info.get('path')
                 if addon_path:
-                    default_path = os.path.join(addon_path, 'resources', 'config', self.MAPPING_FILE)
-                    logger.debug(f"EPGMapping: Default mapping path (Kodi): {default_path}")
-                    return default_path
+                    default_dir = os.path.join(addon_path, 'resources', 'config', 'epg_mappings')
+                    logger.debug(f"EPGMapping: Default mapping dir (Kodi): {default_dir}")
+                    return default_dir
 
             # Fallback to standard filesystem
             addon_path = os.getcwd()
-            default_path = os.path.join(addon_path, 'resources', 'config', self.MAPPING_FILE)
-            logger.debug(f"EPGMapping: Default mapping path (standard): {default_path}")
-            return default_path
+            default_dir = os.path.join(addon_path, 'resources', 'config', 'epg_mappings')
+            logger.debug(f"EPGMapping: Default mapping dir (standard): {default_dir}")
+            return default_dir
 
         except Exception as e:
-            logger.warning(f"EPGMapping: Could not determine default mapping path: {e}")
+            logger.warning(f"EPGMapping: Could not determine default mapping dir: {e}")
             # Last resort fallback
             addon_path = os.getcwd()
-            default_path = os.path.join(addon_path, 'resources', 'config', self.MAPPING_FILE)
-            return default_path
+            default_dir = os.path.join(addon_path, 'resources', 'config', 'epg_mappings')
+            return default_dir
 
-    def _copy_default_to_user(self) -> bool:
+    def _copy_default_mapping_files(self) -> bool:
         """
-        Copy default mapping from addon resources to user directory.
-        Only called on first run when user mapping doesn't exist.
+        Copy all default mapping files from addon resources to user directory.
+        Only called on first run.
 
         Returns:
-            True if copied successfully or created empty mapping
+            True if at least one file was copied or user files already exist
         """
-        default_path = self._get_default_mapping_path()
+        default_dir = self._get_default_mapping_files_dir()
 
-        if default_path and os.path.exists(default_path):
-            # Read default mapping using standard file operations
-            # (it's in addon resources, not in VFS user data)
-            try:
-                import json
-                with open(default_path, 'r', encoding='utf-8') as f:
-                    default_mapping = json.load(f)
+        if not default_dir or not os.path.exists(default_dir):
+            logger.warning("EPGMapping: No default mapping directory found")
+            # Check if any user mapping files already exist
+            user_files = self.user_vfs.list_files(pattern=self.MAPPING_FILE_PATTERN)
+            if user_files:
+                logger.info(f"EPGMapping: Found {len(user_files)} existing user mapping files")
+                return True
+            else:
+                logger.warning("EPGMapping: No default files and no user files found")
+                return False
 
-                # Write to user VFS
-                if self.user_vfs.write_json(self.MAPPING_FILE, default_mapping):
-                    logger.info(f"EPGMapping: Copied default mapping to user directory")
-                    return True
-                else:
-                    logger.error(f"EPGMapping: Failed to write default mapping to user directory")
-                    return False
+        try:
+            # Get list of default mapping files
+            default_files = glob.glob(os.path.join(default_dir, self.MAPPING_FILE_PATTERN))
 
-            except Exception as e:
-                logger.error(f"EPGMapping: Failed to read/copy default mapping: {e}")
-                # Fall through to create empty mapping
+            if not default_files:
+                logger.warning(f"EPGMapping: No default mapping files found in {default_dir}")
+                return False
 
-        # No default found or copy failed - create empty mapping with format info
-        logger.warning("EPGMapping: No default mapping found, creating empty mapping")
-        empty_mapping = {
-            "_format_version": "1.0",
-            "_description": "EPG Channel Mapping - Maps provider channel IDs to XMLTV EPG channel IDs",
-            "_example": {
-                "provider_key": {
-                    "_provider_name": "Provider Display Name (optional)",
-                    "channel_id": {
-                        "epg_id": "xmltv_channel_id",
-                        "name": "Channel Display Name"
-                    }
-                }
-            }
-        }
-        if self.user_vfs.write_json(self.MAPPING_FILE, empty_mapping):
-            logger.info("EPGMapping: Created empty user mapping file with examples")
-            return True
-        else:
-            logger.error("EPGMapping: Failed to create empty user mapping")
+            copied_count = 0
+
+            for default_file in default_files:
+                filename = os.path.basename(default_file)
+
+                # Skip if user file already exists
+                if self.user_vfs.exists(filename):
+                    logger.debug(f"EPGMapping: User file already exists: {filename}")
+                    continue
+
+                # Read default file using standard file operations
+                try:
+                    with open(default_file, 'r', encoding='utf-8') as f:
+                        content = f.read()
+
+                    # Write to user VFS
+                    if self.user_vfs.write_text(filename, content):
+                        logger.info(f"EPGMapping: Copied default mapping: {filename}")
+                        copied_count += 1
+                    else:
+                        logger.error(f"EPGMapping: Failed to write user mapping: {filename}")
+
+                except Exception as e:
+                    logger.error(f"EPGMapping: Failed to read/copy {filename}: {e}")
+                    continue
+
+            logger.info(f"EPGMapping: Copied {copied_count} default mapping files")
+            return copied_count > 0
+
+        except Exception as e:
+            logger.error(f"EPGMapping: Failed to copy default mapping files: {e}")
             return False
 
-    def _ensure_user_mapping_exists(self) -> bool:
+    def _extract_provider_from_filename(self, filename: str) -> str:
         """
-        Ensure user mapping file exists. Copy from default if needed.
-
-        Returns:
-            True if user mapping exists or was created successfully
-        """
-        # Check if user mapping already exists
-        if self.user_vfs.exists(self.MAPPING_FILE):
-            logger.debug("EPGMapping: User mapping file exists")
-            return True
-
-        # User mapping doesn't exist - copy from default or create empty
-        logger.info("EPGMapping: User mapping not found, initializing...")
-        return self._copy_default_to_user()
-
-    @staticmethod
-    def _flatten_mapping(raw_mapping: Dict) -> tuple:
-        """
-        Flatten mapping format to simple provider->channel->epg_id format for lookups.
-        Also extracts channel names for reference.
-
-        Input format:
-        {
-          "provider_name": {
-            "_provider_name": "Display Name",
-            "channel_id": {
-              "epg_id": "tkmde_404",
-              "name": "Channel Name"
-            }
-          }
-        }
-
-        Output format:
-        (
-          {  # mapping
-            "provider_name": {
-              "channel_id": "tkmde_404"
-            }
-          },
-          {  # channel_names
-            "provider_name": {
-              "channel_id": "Channel Name"
-            }
-          }
-        )
+        Extract provider name from mapping filename.
 
         Args:
-            raw_mapping: Raw mapping from JSON file
+            filename: e.g., "magentaeu_at_epg_mapping.json"
 
         Returns:
-            Tuple of (flattened mapping dict, channel names dict)
+            Provider name, e.g., "magentaeu_at"
         """
-        flattened = {}
-        names = {}
+        if filename.endswith(self.MAPPING_FILE_SUFFIX):
+            return filename[:-len(self.MAPPING_FILE_SUFFIX)]
+        return filename
 
-        for provider_name, provider_data in raw_mapping.items():
-            # Skip metadata entries (those starting with underscore)
-            if provider_name.startswith('_'):
-                continue
+    def _get_mapping_filename(self, provider_name: str) -> str:
+        """
+        Get mapping filename for a provider.
 
-            # Skip if not a dict (shouldn't happen, but be safe)
-            if not isinstance(provider_data, dict):
-                continue
+        Args:
+            provider_name: Provider name
 
-            # Initialize provider dicts if needed
-            if provider_name not in flattened:
-                flattened[provider_name] = {}
-                names[provider_name] = {}
+        Returns:
+            Filename, e.g., "magentaeu_at_epg_mapping.json"
+        """
+        return f"{provider_name}{self.MAPPING_FILE_SUFFIX}"
 
-            # Process each channel in this provider
-            for channel_id, channel_data in provider_data.items():
-                # Skip metadata entries
+    def _load_provider_mapping(self, provider_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Load mapping for a specific provider from file.
+        Uses cache if already loaded.
+
+        Args:
+            provider_name: Provider name to load mapping for
+
+        Returns:
+            Dictionary with "mapping" and "names", or None if failed
+        """
+        # Check cache first
+        if provider_name in self._cache:
+            logger.debug(f"EPGMapping: Using cached mapping for '{provider_name}'")
+            return self._cache[provider_name]
+
+        filename = self._get_mapping_filename(provider_name)
+
+        # Check if file exists
+        if not self.user_vfs.exists(filename):
+            logger.debug(f"EPGMapping: No mapping file found for provider '{provider_name}'")
+            return None
+
+        try:
+            # Load mapping from file
+            raw_mapping = self.user_vfs.read_json(filename)
+            if raw_mapping is None:
+                logger.warning(f"EPGMapping: Failed to parse mapping file for '{provider_name}'")
+                return None
+
+            # Flatten the mapping
+            mapping = {}
+            names = {}
+
+            for channel_id, channel_data in raw_mapping.items():
+                # Skip metadata entries (those starting with underscore)
                 if channel_id.startswith('_'):
                     continue
 
@@ -232,68 +229,64 @@ class EPGMapping:
                     continue
 
                 if epg_id:
-                    flattened[provider_name][channel_id] = epg_id
-                    names[provider_name][channel_id] = name
+                    mapping[channel_id] = epg_id
+                    names[channel_id] = name
 
-        return flattened, names
+            # Store in cache
+            cached_data = {
+                "mapping": mapping,
+                "names": names,
+                "provider_name": raw_mapping.get('_provider_name', provider_name)
+            }
+            self._cache[provider_name] = cached_data
 
-    def _load_mapping(self) -> bool:
-        """
-        Load mapping from user file.
-
-        Returns:
-            True if mapping loaded successfully
-        """
-        # Ensure user mapping exists (copy from default on first run)
-        self._ensure_user_mapping_exists()
-
-        # Load user mapping
-        raw_mapping = self.user_vfs.read_json(self.MAPPING_FILE)
-        if raw_mapping is not None:
-            self.raw_mapping = raw_mapping
-
-            # Flatten the mapping for easy lookups
-            self.mapping, self.channel_names = self._flatten_mapping(raw_mapping)
-
-            total_channels = sum(len(channels) for channels in self.mapping.values())
             logger.info(
-                f"EPGMapping: Loaded mapping with {len(self.mapping)} providers "
-                f"and {total_channels} channels"
+                f"EPGMapping: Loaded mapping for '{provider_name}' "
+                f"with {len(mapping)} channels"
             )
-            return True
 
-        # Failed to load mapping
-        logger.warning("EPGMapping: Failed to load mapping, using empty mapping")
-        self.raw_mapping = {}
-        self.mapping = {}
-        self.channel_names = {}
-        return False
+            return cached_data
+
+        except Exception as e:
+            logger.error(f"EPGMapping: Failed to load mapping for '{provider_name}': {e}")
+            return None
 
     def get_epg_channel_id(self, provider_name: str, channel_id: str) -> Optional[str]:
         """
         Get EPG channel ID for a provider/channel combination.
+        Falls back to channel_id if no mapping found.
 
         Args:
             provider_name: Name of provider (e.g., "rtlplus", "joyn_de")
             channel_id: Channel ID within provider
 
         Returns:
-            EPG channel ID (e.g., "tkmde_404"), or None if not mapped
+            EPG channel ID, or channel_id if no mapping found
         """
-        # Get provider's mapping
-        provider_mapping = self.mapping.get(provider_name)
-        if not provider_mapping:
-            logger.debug(f"EPGMapping: No mapping found for provider '{provider_name}'")
-            return None
+        # Load provider mapping
+        provider_data = self._load_provider_mapping(provider_name)
+
+        if not provider_data:
+            # No mapping file exists - fall back to using channel_id as epg_id
+            logger.debug(
+                f"EPGMapping: No mapping file for '{provider_name}', "
+                f"using channel_id as epg_id: '{channel_id}'"
+            )
+            return channel_id
 
         # Get channel's EPG ID
-        epg_id = provider_mapping.get(channel_id)
-        if not epg_id:
-            logger.debug(f"EPGMapping: No EPG ID found for '{provider_name}/{channel_id}'")
-            return None
+        epg_id = provider_data["mapping"].get(channel_id)
 
-        logger.debug(f"EPGMapping: Mapped '{provider_name}/{channel_id}' -> '{epg_id}'")
-        return epg_id
+        if epg_id:
+            logger.debug(f"EPGMapping: Mapped '{provider_name}/{channel_id}' -> '{epg_id}'")
+            return epg_id
+        else:
+            # Channel not in mapping - fall back to channel_id
+            logger.debug(
+                f"EPGMapping: No mapping for '{provider_name}/{channel_id}', "
+                f"using channel_id as epg_id"
+            )
+            return channel_id
 
     def get_channel_name(self, provider_name: str, channel_id: str) -> Optional[str]:
         """
@@ -306,11 +299,12 @@ class EPGMapping:
         Returns:
             Channel display name, or None if not found
         """
-        provider_names = self.channel_names.get(provider_name)
-        if not provider_names:
+        provider_data = self._load_provider_mapping(provider_name)
+
+        if not provider_data:
             return None
 
-        return provider_names.get(channel_id)
+        return provider_data["names"].get(channel_id)
 
     def get_provider_mapping(self, provider_name: str) -> Dict[str, str]:
         """
@@ -322,7 +316,12 @@ class EPGMapping:
         Returns:
             Dictionary mapping channel IDs to EPG IDs
         """
-        return self.mapping.get(provider_name, {})
+        provider_data = self._load_provider_mapping(provider_name)
+
+        if not provider_data:
+            return {}
+
+        return provider_data["mapping"].copy()
 
     def has_mapping(self, provider_name: str, channel_id: Optional[str] = None) -> bool:
         """
@@ -335,23 +334,35 @@ class EPGMapping:
         Returns:
             True if mapping exists
         """
-        if provider_name not in self.mapping:
+        provider_data = self._load_provider_mapping(provider_name)
+
+        if not provider_data:
             return False
 
         if channel_id is None:
             return True
 
-        return channel_id in self.mapping[provider_name]
+        return channel_id in provider_data["mapping"]
 
-    def reload_mapping(self) -> bool:
+    def reload_mapping(self, provider_name: Optional[str] = None) -> bool:
         """
-        Reload mapping from file (useful after user edits).
+        Reload mapping from file. If provider_name is None, reload all.
+
+        Args:
+            provider_name: Provider name to reload, or None for all
 
         Returns:
             True if reloaded successfully
         """
-        logger.info("EPGMapping: Reloading mapping from file")
-        return self._load_mapping()
+        if provider_name is None:
+            logger.info("EPGMapping: Reloading all mappings from files")
+            self._cache.clear()
+            return True
+        else:
+            logger.info(f"EPGMapping: Reloading mapping for '{provider_name}'")
+            if provider_name in self._cache:
+                del self._cache[provider_name]
+            return self._load_provider_mapping(provider_name) is not None
 
     def get_mapping_stats(self) -> Dict:
         """
@@ -360,15 +371,35 @@ class EPGMapping:
         Returns:
             Dictionary with mapping statistics
         """
-        total_providers = len(self.mapping)
-        total_channels = sum(len(channels) for channels in self.mapping.values())
+        # List all provider mapping files in user directory
+        user_files = self.user_vfs.list_files(pattern=self.MAPPING_FILE_PATTERN)
 
-        user_mapping_path = self.user_vfs.join_path(self.MAPPING_FILE)
+        # Extract provider names from filenames
+        providers = [self._extract_provider_from_filename(f) for f in user_files]
+
+        # Get cached providers
+        cached_providers = list(self._cache.keys())
+
+        total_channels = sum(
+            len(data["mapping"])
+            for data in self._cache.values()
+        )
 
         return {
-            'total_providers': total_providers,
+            'total_providers': len(providers),
+            'cached_providers': len(cached_providers),
             'total_channels': total_channels,
-            'providers': list(self.mapping.keys()),
-            'user_mapping_path': user_mapping_path,
-            'user_mapping_exists': self.user_vfs.exists(self.MAPPING_FILE)
+            'providers': providers,
+            'cached_providers_list': cached_providers,
+            'user_mapping_dir': self.user_vfs.base_path
         }
+
+    def list_providers_with_mappings(self) -> List[str]:
+        """
+        List all providers that have mapping files.
+
+        Returns:
+            List of provider names
+        """
+        user_files = self.user_vfs.list_files(pattern=self.MAPPING_FILE_PATTERN)
+        return [self._extract_provider_from_filename(f) for f in user_files]

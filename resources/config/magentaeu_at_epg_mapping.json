@@ -1,0 +1,255 @@
+{
+  "_provider_name": "Magenta TV Austria",
+  "206965288143": {
+    "epg_id": "tkmde_404",
+    "name": "RTL HD"
+  },
+  "206964776235": {
+    "epg_id": "tkmde_374",
+    "name": "ProSieben HD"
+  },
+  "206963752404": {
+    "epg_id": "tkmde_381",
+    "name": "SAT.1 HD"
+  },
+  "206965800213": {
+    "epg_id": "tkmde_405",
+    "name": "Kabel Eins HD"
+  },
+  "206963752441": {
+    "epg_id": "tkmde_338",
+    "name": "SAT.1 Gold HD"
+  },
+  "206966311964": {
+    "epg_id": "tkmde_396",
+    "name": "ProSieben Maxx HD"
+  },
+  "206963752417": {
+    "epg_id": "tkmde_382",
+    "name": "RTLZWEI HD"
+  },
+  "206966311961": {
+    "epg_id": "tkmde_542",
+    "name": "RTLup HD"
+  },
+  "207381032332": {
+    "epg_id": "tkmde_216",
+    "name": "RTL Crime HD"
+  },
+  "207381032331": {
+    "epg_id": "tkmde_227",
+    "name": "RTL Living HD"
+  },
+  "207382568087": {
+    "epg_id": "tkmde_209",
+    "name": "RTL Passion HD"
+  },
+  "207382568112": {
+    "epg_id": "tkmde_224",
+    "name": "SAT.1 emotions HD"
+  },
+  "206966824407": {
+    "epg_id": "tkmde_259",
+    "name": "ProSieben FUN HD"
+  },
+  "206965288240": {
+    "epg_id": "tkmde_573",
+    "name": "Kabel Eins Doku HD"
+  },
+  "207382568111": {
+    "epg_id": "tkmde_157",
+    "name": "kabel eins CLASSICS HD"
+  },
+  "206964776277": {
+    "epg_id": "tkmde_373",
+    "name": "Das Erste HD"
+  },
+  "206964776230": {
+    "epg_id": "tkmde_408",
+    "name": "ZDF HD"
+  },
+  "206966312080": {
+    "epg_id": "tkmde_378",
+    "name": "ZDFinfo HD"
+  },
+  "206965800291": {
+    "epg_id": "tkmde_391",
+    "name": "ZDFneo HD"
+  },
+  "206966312188": {
+    "epg_id": "tkmde_387",
+    "name": "KiKA HD"
+  },
+  "206965800302": {
+    "epg_id": "tkmde_402",
+    "name": "One HD"
+  },
+  "206966312077": {
+    "epg_id": "tkmde_371",
+    "name": "phoenix HD"
+  },
+  "207382568115": {
+    "epg_id": "tkmde_192",
+    "name": "Sky Sport 1"
+  },
+  "207382568116": {
+    "epg_id": "tkmde_212",
+    "name": "Sky Sport 2"
+  },
+  "207382568117": {
+    "epg_id": "tkmde_189",
+    "name": "Sky Sport 3"
+  },
+  "207382568118": {
+    "epg_id": "tkmde_111",
+    "name": "Sky Sport 4"
+  },
+  "207382568119": {
+    "epg_id": "tkmde_114",
+    "name": "Sky Sport 5"
+  },
+  "207382568108": {
+    "epg_id": "tkmde_113",
+    "name": "Sky Sport 6"
+  },
+  "207382568110": {
+    "epg_id": "tkmde_127",
+    "name": "Sky Sport 7"
+  },
+  "207382568113": {
+    "epg_id": "tkmde_261",
+    "name": "Sky Sport 8"
+  },
+  "207382568114": {
+    "epg_id": "tkmde_187",
+    "name": "Sky Sport 9"
+  },
+  "301712936310": {
+    "epg_id": "tkmde_5554",
+    "name": "Sky Sport 10"
+  },
+  "207382568125": {
+    "epg_id": "tkmde_42",
+    "name": "Sky Bundesliga"
+  },
+  "207382568030": {
+    "epg_id": "tkmde_206",
+    "name": "Sky Bundesliga 1"
+  },
+  "207381032273": {
+    "epg_id": "tkmde_211",
+    "name": "Sky Bundesliga 2"
+  },
+  "207382568028": {
+    "epg_id": "tkmde_199",
+    "name": "Sky Bundesliga 3"
+  },
+  "207381032275": {
+    "epg_id": "tkmde_232",
+    "name": "Sky Bundesliga 4"
+  },
+  "207381032276": {
+    "epg_id": "tkmde_234",
+    "name": "Sky Bundesliga 5"
+  },
+  "207381032277": {
+    "epg_id": "tkmde_231",
+    "name": "Sky Bundesliga 6"
+  },
+  "207381032278": {
+    "epg_id": "tkmde_258",
+    "name": "Sky Bundesliga 7"
+  },
+  "207381032279": {
+    "epg_id": "tkmde_219",
+    "name": "Sky Bundesliga 8"
+  },
+  "207381032274": {
+    "epg_id": "tkmde_237",
+    "name": "Sky Bundesliga 9"
+  },
+  "301713448071": {
+    "epg_id": "tkmde_5557",
+    "name": "Sky Bundesliga 10"
+  },
+  "207382568163": {
+    "epg_id": "tkmde_4889",
+    "name": "Sky Sport F1"
+  },
+  "301709352380": {
+    "epg_id": "tkmde_5558",
+    "name": "Sky Sport Golf"
+  },
+  "207381032347": {
+    "epg_id": "tkmde_5556",
+    "name": "Sky Sport Mix"
+  },
+  "206967848002": {
+    "epg_id": "tkmde_190",
+    "name": "Sky Sport News"
+  },
+  "301712936303": {
+    "epg_id": "tkmde_5555",
+    "name": "Sky Sport Premier League"
+  },
+  "207381032358": {
+    "epg_id": "tkmde_198",
+    "name": "Sky Sport Tennis"
+  },
+  "306844200112": {
+    "epg_id": "tkmde_5577",
+    "name": "Sky Showcase"
+  },
+  "207382568156": {
+    "epg_id": "tkmde_3756",
+    "name": "Sky Replay"
+  },
+  "207381032386": {
+    "epg_id": "tkmde_576",
+    "name": "Sky One"
+  },
+  "229429288190": {
+    "epg_id": "tkmde_5142",
+    "name": "Sky Nature"
+  },
+  "207381032342": {
+    "epg_id": "tkmde_201",
+    "name": "Sky Krimi HD"
+  },
+  "229429799984": {
+    "epg_id": "tkmde_5143",
+    "name": "Sky Documentaries"
+  },
+  "207382568161": {
+    "epg_id": "tkmde_4924",
+    "name": "Sky Crime"
+  },
+  "207381032340": {
+    "epg_id": "tkmde_195",
+    "name": "Sky Cinema Premiere"
+  },
+  "207381032388": {
+    "epg_id": "tkmde_6210",
+    "name": "Sky Cinema Highlights"
+  },
+  "207381032385": {
+    "epg_id": "tkmde_572",
+    "name": "Sky Cinema Family"
+  },
+  "207382568093": {
+    "epg_id": "tkmde_200",
+    "name": "Sky Cinema Classics"
+  },
+  "207381032334": {
+    "epg_id": "tkmde_40",
+    "name": "Sky Cinema Action"
+  },
+  "207381032335": {
+    "epg_id": "tkmde_264",
+    "name": "Sky Atlantic"
+  },
+  "207381032291": {
+    "epg_id": "tkmde_31",
+    "name": "Sky Sport Austria 1"
+  }
+}
