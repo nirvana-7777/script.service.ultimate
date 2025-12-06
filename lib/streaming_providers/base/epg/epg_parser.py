@@ -9,14 +9,22 @@ import xml.etree.ElementTree as ET
 import gzip
 import hashlib
 from datetime import datetime
-from typing import List, Dict, Optional, Tuple, Any
+from typing import List, Optional, Tuple, Any, Dict
+from ..models.epg_models import EPGEntry
+from ..models import epg_models
 from ..utils.logger import logger
+
+# Import constants with proper naming
+EPGGenre = epg_models.EPGGenre
+EPGFlags = epg_models.EPGFlags
 
 
 class EPGParser:
     """
     Parses XMLTV EPG data and converts to Kodi PVR format.
     Uses streaming parse for performance with large EPG files.
+
+    Now returns EPGEntry objects internally for validation and type safety.
     """
 
     @staticmethod
@@ -181,16 +189,57 @@ class EPGParser:
         return None
 
     @staticmethod
-    def parse_programme(programme_elem: ET.Element, epg_channel_id: str) -> Optional[Dict]:
+    def _map_genre_to_type(genre_str: str) -> int:
         """
-        Parse a single XMLTV programme element to Kodi EPG format.
+        Map genre string to numeric genre type based on DVB-SI standard.
+
+        Args:
+            genre_str: Genre string from XMLTV (lowercase)
+
+        Returns:
+            Numeric genre type from EPGGenre (DVB-SI ETSI EN 300 468)
+        """
+        if 'movie' in genre_str or 'film' in genre_str or 'drama' in genre_str:
+            return EPGGenre.MOVIEDRAMA
+        elif 'news' in genre_str:
+            return EPGGenre.NEWSCURRENTAFFAIRS
+        elif 'show' in genre_str or 'series' in genre_str or 'serie' in genre_str:
+            return EPGGenre.SHOW
+        elif 'sports' in genre_str or 'sport' in genre_str:
+            return EPGGenre.SPORTS
+        elif 'children' in genre_str or 'kids' in genre_str or 'cartoon' in genre_str or 'youth' in genre_str:
+            return EPGGenre.CHILDRENYOUTH
+        elif 'documentary' in genre_str or 'dokumentation' in genre_str:
+            # Documentary can be either News/Current Affairs or Educational/Science
+            # We'll use News/Current Affairs as it's more common
+            return EPGGenre.NEWSCURRENTAFFAIRS
+        elif 'music' in genre_str or 'ballet' in genre_str or 'dance' in genre_str:
+            return EPGGenre.MUSICBALLETDANCE
+        elif 'arts' in genre_str or 'culture' in genre_str or 'art' in genre_str:
+            return EPGGenre.ARTSCULTURE
+        elif 'educational' in genre_str or 'education' in genre_str or 'science' in genre_str:
+            return EPGGenre.EDUCATIONALSCIENCE
+        elif 'social' in genre_str or 'political' in genre_str or 'politics' in genre_str or 'economic' in genre_str:
+            return EPGGenre.SOCIALPOLITICALECONOMICS
+        elif 'leisure' in genre_str or 'hobbies' in genre_str or 'hobby' in genre_str:
+            return EPGGenre.LEISUREHOBBIES
+        elif 'comedy' in genre_str:
+            # Comedy is a subtype of Movie/Drama
+            return EPGGenre.MOVIEDRAMA
+        else:
+            return EPGGenre.UNDEFINED
+
+    @staticmethod
+    def parse_programme(programme_elem: ET.Element, epg_channel_id: str) -> Optional[EPGEntry]:
+        """
+        Parse a single XMLTV programme element to EPGEntry object.
 
         Args:
             programme_elem: XML programme element
             epg_channel_id: EPG channel ID for validation
 
         Returns:
-            Dictionary with EPG data, or None if required fields missing
+            EPGEntry object, or None if required fields missing or validation fails
         """
         # Verify channel matches
         channel = programme_elem.get('channel', '')
@@ -215,12 +264,12 @@ class EPGParser:
         # Generate broadcast ID
         broadcast_id = EPGParser.generate_broadcast_id(epg_channel_id, start_time)
 
-        # Build base EPG entry with required fields for C++ frontend
-        epg_entry: Dict[str, Any] = {
+        # Build EPGEntry with required fields
+        entry_kwargs: Dict[str, Any] = {
             'broadcast_id': broadcast_id,
             'title': title.strip(),
-            'start': start_time,  # C++ expects 'start' key
-            'end': end_time,  # C++ expects 'end' key
+            'start': start_time,
+            'end': end_time,
         }
 
         # Parse optional fields
@@ -228,86 +277,59 @@ class EPGParser:
         # Sub-title (episode name)
         subtitle_elem = programme_elem.find('sub-title')
         if subtitle_elem is not None and subtitle_elem.text:
-            epg_entry['episode_name'] = subtitle_elem.text.strip()
+            entry_kwargs['episode_name'] = subtitle_elem.text.strip()
 
         # Description (plot)
         desc_elem = programme_elem.find('desc')
         if desc_elem is not None and desc_elem.text:
             plot = desc_elem.text.strip()
-            epg_entry['description'] = plot  # C++ expects 'description' for full plot
+            entry_kwargs['description'] = plot
 
             # Use first sentence or first 100 chars as plot_outline
             outline = plot.split('.')[0] if '.' in plot else plot[:100]
-            epg_entry['plot_outline'] = outline.strip()
+            entry_kwargs['plot_outline'] = outline.strip()
 
         # Credits
         credits_elem = programme_elem.find('credits')
         if credits_elem is not None:
-            # Director - C++ expects 'directors' as array
+            # Director
             director_elem = credits_elem.find('director')
             if director_elem is not None and director_elem.text:
-                director = director_elem.text.strip()
-                epg_entry['directors'] = [director]
+                entry_kwargs['directors'] = [director_elem.text.strip()]
 
-            # Actors - C++ expects 'cast' as array
+            # Actors
             actors = credits_elem.findall('actor')
             if actors:
                 cast_list = [actor.text.strip() for actor in actors if actor.text]
                 if cast_list:
-                    epg_entry['cast'] = cast_list
+                    entry_kwargs['cast'] = cast_list
 
-            # Writer - C++ expects 'writers' as array
+            # Writer
             writer_elem = credits_elem.find('writer')
             if writer_elem is not None and writer_elem.text:
-                writer = writer_elem.text.strip()
-                epg_entry['writers'] = [writer]
+                entry_kwargs['writers'] = [writer_elem.text.strip()]
 
         # Year/Date
         date_elem = programme_elem.find('date')
         if date_elem is not None and date_elem.text:
             try:
                 year = int(date_elem.text.strip()[:4])
-                epg_entry['year'] = year
+                entry_kwargs['year'] = year
             except ValueError:
                 pass
 
-        # Category (genre) - Convert to numeric genre type for C++
+        # Category (genre)
         category_elem = programme_elem.find('category')
         if category_elem is not None and category_elem.text:
             genre_str = category_elem.text.strip().lower()
+            entry_kwargs['genre'] = EPGParser._map_genre_to_type(genre_str)
 
-            # Convert to numeric genre type (Kodi expects 0-...)
-            genre_type = 0  # Unknown
-
-            if 'movie' in genre_str or 'film' in genre_str:
-                genre_type = 1  # Movie
-            elif 'news' in genre_str:
-                genre_type = 2  # News
-            elif 'show' in genre_str or 'series' in genre_str or 'serie' in genre_str:
-                genre_type = 3  # TV Show
-            elif 'sports' in genre_str or 'sport' in genre_str:
-                genre_type = 4  # Sports
-            elif 'children' in genre_str or 'kids' in genre_str or 'cartoon' in genre_str:
-                genre_type = 5  # Children's
-            elif 'documentary' in genre_str or 'dokumentation' in genre_str:
-                genre_type = 6  # Documentary
-            elif 'music' in genre_str:
-                genre_type = 7  # Music
-            elif 'comedy' in genre_str:
-                genre_type = 8  # Comedy
-            elif 'drama' in genre_str:
-                genre_type = 9  # Drama
-            elif 'educational' in genre_str or 'education' in genre_str:
-                genre_type = 10  # Educational
-
-            epg_entry['genre'] = genre_type
-
-        # Icon - C++ expects 'icon'
+        # Icon
         icon_elem = programme_elem.find('icon')
         if icon_elem is not None:
             icon_src = icon_elem.get('src', '')
             if icon_src:
-                epg_entry['icon'] = icon_src
+                entry_kwargs['icon'] = icon_src
 
         # Episode numbering
         episode_nums = programme_elem.findall('episode-num')
@@ -327,18 +349,18 @@ class EPGParser:
                     break
 
         if series_num is not None:
-            epg_entry['season_number'] = series_num  # C++ expects 'season_number'
+            entry_kwargs['season_number'] = series_num
         if episode_num is not None:
-            epg_entry['episode_number'] = episode_num
+            entry_kwargs['episode_number'] = episode_num
         if part_num is not None:
-            epg_entry['episode_part_number'] = part_num
+            entry_kwargs['episode_part_number'] = part_num
 
         # Star rating
         star_rating_elem = programme_elem.find('star-rating')
         if star_rating_elem is not None:
             rating = EPGParser.parse_star_rating(star_rating_elem)
             if rating is not None:
-                epg_entry['star_rating'] = rating
+                entry_kwargs['star_rating'] = rating
 
         # Parental rating
         rating_elems = programme_elem.findall('rating')
@@ -350,7 +372,7 @@ class EPGParser:
                     import re
                     match = re.search(r'\d+', value_elem.text)
                     if match:
-                        epg_entry['parental_rating'] = int(match.group())
+                        entry_kwargs['parental_rating'] = int(match.group())
                         break
                 except (ValueError, AttributeError):
                     pass
@@ -362,9 +384,14 @@ class EPGParser:
             if first_aired_str:
                 first_aired = EPGParser.parse_xmltv_time(first_aired_str)
                 if first_aired:
-                    epg_entry['first_aired'] = first_aired
+                    entry_kwargs['first_aired'] = first_aired
 
-        return epg_entry
+        # Create EPGEntry object with validation
+        try:
+            return EPGEntry(**entry_kwargs)
+        except ValueError as e:
+            logger.warning(f"Invalid EPG entry: {e}")
+            return None
 
     @staticmethod
     def open_xml_file(file_path: str):
@@ -390,7 +417,7 @@ class EPGParser:
             epg_channel_id: str,
             start_time: Optional[int] = None,
             end_time: Optional[int] = None
-    ) -> List[Dict]:
+    ) -> List[EPGEntry]:
         """
         Parse EPG data for a specific channel within a time range.
         Uses streaming parse for performance.
@@ -402,11 +429,11 @@ class EPGParser:
             end_time: End of time range (Unix timestamp), None for no upper bound
 
         Returns:
-            List of EPG entries as dictionaries
+            List of EPGEntry objects
         """
         logger.info(f"Parsing EPG for channel '{epg_channel_id}' from {xml_path}")
 
-        programmes = []
+        programmes: List[EPGEntry] = []
 
         try:
             with EPGParser.open_xml_file(xml_path) as xml_file:
@@ -421,17 +448,13 @@ class EPGParser:
                             epg_entry = EPGParser.parse_programme(elem, epg_channel_id)
 
                             if epg_entry:
-                                # Filter by time range
-                                prog_start = epg_entry['start']  # Changed from 'start_time'
-                                prog_end = epg_entry['end']  # Changed from 'end_time'
-
-                                # Include if programme overlaps with requested range
-                                if start_time is not None and prog_end < start_time:
+                                # Filter by time range using EPGEntry methods
+                                if start_time is not None and epg_entry.end < start_time:
                                     # Programme ends before requested range
                                     elem.clear()
                                     continue
 
-                                if end_time is not None and prog_start > end_time:
+                                if end_time is not None and epg_entry.start > end_time:
                                     # Programme starts after requested range
                                     # Since XMLTV is chronological, we can stop here
                                     elem.clear()

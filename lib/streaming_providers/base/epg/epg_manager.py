@@ -1,8 +1,15 @@
-#!/usr/bin/env python3
+# ============================================================================
+# EPG MANAGER - Refactored to work with EPGEntry objects internally
+# ============================================================================
+
+# !/usr/bin/env python3
 # streaming_providers/base/epg/epg_manager.py
 """
 EPG Manager - Central coordinator for EPG operations
 Orchestrates cache, mapping, and parsing components
+
+Refactored to use EPGEntry objects internally while maintaining
+backward-compatible dictionary output for external consumers.
 """
 
 from datetime import datetime, timedelta
@@ -10,6 +17,7 @@ from typing import List, Dict, Optional
 from .epg_cache import EPGCache
 from .epg_mapping import EPGMapping
 from .epg_parser import EPGParser
+from ..models.epg_models import EPGEntry
 from ..utils.logger import logger
 
 
@@ -17,6 +25,9 @@ class EPGManager:
     """
     Central manager for EPG operations.
     Coordinates cache management, channel mapping, and EPG parsing.
+
+    Internal: Works with EPGEntry objects for type safety and validation
+    External: Returns dictionaries for backward compatibility with C++ frontend
 
     All file operations are handled transparently by VFS - works in both
     Kodi and standard Python environments.
@@ -66,7 +77,8 @@ class EPGManager:
 
         return None
 
-    def _get_default_time_range(self) -> tuple:
+    @staticmethod
+    def _get_default_time_range() -> tuple:
         """
         Get default time range for EPG queries (now to +12 hours).
 
@@ -91,6 +103,8 @@ class EPGManager:
         Get EPG data for a specific channel within a time range.
 
         This is the main entry point for EPG queries.
+
+        EXTERNAL INTERFACE: Returns list of dictionaries for C++ compatibility.
 
         Args:
             provider_name: Name of provider (e.g., "rtlplus", "joyn_de")
@@ -131,8 +145,8 @@ class EPGManager:
 
             logger.debug(f"EPGManager: Time range: {start_ts} to {end_ts}")
 
-            # Step 4: Parse EPG for channel and time range
-            epg_entries = self.parser.parse_epg_for_channel(
+            # Step 4: Parse EPG for channel and time range (returns EPGEntry objects)
+            epg_entries: List[EPGEntry] = self.parser.parse_epg_for_channel(
                 xml_path,
                 epg_channel_id,
                 start_ts,
@@ -144,10 +158,66 @@ class EPGManager:
                 f"{provider_name}/{channel_id}"
             )
 
-            return epg_entries
+            # Step 5: Convert EPGEntry objects to dictionaries for external consumers
+            return [entry.to_dict() for entry in epg_entries]
 
         except Exception as e:
             logger.error(f"EPGManager: Error getting EPG: {e}", exc_info=True)
+            return []
+
+    def get_epg_entries(
+            self,
+            provider_name: str,
+            channel_id: str,
+            start_time: Optional[datetime] = None,
+            end_time: Optional[datetime] = None
+    ) -> List[EPGEntry]:
+        """
+        Get EPG data as EPGEntry objects (for internal use).
+
+        INTERNAL INTERFACE: Returns EPGEntry objects for type safety.
+
+        Args:
+            provider_name: Name of provider
+            channel_id: Channel ID within provider
+            start_time: Start of time range (datetime), None for now
+            end_time: End of time range (datetime), None for now+12h
+
+        Returns:
+            List of EPGEntry objects (empty on any error)
+        """
+        logger.info(f"EPGManager: Getting EPG entries for {provider_name}/{channel_id}")
+
+        try:
+            epg_channel_id = self.mapping.get_epg_channel_id(provider_name, channel_id)
+            if not epg_channel_id:
+                logger.warning(
+                    f"EPGManager: No EPG mapping found for {provider_name}/{channel_id}"
+                )
+                return []
+
+            xml_path = self.cache.get_or_download(self.epg_url)
+            if not xml_path:
+                logger.error("EPGManager: Failed to get EPG XML file")
+                return []
+
+            if start_time is None or end_time is None:
+                default_start, default_end = self._get_default_time_range()
+                start_ts = int(start_time.timestamp()) if start_time else default_start
+                end_ts = int(end_time.timestamp()) if end_time else default_end
+            else:
+                start_ts = int(start_time.timestamp())
+                end_ts = int(end_time.timestamp())
+
+            return self.parser.parse_epg_for_channel(
+                xml_path,
+                epg_channel_id,
+                start_ts,
+                end_ts
+            )
+
+        except Exception as e:
+            logger.error(f"EPGManager: Error getting EPG entries: {e}", exc_info=True)
             return []
 
     def get_epg_for_provider(
@@ -159,13 +229,15 @@ class EPGManager:
         """
         Get EPG data for all channels of a provider.
 
+        EXTERNAL INTERFACE: Returns dictionaries for C++ compatibility.
+
         Args:
             provider_name: Name of provider
             start_time: Start of time range (datetime)
             end_time: End of time range (datetime)
 
         Returns:
-            Dictionary mapping channel IDs to their EPG entries
+            Dictionary mapping channel IDs to their EPG entries (as dicts)
         """
         logger.info(f"EPGManager: Getting EPG for all channels of provider '{provider_name}'")
 
