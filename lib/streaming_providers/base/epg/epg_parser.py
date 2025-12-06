@@ -7,7 +7,6 @@ Parses XMLTV format and converts to Kodi PVR EPG format
 
 import xml.etree.ElementTree as ET
 import gzip
-import hashlib
 from datetime import datetime
 from typing import List, Optional, Tuple, Any, Dict
 from ..models.epg_models import EPGEntry
@@ -26,6 +25,54 @@ class EPGParser:
 
     Now returns EPGEntry objects internally for validation and type safety.
     """
+
+    def __init__(self):
+        """Initialize parser with provider registry for broadcast ID encoding."""
+        # Provider registry maps provider hash -> provider name
+        # Used to look up provider from broadcast_id during catchup
+        self._provider_registry: Dict[int, str] = {}
+
+    def register_provider(self, provider_name: str) -> int:
+        """
+        Register a provider and return its hash.
+        This enables provider lookup from broadcast IDs.
+
+        Args:
+            provider_name: Provider name to register
+
+        Returns:
+            Provider hash (16-bit)
+        """
+        import hashlib
+        provider_hash_obj = hashlib.sha256(provider_name.encode('utf-8'))
+        provider_hash = int(provider_hash_obj.hexdigest()[:4], 16)
+
+        self._provider_registry[provider_hash] = provider_name
+        logger.debug(f"Registered provider '{provider_name}' with hash {provider_hash:04x}")
+
+        return provider_hash
+
+    def get_provider_from_broadcast_id(self, broadcast_id: int) -> Optional[str]:
+        """
+        Get provider name from broadcast ID.
+        Useful for catchup operations where only broadcast_id is available.
+
+        Args:
+            broadcast_id: Encoded broadcast ID
+
+        Returns:
+            Provider name, or None if not found in registry
+        """
+        provider_hash = EPGEntry.get_provider_hash(broadcast_id)
+        provider_name = self._provider_registry.get(provider_hash)
+
+        if not provider_name:
+            logger.warning(
+                f"Provider not found for broadcast_id {broadcast_id} "
+                f"(hash: {provider_hash:04x})"
+            )
+
+        return provider_name
 
     @staticmethod
     def parse_xmltv_time(time_str: str) -> Optional[int]:
@@ -72,22 +119,35 @@ class EPGParser:
             return None
 
     @staticmethod
-    def generate_broadcast_id(channel_id: str, start_time: int) -> int:
+    def generate_broadcast_id(
+            channel_id: str,
+            start_time: int,
+            provider_name: Optional[str] = None
+    ) -> int:
         """
         Generate deterministic broadcast ID from channel and start time.
+
+        If provider_name is given, uses encode_broadcast_id() for provider-aware IDs.
+        Otherwise, falls back to legacy hash-only method.
 
         Args:
             channel_id: EPG channel ID
             start_time: Unix timestamp of programme start
+            provider_name: Optional provider name for encoding
 
         Returns:
             Unique integer broadcast ID
         """
-        # Create hash from channel_id and start_time
-        hash_input = f"{channel_id}_{start_time}".encode('utf-8')
-        hash_digest = hashlib.sha256(hash_input).hexdigest()
-        # Convert first 8 hex chars to int (32-bit)
-        return int(hash_digest[:8], 16)
+        if provider_name:
+            # New method: encode provider information
+            return EPGEntry.encode_broadcast_id(provider_name, channel_id, start_time)
+        else:
+            # Legacy method: simple hash (for backward compatibility)
+            import hashlib
+            hash_input = f"{channel_id}_{start_time}".encode('utf-8')
+            hash_digest = hashlib.sha256(hash_input).hexdigest()
+            # Convert first 8 hex chars to int (32-bit)
+            return int(hash_digest[:8], 16)
 
     @staticmethod
     def parse_episode_num(episode_elem: ET.Element) -> Tuple[Optional[int], Optional[int], Optional[int]]:
@@ -229,14 +289,19 @@ class EPGParser:
         else:
             return EPGGenre.UNDEFINED
 
-    @staticmethod
-    def parse_programme(programme_elem: ET.Element, epg_channel_id: str) -> Optional[EPGEntry]:
+    def parse_programme(
+            self,
+            programme_elem: ET.Element,
+            epg_channel_id: str,
+            provider_name: Optional[str] = None
+    ) -> Optional[EPGEntry]:
         """
         Parse a single XMLTV programme element to EPGEntry object.
 
         Args:
             programme_elem: XML programme element
             epg_channel_id: EPG channel ID for validation
+            provider_name: Optional provider name for encoding in broadcast_id
 
         Returns:
             EPGEntry object, or None if required fields missing or validation fails
@@ -261,8 +326,16 @@ class EPGParser:
         title_elem = programme_elem.find('title')
         title = title_elem.text if title_elem is not None and title_elem.text else "Unknown"
 
-        # Generate broadcast ID
-        broadcast_id = EPGParser.generate_broadcast_id(epg_channel_id, start_time)
+        # Generate broadcast ID (with provider encoding if available)
+        broadcast_id = EPGParser.generate_broadcast_id(
+            epg_channel_id,
+            start_time,
+            provider_name
+        )
+
+        # Register provider if given
+        if provider_name and hasattr(self, '_provider_registry'):
+            self.register_provider(provider_name)
 
         # Build EPGEntry with required fields
         entry_kwargs: Dict[str, Any] = {
@@ -411,12 +484,13 @@ class EPGParser:
             logger.debug(f"Opening plain EPG file: {file_path}")
             return open(file_path, 'r', encoding='utf-8')
 
-    @staticmethod
     def parse_epg_for_channel(
+            self,
             xml_path: str,
             epg_channel_id: str,
             start_time: Optional[int] = None,
-            end_time: Optional[int] = None
+            end_time: Optional[int] = None,
+            provider_name: Optional[str] = None
     ) -> List[EPGEntry]:
         """
         Parse EPG data for a specific channel within a time range.
@@ -427,6 +501,7 @@ class EPGParser:
             epg_channel_id: EPG channel ID to filter for
             start_time: Start of time range (Unix timestamp), None for no lower bound
             end_time: End of time range (Unix timestamp), None for no upper bound
+            provider_name: Optional provider name for encoding in broadcast_id
 
         Returns:
             List of EPGEntry objects
@@ -444,8 +519,12 @@ class EPGParser:
                     if elem.tag == 'programme':
                         # Check if this programme matches our channel
                         if elem.get('channel') == epg_channel_id:
-                            # Parse the programme
-                            epg_entry = EPGParser.parse_programme(elem, epg_channel_id)
+                            # Parse the programme with provider info
+                            epg_entry = self.parse_programme(
+                                elem,
+                                epg_channel_id,
+                                provider_name
+                            )
 
                             if epg_entry:
                                 # Filter by time range using EPGEntry methods

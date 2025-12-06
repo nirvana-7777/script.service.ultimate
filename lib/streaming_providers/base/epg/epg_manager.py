@@ -10,6 +10,29 @@ Orchestrates cache, mapping, and parsing components
 
 Refactored to use EPGEntry objects internally while maintaining
 backward-compatible dictionary output for external consumers.
+
+PROVIDER ENCODING IN BROADCAST IDs:
+------------------------------------
+The EPGManager now encodes provider information into broadcast IDs,
+enabling provider identification during catchup operations:
+
+Example workflow:
+    # 1. EPG is fetched and parsed (provider is known)
+    manager = EPGManager()
+    epg_data = manager.get_epg("rtlplus", "rtl")
+    # broadcast_id now contains encoded "rtlplus" provider hash
+
+    # 2. Later, in catchup handler (only broadcast_id available)
+    def get_catchup_stream(broadcast_id):
+        # Identify provider from broadcast_id
+        provider = manager.get_provider_from_broadcast_id(broadcast_id)
+        # -> "rtlplus"
+
+        # Now we can call the right provider's catchup API
+        return provider_registry[provider].get_catchup(broadcast_id)
+
+This solves the problem of needing provider information for catchup
+when only the broadcast_id is passed from Kodi.
 """
 
 from datetime import datetime, timedelta
@@ -146,11 +169,13 @@ class EPGManager:
             logger.debug(f"EPGManager: Time range: {start_ts} to {end_ts}")
 
             # Step 4: Parse EPG for channel and time range (returns EPGEntry objects)
+            # Pass provider_name to enable provider encoding in broadcast_id
             epg_entries: List[EPGEntry] = self.parser.parse_epg_for_channel(
                 xml_path,
                 epg_channel_id,
                 start_ts,
-                end_ts
+                end_ts,
+                provider_name  # Enable provider encoding
             )
 
             logger.info(
@@ -213,7 +238,8 @@ class EPGManager:
                 xml_path,
                 epg_channel_id,
                 start_ts,
-                end_ts
+                end_ts,
+                provider_name  # Enable provider encoding
             )
 
         except Exception as e:
@@ -312,3 +338,37 @@ class EPGManager:
             True if mapping exists
         """
         return self.mapping.has_mapping(provider_name, channel_id)
+
+    def get_provider_from_broadcast_id(self, broadcast_id: int) -> Optional[str]:
+        """
+        Get provider name from an encoded broadcast ID.
+        Useful for catchup operations where only broadcast_id is available.
+
+        Args:
+            broadcast_id: Encoded broadcast ID from EPG entry
+
+        Returns:
+            Provider name, or None if not found
+
+        Example:
+            # In catchup handler
+            provider = manager.get_provider_from_broadcast_id(broadcast_id)
+            if provider:
+                # Get catchup stream from provider
+                stream_url = get_catchup_stream(provider, broadcast_id)
+        """
+        return self.parser.get_provider_from_broadcast_id(broadcast_id)
+
+    @staticmethod
+    def verify_broadcast_id_provider(broadcast_id: int, provider_name: str) -> bool:
+        """
+        Verify if a broadcast ID belongs to a specific provider.
+
+        Args:
+            broadcast_id: Encoded broadcast ID
+            provider_name: Provider name to verify
+
+        Returns:
+            True if broadcast_id was generated for this provider
+        """
+        return EPGEntry.verify_provider(broadcast_id, provider_name)

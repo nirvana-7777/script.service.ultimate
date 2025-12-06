@@ -5,7 +5,7 @@ EPG Models - Data classes for Electronic Program Guide entries
 Based on Kodi PVR EPG Tag specification (ETSI EN 300 468 DVB-SI standard)
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, List
 from datetime import datetime
 from enum import IntEnum
@@ -44,6 +44,29 @@ class EPGEntry:
 
     This class matches the dictionary format used by epg_parser.py and
     expected by the C++ PVR frontend.
+
+    BROADCAST ID ENCODING:
+    ----------------------
+    The broadcast_id field uses a special encoding scheme that embeds provider
+    information for catchup functionality:
+
+    - Bits 0-15 (lower 16 bits): Provider hash
+    - Bits 16-31 (upper 16 bits): Event hash (channel + start time)
+
+    This allows identifying the provider from just the broadcast_id, which is
+    critical for catchup operations where only the broadcast_id is available.
+
+    Usage:
+        # Creating entries (done by parser)
+        broadcast_id = EPGEntry.encode_broadcast_id("rtlplus", "rtl", start_time)
+
+        # In catchup handler (only broadcast_id available)
+        provider_hash = EPGEntry.get_provider_hash(broadcast_id)
+        # Look up provider from hash in registry
+
+        # Or verify provider
+        if EPGEntry.verify_provider(broadcast_id, "rtlplus"):
+            # Get catchup stream from rtlplus
     """
 
     # Required fields
@@ -365,6 +388,111 @@ class EPGEntry:
         if not text:
             return []
         return [item.strip() for item in text.split(EPG_STRING_TOKEN_SEPARATOR) if item.strip()]
+
+    @staticmethod
+    def encode_broadcast_id(
+            provider_name: str,
+            channel_id: str,
+            start_time: int
+    ) -> int:
+        """
+        Generate deterministic broadcast ID with encoded provider information.
+
+        The ID structure allows extraction of provider hash for catchup operations:
+        - Bits 0-15 (lower 16 bits): Provider hash (65536 possible values)
+        - Bits 16-31 (upper 16 bits): Event hash (channel + start time)
+
+        This ensures:
+        1. Unique IDs across different providers
+        2. Provider can be identified from broadcast_id alone
+        3. Same event on same provider always gets same ID
+
+        Args:
+            provider_name: Provider name (e.g., "rtlplus", "joyn_de")
+            channel_id: Channel ID (e.g., "rtl", "prosieben")
+            start_time: Unix timestamp of programme start
+
+        Returns:
+            Unique 32-bit broadcast ID with encoded provider info
+
+        Example:
+            broadcast_id = EPGEntry.encode_broadcast_id("rtlplus", "rtl", 1234567890)
+            provider_hash = EPGEntry.get_provider_hash(broadcast_id)
+        """
+        import hashlib
+
+        # Generate provider hash (16 bits)
+        provider_hash_obj = hashlib.sha256(provider_name.encode('utf-8'))
+        provider_hash = int(provider_hash_obj.hexdigest()[:4], 16)  # 16 bits
+
+        # Generate event hash from channel + start time (16 bits)
+        event_input = f"{channel_id}_{start_time}".encode('utf-8')
+        event_hash_obj = hashlib.sha256(event_input)
+        event_hash = int(event_hash_obj.hexdigest()[:4], 16)  # 16 bits
+
+        # Combine: upper 16 bits = event hash, lower 16 bits = provider hash
+        broadcast_id = (event_hash << 16) | provider_hash
+
+        # Ensure positive and non-zero
+        return broadcast_id if broadcast_id > 0 else 1
+
+    @staticmethod
+    def get_provider_hash(broadcast_id: int) -> int:
+        """
+        Extract provider hash from encoded broadcast ID.
+
+        Args:
+            broadcast_id: Encoded broadcast ID from encode_broadcast_id()
+
+        Returns:
+            16-bit provider hash (lower 16 bits of broadcast_id)
+
+        Example:
+            broadcast_id = EPGEntry.encode_broadcast_id("rtlplus", "rtl", 1234567890)
+            provider_hash = EPGEntry.get_provider_hash(broadcast_id)
+            # Use provider_hash to look up provider from registry
+        """
+        return broadcast_id & 0xFFFF
+
+    @staticmethod
+    def get_event_hash(broadcast_id: int) -> int:
+        """
+        Extract event hash from encoded broadcast ID.
+
+        Args:
+            broadcast_id: Encoded broadcast ID from encode_broadcast_id()
+
+        Returns:
+            16-bit event hash (upper 16 bits of broadcast_id)
+        """
+        return (broadcast_id >> 16) & 0xFFFF
+
+    @staticmethod
+    def verify_provider(broadcast_id: int, provider_name: str) -> bool:
+        """
+        Verify if a broadcast ID matches a given provider.
+
+        Args:
+            broadcast_id: Encoded broadcast ID
+            provider_name: Provider name to verify against
+
+        Returns:
+            True if broadcast_id was generated for this provider
+
+        Example:
+            if EPGEntry.verify_provider(broadcast_id, "rtlplus"):
+                print("This EPG entry is from rtlplus")
+        """
+        import hashlib
+
+        # Get provider hash from broadcast_id
+        stored_hash = EPGEntry.get_provider_hash(broadcast_id)
+
+        # Calculate hash for given provider name
+        provider_hash_obj = hashlib.sha256(provider_name.encode('utf-8'))
+        calculated_hash = int(provider_hash_obj.hexdigest()[:4], 16)
+
+        return stored_hash == calculated_hash
 
     def __post_init__(self):
         """Validate required fields after initialization."""
