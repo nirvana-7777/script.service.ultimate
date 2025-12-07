@@ -499,6 +499,222 @@ class ProviderManager:
 
         return processed_configs
 
+    # ==============================================================================
+    # CATCHUP METHODS - Add these after get_channel_drm_configs() method
+    # ==============================================================================
+
+    def get_catchup_manifest(self,
+                             provider_name: str,
+                             channel_id: str,
+                             start_time: int,
+                             end_time: int,
+                             epg_id: Optional[str] = None,
+                             country: Optional[str] = None) -> Optional[str]:
+        """
+        Get catchup manifest URL for a channel.
+
+        Args:
+            provider_name: Name of the provider
+            channel_id: Channel identifier
+            start_time: Start time as Unix timestamp
+            end_time: End time as Unix timestamp
+            epg_id: Optional EPG event ID
+            country: Optional country code
+
+        Returns:
+            Manifest URL for catchup content, or None if not available
+
+        Raises:
+            ValueError: If provider not found
+        """
+        provider = self.get_provider(provider_name)
+
+        if not provider:
+            raise ValueError(f"Provider '{provider_name}' not found")
+
+        # Check if provider supports catchup
+        if not provider.supports_catchup:
+            logger.warning(f"Provider '{provider_name}' does not support catchup")
+            return None
+
+        # Validate catchup request
+        is_valid, error_msg = provider.validate_catchup_request(start_time, end_time)
+        if not is_valid:
+            logger.error(f"Invalid catchup request for {provider_name}/{channel_id}: {error_msg}")
+            return None
+
+        try:
+            # Call provider's catchup manifest method
+            manifest_url = provider.get_catchup_manifest(
+                channel_id=channel_id,
+                start_time=start_time,
+                end_time=end_time,
+                epg_id=epg_id,
+                country=country
+            )
+
+            if manifest_url:
+                logger.info(f"Got catchup manifest for {provider_name}/{channel_id}: {manifest_url[:100]}...")
+            else:
+                logger.warning(f"No catchup manifest returned for {provider_name}/{channel_id}")
+
+            return manifest_url
+
+        except NotImplementedError:
+            logger.error(f"Provider '{provider_name}' has not implemented get_catchup_manifest()")
+            return None
+        except Exception as e:
+            logger.error(f"Error getting catchup manifest for {provider_name}/{channel_id}: {e}",
+                         exc_info=True)
+            return None
+
+    def get_catchup_drm_configs(self,
+                                provider_name: str,
+                                channel_id: str,
+                                start_time: int,
+                                end_time: int,
+                                epg_id: Optional[str] = None,
+                                country: Optional[str] = None) -> List:
+        """
+        Get DRM configurations for catchup content.
+
+        Args:
+            provider_name: Name of the provider
+            channel_id: Channel identifier
+            start_time: Start time as Unix timestamp
+            end_time: End time as Unix timestamp
+            epg_id: Optional EPG event ID
+            country: Optional country code
+
+        Returns:
+            List of DRM configurations
+
+        Raises:
+            ValueError: If provider not found
+        """
+        provider = self.get_provider(provider_name)
+
+        if not provider:
+            raise ValueError(f"Provider '{provider_name}' not found")
+
+        # Check if provider supports catchup
+        if not provider.supports_catchup:
+            logger.debug(f"Provider '{provider_name}' does not support catchup, using live DRM")
+            return self.get_channel_drm_configs(provider_name, channel_id, country=country)
+
+        try:
+            # Call provider's catchup DRM method
+            drm_configs = provider.get_catchup_drm(
+                channel_id=channel_id,
+                start_time=start_time,
+                end_time=end_time,
+                epg_id=epg_id,
+                country=country
+            )
+
+            if drm_configs:
+                logger.debug(f"Got {len(drm_configs)} DRM config(s) for catchup {provider_name}/{channel_id}")
+            else:
+                logger.debug(f"No catchup DRM configs for {provider_name}/{channel_id}")
+
+            return drm_configs
+
+        except NotImplementedError:
+            logger.debug(f"Provider '{provider_name}' has not implemented get_catchup_drm(), "
+                         f"using live DRM")
+            return self.get_channel_drm_configs(provider_name, channel_id, country=country)
+        except Exception as e:
+            logger.error(f"Error getting catchup DRM for {provider_name}/{channel_id}: {e}",
+                         exc_info=True)
+            # Fallback to live DRM on error
+            return self.get_channel_drm_configs(provider_name, channel_id, country=country)
+
+    def get_catchup_window(self,
+                           provider_name: str,
+                           channel_id: Optional[str] = None) -> int:
+        """
+        Get catchup window in days for a provider or specific channel.
+
+        Args:
+            provider_name: Name of the provider
+            channel_id: Optional channel identifier for channel-specific window
+
+        Returns:
+            Catchup window in days (0 = no catchup support)
+
+        Raises:
+            ValueError: If provider not found
+        """
+        provider = self.get_provider(provider_name)
+
+        if not provider:
+            raise ValueError(f"Provider '{provider_name}' not found")
+
+        # Get channel-specific window if channel_id provided
+        if channel_id:
+            try:
+                return provider.get_catchup_window_for_channel(channel_id)
+            except Exception as e:
+                logger.warning(f"Error getting channel-specific catchup window: {e}")
+                # Fallback to provider-wide window
+
+        # Return provider-wide catchup window
+        return provider.catchup_window
+
+    def supports_catchup(self, provider_name: str) -> bool:
+        """
+        Check if a provider supports catchup.
+
+        Args:
+            provider_name: Name of the provider
+
+        Returns:
+            True if provider supports catchup
+
+        Raises:
+            ValueError: If provider not found
+        """
+        provider = self.get_provider(provider_name)
+
+        if not provider:
+            raise ValueError(f"Provider '{provider_name}' not found")
+
+        return provider.supports_catchup
+
+    def get_all_catchup_capabilities(self) -> Dict[str, Dict[str, any]]:
+        """
+        Get catchup capabilities for all providers.
+
+        Returns:
+            Dictionary mapping provider names to their catchup capabilities:
+            {
+                'provider_name': {
+                    'supports_catchup': bool,
+                    'catchup_window': int,
+                    'catchup_enabled': bool
+                }
+            }
+        """
+        capabilities = {}
+
+        for provider_name in self.list_providers():
+            try:
+                provider = self.get_provider(provider_name)
+                capabilities[provider_name] = {
+                    'supports_catchup': provider.supports_catchup,
+                    'catchup_window': provider.catchup_window,
+                    'catchup_enabled': provider.supports_catchup and provider.catchup_window > 0
+                }
+            except Exception as e:
+                logger.warning(f"Error getting catchup capabilities for {provider_name}: {e}")
+                capabilities[provider_name] = {
+                    'supports_catchup': False,
+                    'catchup_window': 0,
+                    'catchup_enabled': False
+                }
+
+        return capabilities
+
     def _extract_pssh_from_manifest(self, manifest_url: str) -> List:
         """
         Extract PSSH data from a manifest URL.
