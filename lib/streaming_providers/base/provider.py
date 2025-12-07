@@ -426,6 +426,29 @@ class StreamingProvider(ABC):
         """Get all DRM configurations for a channel by ID"""
         return []
 
+    @property
+    def catchup_window(self) -> int:
+        """
+        Return the catchup window in days for this provider.
+
+        Returns:
+            int: Number of days of catchup available (0 = no catchup support)
+
+        Override in subclass to provide provider-specific catchup window.
+        Default is 0 (no catchup).
+        """
+        return 0
+
+    @property
+    def supports_catchup(self) -> bool:
+        """
+        Check if provider supports catchup/timeshift functionality.
+
+        Returns:
+            bool: True if catchup is supported
+        """
+        return self.catchup_window > 0
+
     def get_epg(self, channel_id: str,
                 start_time: Optional[datetime] = None,
                 end_time: Optional[datetime] = None,
@@ -466,3 +489,216 @@ class StreamingProvider(ABC):
     def to_json(self, channels: List[StreamingChannel] = None, indent: int = 2) -> str:
         """Convert to JSON string"""
         return json.dumps(self.to_output_format(channels), indent=indent, ensure_ascii=False)
+
+
+    # ============================================================================
+    # CATCHUP ABSTRACT METHODS
+    # ============================================================================
+
+    def get_catchup_manifest(self,
+                             channel_id: str,
+                             start_time: int,
+                             end_time: int,
+                             epg_id: Optional[str] = None,
+                             **kwargs) -> Optional[str]:
+        """
+        Get manifest URL for catchup/timeshift content.
+
+        Args:
+            channel_id: Channel identifier
+            start_time: Start time as Unix timestamp
+            end_time: End time as Unix timestamp
+            epg_id: Optional EPG event ID (might be needed by some providers)
+            **kwargs: Additional provider-specific parameters
+
+        Returns:
+            Manifest URL for catchup content, or None if not supported
+
+        Default implementation falls back to live manifest.
+        Override in subclass to implement provider-specific catchup logic.
+        """
+        if not self.supports_catchup:
+            logger.debug(f"{self.provider_name}: Catchup not supported, falling back to live manifest")
+            return self.get_manifest(channel_id, **kwargs)
+
+        logger.warning(f"{self.provider_name}: get_catchup_manifest not implemented, "
+                       f"falling back to live manifest")
+        return self.get_manifest(channel_id, **kwargs)
+
+    def get_catchup_drm(self,
+                        channel_id: str,
+                        start_time: int,
+                        end_time: int,
+                        epg_id: Optional[str] = None,
+                        **kwargs) -> List[DRMConfig]:
+        """
+        Get DRM configurations for catchup content.
+
+        Args:
+            channel_id: Channel identifier
+            start_time: Start time as Unix timestamp
+            end_time: End time as Unix timestamp
+            epg_id: Optional EPG event ID (might be needed for DRM licensing)
+            **kwargs: Additional provider-specific parameters
+
+        Returns:
+            List of DRM configurations for catchup content
+
+        Default implementation falls back to live DRM.
+        Override in subclass if catchup requires different DRM configuration.
+        """
+        if not self.supports_catchup:
+            logger.debug(f"{self.provider_name}: Catchup not supported, falling back to live DRM")
+            return self.get_drm(channel_id, **kwargs)
+
+        logger.debug(f"{self.provider_name}: get_catchup_drm not implemented, "
+                     f"using live DRM configuration")
+        return self.get_drm(channel_id, **kwargs)
+
+    # ============================================================================
+    # CATCHUP HELPER METHODS
+    # ============================================================================
+
+    def validate_catchup_request(self,
+                                 start_time: int,
+                                 end_time: int) -> tuple[bool, Optional[str]]:
+        """
+        Validate a catchup request against provider's capabilities.
+
+        Args:
+            start_time: Start time as Unix timestamp
+            end_time: End time as Unix timestamp
+
+        Returns:
+            Tuple of (is_valid, error_message)
+            If valid: (True, None)
+            If invalid: (False, "error description")
+        """
+        import time
+
+        # Check if catchup is supported
+        if not self.supports_catchup:
+            return False, f"Provider '{self.provider_name}' does not support catchup"
+
+        # Validate timestamps
+        if start_time >= end_time:
+            return False, "Invalid time range: start_time must be before end_time"
+
+        # Check if request is in the future
+        now = int(time.time())
+        if start_time > now:
+            return False, "Cannot request future content"
+
+        # Check if content is within catchup window
+        max_age_seconds = self.catchup_window * 86400  # days to seconds
+        content_age = now - start_time
+
+        if content_age > max_age_seconds:
+            return False, (f"Content is outside catchup window "
+                           f"(requested: {content_age // 86400} days ago, "
+                           f"max: {self.catchup_window} days)")
+
+        return True, None
+
+    def get_catchup_window_for_channel(self, channel_id: str) -> int:
+        """
+        Get catchup window for a specific channel.
+
+        Some providers might have different catchup windows for different channels.
+        Default implementation returns the provider-wide catchup window.
+
+        Args:
+            channel_id: Channel identifier
+
+        Returns:
+            int: Catchup window in days for this channel
+
+        Override in subclass if channels have different catchup windows.
+        """
+        return self.catchup_window
+
+    def format_catchup_time_params(self,
+                                   start_time: int,
+                                   end_time: int,
+                                   format_type: str = 'iso') -> Dict[str, str]:
+        """
+        Format time parameters for provider-specific API calls.
+
+        Different providers expect different time formats in their APIs.
+        This helper converts Unix timestamps to various formats.
+
+        Args:
+            start_time: Start time as Unix timestamp
+            end_time: End time as Unix timestamp
+            format_type: Format type ('iso', 'unix', 'millis', 'custom')
+
+        Returns:
+            Dictionary with formatted time parameters
+
+        Override in subclass for provider-specific formatting.
+        """
+        from datetime import datetime
+
+        if format_type == 'iso':
+            # ISO 8601 format
+            start_dt = datetime.fromtimestamp(start_time)
+            end_dt = datetime.fromtimestamp(end_time)
+            return {
+                'start': start_dt.isoformat(),
+                'end': end_dt.isoformat()
+            }
+        elif format_type == 'unix':
+            # Unix timestamps (seconds)
+            return {
+                'start': str(start_time),
+                'end': str(end_time)
+            }
+        elif format_type == 'millis':
+            # Milliseconds since epoch
+            return {
+                'start': str(start_time * 1000),
+                'end': str(end_time * 1000)
+            }
+        else:
+            # Default to unix
+            return {
+                'start': str(start_time),
+                'end': str(end_time)
+            }
+
+    def build_catchup_manifest_url(self,
+                                   base_url: str,
+                                   start_time: int,
+                                   end_time: int,
+                                   url_format: str = 'query') -> str:
+        """
+        Build catchup manifest URL with time parameters.
+
+        Helper method to construct manifest URLs with time parameters
+        in various formats that different providers use.
+
+        Args:
+            base_url: Base manifest URL
+            start_time: Start time as Unix timestamp
+            end_time: End time as Unix timestamp
+            url_format: Format ('query', 'path', 'fragment')
+
+        Returns:
+            Complete manifest URL with time parameters
+
+        Override in subclass for provider-specific URL construction.
+        """
+        if url_format == 'query':
+            # Add as query parameters
+            separator = '&' if '?' in base_url else '?'
+            return f"{base_url}{separator}start={start_time}&end={end_time}"
+        elif url_format == 'path':
+            # Add to path (e.g., /manifest/start/end.mpd)
+            return f"{base_url}/{start_time}/{end_time}"
+        elif url_format == 'fragment':
+            # Add as URL fragment (e.g., manifest.mpd#t=start,end)
+            return f"{base_url}#t={start_time},{end_time}"
+        else:
+            # Default to query parameters
+            separator = '&' if '?' in base_url else '?'
+            return f"{base_url}{separator}start={start_time}&end={end_time}"

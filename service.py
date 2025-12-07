@@ -361,6 +361,81 @@ class UltimateService:
 
         return m3u_content
 
+    def _get_proxied_catchup_manifest(self, provider: str, channel_id: str,
+                                      start_time: int, end_time: int,
+                                      epg_id: str = None, country: str = None) -> str:
+        """
+        Get proxied and rewritten MPD manifest for catchup content.
+        Similar to _get_proxied_manifest but for catchup streams.
+        """
+        # Generate cache key that includes time parameters
+        cache_key = f"{channel_id}_catchup_{start_time}_{end_time}"
+
+        # Try cache first (with catchup-specific key)
+        cached_mpd = self.mpd_cache.get(provider, cache_key)
+        if cached_mpd:
+            response.content_type = 'application/dash+xml; charset=utf-8'
+            return cached_mpd
+
+        logger.info(f"Cache miss for catchup {provider}/{channel_id}, fetching manifest")
+
+        # Get catchup manifest URL
+        manifest_url = self.manager.get_catchup_manifest(
+            provider_name=provider,
+            channel_id=channel_id,
+            start_time=start_time,
+            end_time=end_time,
+            epg_id=epg_id,
+            country=country
+        )
+
+        if not manifest_url:
+            response.status = 404
+            response.content_type = 'application/json'
+            return json.dumps({'error': f'Catchup manifest not available'})
+
+        # Get provider's HTTP manager
+        http_manager = self.manager.get_provider_http_manager(provider)
+        if not http_manager:
+            logger.error(f"No HTTP manager found for provider '{provider}'")
+            response.status = 502
+            response.content_type = 'application/json'
+            return json.dumps({'error': f'Provider "{provider}" not configured properly'})
+
+        # Fetch manifest via proxy
+        try:
+            logger.debug(f"Fetching catchup manifest via proxy: {manifest_url}")
+            manifest_response = http_manager.get(manifest_url, operation="manifest")
+
+            # Extract cache TTL
+            ttl = MPDRewriter.extract_cache_ttl(manifest_response.headers)
+            mpd_ttl = MPDRewriter.extract_mpd_update_period(manifest_response.text)
+            if mpd_ttl and mpd_ttl < ttl:
+                ttl = mpd_ttl
+
+            # Rewrite MPD URLs to point to proxy
+            base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
+            rewriter = MPDRewriter(base_url, provider)
+            rewritten_mpd = rewriter.rewrite_mpd(manifest_response.text, manifest_url)
+
+            # Cache the rewritten MPD with catchup-specific key
+            self.mpd_cache.set(
+                provider=provider,
+                channel_id=cache_key,  # Use catchup-specific cache key
+                mpd_content=rewritten_mpd,
+                ttl=ttl,
+                original_url=manifest_url
+            )
+
+            response.content_type = 'application/dash+xml; charset=utf-8'
+            return rewritten_mpd
+
+        except Exception as fetch_err:
+            logger.error(f"Failed to fetch catchup manifest via proxy: {fetch_err}")
+            response.status = 502
+            response.content_type = 'application/json'
+            return json.dumps({'error': f'Failed to fetch manifest: {str(fetch_err)}'})
+
     def setup_routes(self):
         @self.app.route('/api/providers')
         def list_providers():
@@ -401,11 +476,29 @@ class UltimateService:
                     fetch_manifests=request.query.get('fetch_manifests', 'false').lower() == 'true',
                     country=request.query.get('country')
                 )
+
+                # Get provider instance to check catchup support
+                provider_instance = self.manager.get_provider(provider)
+                provider_catchup_days = getattr(provider_instance, 'catchup_window', 0)
+
+                # Build channel list with catchup info
+                channels_data = []
+                for c in channels:
+                    channel_dict = c.to_dict()
+
+                    # Add catchup days - use channel-specific if available, else provider default
+                    if hasattr(c, 'catchup_days'):
+                        channel_dict['CatchupDays'] = c.catchup_days
+                    else:
+                        channel_dict['CatchupDays'] = provider_catchup_days
+
+                    channels_data.append(channel_dict)
+
                 return {
                     'provider': provider,
-                    'country': self.manager.get_provider(provider).country if self.manager.get_provider(
-                        provider) else 'DE',
-                    'channels': [c.to_dict() for c in channels]
+                    'country': provider_instance.country if provider_instance else 'DE',
+                    'catchup_window_days': provider_catchup_days,
+                    'channels': channels_data
                 }
             except Exception as api_err:
                 logger.error(f"API Error in /api/providers/{provider}: {str(api_err)}")
@@ -446,39 +539,96 @@ class UltimateService:
         def get_channel_stream(provider, channel_id):
             """
             Returns HTTP 302 redirect to the actual manifest or rewritten manifest endpoint.
-            This allows players to use this endpoint directly as a stream URL.
+            Supports both live and catchup streaming.
             """
             try:
-                # Check if provider needs proxy
-                if self.manager.needs_proxy(provider):
-                    # Proxy mode: return rewritten MPD content directly
-                    # (not redirect, because /manifest now returns JSON)
-                    return self._get_proxied_manifest(provider, channel_id)
+                # Get optional catchup parameters
+                start_time = request.query.get('start_time')
+                end_time = request.query.get('end_time')
+                epg_id = request.query.get('epg_id')
+                country = request.query.get('country')
+
+                # Determine if this is a catchup request
+                is_catchup = bool(start_time and end_time)
+
+                if is_catchup:
+                    logger.info(f"Catchup stream request for {provider}/{channel_id}: "
+                                f"start={start_time}, end={end_time}, epg_id={epg_id}")
+
+                    # Convert Unix timestamps to integers
+                    try:
+                        start_time_int = int(start_time)
+                        end_time_int = int(end_time)
+                    except (ValueError, TypeError):
+                        response.status = 400
+                        return {'error': 'Invalid start_time or end_time format'}
+
+                    # Validate catchup is supported
+                    provider_instance = self.manager.get_provider(provider)
+                    catchup_window = getattr(provider_instance, 'catchup_window', 0)
+
+                    if catchup_window == 0:
+                        response.status = 400
+                        return {'error': f'Catchup not supported for provider "{provider}"'}
+
+                    # Validate time is within catchup window
+                    import time
+                    now = int(time.time())
+                    max_age_seconds = catchup_window * 86400
+
+                    if (now - start_time_int) > max_age_seconds:
+                        response.status = 400
+                        return {'error': f'Content outside catchup window (max {catchup_window} days)'}
+
+                    # Check if provider needs proxy for catchup
+                    if self.manager.needs_proxy(provider):
+                        # Proxy mode: return rewritten MPD content directly
+                        return self._get_proxied_catchup_manifest(
+                            provider, channel_id, start_time_int, end_time_int, epg_id, country
+                        )
+                    else:
+                        # Direct mode: get catchup manifest URL and redirect
+                        manifest_url = self.manager.get_catchup_manifest(
+                            provider_name=provider,
+                            channel_id=channel_id,
+                            start_time=start_time_int,
+                            end_time=end_time_int,
+                            epg_id=epg_id,
+                            country=country
+                        )
+
+                        if not manifest_url:
+                            response.status = 404
+                            return {'error': f'Catchup manifest not available for channel "{channel_id}"'}
+
+                        logger.debug(f"Redirecting to catchup manifest: {manifest_url}")
+                        redirect(manifest_url)
                 else:
-                    # Direct mode: redirect to original manifest URL
-                    manifest_url = self.manager.get_channel_manifest(
-                        provider_name=provider,
-                        channel_id=channel_id,
-                        country=request.query.get('country')
-                    )
+                    # Live stream - existing logic
+                    if self.manager.needs_proxy(provider):
+                        return self._get_proxied_manifest(provider, channel_id)
+                    else:
+                        manifest_url = self.manager.get_channel_manifest(
+                            provider_name=provider,
+                            channel_id=channel_id,
+                            country=country
+                        )
 
-                    if not manifest_url:
-                        response.status = 404
-                        return {
-                            'error': f'Manifest not available for channel "{channel_id}" from provider "{provider}"'}
+                        if not manifest_url:
+                            response.status = 404
+                            return {'error': f'Manifest not available for channel "{channel_id}"'}
 
-                    logger.debug(f"Redirecting to manifest: {manifest_url}")
-                    redirect(manifest_url)
+                        logger.debug(f"Redirecting to manifest: {manifest_url}")
+                        redirect(manifest_url)
 
             except HTTPResponse:
-                # Re-raise HTTPResponse - this is how Bottle handles redirects
                 raise
             except ValueError as val_err:
-                logger.error(f"API Error in /api/providers/{provider}/channels/{channel_id}/stream: {str(val_err)}")
+                logger.error(f"API Error in stream: {str(val_err)}")
                 response.status = 404
                 return {'error': str(val_err)}
             except Exception as api_err:
-                logger.error(f"API Error in /api/providers/{provider}/channels/{channel_id}/stream: {str(api_err)}")
+                logger.error(f"API Error in stream: {str(api_err)}")
                 response.status = 500
                 return {'error': f'Internal server error: {str(api_err)}'}
 
@@ -722,11 +872,43 @@ class UltimateService:
         @self.app.route('/api/providers/<provider>/channels/<channel_id>/drm')
         def get_channel_drm(provider, channel_id):
             try:
-                drm_configs = self.manager.get_channel_drm_configs(
-                    provider_name=provider,
-                    channel_id=channel_id,
-                    country=request.query.get('country')
-                )
+                # Get optional catchup parameters
+                start_time = request.query.get('start_time')
+                end_time = request.query.get('end_time')
+                epg_id = request.query.get('epg_id')
+                country = request.query.get('country')
+
+                # Determine if this is a catchup request
+                is_catchup = bool(start_time and end_time)
+
+                if is_catchup:
+                    logger.debug(f"Catchup DRM request for {provider}/{channel_id}: "
+                                 f"epg_id={epg_id}")
+
+                    # Convert timestamps
+                    try:
+                        start_time_int = int(start_time)
+                        end_time_int = int(end_time)
+                    except (ValueError, TypeError):
+                        response.status = 400
+                        return {'error': 'Invalid start_time or end_time format'}
+
+                    # Get catchup DRM configs
+                    drm_configs = self.manager.get_catchup_drm_configs(
+                        provider_name=provider,
+                        channel_id=channel_id,
+                        start_time=start_time_int,
+                        end_time=end_time_int,
+                        epg_id=epg_id,
+                        country=country
+                    )
+                else:
+                    # Live DRM - existing logic
+                    drm_configs = self.manager.get_channel_drm_configs(
+                        provider_name=provider,
+                        channel_id=channel_id,
+                        country=country
+                    )
 
                 # Merge all DRM configs into a single dictionary
                 merged_drm_configs = {}
@@ -735,24 +917,21 @@ class UltimateService:
                         config_dict = config.to_dict()
                     else:
                         config_dict = config
-
-                    # config_dict is something like {"com.widevine.alpha": {...}}
-                    # We need to merge it into the main dictionary
                     merged_drm_configs.update(config_dict)
 
                 return {
                     'provider': provider,
                     'channel_id': channel_id,
-                    'drm_configs': merged_drm_configs  # Now an object, not an array
+                    'is_catchup': is_catchup,
+                    'drm_configs': merged_drm_configs
                 }
 
             except ValueError as val_err:
-                # This handles the case where manager raises ValueError for unknown provider
-                logger.error(f"API Error in /api/providers/{provider}/channels/{channel_id}/drm: {str(val_err)}")
+                logger.error(f"API Error in DRM endpoint: {str(val_err)}")
                 response.status = 404
                 return {'error': str(val_err)}
             except Exception as api_err:
-                logger.error(f"API Error in /api/providers/{provider}/channels/{channel_id}/drm: {str(api_err)}")
+                logger.error(f"API Error in DRM endpoint: {str(api_err)}")
                 response.status = 500
                 return {'error': f'Internal server error: {str(api_err)}'}
 
