@@ -127,6 +127,11 @@ class MagentaProvider(StreamingProvider):
     def implements_epg(self) -> bool:
         return False
 
+    @property
+    def catchup_window(self) -> int:
+        # This provider offers 7 days of catchup
+        return 7
+
     def authenticate(self, **kwargs) -> str:
         logger.info(f"=== MagentaProvider.authenticate() CALLED with kwargs: {kwargs} ===")
         self.bearer_token = self.authenticator.get_bearer_token(force_refresh=kwargs.get('force_refresh', False))
