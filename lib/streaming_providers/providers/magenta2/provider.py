@@ -400,6 +400,11 @@ class Magenta2Provider(StreamingProvider):
     def implements_epg(self) -> bool:
         return False
 
+    @property
+    def catchup_window(self) -> int:
+        # This provider offers 7 days of catchup
+        return 7
+
     def get_discovery_status(self) -> Dict[str, Any]:
         """Get discovery and configuration status"""
         if not self.discovery_service:
@@ -1160,6 +1165,58 @@ class Magenta2Provider(StreamingProvider):
         """Get MPD manifest URL using cached SMIL data"""
         smil_data = self._get_smil_data(channel_id)
         return smil_data.get('mpd_url') if smil_data else None
+
+    def get_catchup_manifest(self, channel_id: str, start_time: int, end_time: int, **kwargs) -> Optional[str]:
+        """
+        Get catchup manifest URL for Magenta TV.
+
+        Returns the same manifest as get_manifest but extended with
+        ?begin=YYYYMMDDTHHMMSS&end=YYYYMMDDTHHMMSS query parameters.
+
+        Args:
+            channel_id: Channel identifier
+            start_time: Start time as Unix timestamp (epoch seconds)
+            end_time: End time as Unix timestamp (epoch seconds)
+            **kwargs: Additional parameters (epg_id, etc.)
+
+        Returns:
+            Manifest URL with catchup time parameters, or None if channel not found
+        """
+        from ...base.utils.timestamp_converter import TimestampConverter
+
+        # First get the base manifest URL
+        base_manifest = self.get_manifest(channel_id, **kwargs)
+
+        if not base_manifest:
+            logger.warning(f"Channel {channel_id} not found or has no manifest")
+            return None
+
+        try:
+            # Convert epoch seconds to ISO basic format (YYYYMMDDTHHMMSS)
+            start_iso = TimestampConverter.epoch_to_iso(
+                start_time,
+                format_type="basic",
+                as_utc=True
+            )
+            end_iso = TimestampConverter.epoch_to_iso(
+                end_time,
+                format_type="basic",
+                as_utc=True
+            )
+
+            # Build the catchup manifest URL
+            # Check if the manifest already has query parameters
+            separator = '&' if '?' in base_manifest else '?'
+            catchup_manifest = f"{base_manifest}{separator}begin={start_iso}&end={end_iso}"
+
+            logger.debug(f"Catchup manifest for channel {channel_id}: {catchup_manifest}")
+            return catchup_manifest
+
+        except Exception as e:
+            logger.error(f"Error building catchup manifest for channel {channel_id}: {e}")
+            # Fall back to live manifest if catchup formatting fails
+            logger.warning(f"Falling back to live manifest for channel {channel_id}")
+            return base_manifest
 
     def _get_smil_data(self, channel_id: str) -> Optional[Dict[str, Any]]:
         """Get complete SMIL data with caching"""
