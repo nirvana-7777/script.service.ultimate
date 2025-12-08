@@ -479,25 +479,25 @@ class UltimateService:
 
                 # Get provider instance to check catchup support
                 provider_instance = self.manager.get_provider(provider)
-                provider_catchup_days = getattr(provider_instance, 'catchup_window', 0)
+                provider_catchup_hours = getattr(provider_instance, 'catchup_window', 0)  # CHANGE
 
                 # Build channel list with catchup info
                 channels_data = []
                 for c in channels:
                     channel_dict = c.to_dict()
 
-                    # Add catchup days - use channel-specific if available, else provider default
-                    if hasattr(c, 'catchup_days'):
-                        channel_dict['CatchupDays'] = c.catchup_days
+                    # Add catchup hours - use channel-specific if available, else provider default
+                    if hasattr(c, 'catchup_hours'):  # CHANGE
+                        channel_dict['CatchupHours'] = c.catchup_hours  # CHANGE
                     else:
-                        channel_dict['CatchupDays'] = provider_catchup_days
+                        channel_dict['CatchupHours'] = provider_catchup_hours  # CHANGE
 
                     channels_data.append(channel_dict)
 
                 return {
                     'provider': provider,
                     'country': provider_instance.country if provider_instance else 'DE',
-                    'catchup_window_days': provider_catchup_days,
+                    'catchup_window_hours': provider_catchup_hours,  # CHANGE
                     'channels': channels_data
                 }
             except Exception as api_err:
@@ -565,20 +565,20 @@ class UltimateService:
 
                     # Validate catchup is supported
                     provider_instance = self.manager.get_provider(provider)
-                    catchup_window = getattr(provider_instance, 'catchup_window', 0)
+                    catchup_hours = getattr(provider_instance, 'catchup_window', 0)  # Now in hours
 
-                    if catchup_window == 0:
+                    if catchup_hours == 0:
                         response.status = 400
                         return {'error': f'Catchup not supported for provider "{provider}"'}
 
-                    # Validate time is within catchup window
+                    # Validate time is within catchup window (in HOURS)
                     import time
                     now = int(time.time())
-                    max_age_seconds = catchup_window * 86400
+                    max_age_seconds = catchup_hours * 3600  # Hours to seconds
 
                     if (now - start_time_int) > max_age_seconds:
                         response.status = 400
-                        return {'error': f'Content outside catchup window (max {catchup_window} days)'}
+                        return {'error': f'Content outside catchup window (max {catchup_hours} hours)'}
 
                     # Check if provider needs proxy for catchup
                     if self.manager.needs_proxy(provider):

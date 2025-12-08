@@ -129,8 +129,8 @@ class MagentaProvider(StreamingProvider):
 
     @property
     def catchup_window(self) -> int:
-        # This provider offers 7 days of catchup
-        return 7
+        # This provider offers 168 hours (7 days) of catchup
+        return 168
 
     def authenticate(self, **kwargs) -> str:
         logger.info(f"=== MagentaProvider.authenticate() CALLED with kwargs: {kwargs} ===")

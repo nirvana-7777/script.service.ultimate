@@ -429,13 +429,10 @@ class StreamingProvider(ABC):
     @property
     def catchup_window(self) -> int:
         """
-        Return the catchup window in days for this provider.
+        Return the catchup window in HOURS for this provider.
 
         Returns:
-            int: Number of days of catchup available (0 = no catchup support)
-
-        Override in subclass to provide provider-specific catchup window.
-        Default is 0 (no catchup).
+            int: Number of hours of catchup available (0 = no catchup support)
         """
         return 0
 
@@ -559,9 +556,19 @@ class StreamingProvider(ABC):
     # CATCHUP HELPER METHODS
     # ============================================================================
 
-    def validate_catchup_request(self,
-                                 start_time: int,
-                                 end_time: int) -> tuple[bool, Optional[str]]:
+    def get_catchup_window_for_channel(self, channel_id: str) -> int:
+        """
+        Get catchup window for a specific channel in HOURS.
+
+        Args:
+            channel_id: Channel identifier
+
+        Returns:
+            int: Catchup window in hours for this channel
+        """
+        return self.catchup_window
+
+    def validate_catchup_request(self, start_time: int, end_time: int) -> tuple[bool, Optional[str]]:
         """
         Validate a catchup request against provider's capabilities.
 
@@ -571,51 +578,30 @@ class StreamingProvider(ABC):
 
         Returns:
             Tuple of (is_valid, error_message)
-            If valid: (True, None)
-            If invalid: (False, "error description")
         """
         import time
 
-        # Check if catchup is supported
         if not self.supports_catchup:
             return False, f"Provider '{self.provider_name}' does not support catchup"
 
-        # Validate timestamps
         if start_time >= end_time:
             return False, "Invalid time range: start_time must be before end_time"
 
-        # Check if request is in the future
         now = int(time.time())
         if start_time > now:
             return False, "Cannot request future content"
 
-        # Check if content is within catchup window
-        max_age_seconds = self.catchup_window * 86400  # days to seconds
+        # CHANGE FROM DAYS TO HOURS HERE
+        max_age_seconds = self.catchup_window * 3600  # hours to seconds
         content_age = now - start_time
 
         if content_age > max_age_seconds:
+            hours_ago = content_age // 3600
             return False, (f"Content is outside catchup window "
-                           f"(requested: {content_age // 86400} days ago, "
-                           f"max: {self.catchup_window} days)")
+                           f"(requested: {hours_ago} hours ago, "
+                           f"max: {self.catchup_window} hours)")
 
         return True, None
-
-    def get_catchup_window_for_channel(self, channel_id: str) -> int:
-        """
-        Get catchup window for a specific channel.
-
-        Some providers might have different catchup windows for different channels.
-        Default implementation returns the provider-wide catchup window.
-
-        Args:
-            channel_id: Channel identifier
-
-        Returns:
-            int: Catchup window in days for this channel
-
-        Override in subclass if channels have different catchup windows.
-        """
-        return self.catchup_window
 
     def format_catchup_time_params(self,
                                    start_time: int,

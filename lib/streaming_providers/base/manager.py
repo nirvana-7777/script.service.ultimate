@@ -633,17 +633,14 @@ class ProviderManager:
                            provider_name: str,
                            channel_id: Optional[str] = None) -> int:
         """
-        Get catchup window in days for a provider or specific channel.
+        Get catchup window in HOURS for a provider or specific channel.
 
         Args:
             provider_name: Name of the provider
             channel_id: Optional channel identifier for channel-specific window
 
         Returns:
-            Catchup window in days (0 = no catchup support)
-
-        Raises:
-            ValueError: If provider not found
+            Catchup window in hours (0 = no catchup support)
         """
         provider = self.get_provider(provider_name)
 
@@ -690,7 +687,7 @@ class ProviderManager:
             {
                 'provider_name': {
                     'supports_catchup': bool,
-                    'catchup_window': int,
+                    'catchup_window': int,  # IN HOURS
                     'catchup_enabled': bool
                 }
             }

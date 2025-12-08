@@ -402,8 +402,8 @@ class Magenta2Provider(StreamingProvider):
 
     @property
     def catchup_window(self) -> int:
-        # This provider offers 7 days of catchup
-        return 7
+        # This provider offers 4 hours of catchup
+        return 4
 
     def get_discovery_status(self) -> Dict[str, Any]:
         """Get discovery and configuration status"""
