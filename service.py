@@ -777,13 +777,14 @@ class UltimateService:
                 # Parse optional parameters
                 kwargs = {'country': request.query.get('country')}
 
+                from datetime import timezone
                 # Handle start_time - can be Unix timestamp (from Kodi) or datetime
                 if request.query.get('start_time'):
                     start_time_str = request.query.get('start_time')
                     try:
                         # Try to parse as Unix timestamp (integer from Kodi PVR)
                         start_time_int = int(start_time_str)
-                        kwargs['start_time'] = datetime.fromtimestamp(start_time_int)
+                        kwargs['start_time'] = datetime.fromtimestamp(start_time_int, tz=timezone.utc)
                     except (ValueError, TypeError):
                         # Try to parse as ISO format string (for manual API calls)
                         try:
@@ -801,7 +802,7 @@ class UltimateService:
                     try:
                         # Try to parse as Unix timestamp (integer from Kodi PVR)
                         end_time_int = int(end_time_str)
-                        kwargs['end_time'] = datetime.fromtimestamp(end_time_int)
+                        kwargs['end_time'] = datetime.fromtimestamp(end_time_int, tz=timezone.utc)
                     except (ValueError, TypeError):
                         # Try to parse as ISO format string (for manual API calls)
                         try:
