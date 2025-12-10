@@ -14,7 +14,7 @@ ENV PYTHONUNBUFFERED=1 \
     ULTIMATE_PORT=7777 \
     ULTIMATE_COUNTRY=DE \
     ULTIMATE_DEBUG=false \
-    PYTHONPATH=${APP_HOME}:${PYTHONPATH}
+    PYTHONPATH=${APP_HOME}/lib:${PYTHONPATH}
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -51,17 +51,19 @@ COPY --chown=${USER_ID}:${GROUP_ID} . .
 # Debug: Show Python path and test import
 RUN echo "Testing imports..." && \
     python3 -c "import sys; print('Python path:', sys.path)" && \
-    python3 -c "import sys; sys.path.insert(0, '/app/lib'); \
-    try: \
-        import streaming_providers; \
-        print('✓ streaming_providers import successful'); \
-    except ImportError as e: \
-        print('✗ streaming_providers import failed:', e); \
-        print('Looking for module...'); \
-        import os; \
-        print('lib exists:', os.path.exists('/app/lib')); \
-        print('lib/streaming_providers exists:', os.path.exists('/app/lib/streaming_providers')); \
-        print('lib/streaming_providers/__init__.py exists:', os.path.exists('/app/lib/streaming_providers/__init__.py'));"
+    python3 -c "\
+import sys;\n\
+sys.path.insert(0, '/app/lib');\n\
+try:\n\
+    import streaming_providers;\n\
+    print('✓ streaming_providers import successful');\n\
+except ImportError as e:\n\
+    print('✗ streaming_providers import failed:', e);\n\
+    import os;\n\
+    print('lib exists:', os.path.exists('/app/lib'));\n\
+    print('lib/streaming_providers exists:', os.path.exists('/app/lib/streaming_providers'));\n\
+    print('lib/streaming_providers/__init__.py exists:', os.path.exists('/app/lib/streaming_providers/__init__.py'));\n\
+    print('Files in lib:', os.listdir('/app/lib') if os.path.exists('/app/lib') else 'lib not found');"
 
 # Create directories
 RUN mkdir -p /config /logs /cache && \
@@ -86,6 +88,13 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
 LABEL maintainer="nirvana-7777" \
       description="Ultimate Backend Streaming Service"
 
-# Entrypoint with modified Python path
-ENTRYPOINT ["python", "-c", "import sys; sys.path.insert(0, '/app/lib'); exec(open('/app/service.py').read())"]
+# Create a simple wrapper script to set up Python path
+RUN echo '#!/bin/bash\n\
+export PYTHONPATH="/app/lib:${PYTHONPATH}"\n\
+cd /app\n\
+python service.py "$@"' > /app/entrypoint.sh && \
+    chmod +x /app/entrypoint.sh
+
+# Use the wrapper script as entrypoint
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["--standalone", "--config-dir", "/config"]
