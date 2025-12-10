@@ -7,13 +7,13 @@ Supports country-specific credentials, sessions, and configurations
 import json
 import time
 import os
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
 from dataclasses import dataclass, field
 
 from ..auth.session_manager import SessionManager
 from ..auth.credential_manager import CredentialManager
-from ..auth.credentials import BaseCredentials
+from ..auth.credentials import BaseCredentials, ClientCredentials, UserPasswordCredentials
 from ..network.proxy_manager import ProxyConfigManager
 from ..models.proxy_models import ProxyConfig
 from ..utils.logger import logger
@@ -1355,6 +1355,422 @@ class SettingsManager:
         except Exception as e:
             logger.warning(f"Error checking enable status for '{provider_name}': {e}, defaulting to enabled")
             return True
+
+    # ============= API Import Methods =============
+
+    @staticmethod
+    def parse_provider_country(provider_name: str) -> Tuple[str, Optional[str]]:
+        """
+        Parse provider_country format into (provider, country)
+
+        Examples:
+            "joyn_de" → ("joyn", "de")
+            "magenta2_de" → ("magenta2", "de")
+            "some_provider" → ("some_provider", None)
+
+        Args:
+            provider_name: Combined provider name like "joyn_de" or plain "provider"
+
+        Returns:
+            Tuple of (provider, country) where country may be None
+        """
+        # Split by last underscore
+        parts = provider_name.rsplit('_', 1)
+
+        # Check if last part looks like a country code (2-3 alphabetic chars)
+        if len(parts) == 2 and len(parts[1]) in (2, 3) and parts[1].isalpha():
+            return parts[0], parts[1].lower()
+
+        # No country suffix detected
+        return provider_name, None
+
+
+    def get_auth_status(self, provider_name: str) -> Dict[str, Any]:
+        """
+        Get comprehensive authentication status for a provider
+
+        Determines the "real" authentication state accounting for:
+        - Providers with credentials but no token (lazy auth)
+        - Expired vs valid tokens
+        - Different credential types
+
+        Args:
+            provider_name: Provider name, optionally with country (e.g., "joyn_de")
+
+        Returns:
+            Dictionary with authentication status information
+        """
+        # Parse provider and country
+        provider, country = self.parse_provider_country(provider_name)
+
+        # Check if provider is registered
+        if not self.is_provider_registered(provider):
+            return {
+                'provider': provider_name,
+                'auth_state': 'not_authenticated',
+                'error': f'Provider "{provider}" is not registered',
+                'is_ready': False
+            }
+
+        # Load credentials
+        credentials = self.get_provider_credentials(provider, country)
+        has_credentials = credentials is not None and credentials.validate()
+
+        # Load token data
+        token_data = self.load_token_data(provider, country)
+        has_token = token_data is not None
+
+        # Check token expiration (using same buffer as SessionManager)
+        token_valid = False
+        token_expires_at = None
+
+        if has_token:
+            # Use SessionManager's expiration check
+            token_valid = not self.session_manager._is_token_expired(token_data, buffer_seconds=300)
+
+            # Calculate expiration timestamp
+            if 'issued_at' in token_data and 'expires_in' in token_data:
+                token_expires_at = token_data['issued_at'] + token_data['expires_in']
+
+        # Determine authentication state
+        auth_state = self._determine_auth_state(
+            has_credentials=has_credentials,
+            has_token=has_token,
+            token_valid=token_valid,
+            credential_type=credentials.credential_type if credentials else None
+        )
+
+        # Build response
+        status = {
+            'provider': provider_name,
+            'auth_state': auth_state,
+            'credential_type': credentials.credential_type if credentials else None,
+            'has_credentials': has_credentials,
+            'has_active_token': token_valid,
+            'token_expires_at': token_expires_at,
+            'is_ready': auth_state in ['user_authenticated', 'client_authenticated']
+        }
+
+        return status
+
+
+    @staticmethod
+    def _determine_auth_state(has_credentials: bool, has_token: bool,
+                              token_valid: bool, credential_type: Optional[str]) -> str:
+        """
+        Determine authentication state from credential and token status
+
+        Args:
+            has_credentials: Whether valid credentials exist
+            has_token: Whether token data exists
+            token_valid: Whether token is valid (not expired)
+            credential_type: Type of credential ("user_password" or "client_credentials")
+
+        Returns:
+            One of: "not_authenticated", "credentials_only", "user_authenticated", "client_authenticated"
+        """
+        # No credentials and no token
+        if not has_credentials and not has_token:
+            return "not_authenticated"
+
+        # No credentials but has token (shouldn't happen, but handle it)
+        if not has_credentials and has_token:
+            return "not_authenticated"
+
+        # Has credentials but no token (lazy auth - hasn't authenticated yet)
+        if has_credentials and not has_token:
+            return "credentials_only"
+
+        # Has credentials and token but token expired (needs re-auth)
+        if has_credentials and has_token and not token_valid:
+            return "credentials_only"
+
+        # Has credentials and valid token - determine type
+        if has_credentials and has_token and token_valid:
+            if credential_type == "user_password":
+                return "user_authenticated"
+            elif credential_type == "client_credentials":
+                return "client_authenticated"
+            else:
+                # Unknown credential type but authenticated
+                return "user_authenticated"
+
+        # Fallback
+        return "not_authenticated"
+
+
+    def save_provider_credentials_from_api(self, provider_name: str,
+                                           credentials_data: Dict[str, Any]) -> Tuple[bool, str]:
+        """
+        Save credentials from API request (bypasses Kodi sync)
+
+        Args:
+            provider_name: Provider name, optionally with country (e.g., "joyn_de")
+            credentials_data: Dictionary with credential data
+                For user_password: {"username": "...", "password": "...", "client_id": "..." (optional)}
+                For client_credentials: {"client_id": "...", "client_secret": "..."}
+
+        Returns:
+            Tuple of (success: bool, message: str)
+        """
+        try:
+            # Parse provider and country
+            provider, country = self.parse_provider_country(provider_name)
+
+            # Check if provider is registered
+            if not self.is_provider_registered(provider):
+                return False, f'Provider "{provider}" is not registered'
+
+            # Validate credentials_data format
+            if not isinstance(credentials_data, dict):
+                return False, "Credentials data must be a dictionary"
+
+            # Determine credential type and create appropriate object
+            credentials = self._parse_credentials_from_dict(credentials_data)
+
+            if not credentials:
+                return False, "Invalid credentials format. Must provide either (username + password) or (client_id + client_secret)"
+
+            # Validate credentials
+            if not credentials.validate():
+                return False, f"Credential validation failed: missing required fields"
+
+            # Save directly to file (bypass Kodi sync)
+            success = self.credential_manager.save_credentials(provider, credentials, country)
+
+            if success:
+                country_str = f" ({country})" if country else ""
+                logger.info(f"Successfully saved credentials from API for {provider}{country_str}")
+                return True, "Credentials saved successfully"
+            else:
+                return False, "Failed to save credentials to file"
+
+        except Exception as e:
+            logger.error(f"Error saving credentials from API for {provider_name}: {e}")
+            return False, f"Internal error: {str(e)}"
+
+
+    @staticmethod
+    def _parse_credentials_from_dict(credentials_data: Dict[str, Any]) -> Optional[BaseCredentials]:
+        """
+        Parse credentials dictionary and create appropriate credential object
+
+        Args:
+            credentials_data: Dictionary with credential data
+
+        Returns:
+            BaseCredentials instance or None if invalid
+        """
+        # Check for user_password credentials
+        has_username = 'username' in credentials_data and credentials_data['username']
+        has_password = 'password' in credentials_data and credentials_data['password']
+
+        if has_username and has_password:
+            return UserPasswordCredentials(
+                username=credentials_data['username'].strip(),
+                password=credentials_data['password'].strip(),
+                client_id=credentials_data.get('client_id', '').strip() or None
+            )
+
+        # Check for client credentials
+        has_client_id = 'client_id' in credentials_data and credentials_data['client_id']
+        has_client_secret = 'client_secret' in credentials_data and credentials_data['client_secret']
+
+        if has_client_id and has_client_secret:
+            return ClientCredentials(
+                client_id=credentials_data['client_id'].strip(),
+                client_secret=credentials_data['client_secret'].strip()
+            )
+
+        # Invalid format
+        return None
+
+
+    def save_provider_proxy_from_api(self, provider_name: str,
+                                     proxy_data: Dict[str, Any]) -> Tuple[bool, str]:
+        """
+        Save proxy configuration from API request (bypasses Kodi sync)
+
+        Args:
+            provider_name: Provider name, optionally with country (e.g., "joyn_de")
+            proxy_data: Dictionary with proxy data
+                Required: {"host": "...", "port": 8080}
+                Optional: {"proxy_type": "http", "username": "...", "password": "...",
+                          "timeout": 30, "verify_ssl": true}
+
+        Returns:
+            Tuple of (success: bool, message: str)
+        """
+        try:
+            # Parse provider and country
+            provider, country = self.parse_provider_country(provider_name)
+
+            # Check if provider is registered
+            if not self.is_provider_registered(provider):
+                return False, f'Provider "{provider}" is not registered'
+
+            # Validate proxy_data format
+            if not isinstance(proxy_data, dict):
+                return False, "Proxy data must be a dictionary"
+
+            # Create ProxyConfig object
+            proxy_config = self._parse_proxy_from_dict(proxy_data)
+
+            if not proxy_config:
+                return False, "Invalid proxy format. Must provide 'host' and 'port'"
+
+            # Validate proxy config
+            if not proxy_config.validate():
+                return False, "Proxy validation failed: invalid host, port, or timeout"
+
+            # Save directly to file (bypass Kodi sync)
+            success = self.proxy_manager.set_proxy_config(provider, proxy_config, country)
+
+            if success:
+                country_str = f" ({country})" if country else ""
+                logger.info(f"Successfully saved proxy config from API for {provider}{country_str}")
+                return True, "Proxy configuration saved successfully"
+            else:
+                return False, "Failed to save proxy configuration to file"
+
+        except Exception as e:
+            logger.error(f"Error saving proxy config from API for {provider_name}: {e}")
+            return False, f"Internal error: {str(e)}"
+
+
+    @staticmethod
+    def _parse_proxy_from_dict(proxy_data: Dict[str, Any]) -> Optional[ProxyConfig]:
+        """
+        Parse proxy dictionary and create ProxyConfig object
+
+        Args:
+            proxy_data: Dictionary with proxy data
+
+        Returns:
+            ProxyConfig instance or None if invalid
+        """
+        from ..models.proxy_models import ProxyConfig, ProxyAuth, ProxyType, ProxyScope
+
+        # Required fields
+        if 'host' not in proxy_data or not proxy_data['host']:
+            return None
+        if 'port' not in proxy_data:
+            return None
+
+        try:
+            port = int(proxy_data['port'])
+        except (ValueError, TypeError):
+            return None
+
+        # Optional proxy type
+        proxy_type = ProxyType.HTTP
+        if 'proxy_type' in proxy_data:
+            try:
+                proxy_type = ProxyType(proxy_data['proxy_type'].lower())
+            except (ValueError, AttributeError):
+                pass  # Use default
+
+        # Optional authentication
+        auth = None
+        if 'username' in proxy_data and 'password' in proxy_data:
+            if proxy_data['username'] and proxy_data['password']:
+                auth = ProxyAuth(
+                    username=proxy_data['username'].strip(),
+                    password=proxy_data['password'].strip()
+                )
+
+        # Optional scope (default to all enabled)
+        scope = ProxyScope()
+        if 'scope' in proxy_data and isinstance(proxy_data['scope'], dict):
+            scope_data = proxy_data['scope']
+            scope = ProxyScope(
+                api_calls=scope_data.get('api_calls', True),
+                authentication=scope_data.get('authentication', True),
+                manifests=scope_data.get('manifests', True),
+                license=scope_data.get('license', True),
+                all=scope_data.get('all', True)
+            )
+
+        # Optional settings
+        timeout = proxy_data.get('timeout', 30)
+        verify_ssl = proxy_data.get('verify_ssl', True)
+
+        return ProxyConfig(
+            host=proxy_data['host'].strip(),
+            port=port,
+            proxy_type=proxy_type,
+            auth=auth,
+            scope=scope,
+            timeout=timeout,
+            verify_ssl=verify_ssl
+        )
+
+
+    def delete_provider_credentials_from_api(self, provider_name: str) -> Tuple[bool, str]:
+        """
+        Delete credentials via API request
+
+        Args:
+            provider_name: Provider name, optionally with country (e.g., "joyn_de")
+
+        Returns:
+            Tuple of (success: bool, message: str)
+        """
+        try:
+            # Parse provider and country
+            provider, country = self.parse_provider_country(provider_name)
+
+            # Check if provider is registered
+            if not self.is_provider_registered(provider):
+                return False, f'Provider "{provider}" is not registered'
+
+            # Delete credentials
+            success = self.credential_manager.delete_credentials(provider, country)
+
+            if success:
+                country_str = f" ({country})" if country else ""
+                logger.info(f"Successfully deleted credentials from API for {provider}{country_str}")
+                return True, "Credentials deleted successfully"
+            else:
+                return False, "Failed to delete credentials"
+
+        except Exception as e:
+            logger.error(f"Error deleting credentials from API for {provider_name}: {e}")
+            return False, f"Internal error: {str(e)}"
+
+
+    def delete_provider_proxy_from_api(self, provider_name: str) -> Tuple[bool, str]:
+        """
+        Delete proxy configuration via API request
+
+        Args:
+            provider_name: Provider name, optionally with country (e.g., "joyn_de")
+
+        Returns:
+            Tuple of (success: bool, message: str)
+        """
+        try:
+            # Parse provider and country
+            provider, country = self.parse_provider_country(provider_name)
+
+            # Check if provider is registered
+            if not self.is_provider_registered(provider):
+                return False, f'Provider "{provider}" is not registered'
+
+            # Delete proxy config
+            success = self.proxy_manager.remove_proxy_config(provider, country)
+
+            if success:
+                country_str = f" ({country})" if country else ""
+                logger.info(f"Successfully deleted proxy config from API for {provider}{country_str}")
+                return True, "Proxy configuration deleted successfully"
+            else:
+                return False, "Failed to delete proxy configuration"
+
+        except Exception as e:
+            logger.error(f"Error deleting proxy config from API for {provider_name}: {e}")
+            return False, f"Internal error: {str(e)}"
+
 
 # For imports that expect the old interface
 UnifiedSettingsManager = SettingsManager  # Backward compatibility alias

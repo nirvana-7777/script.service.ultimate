@@ -15,15 +15,18 @@ class MPDCacheManager:
         self.vfs = VFS(addon_subdir="mpd_cache")
         logger.debug(f"MPD cache initialized at: {self.vfs.base_path}")
 
-    def _get_cache_key(self, provider: str, channel_id: str) -> str:
+    @staticmethod
+    def _get_cache_key(provider: str, channel_id: str) -> str:
         """Generate cache key for provider/channel"""
         return f"{provider}_{channel_id}"
 
-    def _get_manifest_filename(self, cache_key: str) -> str:
+    @staticmethod
+    def _get_manifest_filename(cache_key: str) -> str:
         """Get filename for cached manifest"""
         return f"{cache_key}.xml"
 
-    def _get_meta_filename(self, cache_key: str) -> str:
+    @staticmethod
+    def _get_meta_filename(cache_key: str) -> str:
         """Get filename for cache metadata"""
         return f"{cache_key}.meta"
 

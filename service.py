@@ -3,30 +3,44 @@ import os
 import sys
 import threading
 from datetime import datetime
-import xbmc
-import xbmcaddon
+import time
 import json
 from bottle import Bottle, run, request, response, redirect, HTTPResponse
 from urllib.parse import urlencode, parse_qsl
 
-# Get addon settings
-ADDON = xbmcaddon.Addon()
-ADDON_PATH = ADDON.getAddonInfo('path')
-LIB_PATH = os.path.join(ADDON_PATH, 'lib')
-sys.path.insert(0, LIB_PATH)
+# Add lib path for imports
+script_dir = os.path.dirname(os.path.abspath(__file__))
+LIB_PATH = os.path.join(script_dir, 'lib')
+if os.path.exists(LIB_PATH):
+    sys.path.insert(0, LIB_PATH)
 
 try:
     from streaming_providers import get_configured_manager
     from streaming_providers.base.models import StreamingChannel
-    from streaming_providers.base.utils import logger, VFS, MPDRewriter, MPDCacheManager
+    from streaming_providers.base.utils import logger, MPDRewriter, MPDCacheManager
+    from streaming_providers.base.utils.environment import get_environment_manager, get_vfs_instance
+    from streaming_providers.base.utils.environment import is_kodi_environment
 except ImportError as import_err:
-    xbmc.log(f"Ultimate Backend: Critical import failed - {str(import_err)}", xbmc.LOGERROR)
+    print(f"Ultimate Backend: Critical import failed - {str(import_err)}", file=sys.stderr)
     raise
 
 
 class UltimateService:
-    def __init__(self):
+    def __init__(self, config_dir: str = None):
         self.app = Bottle()
+
+        # Get environment manager
+        self.env_manager = get_environment_manager()
+
+        # Override config directory if provided
+        if config_dir:
+            self.env_manager.set_config('profile_path', config_dir)
+
+        # Get settings
+        self.server_port = self.env_manager.get_config('server_port', 7777)
+        self.default_country = self.env_manager.get_config('default_country', 'DE')
+
+        # Initialize manager
         try:
             self.manager = get_configured_manager()
             logger.info("Manager initialized successfully")
@@ -35,13 +49,28 @@ class UltimateService:
             raise
 
         # Initialize VFS for M3U caching
-        self.vfs = VFS(addon_subdir="m3u_cache")
+        self.vfs = get_vfs_instance(subdir="m3u_cache")
         logger.info(f"VFS initialized for M3U caching: {self.vfs.base_path}")
 
         self.mpd_cache = MPDCacheManager()
         logger.info(f"MPD cache initialized: {self.mpd_cache.vfs.base_path}")
 
         self.setup_routes()
+
+    def _get_setting(self, setting_id: str, default: str = None) -> str:
+        """Get setting value from appropriate source"""
+        # Try Kodi settings first if in Kodi environment
+        if is_kodi_environment():
+            try:
+                import xbmcaddon
+                addon = xbmcaddon.Addon()
+                value = addon.getSetting(setting_id)
+                return value if value else default
+            except Exception as e:
+                logger.debug(f"Could not get Kodi setting {setting_id}: {e}")
+
+        # Fallback to environment manager config
+        return self.env_manager.get_config(setting_id, default)
 
     def _get_proxied_manifest(self, provider: str, channel_id: str) -> str:
         """
@@ -300,7 +329,8 @@ class UltimateService:
 
         return directives
 
-    def _process_license_headers(self, req_headers):
+    @staticmethod
+    def _process_license_headers(req_headers):
         """
         Process license headers and convert to URL-encoded format.
 
@@ -441,7 +471,7 @@ class UltimateService:
         def list_providers():
             try:
                 provider_names = self.manager.list_providers()
-                default_country = ADDON.getSetting('default_country') or 'DE'
+                default_country = self._get_setting('default_country', 'DE')  # Changed
 
                 # Enhanced response with provider details including labels
                 providers_details = []
@@ -460,7 +490,7 @@ class UltimateService:
                         })
 
                 return {
-                    'providers': providers_details,  # Now includes labels and countries
+                    'providers': providers_details,
                     'default_country': default_country
                 }
             except Exception as api_err:
@@ -1082,35 +1112,345 @@ class UltimateService:
                 response.status = 500
                 return {'error': str(e)}
 
-def run_service():
-    service = UltimateService()
-    port = int(ADDON.getSetting("server_port") or 7777)
+        @self.app.route('/api/providers/<provider>/auth/status')
+        def get_provider_auth_status(provider):
+            """
+            Get authentication status for a provider
+
+            Returns current authentication state including:
+            - Authentication state (not_authenticated, credentials_only, user_authenticated, client_authenticated)
+            - Credential type
+            - Token validity and expiration
+            - Whether provider is ready to use
+
+            Example: GET /api/providers/joyn_de/auth/status
+            """
+            try:
+                status = self.manager.settings_manager.get_auth_status(provider)
+
+                response.content_type = 'application/json; charset=utf-8'
+                return status
+
+            except Exception as api_err:
+                logger.error(f"API Error in /api/providers/{provider}/auth/status: {str(api_err)}")
+                response.status = 500
+                return {'error': f'Internal server error: {str(api_err)}'}
+
+        @self.app.route('/api/providers/<provider>/credentials', method='POST')
+        def save_provider_credentials(provider):
+            """
+            Save credentials for a provider via API
+
+            Accepts JSON body with credentials:
+            - User/password: {"username": "...", "password": "...", "client_id": "..." (optional)}
+            - Client credentials: {"client_id": "...", "client_secret": "..."}
+
+            Example: POST /api/providers/joyn_de/credentials
+            Body: {"username": "user@example.com", "password": "secret123"}
+            """
+            try:
+                # Parse JSON body
+                try:
+                    credentials_data = request.json
+                except Exception as json_err:
+                    logger.error(f"Invalid JSON in request body: {json_err}")
+                    response.status = 400
+                    return {'error': 'Invalid JSON in request body'}
+
+                if not credentials_data:
+                    response.status = 400
+                    return {'error': 'Request body must contain credentials data'}
+
+                # Validate it's a dictionary
+                if not isinstance(credentials_data, dict):
+                    response.status = 400
+                    return {'error': 'Credentials data must be a JSON object'}
+
+                # Save credentials
+                success, message = self.manager.settings_manager.save_provider_credentials_from_api(
+                    provider, credentials_data
+                )
+
+                if success:
+                    response.status = 200
+                    response.content_type = 'application/json; charset=utf-8'
+                    return {
+                        'success': True,
+                        'provider': provider,
+                        'message': message
+                    }
+                else:
+                    # Determine appropriate status code
+                    if 'not registered' in message.lower():
+                        response.status = 404
+                    elif 'invalid' in message.lower() or 'validation failed' in message.lower():
+                        response.status = 400
+                    else:
+                        response.status = 500
+
+                    return {'error': message}
+
+            except Exception as api_err:
+                logger.error(f"API Error in POST /api/providers/{provider}/credentials: {str(api_err)}")
+                response.status = 500
+                return {'error': f'Internal server error: {str(api_err)}'}
+
+        @self.app.route('/api/providers/<provider>/credentials', method='DELETE')
+        def delete_provider_credentials(provider):
+            """
+            Delete credentials for a provider via API
+
+            Example: DELETE /api/providers/joyn_de/credentials
+            """
+            try:
+                success, message = self.manager.settings_manager.delete_provider_credentials_from_api(provider)
+
+                if success:
+                    response.status = 200
+                    response.content_type = 'application/json; charset=utf-8'
+                    return {
+                        'success': True,
+                        'provider': provider,
+                        'message': message
+                    }
+                else:
+                    # Determine appropriate status code
+                    if 'not registered' in message.lower():
+                        response.status = 404
+                    else:
+                        response.status = 500
+
+                    return {'error': message}
+
+            except Exception as api_err:
+                logger.error(f"API Error in DELETE /api/providers/{provider}/credentials: {str(api_err)}")
+                response.status = 500
+                return {'error': f'Internal server error: {str(api_err)}'}
+
+        @self.app.route('/api/providers/<provider>/proxy', method='POST')
+        def save_provider_proxy(provider):
+            """
+            Save proxy configuration for a provider via API
+
+            Accepts JSON body with proxy configuration:
+            Required: {"host": "proxy.example.com", "port": 8080}
+            Optional: {
+                "proxy_type": "http",  # http, https, socks4, socks5
+                "username": "proxyuser",
+                "password": "proxypass",
+                "timeout": 30,
+                "verify_ssl": true,
+                "scope": {
+                    "api_calls": true,
+                    "authentication": true,
+                    "manifests": true,
+                    "license": true,
+                    "all": true
+                }
+            }
+
+            Example: POST /api/providers/joyn_de/proxy
+            Body: {"host": "proxy.example.com", "port": 8080}
+            """
+            try:
+                # Parse JSON body
+                try:
+                    proxy_data = request.json
+                except Exception as json_err:
+                    logger.error(f"Invalid JSON in request body: {json_err}")
+                    response.status = 400
+                    return {'error': 'Invalid JSON in request body'}
+
+                if not proxy_data:
+                    response.status = 400
+                    return {'error': 'Request body must contain proxy configuration'}
+
+                # Validate it's a dictionary
+                if not isinstance(proxy_data, dict):
+                    response.status = 400
+                    return {'error': 'Proxy data must be a JSON object'}
+
+                # Save proxy configuration
+                success, message = self.manager.settings_manager.save_provider_proxy_from_api(
+                    provider, proxy_data
+                )
+
+                if success:
+                    response.status = 200
+                    response.content_type = 'application/json; charset=utf-8'
+                    return {
+                        'success': True,
+                        'provider': provider,
+                        'message': message
+                    }
+                else:
+                    # Determine appropriate status code
+                    if 'not registered' in message.lower():
+                        response.status = 404
+                    elif 'invalid' in message.lower() or 'validation failed' in message.lower():
+                        response.status = 400
+                    else:
+                        response.status = 500
+
+                    return {'error': message}
+
+            except Exception as api_err:
+                logger.error(f"API Error in POST /api/providers/{provider}/proxy: {str(api_err)}")
+                response.status = 500
+                return {'error': f'Internal server error: {str(api_err)}'}
+
+        @self.app.route('/api/providers/<provider>/proxy', method='DELETE')
+        def delete_provider_proxy(provider):
+            """
+            Delete proxy configuration for a provider via API
+
+            Example: DELETE /api/providers/joyn_de/proxy
+            """
+            try:
+                success, message = self.manager.settings_manager.delete_provider_proxy_from_api(provider)
+
+                if success:
+                    response.status = 200
+                    response.content_type = 'application/json; charset=utf-8'
+                    return {
+                        'success': True,
+                        'provider': provider,
+                        'message': message
+                    }
+                else:
+                    # Determine appropriate status code
+                    if 'not registered' in message.lower():
+                        response.status = 404
+                    else:
+                        response.status = 500
+
+                    return {'error': message}
+
+            except Exception as api_err:
+                logger.error(f"API Error in DELETE /api/providers/{provider}/proxy: {str(api_err)}")
+                response.status = 500
+                return {'error': f'Internal server error: {str(api_err)}'}
+
+
+def start_service(service_instance):
+    """Start the Bottle server"""
+    port = service_instance.server_port
     logger.info(f"Starting server on port {port}")
-    run(service.app, host='0.0.0.0', port=port, quiet=True, debug=True)
+
+    # Determine if we should run in debug mode
+    debug_mode = service_instance.env_manager.get_config('debug_mode', False)
+
+    run(service_instance.app, host='0.0.0.0', port=port, quiet=not debug_mode, debug=debug_mode)
 
 
-if __name__ == '__main__':
-    logger.info("Starting service...")
-
-    # Give Kodi time to initialize
-    import time
-
-    time.sleep(5)
+def run_kodi_service():
+    """Run service within Kodi addon context"""
+    logger.info("Starting Ultimate Backend service in Kodi mode")
 
     try:
+        import xbmc
+        import xbmcaddon
+    except ImportError:
+        logger.error("Kodi modules not available!")
+        print("ERROR: Cannot run in Kodi mode - xbmc/xbmcaddon not available")
+        return
+
+    # Give Kodi time to initialize
+    time.sleep(3)
+
+    try:
+        # Create service instance
+        service = UltimateService()
+
+        # Start service in background thread
         service_thread = threading.Thread(
-            target=run_service,
+            target=start_service,
+            args=(service,),
             name="UltimateBackendService"
         )
         service_thread.daemon = True
         service_thread.start()
 
+        # Monitor for Kodi shutdown
         monitor = xbmc.Monitor()
         while not monitor.abortRequested():
             if monitor.waitForAbort(5):
                 break
 
-        logger.info("Service stopped")
-    except Exception as startup_err:
-        logger.error(f"Failed to start - {str(startup_err)}")
+        logger.info("Service stopped (Kodi shutdown)")
+    except Exception as e:
+        logger.error(f"Failed to start Kodi service: {e}")
         raise
+
+
+def run_standalone_service(config_dir: str = None):
+    """Run service in standalone mode"""
+    logger.info("Starting Ultimate Backend service in standalone mode")
+
+    # Create service instance
+    service = UltimateService(config_dir=config_dir)
+
+    # Print startup information
+    print("=" * 60)
+    print("Ultimate Backend Streaming Service")
+    print("=" * 60)
+    print(f"Mode: Standalone")
+    print(f"Port: {service.server_port}")
+    print(f"Default Country: {service.default_country}")
+    print(f"Config Directory: {service.vfs.base_path}")
+    print(f"Log Directory: {service.env_manager.get_config('profile_path', 'N/A')}")
+    print("=" * 60)
+    print(f"API Endpoints:")
+    print(f"  http://localhost:{service.server_port}/api/providers")
+    print(f"  http://localhost:{service.server_port}/api/m3u")
+    print(f"  http://localhost:{service.server_port}/api/providers/<provider>/m3u")
+    print("=" * 60)
+    print("Press Ctrl+C to stop the service")
+    print("=" * 60)
+
+    try:
+        start_service(service)
+    except KeyboardInterrupt:
+        print("\nService stopped by user")
+    except Exception as e:
+        print(f"Error running service: {e}")
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Ultimate Backend Streaming Service')
+    parser.add_argument('--port', type=int, help='Server port (overrides config)')
+    parser.add_argument('--config-dir', help='Configuration directory')
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
+    parser.add_argument('--kodi', action='store_true', help='Force Kodi mode (requires Kodi modules)')
+    parser.add_argument('--standalone', action='store_true', help='Force standalone mode')
+
+    args = parser.parse_args()
+
+    # Get environment manager
+    env_manager = get_environment_manager()
+
+    # Apply CLI overrides
+    if args.port:
+        env_manager.set_config('server_port', args.port)
+        logger.info(f"Port overridden via CLI: {args.port}")
+
+    if args.debug:
+        env_manager.set_config('debug_mode', True)
+        logger.info("Debug mode enabled via CLI")
+
+    # Determine execution mode
+    if args.kodi:
+        logger.info("Kodi mode forced by CLI argument")
+        run_kodi_service()
+    elif args.standalone:
+        logger.info("Standalone mode forced by CLI argument")
+        run_standalone_service(config_dir=args.config_dir)
+    elif is_kodi_environment():
+        logger.info("Kodi environment detected, running in Kodi mode")
+        run_kodi_service()
+    else:
+        logger.info("Running in standalone mode (default)")
+        run_standalone_service(config_dir=args.config_dir)

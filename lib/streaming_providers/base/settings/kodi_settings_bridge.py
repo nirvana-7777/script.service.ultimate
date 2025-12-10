@@ -1,17 +1,12 @@
 # streaming_providers/base/settings/kodi_settings_bridge.py
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, Any
+import json
 import xml.etree.ElementTree as ElementTree
 
 from ..auth.credentials import BaseCredentials, UserPasswordCredentials, ClientCredentials
 from ..models.proxy_models import ProxyConfig
 from ..utils.logger import logger
-
-try:
-    import xbmcaddon
-
-    KODI_AVAILABLE = True
-except ImportError:
-    KODI_AVAILABLE = False
+from ..utils.environment import get_environment_manager, is_kodi_environment, get_vfs_instance
 
 
 class KodiSettingsBridge:
@@ -24,13 +19,19 @@ class KodiSettingsBridge:
         """Initialize Kodi settings bridge"""
         self.addon = None
         self.addon_id = addon_id
+        self._env_manager = get_environment_manager()
 
         # Initialize VFS with config directory support
-        from ..utils.vfs import VFS
-        self.vfs = VFS(config_dir=config_dir)
+        self.vfs = get_vfs_instance(config_dir=config_dir)
 
-        if KODI_AVAILABLE:
+        # Settings storage for standalone mode
+        self._standalone_settings: Dict[str, str] = {}
+        self._settings_file = "standalone_settings.json"
+        self._load_standalone_settings()
+
+        if is_kodi_environment():
             try:
+                import xbmcaddon
                 if addon_id:
                     self.addon = xbmcaddon.Addon(addon_id)
                 else:
@@ -43,14 +44,72 @@ class KodiSettingsBridge:
 
     def is_kodi_environment(self) -> bool:
         """Check if currently running in Kodi environment"""
-        return KODI_AVAILABLE and self.addon is not None
+        return is_kodi_environment() and self.addon is not None
+
+    def _load_standalone_settings(self) -> None:
+        """Load settings from file in standalone mode"""
+        if not is_kodi_environment() and self.vfs.exists(self._settings_file):
+            try:
+                content = self.vfs.read_text(self._settings_file)
+                if content:
+                    self._standalone_settings = json.loads(content)
+                    logger.debug(f"Loaded {len(self._standalone_settings)} standalone settings")
+            except Exception as e:
+                logger.error(f"Error loading standalone settings: {e}")
+
+    def _save_standalone_settings(self) -> None:
+        """Save settings to file in standalone mode"""
+        if not is_kodi_environment():
+            try:
+                self.vfs.write_json(self._settings_file, self._standalone_settings)
+                logger.debug(f"Saved {len(self._standalone_settings)} standalone settings")
+            except Exception as e:
+                logger.error(f"Error saving standalone settings: {e}")
+
+    def get_setting(self, setting_id: str, default: str = "") -> str:
+        """Get setting value, works in both Kodi and standalone mode"""
+        if self.is_kodi_environment():
+            try:
+                return self.addon.getSetting(setting_id) or default
+            except Exception as e:
+                logger.error(f"Error getting setting {setting_id}: {e}")
+                return default
+        else:
+            # Standalone mode: use local storage
+            return self._standalone_settings.get(setting_id, default)
+
+    def set_setting(self, setting_id: str, value: str) -> bool:
+        """Set setting value, works in both Kodi and standalone mode"""
+        if self.is_kodi_environment():
+            try:
+                self.addon.setSetting(setting_id, value)
+                logger.debug(f"Set Kodi setting {setting_id}")
+                return True
+            except Exception as e:
+                logger.error(f"Error setting {setting_id}: {e}")
+                return False
+        else:
+            # Standalone mode: update local storage
+            self._standalone_settings[setting_id] = value
+            self._save_standalone_settings()
+            logger.debug(f"Set standalone setting {setting_id}")
+            return True
 
     def get_addon_info(self) -> Dict[str, str]:
-        """Get information about current Kodi addon (ID, version, etc.)"""
+        """Get information about current Kodi addon or environment"""
         if not self.is_kodi_environment():
-            return {"error": "Not in Kodi environment"}
+            # Return environment info in standalone mode
+            return {
+                'environment': 'standalone',
+                'id': self._env_manager.get_config('addon_id', 'standalone'),
+                'name': self._env_manager.get_config('addon_name', 'Ultimate Backend'),
+                'version': self._env_manager.get_config('addon_version', '1.0.0'),
+                'config_dir': self.vfs.base_path,
+                'profile_path': self._env_manager.get_config('profile_path', ''),
+            }
 
         return {
+            'environment': 'kodi',
             'id': self.addon.getAddonInfo('id'),
             'name': self.addon.getAddonInfo('name'),
             'version': self.addon.getAddonInfo('version'),
@@ -68,16 +127,14 @@ class KodiSettingsBridge:
             List of all setting IDs found in settings.xml
         """
         if not self.is_kodi_environment():
-            return []
+            # In standalone mode, return keys from standalone settings
+            return list(self._standalone_settings.keys())
 
         try:
             # Read settings.xml from VFS base path (addon profile directory)
             xml_content = self.vfs.read_text('settings.xml')
             if not xml_content:
                 logger.warning("settings.xml not found or empty")
-                return []
-            if not xml_content:
-                logger.warning("settings.xml is empty")
                 return []
 
             root = ElementTree.fromstring(xml_content)
@@ -141,16 +198,15 @@ class KodiSettingsBridge:
 
     def discover_all_providers(self) -> Dict[str, List[str]]:
         """
-        Scan all Kodi settings and discover providers with their countries dynamically.
+        Scan all settings and discover providers with their countries dynamically.
+
+        Works in both Kodi and standalone mode.
 
         Returns:
             Dict mapping provider names to list of countries.
             Empty list means provider without country.
             Example: {'joyn': ['de', 'at'], 'rtlplus': ['de'], 'zattoo': []}
         """
-        if not self.is_kodi_environment():
-            return {}
-
         discovered: Dict[str, Set[Optional[str]]] = {}
 
         # Get all setting IDs
@@ -218,7 +274,7 @@ class KodiSettingsBridge:
             available_countries: List of country codes to check
 
         Returns:
-            List of country codes that have credentials in Kodi
+            List of country codes that have credentials
         """
         discovered_countries = self.detect_countries_for_provider(provider)
         return [c for c in available_countries if c in discovered_countries]
@@ -227,23 +283,21 @@ class KodiSettingsBridge:
 
     def read_credentials_from_kodi(self, provider: str, country: Optional[str] = None) -> Optional[BaseCredentials]:
         """
-        Read authentication credentials from Kodi settings for a provider.
+        Read authentication credentials from settings for a provider.
         Uses convention: {provider}_{country}_username, {provider}_{country}_password, etc.
         If country is None, tries without country suffix for backward compatibility.
+        Works in both Kodi and standalone mode.
         """
-        if not self.is_kodi_environment():
-            return None
-
         country_suffix = f"_{country}" if country else ""
 
         try:
-            # Try convention-based setting names
-            username = self.addon.getSetting(f'{provider}{country_suffix}_username')
-            password = self.addon.getSetting(f'{provider}{country_suffix}_password')
-            client_id = self.addon.getSetting(f'{provider}{country_suffix}_client_id')
-            client_secret = self.addon.getSetting(f'{provider}{country_suffix}_client_secret')
+            # Use unified get_setting method
+            username = self.get_setting(f'{provider}{country_suffix}_username')
+            password = self.get_setting(f'{provider}{country_suffix}_password')
+            client_id = self.get_setting(f'{provider}{country_suffix}_client_id')
+            client_secret = self.get_setting(f'{provider}{country_suffix}_client_secret')
 
-            logger.debug(f"Kodi settings for {provider}{country_suffix}:")
+            logger.debug(f"Settings for {provider}{country_suffix}:")
             logger.debug(f"  username: '{username}' (empty={not username})")
             logger.debug(f"  password: {'***' if password else '(empty)'}")
             logger.debug(f"  client_id: '{client_id}' (empty={not client_id})")
@@ -251,58 +305,55 @@ class KodiSettingsBridge:
 
             # Determine credential type based on available values
             if username and password:
-                logger.info(f"Found username/password credentials for {provider}{country_suffix} in Kodi")
+                logger.info(f"Found username/password credentials for {provider}{country_suffix}")
                 return UserPasswordCredentials(
                     username=username.strip(),
                     password=password.strip(),
                     client_id=client_id.strip() if client_id else None
                 )
             elif client_id and client_secret:
-                logger.info(f"Found client credentials for {provider}{country_suffix} in Kodi")
+                logger.info(f"Found client credentials for {provider}{country_suffix}")
                 return ClientCredentials(
                     client_id=client_id.strip(),
                     client_secret=client_secret.strip()
                 )
 
-            logger.debug(f"No valid credentials found in Kodi for {provider}{country_suffix}")
+            logger.debug(f"No valid credentials found for {provider}{country_suffix}")
             return None
 
         except Exception as e:
-            logger.error(f"Error reading credentials from Kodi for {provider}: {e}")
+            logger.error(f"Error reading credentials for {provider}: {e}")
             return None
 
     def write_credentials_to_kodi(self, provider: str, credentials: BaseCredentials,
                                   country: Optional[str] = None) -> bool:
-        """Write authentication credentials to Kodi settings"""
-        if not self.is_kodi_environment():
-            return False
-
+        """Write authentication credentials to settings"""
         country_suffix = f"_{country}" if country else ""
 
         try:
             if isinstance(credentials, UserPasswordCredentials):
-                self.addon.setSetting(f'{provider}{country_suffix}_username', credentials.username)
-                self.addon.setSetting(f'{provider}{country_suffix}_password', credentials.password)
+                self.set_setting(f'{provider}{country_suffix}_username', credentials.username)
+                self.set_setting(f'{provider}{country_suffix}_password', credentials.password)
                 if credentials.client_id:
-                    self.addon.setSetting(f'{provider}{country_suffix}_client_id', credentials.client_id)
-                logger.info(f"Wrote username/password credentials to Kodi for {provider}{country_suffix}")
+                    self.set_setting(f'{provider}{country_suffix}_client_id', credentials.client_id)
+                logger.info(f"Wrote username/password credentials for {provider}{country_suffix}")
                 return True
 
             elif isinstance(credentials, ClientCredentials):
-                self.addon.setSetting(f'{provider}{country_suffix}_client_id', credentials.client_id)
-                self.addon.setSetting(f'{provider}{country_suffix}_client_secret', credentials.client_secret)
-                logger.info(f"Wrote client credentials to Kodi for {provider}{country_suffix}")
+                self.set_setting(f'{provider}{country_suffix}_client_id', credentials.client_id)
+                self.set_setting(f'{provider}{country_suffix}_client_secret', credentials.client_secret)
+                logger.info(f"Wrote client credentials for {provider}{country_suffix}")
                 return True
 
             return False
 
         except Exception as e:
-            logger.error(f"Error writing credentials to Kodi for {provider}: {e}")
+            logger.error(f"Error writing credentials for {provider}: {e}")
             return False
 
     def sync_credentials_to_file(self, provider: str, credential_manager,
                                  country: Optional[str] = None) -> bool:
-        """Sync provider credentials from Kodi settings to credential file"""
+        """Sync provider credentials from settings to credential file"""
         credentials = self.read_credentials_from_kodi(provider, country)
         if not credentials:
             logger.debug(f"No credentials to sync for {provider}")
@@ -316,32 +367,29 @@ class KodiSettingsBridge:
 
         success = credential_manager.save_credentials(provider, credentials, country)
         if success:
-            logger.info(f"Synced credentials from Kodi to file for {provider}")
+            logger.info(f"Synced credentials from settings to file for {provider}")
         return success
 
     # ============= Proxy Operations =============
 
     def read_proxy_config_from_kodi(self, provider: str, country: Optional[str] = None) -> Optional[ProxyConfig]:
         """
-        Read proxy configuration from Kodi settings for a provider.
+        Read proxy configuration from settings for a provider.
         Uses convention: {provider}_{country}_proxy_enabled, {provider}_{country}_proxy_host, etc.
         """
-        if not self.is_kodi_environment():
-            return None
-
         country_suffix = f"_{country}" if country else ""
 
         try:
             # Check if proxy is enabled
-            proxy_enabled = self.addon.getSetting(f'{provider}{country_suffix}_proxy_enabled')
+            proxy_enabled = self.get_setting(f'{provider}{country_suffix}_proxy_enabled')
             logger.debug(f"Proxy enabled setting for {provider}{country_suffix}: '{proxy_enabled}'")
 
             if not proxy_enabled or proxy_enabled.lower() not in ['true', '1', 'yes']:
                 logger.debug(f"Proxy not enabled for {provider}{country_suffix}")
                 return None
 
-            proxy_host = self.addon.getSetting(f'{provider}{country_suffix}_proxy_host')
-            proxy_port_str = self.addon.getSetting(f'{provider}{country_suffix}_proxy_port')
+            proxy_host = self.get_setting(f'{provider}{country_suffix}_proxy_host')
+            proxy_port_str = self.get_setting(f'{provider}{country_suffix}_proxy_port')
 
             logger.debug(f"Proxy settings for {provider}{country_suffix}:")
             logger.debug(f"  host: '{proxy_host}'")
@@ -360,36 +408,33 @@ class KodiSettingsBridge:
             # Create proxy config
             proxy_config = ProxyConfig(host=proxy_host.strip(), port=proxy_port)
 
-            logger.info(f"Found proxy config for {provider}{country_suffix} in Kodi: {proxy_host}:{proxy_port}")
+            logger.info(f"Found proxy config for {provider}{country_suffix}: {proxy_host}:{proxy_port}")
             return proxy_config
 
         except Exception as e:
-            logger.error(f"Error reading proxy config from Kodi for {provider}: {e}")
+            logger.error(f"Error reading proxy config for {provider}: {e}")
             return None
 
     def write_proxy_config_to_kodi(self, provider: str, proxy_config: ProxyConfig,
                                    country: Optional[str] = None) -> bool:
-        """Write proxy configuration to Kodi settings"""
-        if not self.is_kodi_environment():
-            return False
-
+        """Write proxy configuration to settings"""
         country_suffix = f"_{country}" if country else ""
 
         try:
-            self.addon.setSetting(f'{provider}{country_suffix}_proxy_enabled', 'true')
-            self.addon.setSetting(f'{provider}{country_suffix}_proxy_host', proxy_config.host)
-            self.addon.setSetting(f'{provider}{country_suffix}_proxy_port', str(proxy_config.port))
+            self.set_setting(f'{provider}{country_suffix}_proxy_enabled', 'true')
+            self.set_setting(f'{provider}{country_suffix}_proxy_host', proxy_config.host)
+            self.set_setting(f'{provider}{country_suffix}_proxy_port', str(proxy_config.port))
 
-            logger.info(f"Wrote proxy config to Kodi for {provider}{country_suffix}")
+            logger.info(f"Wrote proxy config for {provider}{country_suffix}")
             return True
 
         except Exception as e:
-            logger.error(f"Error writing proxy config to Kodi for {provider}: {e}")
+            logger.error(f"Error writing proxy config for {provider}: {e}")
             return False
 
     def sync_proxy_config_to_file(self, provider: str, proxy_manager,
                                   country: Optional[str] = None) -> bool:
-        """Sync provider proxy config from Kodi settings to proxy config file"""
+        """Sync provider proxy config from settings to proxy config file"""
         proxy_config = self.read_proxy_config_from_kodi(provider, country)
         if not proxy_config:
             logger.debug(f"No proxy config to sync for {provider}")
@@ -403,12 +448,12 @@ class KodiSettingsBridge:
 
         success = proxy_manager.set_proxy_config(provider, proxy_config, country)
         if success:
-            logger.info(f"Synced proxy config from Kodi to file for {provider}")
+            logger.info(f"Synced proxy config from settings to file for {provider}")
         return success
 
     def read_ip_address_from_kodi(self, provider: str, country: Optional[str] = None) -> Optional[str]:
         """
-        Read IP address from Kodi settings for a provider.
+        Read IP address from settings for a provider.
         Uses convention: {provider}_{country}_ipaddress or {provider}_ipaddress
 
         Args:
@@ -418,13 +463,10 @@ class KodiSettingsBridge:
         Returns:
             Configured IP address or None if not set
         """
-        if not self.is_kodi_environment():
-            return None
-
         country_suffix = f"_{country}" if country else ""
 
         try:
-            ip_address = self.addon.getSetting(f'{provider}{country_suffix}_ipaddress')
+            ip_address = self.get_setting(f'{provider}{country_suffix}_ipaddress')
 
             logger.debug(f"IP address setting for {provider}{country_suffix}: '{ip_address}'")
 
@@ -436,7 +478,7 @@ class KodiSettingsBridge:
             return None
 
         except Exception as e:
-            logger.error(f"Error reading IP address from Kodi for {provider}: {e}")
+            logger.error(f"Error reading IP address for {provider}: {e}")
             return None
 
     # ============= Comparison Helpers =============
@@ -491,3 +533,21 @@ class KodiSettingsBridge:
             return False
 
         return True
+
+    def debug_info(self) -> Dict[str, Any]:
+        """Get debug information about the settings bridge"""
+        info = {
+            'environment': 'kodi' if self.is_kodi_environment() else 'standalone',
+            'addon_info': self.get_addon_info(),
+            'has_addon': self.addon is not None,
+            'standalone_settings_count': len(self._standalone_settings),
+            'vfs_base_path': self.vfs.base_path,
+        }
+
+        if self.is_kodi_environment():
+            info['addon_id'] = self.addon_id
+            info['kodi_available'] = True
+        else:
+            info['kodi_available'] = False
+
+        return info

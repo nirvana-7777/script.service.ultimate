@@ -6,23 +6,13 @@ Provides transparent file operations for both Kodi and regular Python environmen
 
 import json
 import os
-from typing import Optional, Any, List
-from pathlib import Path
+from typing import Optional, Any, List, Dict, Tuple
+
+# Import centralized environment manager
+from .environment import get_environment_manager, is_kodi_environment
 
 # Import centralized logger
 from .logger import logger
-
-# Kodi imports - with fallback for non-Kodi environments
-try:
-    import xbmc
-    import xbmcvfs
-    import xbmcaddon
-
-    KODI_AVAILABLE = True
-    logger.info("Kodi VFS environment detected")
-except ImportError:
-    KODI_AVAILABLE = False
-    logger.info("Standard filesystem environment detected")
 
 
 class VFS:
@@ -44,6 +34,8 @@ class VFS:
         self.addon_subdir = addon_subdir
         self._base_path = None
         self._explicit_config_dir = config_dir
+        self._env_manager = get_environment_manager()
+
         logger.debug(f"VFS initialized with config_dir={config_dir}, addon_subdir={addon_subdir}")
 
     @property
@@ -54,31 +46,20 @@ class VFS:
                 # Use explicitly provided config directory
                 self._base_path = self._explicit_config_dir
                 logger.info(f"Using explicit config directory: {self._base_path}")
-            elif KODI_AVAILABLE:
-                # Use Kodi's addon data directory
-                try:
-                    addon = xbmcaddon.Addon()
-                    # Use xbmcvfs.translatePath instead of xbmc.translatePath for Kodi 19+
-                    addon_profile = xbmcvfs.translatePath(addon.getAddonInfo('profile'))
-                    if self.addon_subdir:
-                        self._base_path = os.path.join(addon_profile, self.addon_subdir).replace('\\', '/')
-                    else:
-                        self._base_path = addon_profile.replace('\\', '/')
-                    logger.info(f"Kodi base path: {self._base_path}")
-                except Exception as e:
-                    logger.error(f"Error getting Kodi addon path: {e}")
-                    # Fallback to temp directory
-                    try:
-                        self._base_path = xbmcvfs.translatePath("special://temp/streaming_providers")
-                    except:
-                        self._base_path = "/tmp/streaming_providers"
             else:
-                # Use standard filesystem
+                # Use profile path from environment manager
+                profile_path = self._env_manager.get_config('profile_path', '')
                 if self.addon_subdir:
-                    self._base_path = str(Path.home() / '.streaming_providers' / self.addon_subdir)
+                    if is_kodi_environment():
+                        # Kodi uses forward slashes
+                        self._base_path = os.path.join(profile_path, self.addon_subdir).replace('\\', '/')
+                    else:
+                        # Standard filesystem
+                        self._base_path = os.path.join(profile_path, self.addon_subdir)
                 else:
-                    self._base_path = str(Path.home() / '.streaming_providers')
-                logger.info(f"Standard filesystem base path: {self._base_path}")
+                    self._base_path = profile_path
+
+                logger.info(f"Base path from environment: {self._base_path}")
 
             # Ensure base directory exists
             self.mkdirs('')
@@ -95,7 +76,7 @@ class VFS:
         Returns:
             Joined path string
         """
-        if KODI_AVAILABLE:
+        if is_kodi_environment():
             # Kodi VFS uses forward slashes
             path = self.base_path
             for part in parts:
@@ -103,12 +84,8 @@ class VFS:
                     path = path.rstrip('/') + '/' + str(part).lstrip('/')
             return path
         else:
-            # Use pathlib for standard filesystem
-            path = Path(self.base_path)
-            for part in parts:
-                if part:
-                    path = path / str(part)
-            return str(path)
+            # Use os.path.join for standard filesystem
+            return os.path.join(self.base_path, *[str(p) for p in parts if p])
 
     def exists(self, filepath: str) -> bool:
         """
@@ -124,10 +101,12 @@ class VFS:
             if not os.path.isabs(filepath):
                 filepath = self.join_path(filepath)
 
-            if KODI_AVAILABLE:
+            if is_kodi_environment():
+                import xbmcvfs
                 return xbmcvfs.exists(filepath)
             else:
-                return Path(filepath).exists()
+                import pathlib
+                return pathlib.Path(filepath).exists()
         except Exception as e:
             logger.error(f"Error checking if {filepath} exists: {e}")
             return False
@@ -146,14 +125,16 @@ class VFS:
             if not os.path.isabs(dirpath):
                 dirpath = self.join_path(dirpath)
 
-            if KODI_AVAILABLE:
+            if is_kodi_environment():
+                import xbmcvfs
                 if not xbmcvfs.exists(dirpath):
                     result = xbmcvfs.mkdirs(dirpath)
                     logger.debug(f"Kodi mkdirs {dirpath}: {result}")
                     return result
                 return True
             else:
-                Path(dirpath).mkdir(parents=True, exist_ok=True)
+                import pathlib
+                pathlib.Path(dirpath).mkdir(parents=True, exist_ok=True)
                 return True
         except Exception as e:
             logger.error(f"Error creating directory {dirpath}: {e}")
@@ -174,14 +155,16 @@ class VFS:
             if not os.path.isabs(filepath):
                 filepath = self.join_path(filepath)
 
-            if KODI_AVAILABLE:
+            if is_kodi_environment():
+                import xbmcvfs
                 if not xbmcvfs.exists(filepath):
                     return None
                 with xbmcvfs.File(filepath, 'r') as f:
                     content = f.read()
                     return content if content else None
             else:
-                path = Path(filepath)
+                import pathlib
+                path = pathlib.Path(filepath)
                 if not path.exists():
                     return None
                 with open(path, 'r', encoding=encoding) as f:
@@ -206,7 +189,8 @@ class VFS:
             if not os.path.isabs(filepath):
                 filepath = self.join_path(filepath)
 
-            if KODI_AVAILABLE:
+            if is_kodi_environment():
+                import xbmcvfs
                 # Ensure directory exists
                 dir_path = '/'.join(filepath.split('/')[:-1])
                 if dir_path and not xbmcvfs.exists(dir_path):
@@ -217,7 +201,8 @@ class VFS:
                     logger.debug(f"Kodi file write: {bytes_written} bytes to {filepath}")
                     return bytes_written > 0
             else:
-                path = Path(filepath)
+                import pathlib
+                path = pathlib.Path(filepath)
                 path.parent.mkdir(parents=True, exist_ok=True)
                 with open(path, 'w', encoding=encoding) as f:
                     f.write(content)
@@ -240,12 +225,14 @@ class VFS:
             if not os.path.isabs(filepath):
                 filepath = self.join_path(filepath)
 
-            if KODI_AVAILABLE:
+            if is_kodi_environment():
+                import xbmcvfs
                 if xbmcvfs.exists(filepath):
                     return xbmcvfs.delete(filepath)
                 return True
             else:
-                path = Path(filepath)
+                import pathlib
+                path = pathlib.Path(filepath)
                 if path.exists():
                     path.unlink()
                 return True
@@ -311,7 +298,9 @@ class VFS:
             elif not os.path.isabs(dirpath):
                 dirpath = self.join_path(dirpath)
 
-            if KODI_AVAILABLE:
+            if is_kodi_environment():
+                import xbmcvfs
+                import fnmatch
                 if not xbmcvfs.exists(dirpath):
                     return []
 
@@ -321,10 +310,10 @@ class VFS:
                     return files
                 else:
                     # Simple pattern matching
-                    import fnmatch
                     return [f for f in files if fnmatch.fnmatch(f, pattern)]
             else:
-                path = Path(dirpath)
+                import pathlib
+                path = pathlib.Path(dirpath)
                 if not path.exists() or not path.is_dir():
                     return []
 
@@ -350,13 +339,15 @@ class VFS:
             if not os.path.isabs(filepath):
                 filepath = self.join_path(filepath)
 
-            if KODI_AVAILABLE:
+            if is_kodi_environment():
+                import xbmcvfs
                 if not xbmcvfs.exists(filepath):
                     return None
                 stat = xbmcvfs.Stat(filepath)
                 return stat.st_size()
             else:
-                path = Path(filepath)
+                import pathlib
+                path = pathlib.Path(filepath)
                 if not path.exists():
                     return None
                 return path.stat().st_size
@@ -392,15 +383,18 @@ class VFS:
             Dictionary with debug information
         """
         info = {
-            'kodi_available': KODI_AVAILABLE,
+            'kodi_available': is_kodi_environment(),
             'base_path': self.base_path,
             'base_path_exists': self.exists(''),
             'explicit_config_dir': self._explicit_config_dir,
-            'addon_subdir': self.addon_subdir
+            'addon_subdir': self.addon_subdir,
+            'environment': self._env_manager.get_environment()
         }
 
-        if KODI_AVAILABLE:
+        if is_kodi_environment():
             try:
+                import xbmcaddon
+                import xbmc
                 addon = xbmcaddon.Addon()
                 info.update({
                     'addon_id': addon.getAddonInfo('id'),
@@ -413,13 +407,15 @@ class VFS:
         return info
 
 
-# Convenience functions for global VFS instance
-_global_vfs = None
+# Cache for VFS instances with different configurations
+_vfs_cache: Dict[Tuple[Optional[str], str], 'VFS'] = {}
 
 
-def get_vfs(config_dir: Optional[str] = None, addon_subdir: str = "") -> VFS:
+def get_vfs(config_dir: Optional[str] = None, addon_subdir: str = "") -> 'VFS':
     """
-    Get global VFS instance
+    Get VFS instance for specific configuration
+
+    Uses a cache to avoid creating multiple instances with same configuration
 
     Args:
         config_dir: Optional explicit config directory
@@ -428,49 +424,72 @@ def get_vfs(config_dir: Optional[str] = None, addon_subdir: str = "") -> VFS:
     Returns:
         VFS instance
     """
+    global _vfs_cache
+
+    cache_key = (config_dir, addon_subdir)
+
+    if cache_key not in _vfs_cache:
+        _vfs_cache[cache_key] = VFS(config_dir, addon_subdir)
+
+    return _vfs_cache[cache_key]
+
+
+# For backward compatibility with existing code
+_global_vfs = None
+
+
+def get_global_vfs(config_dir: Optional[str] = None, addon_subdir: str = "") -> 'VFS':
+    """
+    Get global VFS instance (for backward compatibility)
+
+    Note: Consider using get_vfs() for new code
+    """
     global _global_vfs
-    if _global_vfs is None or _global_vfs._explicit_config_dir != config_dir or _global_vfs.addon_subdir != addon_subdir:
-        _global_vfs = VFS(config_dir, addon_subdir)
-    return _global_vfs
+    vfs = get_vfs(config_dir, addon_subdir)
+    _global_vfs = vfs  # Keep reference for backward compatibility
+    return vfs
 
 
-# Convenience functions that use global VFS
-def exists(filepath: str, config_dir: Optional[str] = None) -> bool:
+# Convenience functions that use VFS cache
+def exists(filepath: str, config_dir: Optional[str] = None, addon_subdir: str = "") -> bool:
     """Check if file exists"""
-    return get_vfs(config_dir).exists(filepath)
+    return get_vfs(config_dir, addon_subdir).exists(filepath)
 
 
-def mkdirs(dirpath: str, config_dir: Optional[str] = None) -> bool:
+def mkdirs(dirpath: str, config_dir: Optional[str] = None, addon_subdir: str = "") -> bool:
     """Create directories"""
-    return get_vfs(config_dir).mkdirs(dirpath)
+    return get_vfs(config_dir, addon_subdir).mkdirs(dirpath)
 
 
-def read_text(filepath: str, encoding: str = 'utf-8', config_dir: Optional[str] = None) -> Optional[str]:
+def read_text(filepath: str, encoding: str = 'utf-8', config_dir: Optional[str] = None, addon_subdir: str = "") -> \
+Optional[str]:
     """Read text file"""
-    return get_vfs(config_dir).read_text(filepath, encoding)
+    return get_vfs(config_dir, addon_subdir).read_text(filepath, encoding)
 
 
-def write_text(filepath: str, content: str, encoding: str = 'utf-8', config_dir: Optional[str] = None) -> bool:
+def write_text(filepath: str, content: str, encoding: str = 'utf-8', config_dir: Optional[str] = None,
+               addon_subdir: str = "") -> bool:
     """Write text file"""
-    return get_vfs(config_dir).write_text(filepath, content, encoding)
+    return get_vfs(config_dir, addon_subdir).write_text(filepath, content, encoding)
 
 
-def read_json(filepath: str, config_dir: Optional[str] = None) -> Optional[dict]:
+def read_json(filepath: str, config_dir: Optional[str] = None, addon_subdir: str = "") -> Optional[dict]:
     """Read JSON file"""
-    return get_vfs(config_dir).read_json(filepath)
+    return get_vfs(config_dir, addon_subdir).read_json(filepath)
 
 
-def write_json(filepath: str, data: Any, indent: int = 2, config_dir: Optional[str] = None) -> bool:
+def write_json(filepath: str, data: Any, indent: int = 2, config_dir: Optional[str] = None,
+               addon_subdir: str = "") -> bool:
     """Write JSON file"""
-    return get_vfs(config_dir).write_json(filepath, data, indent)
+    return get_vfs(config_dir, addon_subdir).write_json(filepath, data, indent)
 
 
-def delete(filepath: str, config_dir: Optional[str] = None) -> bool:
+def delete(filepath: str, config_dir: Optional[str] = None, addon_subdir: str = "") -> bool:
     """Delete file"""
-    return get_vfs(config_dir).delete(filepath)
+    return get_vfs(config_dir, addon_subdir).delete(filepath)
 
 
-def join_path(*parts, config_dir: Optional[str] = None) -> str:
+def join_path(*parts, config_dir: Optional[str] = None, addon_subdir: str = "") -> str:
     """Join path components"""
-    vfs = get_vfs(config_dir)
+    vfs = get_vfs(config_dir, addon_subdir)
     return vfs.join_path(*parts)
