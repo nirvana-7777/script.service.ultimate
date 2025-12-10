@@ -14,7 +14,7 @@ ENV PYTHONUNBUFFERED=1 \
     ULTIMATE_PORT=7777 \
     ULTIMATE_COUNTRY=DE \
     ULTIMATE_DEBUG=false \
-    PYTHONPATH=${APP_HOME}/lib:$PYTHONPATH
+    PYTHONPATH=${APP_HOME}:${PYTHONPATH}
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -48,6 +48,21 @@ RUN groupadd -g ${GROUP_ID} ${APP_USER} && \
 # Copy application code
 COPY --chown=${USER_ID}:${GROUP_ID} . .
 
+# Debug: Show Python path and test import
+RUN echo "Testing imports..." && \
+    python3 -c "import sys; print('Python path:', sys.path)" && \
+    python3 -c "import sys; sys.path.insert(0, '/app/lib'); \
+    try: \
+        import streaming_providers; \
+        print('✓ streaming_providers import successful'); \
+    except ImportError as e: \
+        print('✗ streaming_providers import failed:', e); \
+        print('Looking for module...'); \
+        import os; \
+        print('lib exists:', os.path.exists('/app/lib')); \
+        print('lib/streaming_providers exists:', os.path.exists('/app/lib/streaming_providers')); \
+        print('lib/streaming_providers/__init__.py exists:', os.path.exists('/app/lib/streaming_providers/__init__.py'));"
+
 # Create directories
 RUN mkdir -p /config /logs /cache && \
     chown -R ${USER_ID}:${GROUP_ID} /config /logs /cache
@@ -71,6 +86,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
 LABEL maintainer="nirvana-7777" \
       description="Ultimate Backend Streaming Service"
 
-# Entrypoint
-ENTRYPOINT ["python", "/app/service.py"]
+# Entrypoint with modified Python path
+ENTRYPOINT ["python", "-c", "import sys; sys.path.insert(0, '/app/lib'); exec(open('/app/service.py').read())"]
 CMD ["--standalone", "--config-dir", "/config"]
