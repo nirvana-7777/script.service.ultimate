@@ -28,8 +28,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+# lib/          # <-- REMOVED THIS LINE
+lib64/          # Keep this - it's for 64-bit Python builds
 parts/
 sdist/
 var/
