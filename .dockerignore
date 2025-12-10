@@ -1,17 +1,20 @@
 # Git
-.git
+.git/
 .gitignore
 .gitattributes
+.gitmodules
 
 # IDE
-.vscode
-.idea
+.vscode/
+.idea/
 *.swp
 *.swo
+*~
 
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # Python
 __pycache__/
@@ -19,23 +22,66 @@ __pycache__/
 *$py.class
 *.so
 .Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
 .env
 .venv
+env/
 venv/
 ENV/
-env/
+env.bak/
+venv.bak/
+
+# Test and coverage
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
 
 # Logs
 logs/
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
 
-# Test and coverage
-.coverage
-htmlcov/
-.pytest_cache/
-.tox/
+# Kodi addon specific
+resources/settings.xml~
+resources/language/*/strings.xml~
+addon.xml~
 
-# Distribution
-dist/
-build/
-*.egg-info/
+# Docker
+docker-compose.override.yml
+.env
+*.env.local
+
+# Temporary files
+tmp/
+temp/

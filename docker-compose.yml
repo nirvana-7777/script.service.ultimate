@@ -2,7 +2,12 @@ version: '3.8'
 
 services:
   ultimate-backend:
-    build: .
+    build:
+      context: .
+      args:
+        - USER_ID=1000
+        - GROUP_ID=1000
+    image: nirvana7777/ultimate-backend:latest
     container_name: ultimate-backend
     restart: unless-stopped
     ports:
@@ -10,8 +15,8 @@ services:
     environment:
       - ULTIMATE_PORT=7777
       - ULTIMATE_COUNTRY=DE
-      - TZ=Europe/Berlin
-      - DEBUG_MODE=true
+      - ULTIMATE_DEBUG=false
+      - TZ=${TZ:-Europe/Berlin}
     volumes:
       - ./config:/config
       - ./logs:/logs
@@ -19,10 +24,16 @@ services:
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:7777/api/providers"]
       interval: 30s
-      timeout: 3s
+      timeout: 10s
       retries: 3
-      start_period: 5s
+      start_period: 10s
+    networks:
+      - ultimate-network
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.ultimate.rule=Host(`ultimate.local`)"
       - "traefik.http.services.ultimate.loadbalancer.server.port=7777"
+
+networks:
+  ultimate-network:
+    driver: bridge
