@@ -1,0 +1,12 @@
+bottle>=0.12.25
+requests>=2.31.0
+lxml>=4.9.3
+defusedxml>=0.7.1
+m3u8>=4.0.0
+iso8601>=1.1.0
+pycountry>=23.12.11
+python-dateutil>=2.8.2
+urllib3>=2.0.7
+chardet>=5.2.0
+pycryptodome>=3.19.0
+cryptography>=41.0.0
