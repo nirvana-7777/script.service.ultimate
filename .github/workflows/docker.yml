@@ -55,7 +55,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: nirvana7777/ultimate-backend
+          images: nirvana777/ultimate-backend
           tags: |
             type=ref,event=branch
             type=ref,event=tag
