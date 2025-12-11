@@ -541,6 +541,23 @@ class UltimateService:
             response.content_type = 'application/json'
             return json.dumps({'error': f'Failed to fetch manifest: {str(fetch_err)}'})
 
+    @staticmethod
+    def _get_settings_manager():
+        """Simple helper to get SettingsManager"""
+        try:
+            from streaming_providers.base.settings.settings_manager import SettingsManager
+            return SettingsManager()
+        except ImportError:
+            # Try alternative path
+            try:
+                from base.settings.settings_manager import SettingsManager
+                return SettingsManager()
+            except ImportError as e:
+                logger.error(f"Cannot import SettingsManager: {e}")
+                # Re-raise with a clearer message
+                raise ImportError(
+                    f"SettingsManager not available. Ensure streaming_providers module is installed. Error: {e}")
+
     def setup_routes(self):
         @self.app.route('/api/providers')
         def list_providers():
@@ -556,12 +573,18 @@ class UltimateService:
                         provider_label = getattr(provider_instance, 'provider_label', provider_name)
                         country = getattr(provider_instance, 'country', default_country)
                         provider_logo = getattr(provider_instance, 'provider_logo', '')
+                        requires_user_credentials = getattr(
+                            provider_instance,
+                            'requires_user_credentials',
+                            True  # Default to True if property doesn't exist (for backward compatibility)
+                        )
 
                         providers_details.append({
                             'name': provider_name,
                             'label': provider_label,
                             'logo': provider_logo,
-                            'country': country
+                            'country': country,
+                            'requires_user_credentials': requires_user_credentials
                         })
 
                 return {
@@ -1201,7 +1224,8 @@ class UltimateService:
             Example: GET /api/providers/joyn_de/auth/status
             """
             try:
-                status = self.manager.settings_manager.get_auth_status(provider)
+                settings_manager = self._get_settings_manager()
+                status = settings_manager.get_auth_status(provider)
 
                 response.content_type = 'application/json; charset=utf-8'
                 return status
@@ -1217,8 +1241,7 @@ class UltimateService:
             Save credentials for a provider via API
 
             Accepts JSON body with credentials:
-            - User/password: {"username": "...", "password": "...", "client_id": "..." (optional)}
-            - Client credentials: {"client_id": "...", "client_secret": "..."}
+            - User/password: {"username": "...", "password": "..."}
 
             Example: POST /api/providers/joyn_de/credentials
             Body: {"username": "user@example.com", "password": "secret123"}
@@ -1241,8 +1264,11 @@ class UltimateService:
                     response.status = 400
                     return {'error': 'Credentials data must be a JSON object'}
 
+                # Get settings manager
+                settings_manager = self._get_settings_manager()
+
                 # Save credentials
-                success, message = self.manager.settings_manager.save_provider_credentials_from_api(
+                success, message = settings_manager.save_provider_credentials_from_api(
                     provider, credentials_data
                 )
 
@@ -1278,7 +1304,8 @@ class UltimateService:
             Example: DELETE /api/providers/joyn_de/credentials
             """
             try:
-                success, message = self.manager.settings_manager.delete_provider_credentials_from_api(provider)
+                settings_manager = self._get_settings_manager()
+                success, message = settings_manager.delete_provider_credentials_from_api(provider)
 
                 if success:
                     response.status = 200
@@ -1345,8 +1372,8 @@ class UltimateService:
                     response.status = 400
                     return {'error': 'Proxy data must be a JSON object'}
 
-                # Save proxy configuration
-                success, message = self.manager.settings_manager.save_provider_proxy_from_api(
+                settings_manager = self._get_settings_manager()
+                success, message = settings_manager.save_provider_proxy_from_api(
                     provider, proxy_data
                 )
 
@@ -1382,7 +1409,8 @@ class UltimateService:
             Example: DELETE /api/providers/joyn_de/proxy
             """
             try:
-                success, message = self.manager.settings_manager.delete_provider_proxy_from_api(provider)
+                settings_manager = self._get_settings_manager()
+                success, message = settings_manager.delete_provider_proxy_from_api(provider)
 
                 if success:
                     response.status = 200

@@ -446,6 +446,16 @@ class StreamingProvider(ABC):
         """
         return self.catchup_window > 0
 
+    @property
+    def requires_user_credentials(self) -> bool:
+        """
+        Some providers do not need to authenticate
+
+        Returns:
+            bool: True if user credentials are required
+        """
+        return True
+
     def get_epg(self, channel_id: str,
                 start_time: Optional[datetime] = None,
                 end_time: Optional[datetime] = None,

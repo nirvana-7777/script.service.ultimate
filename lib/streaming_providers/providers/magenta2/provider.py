@@ -405,6 +405,10 @@ class Magenta2Provider(StreamingProvider):
         # This provider offers 4 hours of catchup
         return 4
 
+    @property
+    def requires_user_credentials(self) -> bool:
+        return False
+
     def get_discovery_status(self) -> Dict[str, Any]:
         """Get discovery and configuration status"""
         if not self.discovery_service:

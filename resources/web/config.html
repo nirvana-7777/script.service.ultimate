@@ -142,6 +142,7 @@
             padding: 20px;
             border: 1px solid #dee2e6;
             transition: var(--transition);
+            position: relative;
         }
 
         .provider-card:hover {
@@ -160,10 +161,11 @@
             width: 60px;
             height: 60px;
             border-radius: 50%;
-            object-fit: cover;
+            object-fit: contain;
             background: white;
-            padding: 5px;
+            padding: 8px;
             border: 2px solid var(--primary-color);
+            box-sizing: content-box;
         }
 
         .provider-info h3 {
@@ -214,6 +216,7 @@
             align-items: center;
             justify-content: center;
             gap: 8px;
+            margin-top: 5px;
         }
 
         .btn-primary {
@@ -255,6 +258,7 @@
             display: flex;
             gap: 10px;
             margin-top: 20px;
+            flex-wrap: wrap;
         }
 
         .status-indicator {
@@ -386,6 +390,27 @@
             opacity: 1;
         }
 
+        /* Special styling for provider types */
+        .client-credentials-only .form-group:has(label:contains("Username")),
+        .client-credentials-only .form-group:has(label:contains("Password")),
+        .client-credentials-only .form-group:has(label:contains("Client ID")),
+        .client-credentials-only .form-group:has(label:contains("Client Secret")) {
+            display: none;
+        }
+
+        .client-credentials-only .no-credentials-required {
+            display: block;
+            padding: 15px;
+            background: rgba(76, 201, 240, 0.1);
+            border-radius: var(--border-radius);
+            border-left: 4px solid var(--success-color);
+            margin-bottom: 20px;
+        }
+
+        .no-credentials-required {
+            display: none;
+        }
+
         @media (max-width: 768px) {
             .providers-grid {
                 grid-template-columns: 1fr;
@@ -401,6 +426,14 @@
 
             .tab {
                 text-align: center;
+            }
+
+            .btn-group {
+                flex-direction: column;
+            }
+
+            .btn {
+                width: 100%;
             }
         }
     </style>
@@ -444,7 +477,7 @@
                         <i class="fas fa-info-circle"></i>
                         <div>
                             <strong>Credentials Setup</strong>
-                            <p>Enter your login credentials for each streaming provider. Some providers may also require client ID/secret for API access.</p>
+                            <p>Enter your login credentials for each streaming provider. Some providers like magenta2 don't require manual credentials.</p>
                         </div>
                     </div>
 
@@ -653,8 +686,13 @@
                 return;
             }
 
-            credentialsContainer.innerHTML = providers.map(provider => `
-                <div class="provider-card" data-provider="${provider.name}">
+            credentialsContainer.innerHTML = providers.map(provider => {
+                // Check if this provider requires user credentials
+                const isClientOnly = !provider.requires_user_credentials;
+                const providerCardClass = isClientOnly ? 'provider-card client-credentials-only' : 'provider-card';
+
+                return `
+                <div class="${providerCardClass}" data-provider="${provider.name}">
                     <div class="provider-header">
                         ${provider.logo ? `<img src="${provider.logo}" alt="${provider.label}" class="provider-logo">` : ''}
                         <div class="provider-info">
@@ -666,6 +704,14 @@
                             </div>
                         </div>
                     </div>
+
+                    ${isClientOnly ? `
+                    <div class="no-credentials-required">
+                        <i class="fas fa-info-circle"></i>
+                        <strong>No manual credentials required</strong>
+                        <p>This provider uses client credentials that are hardcoded in the application.</p>
+                    </div>
+                    ` : ''}
 
                     <div class="form-group">
                         <label for="username-${provider.name}">
@@ -689,28 +735,6 @@
                                value="">
                     </div>
 
-                    <div class="form-group">
-                        <label for="client-id-${provider.name}">
-                            <i class="fas fa-id-card"></i> Client ID (Optional)
-                        </label>
-                        <input type="text"
-                               id="client-id-${provider.name}"
-                               class="form-control"
-                               placeholder="Client ID"
-                               value="${authStatus[provider.name]?.client_id || ''}">
-                    </div>
-
-                    <div class="form-group">
-                        <label for="client-secret-${provider.name}">
-                            <i class="fas fa-key"></i> Client Secret (Optional)
-                        </label>
-                        <input type="password"
-                               id="client-secret-${provider.name}"
-                               class="form-control"
-                               placeholder="••••••••"
-                               value="">
-                    </div>
-
                     <div class="btn-group">
                         <button onclick="saveCredentials('${provider.name}')" class="btn btn-primary">
                             <i class="fas fa-save"></i> Save
@@ -723,7 +747,8 @@
                         </button>
                     </div>
                 </div>
-            `).join('');
+                `;
+            }).join('');
         }
 
         // Load proxy forms
@@ -838,16 +863,24 @@
 
         // API Functions
         async function saveCredentials(providerName) {
+            // Check if provider is client-only
+            if (!provider.requires_user_credentials) {
+                showAlert('info', `${providerName} uses hardcoded client credentials - no manual setup needed`);
+                return;
+            }
+
             const username = document.getElementById(`username-${providerName}`).value;
             const password = document.getElementById(`password-${providerName}`).value;
-            const clientId = document.getElementById(`client-id-${providerName}`).value;
-            const clientSecret = document.getElementById(`client-secret-${providerName}`).value;
 
-            const credentials = {};
-            if (username) credentials.username = username;
-            if (password) credentials.password = password;
-            if (clientId) credentials.client_id = clientId;
-            if (clientSecret) credentials.client_secret = clientSecret;
+            if (!username || !password) {
+                showAlert('error', 'Please enter both username and password');
+                return;
+            }
+
+            const credentials = {
+                username: username,
+                password: password
+            };
 
             const statusEl = document.getElementById(`status-${providerName}`);
             statusEl.innerHTML = '<span class="loader"></span> Saving...';
@@ -867,7 +900,6 @@
 
                     // Clear password field
                     document.getElementById(`password-${providerName}`).value = '';
-                    document.getElementById(`client-secret-${providerName}`).value = '';
 
                     // Reload auth status
                     await loadAuthStatus();
@@ -889,6 +921,12 @@
         }
 
         async function deleteCredentials(providerName) {
+            // Check if provider is client-only
+            if (!provider.requires_user_credentials) {
+                showAlert('info', `${providerName} uses hardcoded client credentials - nothing to delete`);
+                return;
+            }
+
             if (!confirm(`Delete credentials for ${providerName}?`)) return;
 
             const statusEl = document.getElementById(`status-${providerName}`);
@@ -906,8 +944,6 @@
                     // Clear fields
                     document.getElementById(`username-${providerName}`).value = '';
                     document.getElementById(`password-${providerName}`).value = '';
-                    document.getElementById(`client-id-${providerName}`).value = '';
-                    document.getElementById(`client-secret-${providerName}`).value = '';
 
                     // Reload auth status
                     await loadAuthStatus();
@@ -937,14 +973,14 @@
                 const result = await response.json();
 
                 if (response.ok) {
-                    if (result.is_authenticated) {
+                    if (result.is_ready) {
                         statusEl.className = 'status-indicator status-success';
-                        statusEl.innerHTML = '<i class="fas fa-check-circle"></i> Authentication successful';
-                        showAlert('success', `Authentication successful for ${providerName}`);
+                        statusEl.innerHTML = '<i class="fas fa-check-circle"></i> Ready to use';
+                        showAlert('success', `${providerName} is ready to use`);
                     } else {
                         statusEl.className = 'status-indicator status-warning';
                         statusEl.innerHTML = `<i class="fas fa-exclamation-triangle"></i> ${result.auth_state}`;
-                        showAlert('warning', `Authentication status: ${result.auth_state}`);
+                        showAlert('warning', `${providerName} status: ${result.auth_state}`);
                     }
                 } else {
                     statusEl.className = 'status-indicator status-error';
@@ -1179,11 +1215,18 @@
             }
 
             try {
+                // Get all providers first
+                const response = await fetch(`${API_BASE}/api/providers`);
+                const data = await response.json();
+
                 // Delete credentials for all providers
-                for (const provider of providers) {
-                    await fetch(`${API_BASE}/api/providers/${provider.name}/credentials`, {
-                        method: 'DELETE'
-                    });
+                for (const provider of data.providers) {
+                    // Skip client-only providers
+                    if (provider.requires_user_credentials) {
+                        await fetch(`${API_BASE}/api/providers/${provider.name}/credentials`, {
+                            method: 'DELETE'
+                        });
+                    }
 
                     await fetch(`${API_BASE}/api/providers/${provider.name}/proxy`, {
                         method: 'DELETE'
