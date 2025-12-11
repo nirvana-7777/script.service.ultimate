@@ -674,7 +674,7 @@
         }
 
         // Render credentials forms
-        function renderCredentialsForms() {
+        async function renderCredentialsForms() {
             if (providers.length === 0) {
                 credentialsContainer.innerHTML = `
                     <div class="empty-state">
@@ -686,69 +686,101 @@
                 return;
             }
 
-            credentialsContainer.innerHTML = providers.map(provider => {
-                // Check if this provider requires user credentials
-                const isClientOnly = !provider.requires_user_credentials;
-                const providerCardClass = isClientOnly ? 'provider-card client-credentials-only' : 'provider-card';
+            // Load credentials for all providers in parallel
+            const credentialsPromises = providers.map(async (provider) => {
+                try {
+                    // Try to fetch existing credentials
+                    const credsResponse = await fetch(`${API_BASE}/api/providers/${provider.name}/credentials`);
+                    let existingCreds = null;
 
-                return `
-                <div class="${providerCardClass}" data-provider="${provider.name}">
-                    <div class="provider-header">
-                        ${provider.logo ? `<img src="${provider.logo}" alt="${provider.label}" class="provider-logo">` : ''}
-                        <div class="provider-info">
-                            <h3>${provider.label}</h3>
-                            <div class="provider-id">${provider.name} • ${provider.country}</div>
-                            <div id="status-${provider.name}" class="status-indicator">
-                                ${getStatusIcon(authStatus[provider.name])}
-                                ${getStatusText(authStatus[provider.name])}
+                    if (credsResponse.ok) {
+                        const credsData = await credsResponse.json();
+                        if (credsData.has_credentials) {
+                            existingCreds = credsData;
+                        }
+                    }
+
+                    // Check if this provider requires user credentials
+                    const isClientOnly = !provider.requires_user_credentials;
+                    const providerCardClass = isClientOnly ? 'provider-card client-credentials-only' : 'provider-card';
+
+                    // Get the current auth status
+                    const status = authStatus[provider.name] || {};
+
+                    return `
+                    <div class="${providerCardClass}" data-provider="${provider.name}">
+                        <div class="provider-header">
+                            ${provider.logo ? `<img src="${provider.logo}" alt="${provider.label}" class="provider-logo">` : ''}
+                            <div class="provider-info">
+                                <h3>${provider.label}</h3>
+                                <div class="provider-id">${provider.name} • ${provider.country}</div>
+                                <div id="status-${provider.name}" class="status-indicator">
+                                    ${getStatusIcon(status)}
+                                    ${getStatusText(status)}
+                                </div>
                             </div>
                         </div>
-                    </div>
 
-                    ${isClientOnly ? `
-                    <div class="no-credentials-required">
-                        <i class="fas fa-info-circle"></i>
-                        <strong>No manual credentials required</strong>
-                        <p>This provider uses client credentials that are hardcoded in the application.</p>
-                    </div>
-                    ` : ''}
+                        ${isClientOnly ? `
+                        <div class="no-credentials-required">
+                            <i class="fas fa-info-circle"></i>
+                            <strong>No manual credentials required</strong>
+                            <p>This provider uses client credentials that are hardcoded in the application.</p>
+                        </div>
+                        ` : ''}
 
-                    <div class="form-group">
-                        <label for="username-${provider.name}">
-                            <i class="fas fa-user"></i> Username/Email
-                        </label>
-                        <input type="text"
-                               id="username-${provider.name}"
-                               class="form-control"
-                               placeholder="user@example.com"
-                               value="${authStatus[provider.name]?.username || ''}">
-                    </div>
+                        <div class="form-group">
+                            <label for="username-${provider.name}">
+                                <i class="fas fa-user"></i> Username/Email
+                            </label>
+                            <input type="text"
+                                   id="username-${provider.name}"
+                                   class="form-control"
+                                   placeholder="user@example.com"
+                                   value="${existingCreds?.username_masked || ''}"
+                                   ${existingCreds?.username_masked ? 'readonly style="background-color:#f5f5f5;"' : ''}>
+                            ${existingCreds?.username_masked ? `
+                            <small style="color:#666; display:block; margin-top:5px;">
+                                <i class="fas fa-info-circle"></i> Credentials saved. Enter new values to update.
+                            </small>
+                            ` : ''}
+                        </div>
 
-                    <div class="form-group">
-                        <label for="password-${provider.name}">
-                            <i class="fas fa-lock"></i> Password
-                        </label>
-                        <input type="password"
-                               id="password-${provider.name}"
-                               class="form-control"
-                               placeholder="••••••••"
-                               value="">
-                    </div>
+                        <div class="form-group">
+                            <label for="password-${provider.name}">
+                                <i class="fas fa-lock"></i> ${existingCreds ? 'New Password (leave blank to keep current)' : 'Password'}
+                            </label>
+                            <input type="password"
+                                   id="password-${provider.name}"
+                                   class="form-control"
+                                   placeholder="${existingCreds ? '•••••••• (optional)' : '••••••••'}"
+                                   value="">
+                        </div>
 
-                    <div class="btn-group">
-                        <button onclick="saveCredentials('${provider.name}')" class="btn btn-primary">
-                            <i class="fas fa-save"></i> Save
-                        </button>
-                        <button onclick="deleteCredentials('${provider.name}')" class="btn btn-danger">
-                            <i class="fas fa-trash"></i> Delete
-                        </button>
-                        <button onclick="testAuth('${provider.name}')" class="btn btn-success">
-                            <i class="fas fa-check"></i> Test
-                        </button>
+                        <div class="btn-group">
+                            <button onclick="saveCredentials('${provider.name}')" class="btn btn-primary">
+                                <i class="fas fa-save"></i> ${existingCreds ? 'Update' : 'Save'}
+                            </button>
+                            ${existingCreds ? `
+                            <button onclick="deleteCredentials('${provider.name}')" class="btn btn-danger">
+                                <i class="fas fa-trash"></i> Delete
+                            </button>
+                            ` : ''}
+                            <button onclick="testAuth('${provider.name}')" class="btn btn-success">
+                                <i class="fas fa-check"></i> Test
+                            </button>
+                        </div>
                     </div>
-                </div>
-                `;
-            }).join('');
+                    `;
+                } catch (error) {
+                    console.error(`Error loading credentials for ${provider.name}:`, error);
+                    return ''; // Return empty string on error
+                }
+            });
+
+            // Wait for all promises and render
+            const htmls = await Promise.all(credentialsPromises);
+            credentialsContainer.innerHTML = htmls.join('');
         }
 
         // Load proxy forms
@@ -900,18 +932,39 @@
                 return;
             }
 
-            const username = document.getElementById(`username-${providerName}`).value;
-            const password = document.getElementById(`password-${providerName}`).value;
+            const usernameInput = document.getElementById(`username-${providerName}`);
+            const passwordInput = document.getElementById(`password-${providerName}`);
 
-            if (!username || !password) {
-                showAlert('error', 'Please enter both username and password');
+            const username = usernameInput.value;
+            const password = passwordInput.value;
+
+            // For updates, username might be readonly with masked value
+            // We need to check if user entered a new username
+            const isMaskedUsername = usernameInput.hasAttribute('readonly');
+
+            if (isMaskedUsername && !password) {
+                // User is keeping existing credentials, no changes
+                showAlert('info', 'No changes made to credentials');
                 return;
             }
 
-            const credentials = {
-                username: username,
-                password: password
-            };
+            if (!isMaskedUsername && (!username || !password)) {
+                showAlert('error', 'Please enter both username and password for new credentials');
+                return;
+            }
+
+            // Prepare credentials data
+            const credentials = {};
+
+            // Only include username if it's not masked/readonly (new or changed)
+            if (!isMaskedUsername && username) {
+                credentials.username = username;
+            }
+
+            // Only include password if provided (for updates, password can be empty)
+            if (password) {
+                credentials.password = password;
+            }
 
             const statusEl = document.getElementById(`status-${providerName}`);
             if (statusEl) {
@@ -934,13 +987,43 @@
                     }
 
                     // Clear password field for security
-                    document.getElementById(`password-${providerName}`).value = '';
+                    passwordInput.value = '';
+
+                    // If username was changed, mark it as readonly with masked value
+                    if (!isMaskedUsername && username) {
+                        // Create a masked version for display
+                        let maskedUsername;
+                        if (username.includes('@')) {
+                            const parts = username.split('@');
+                            maskedUsername = parts[0].substring(0, 2) + '***@' + parts[1];
+                        } else {
+                            maskedUsername = username.substring(0, 2) + '***';
+                        }
+
+                        usernameInput.value = maskedUsername;
+                        usernameInput.readOnly = true;
+                        usernameInput.style.backgroundColor = '#f5f5f5';
+
+                        // Add info text
+                        const infoText = document.createElement('small');
+                        infoText.innerHTML = '<i class="fas fa-info-circle"></i> Credentials saved. Enter new values to update.';
+                        infoText.style.cssText = 'color:#666; display:block; margin-top:5px;';
+
+                        // Remove existing info if any
+                        const existingInfo = usernameInput.nextElementSibling;
+                        if (existingInfo && existingInfo.tagName === 'SMALL') {
+                            existingInfo.remove();
+                        }
+
+                        usernameInput.parentNode.insertBefore(infoText, passwordInput);
+                    }
 
                     // Reload auth status
                     await loadAuthStatus();
 
                     // Show success message
-                    showAlert('success', `Credentials saved for ${provider.label}`);
+                    const action = isMaskedUsername && !username ? 'Updated' : 'Saved';
+                    showAlert('success', `${action} credentials for ${provider.label}`);
                 } else {
                     if (statusEl) {
                         statusEl.className = 'status-indicator status-error';

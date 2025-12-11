@@ -1238,9 +1238,15 @@ class UltimateService:
         @self.app.route('/api/providers/<provider>/credentials', method='GET')
         def get_provider_credentials(provider):
             """
-            Get current credentials for a provider (masked for security)
+            GET: Retrieve current credentials (masked for security)
 
             Example: GET /api/providers/joyn/credentials
+            Returns: {
+                "has_credentials": true,
+                "credential_type": "user_password",
+                "username_masked": "us***@example.com",
+                "username": "user@example.com"  # Note: only included for pre-fill with user consent
+            }
             """
             try:
                 settings_manager = self._get_settings_manager()
@@ -1251,41 +1257,51 @@ class UltimateService:
                 # Get credentials
                 credentials = settings_manager.get_provider_credentials(provider_name, country)
 
+                response_data = {
+                    'provider': provider,
+                    'has_credentials': credentials is not None,
+                    'credential_type': None,
+                    'username_masked': None,
+                    'username': None  # We'll include this only if user explicitly allows
+                }
+
                 if credentials:
-                    # Return masked credentials for security
-                    cred_dict = {
-                        'has_credentials': True,
-                        'credential_type': credentials.credential_type,
-                        'username': getattr(credentials, 'username', None) if hasattr(credentials,
-                                                                                      'username') else None,
-                        'username_masked': None  # We'll mask it
-                    }
+                    response_data['credential_type'] = credentials.credential_type
+                    response_data['is_valid'] = credentials.validate()
 
-                    # Mask username if present (show first 2 chars and last 2 chars)
-                    if cred_dict['username']:
-                        username = cred_dict['username']
-                        if len(username) > 4:
-                            cred_dict['username_masked'] = username[:2] + '***' + username[-2:]
-                        else:
-                            cred_dict['username_masked'] = '***'
+                    # Get username if it exists (for user_password credentials)
+                    if hasattr(credentials, 'username') and credentials.username:
+                        username = credentials.username
 
-                    return {
-                        'success': True,
-                        'provider': provider,
-                        'credentials': cred_dict
-                    }
-                else:
-                    return {
-                        'success': True,
-                        'provider': provider,
-                        'credentials': None,
-                        'message': 'No credentials found'
-                    }
+                        # Create masked version for display
+                        if '@' in username:  # Email address
+                            parts = username.split('@')
+                            if len(parts[0]) > 2:
+                                masked = parts[0][:2] + '***@' + parts[1]
+                            else:
+                                masked = '***@' + parts[1]
+                        else:  # Username
+                            if len(username) > 4:
+                                masked = username[:2] + '***' + username[-2:]
+                            else:
+                                masked = '***'
 
-            except Exception as api_err:
-                logger.error(f"API Error in GET /api/providers/{provider}/credentials: {str(api_err)}")
+                        response_data['username_masked'] = masked
+
+                        # For pre-filling forms (security consideration - you can omit this)
+                        # Only include if you trust your frontend and have HTTPS
+                        response_data['username'] = username
+
+                    # Log for debugging (remove in production)
+                    logger.debug(
+                        f"GET credentials for {provider}: type={credentials.credential_type}, has_username={hasattr(credentials, 'username')}")
+
+                return response_data
+
+            except Exception as e:
+                logger.error(f"GET credentials error for {provider}: {e}", exc_info=True)
                 response.status = 500
-                return {'error': f'Internal server error: {str(api_err)}'}
+                return {'error': f'Internal server error: {str(e)}'}
 
         @self.app.route('/api/providers/<provider>/credentials', method='POST')
         def save_provider_credentials(provider):
@@ -1294,15 +1310,13 @@ class UltimateService:
 
             Accepts JSON body with credentials:
             - User/password: {"username": "...", "password": "..."}
-
-            Example: POST /api/providers/joyn_de/credentials
-            Body: {"username": "user@example.com", "password": "secret123"}
+            - For updates: {"password": "..."} (keep existing username)
             """
             try:
                 # Parse JSON body
                 try:
                     credentials_data = request.json
-                    logger.info(f"Received credentials data for {provider}: {credentials_data}")
+                    logger.debug(f"Received credentials data for {provider}: {credentials_data}")
                 except Exception as json_err:
                     logger.error(f"Invalid JSON in request body: {json_err}")
                     response.status = 400
@@ -1321,7 +1335,20 @@ class UltimateService:
 
                 # Get settings manager
                 settings_manager = self._get_settings_manager()
-                logger.info(f"Settings manager obtained: {settings_manager}")
+
+                # Parse provider and country
+                provider_name, country = settings_manager.parse_provider_country(provider)
+
+                # Check if we have existing credentials (for partial updates)
+                existing_credentials = settings_manager.get_provider_credentials(provider_name, country)
+
+                if existing_credentials and 'username' not in credentials_data:
+                    # Partial update - keep existing username, only update password
+                    if hasattr(existing_credentials, 'username'):
+                        credentials_data['username'] = existing_credentials.username
+                    else:
+                        response.status = 400
+                        return {'error': 'Cannot update - existing credentials do not have username'}
 
                 # Save credentials
                 success, message = settings_manager.save_provider_credentials_from_api(
@@ -1336,7 +1363,8 @@ class UltimateService:
                     return {
                         'success': True,
                         'provider': provider,
-                        'message': message
+                        'message': message,
+                        'action': 'updated' if existing_credentials else 'created'
                     }
                 else:
                     # Determine appropriate status code
