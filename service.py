@@ -1235,6 +1235,58 @@ class UltimateService:
                 response.status = 500
                 return {'error': f'Internal server error: {str(api_err)}'}
 
+        @self.app.route('/api/providers/<provider>/credentials', method='GET')
+        def get_provider_credentials(provider):
+            """
+            Get current credentials for a provider (masked for security)
+
+            Example: GET /api/providers/joyn/credentials
+            """
+            try:
+                settings_manager = self._get_settings_manager()
+
+                # Parse provider and country
+                provider_name, country = settings_manager.parse_provider_country(provider)
+
+                # Get credentials
+                credentials = settings_manager.get_provider_credentials(provider_name, country)
+
+                if credentials:
+                    # Return masked credentials for security
+                    cred_dict = {
+                        'has_credentials': True,
+                        'credential_type': credentials.credential_type,
+                        'username': getattr(credentials, 'username', None) if hasattr(credentials,
+                                                                                      'username') else None,
+                        'username_masked': None  # We'll mask it
+                    }
+
+                    # Mask username if present (show first 2 chars and last 2 chars)
+                    if cred_dict['username']:
+                        username = cred_dict['username']
+                        if len(username) > 4:
+                            cred_dict['username_masked'] = username[:2] + '***' + username[-2:]
+                        else:
+                            cred_dict['username_masked'] = '***'
+
+                    return {
+                        'success': True,
+                        'provider': provider,
+                        'credentials': cred_dict
+                    }
+                else:
+                    return {
+                        'success': True,
+                        'provider': provider,
+                        'credentials': None,
+                        'message': 'No credentials found'
+                    }
+
+            except Exception as api_err:
+                logger.error(f"API Error in GET /api/providers/{provider}/credentials: {str(api_err)}")
+                response.status = 500
+                return {'error': f'Internal server error: {str(api_err)}'}
+
         @self.app.route('/api/providers/<provider>/credentials', method='POST')
         def save_provider_credentials(provider):
             """
@@ -1250,27 +1302,33 @@ class UltimateService:
                 # Parse JSON body
                 try:
                     credentials_data = request.json
+                    logger.info(f"Received credentials data for {provider}: {credentials_data}")
                 except Exception as json_err:
                     logger.error(f"Invalid JSON in request body: {json_err}")
                     response.status = 400
                     return {'error': 'Invalid JSON in request body'}
 
                 if not credentials_data:
+                    logger.error("No credentials data provided")
                     response.status = 400
                     return {'error': 'Request body must contain credentials data'}
 
                 # Validate it's a dictionary
                 if not isinstance(credentials_data, dict):
+                    logger.error(f"Credentials data is not a dict: {type(credentials_data)}")
                     response.status = 400
                     return {'error': 'Credentials data must be a JSON object'}
 
                 # Get settings manager
                 settings_manager = self._get_settings_manager()
+                logger.info(f"Settings manager obtained: {settings_manager}")
 
                 # Save credentials
                 success, message = settings_manager.save_provider_credentials_from_api(
                     provider, credentials_data
                 )
+
+                logger.info(f"Save result for {provider}: success={success}, message={message}")
 
                 if success:
                     response.status = 200
@@ -1292,7 +1350,7 @@ class UltimateService:
                     return {'error': message}
 
             except Exception as api_err:
-                logger.error(f"API Error in POST /api/providers/{provider}/credentials: {str(api_err)}")
+                logger.error(f"API Error in POST /api/providers/{provider}/credentials: {str(api_err)}", exc_info=True)
                 response.status = 500
                 return {'error': f'Internal server error: {str(api_err)}'}
 
@@ -1326,6 +1384,41 @@ class UltimateService:
 
             except Exception as api_err:
                 logger.error(f"API Error in DELETE /api/providers/{provider}/credentials: {str(api_err)}")
+                response.status = 500
+                return {'error': f'Internal server error: {str(api_err)}'}
+
+        @self.app.route('/api/providers/<provider>/proxy', method='GET')
+        def get_provider_proxy(provider):
+            """
+            Get current proxy configuration for a provider
+
+            Example: GET /api/providers/joyn/proxy
+            """
+            try:
+                settings_manager = self._get_settings_manager()
+
+                # Parse provider and country
+                provider_name, country = settings_manager.parse_provider_country(provider)
+
+                # Get proxy config
+                proxy_config = settings_manager.get_provider_proxy(provider_name, country)
+
+                if proxy_config:
+                    return {
+                        'success': True,
+                        'provider': provider,
+                        'proxy_config': proxy_config.to_dict() if hasattr(proxy_config, 'to_dict') else proxy_config
+                    }
+                else:
+                    return {
+                        'success': True,
+                        'provider': provider,
+                        'proxy_config': None,
+                        'message': 'No proxy configuration found'
+                    }
+
+            except Exception as api_err:
+                logger.error(f"API Error in GET /api/providers/{provider}/proxy: {str(api_err)}")
                 response.status = 500
                 return {'error': f'Internal server error: {str(api_err)}'}
 
@@ -1438,30 +1531,18 @@ class UltimateService:
         def export_config():
             """Export all configurations as JSON"""
             try:
-                config = {
-                    'credentials': {},
-                    'proxy': {},
-                    'settings': {}
-                }
+                settings_manager = self._get_settings_manager()
 
-                # Export credentials and proxy for all providers
-                providers = self.manager.list_providers()
-                for provider in providers:
-                    # Get auth status (contains credential info)
-                    status = self.manager.settings_manager.get_auth_status(provider)
-                    if status.get('has_credentials'):
-                        config['credentials'][provider] = status
+                # Use SettingsManager's export method
+                export_path = settings_manager.export_all_settings()
 
-                    # Get proxy info
-                    provider_instance = self.manager.get_provider(provider)
-                    if hasattr(provider_instance, 'http_manager'):
-                        proxy_config = getattr(provider_instance.http_manager.config, 'proxy_config', None)
-                        if proxy_config:
-                            config['proxy'][provider] = proxy_config
+                # Read the exported file
+                with open(export_path, 'r', encoding='utf-8') as f:
+                    config_data = json.load(f)
 
                 response.content_type = 'application/json'
-                response.headers['Content-Disposition'] = 'attachment; filename="ultimate_backup.json"'
-                return json.dumps(config, indent=2)
+                response.headers['Content-Disposition'] = f'attachment; filename="{os.path.basename(export_path)}"'
+                return json.dumps(config_data, indent=2)
 
             except Exception as e:
                 logger.error(f"Error exporting config: {e}")
@@ -1477,24 +1558,56 @@ class UltimateService:
                     response.status = 400
                     return {'error': 'No data provided'}
 
+                # First save the import data to a temp file
+                import tempfile
+                import uuid
+
+                temp_dir = tempfile.gettempdir()
+                temp_file = os.path.join(temp_dir, f'import_{uuid.uuid4()}.json')
+
+                with open(temp_file, 'w', encoding='utf-8') as f:
+                    json.dump(import_data, f)
+
+                # Use SettingsManager to import
+                settings_manager = self._get_settings_manager()
+
+                # Since SettingsManager doesn't have an import method, we'll process it manually
                 # Import credentials
-                credentials = import_data.get('credentials', {})
-                for provider, cred_data in credentials.items():
-                    # Extract username/password from status data
-                    if 'username' in cred_data and 'password' in cred_data:
-                        self.manager.settings_manager.save_provider_credentials_from_api(
-                            provider,
-                            {'username': cred_data['username'], 'password': cred_data['password']}
+                credentials = import_data.get('providers', {})
+                imported_count = 0
+
+                for provider_name, provider_data in credentials.items():
+                    # Extract credential data if available
+                    if 'credentials' in provider_data:
+                        cred_data = provider_data['credentials']
+                        success, message = settings_manager.save_provider_credentials_from_api(
+                            provider_name, cred_data
                         )
+                        if success:
+                            imported_count += 1
+                            logger.info(f"Imported credentials for {provider_name}")
 
-                # Import proxy configs
-                proxies = import_data.get('proxy', {})
-                for provider, proxy_config in proxies.items():
-                    self.manager.settings_manager.save_provider_proxy_from_api(
-                        provider, proxy_config
-                    )
+                    # Import proxy data if available
+                    if 'proxy' in provider_data:
+                        proxy_data = provider_data['proxy']
+                        success, message = settings_manager.save_provider_proxy_from_api(
+                            provider_name, proxy_data
+                        )
+                        if success:
+                            imported_count += 1
+                            logger.info(f"Imported proxy for {provider_name}")
 
-                return {'success': True, 'imported': len(credentials) + len(proxies)}
+                # Clean up temp file
+                try:
+                    os.remove(temp_file)
+                except:
+                    pass
+
+                return {
+                    'success': True,
+                    'imported': imported_count,
+                    'message': f'Imported {imported_count} configurations'
+                }
 
             except Exception as e:
                 logger.error(f"Error importing config: {e}")

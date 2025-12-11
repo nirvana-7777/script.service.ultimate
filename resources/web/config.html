@@ -752,81 +752,105 @@
         }
 
         // Load proxy forms
-        function loadProxyForms() {
-            proxyContainer.innerHTML = providers.map(provider => `
-                <div class="provider-card" data-provider="${provider.name}">
-                    <div class="provider-header">
-                        ${provider.logo ? `<img src="${provider.logo}" alt="${provider.label}" class="provider-logo">` : ''}
-                        <div class="provider-info">
-                            <h3>${provider.label}</h3>
-                            <div class="provider-id">Proxy Configuration</div>
+        async function loadProxyForms() {
+            proxyContainer.innerHTML = await Promise.all(providers.map(async (provider) => {
+                try {
+                    // Try to load existing proxy config
+                    const proxyResponse = await fetch(`${API_BASE}/api/providers/${provider.name}/proxy`);
+                    let existingProxy = null;
+
+                    if (proxyResponse.ok) {
+                        const proxyData = await proxyResponse.json();
+                        if (proxyData.proxy_config) {
+                            existingProxy = proxyData.proxy_config;
+                        }
+                    }
+
+                    return `
+                    <div class="provider-card" data-provider="${provider.name}">
+                        <div class="provider-header">
+                            ${provider.logo ? `<img src="${provider.logo}" alt="${provider.label}" class="provider-logo">` : ''}
+                            <div class="provider-info">
+                                <h3>${provider.label}</h3>
+                                <div class="provider-id">Proxy Configuration</div>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="proxy-host-${provider.name}">
+                                <i class="fas fa-server"></i> Proxy Host
+                            </label>
+                            <input type="text"
+                                   id="proxy-host-${provider.name}"
+                                   class="form-control"
+                                   placeholder="proxy.example.com"
+                                   value="${existingProxy?.host || ''}">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="proxy-port-${provider.name}">
+                                <i class="fas fa-plug"></i> Proxy Port
+                            </label>
+                            <input type="number"
+                                   id="proxy-port-${provider.name}"
+                                   class="form-control"
+                                   placeholder="8080"
+                                   min="1"
+                                   max="65535"
+                                   value="${existingProxy?.port || ''}">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="proxy-type-${provider.name}">
+                                <i class="fas fa-network-wired"></i> Proxy Type
+                            </label>
+                            <select id="proxy-type-${provider.name}" class="form-control">
+                                <option value="http" ${(!existingProxy || existingProxy.proxy_type === 'http') ? 'selected' : ''}>HTTP</option>
+                                <option value="https" ${(existingProxy?.proxy_type === 'https') ? 'selected' : ''}>HTTPS</option>
+                                <option value="socks4" ${(existingProxy?.proxy_type === 'socks4') ? 'selected' : ''}>SOCKS4</option>
+                                <option value="socks5" ${(existingProxy?.proxy_type === 'socks5') ? 'selected' : ''}>SOCKS5</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="proxy-user-${provider.name}">
+                                <i class="fas fa-user"></i> Username (Optional)
+                            </label>
+                            <input type="text"
+                                   id="proxy-user-${provider.name}"
+                                   class="form-control"
+                                   placeholder="proxyuser"
+                                   value="${existingProxy?.auth?.username || ''}">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="proxy-pass-${provider.name}">
+                                <i class="fas fa-lock"></i> Password (Optional)
+                            </label>
+                            <input type="password"
+                                   id="proxy-pass-${provider.name}"
+                                   class="form-control"
+                                   placeholder="••••••••"
+                                   value="${existingProxy?.auth?.password || ''}">
+                        </div>
+
+                        <div class="btn-group">
+                            <button onclick="saveProxy('${provider.name}')" class="btn btn-primary">
+                                <i class="fas fa-save"></i> ${existingProxy ? 'Update' : 'Save'} Proxy
+                            </button>
+                            ${existingProxy ? `
+                            <button onclick="deleteProxy('${provider.name}')" class="btn btn-danger">
+                                <i class="fas fa-trash"></i> Delete Proxy
+                            </button>
+                            ` : ''}
                         </div>
                     </div>
-
-                    <div class="form-group">
-                        <label for="proxy-host-${provider.name}">
-                            <i class="fas fa-server"></i> Proxy Host
-                        </label>
-                        <input type="text"
-                               id="proxy-host-${provider.name}"
-                               class="form-control"
-                               placeholder="proxy.example.com">
-                    </div>
-
-                    <div class="form-group">
-                        <label for="proxy-port-${provider.name}">
-                            <i class="fas fa-plug"></i> Proxy Port
-                        </label>
-                        <input type="number"
-                               id="proxy-port-${provider.name}"
-                               class="form-control"
-                               placeholder="8080"
-                               min="1"
-                               max="65535">
-                    </div>
-
-                    <div class="form-group">
-                        <label for="proxy-type-${provider.name}">
-                            <i class="fas fa-network-wired"></i> Proxy Type
-                        </label>
-                        <select id="proxy-type-${provider.name}" class="form-control">
-                            <option value="http">HTTP</option>
-                            <option value="https">HTTPS</option>
-                            <option value="socks4">SOCKS4</option>
-                            <option value="socks5">SOCKS5</option>
-                        </select>
-                    </div>
-
-                    <div class="form-group">
-                        <label for="proxy-user-${provider.name}">
-                            <i class="fas fa-user"></i> Username (Optional)
-                        </label>
-                        <input type="text"
-                               id="proxy-user-${provider.name}"
-                               class="form-control"
-                               placeholder="proxyuser">
-                    </div>
-
-                    <div class="form-group">
-                        <label for="proxy-pass-${provider.name}">
-                            <i class="fas fa-lock"></i> Password (Optional)
-                        </label>
-                        <input type="password"
-                               id="proxy-pass-${provider.name}"
-                               class="form-control"
-                               placeholder="••••••••">
-                    </div>
-
-                    <div class="btn-group">
-                        <button onclick="saveProxy('${provider.name}')" class="btn btn-primary">
-                            <i class="fas fa-save"></i> Save Proxy
-                        </button>
-                        <button onclick="deleteProxy('${provider.name}')" class="btn btn-danger">
-                            <i class="fas fa-trash"></i> Delete Proxy
-                        </button>
-                    </div>
-                </div>
-            `).join('');
+                    `;
+                } catch (error) {
+                    console.error(`Error loading proxy for ${provider.name}:`, error);
+                    return ''; // Return empty string on error
+                }
+            })).then(htmls => htmls.join(''));
         }
 
         // Helper functions
@@ -863,9 +887,16 @@
 
         // API Functions
         async function saveCredentials(providerName) {
+            // Find the provider from the global providers array
+            const provider = providers.find(p => p.name === providerName);
+            if (!provider) {
+                showAlert('error', `Provider ${providerName} not found`);
+                return;
+            }
+
             // Check if provider is client-only
             if (!provider.requires_user_credentials) {
-                showAlert('info', `${providerName} uses hardcoded client credentials - no manual setup needed`);
+                showAlert('info', `${provider.label} uses hardcoded client credentials - no manual setup needed`);
                 return;
             }
 
@@ -883,7 +914,9 @@
             };
 
             const statusEl = document.getElementById(`status-${providerName}`);
-            statusEl.innerHTML = '<span class="loader"></span> Saving...';
+            if (statusEl) {
+                statusEl.innerHTML = '<span class="loader"></span> Saving...';
+            }
 
             try {
                 const response = await fetch(`${API_BASE}/api/providers/${providerName}/credentials`, {
@@ -895,26 +928,31 @@
                 const result = await response.json();
 
                 if (response.ok) {
-                    statusEl.className = 'status-indicator status-success';
-                    statusEl.innerHTML = '<i class="fas fa-check-circle"></i> Saved successfully';
+                    if (statusEl) {
+                        statusEl.className = 'status-indicator status-success';
+                        statusEl.innerHTML = '<i class="fas fa-check-circle"></i> Saved successfully';
+                    }
 
-                    // Clear password field
+                    // Clear password field for security
                     document.getElementById(`password-${providerName}`).value = '';
 
                     // Reload auth status
                     await loadAuthStatus();
-                    renderCredentialsForms();
 
                     // Show success message
-                    showAlert('success', `Credentials saved for ${providerName}`);
+                    showAlert('success', `Credentials saved for ${provider.label}`);
                 } else {
-                    statusEl.className = 'status-indicator status-error';
-                    statusEl.innerHTML = `<i class="fas fa-exclamation-circle"></i> ${result.error || 'Failed to save'}`;
-                    showAlert('error', result.error || `Failed to save credentials for ${providerName}`);
+                    if (statusEl) {
+                        statusEl.className = 'status-indicator status-error';
+                        statusEl.innerHTML = `<i class="fas fa-exclamation-circle"></i> ${result.error || 'Failed to save'}`;
+                    }
+                    showAlert('error', result.error || `Failed to save credentials for ${provider.label}`);
                 }
             } catch (error) {
-                statusEl.className = 'status-indicator status-error';
-                statusEl.innerHTML = '<i class="fas fa-exclamation-circle"></i> Network error';
+                if (statusEl) {
+                    statusEl.className = 'status-indicator status-error';
+                    statusEl.innerHTML = '<i class="fas fa-exclamation-circle"></i> Network error';
+                }
                 showAlert('error', `Network error: ${error.message}`);
                 console.error('Save error:', error);
             }
