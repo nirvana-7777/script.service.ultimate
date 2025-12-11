@@ -1358,13 +1358,19 @@ class UltimateService:
                 logger.info(f"Save result for {provider}: success={success}, message={message}")
 
                 if success:
+                    # Reinitialize provider to pick up new credentials
+                    reinit_success = self.manager.reinitialize_provider(provider)
+                    if not reinit_success:
+                        logger.warning(f"Failed to reinitialize provider '{provider}' after credential change")
+
                     response.status = 200
                     response.content_type = 'application/json; charset=utf-8'
                     return {
                         'success': True,
                         'provider': provider,
                         'message': message,
-                        'action': 'updated' if existing_credentials else 'created'
+                        'action': 'updated' if existing_credentials else 'created',
+                        'reinitialized': reinit_success
                     }
                 else:
                     # Determine appropriate status code
@@ -1394,12 +1400,18 @@ class UltimateService:
                 success, message = settings_manager.delete_provider_credentials_from_api(provider)
 
                 if success:
+                    # Reinitialize provider to clear any cached authentication
+                    reinit_success = self.manager.reinitialize_provider(provider)
+                    if not reinit_success:
+                        logger.warning(f"Failed to reinitialize provider '{provider}' after credential deletion")
+
                     response.status = 200
                     response.content_type = 'application/json; charset=utf-8'
                     return {
                         'success': True,
                         'provider': provider,
-                        'message': message
+                        'message': message,
+                        'reinitialized': reinit_success
                     }
                 else:
                     # Determine appropriate status code
@@ -1499,12 +1511,18 @@ class UltimateService:
                 )
 
                 if success:
+                    # Reinitialize provider to pick up new proxy configuration
+                    reinit_success = self.manager.reinitialize_provider(provider)
+                    if not reinit_success:
+                        logger.warning(f"Failed to reinitialize provider '{provider}' after proxy change")
+
                     response.status = 200
                     response.content_type = 'application/json; charset=utf-8'
                     return {
                         'success': True,
                         'provider': provider,
-                        'message': message
+                        'message': message,
+                        'reinitialized': reinit_success
                     }
                 else:
                     # Determine appropriate status code
@@ -1534,12 +1552,18 @@ class UltimateService:
                 success, message = settings_manager.delete_provider_proxy_from_api(provider)
 
                 if success:
+                    # Reinitialize provider to remove proxy configuration
+                    reinit_success = self.manager.reinitialize_provider(provider)  # Changed: self.manager
+                    if not reinit_success:
+                        logger.warning(f"Failed to reinitialize provider '{provider}' after proxy deletion")
+
                     response.status = 200
                     response.content_type = 'application/json; charset=utf-8'
                     return {
                         'success': True,
                         'provider': provider,
-                        'message': message
+                        'message': message,
+                        'reinitialized': reinit_success
                     }
                 else:
                     # Determine appropriate status code
@@ -1554,6 +1578,35 @@ class UltimateService:
                 logger.error(f"API Error in DELETE /api/providers/{provider}/proxy: {str(api_err)}")
                 response.status = 500
                 return {'error': f'Internal server error: {str(api_err)}'}
+
+        @self.app.route('/api/providers/<provider>/reinitialize', method='POST')
+        def reinitialize_provider(provider):
+            """
+            Manually reinitialize a provider (e.g., after external configuration changes)
+
+            Example: POST /api/providers/joyn_de/reinitialize
+            """
+            try:
+                success = self.manager.reinitialize_provider(provider)  # self.manager
+
+                if success:
+                    return {
+                        'success': True,
+                        'provider': provider,
+                        'message': f'Provider {provider} reinitialized successfully'
+                    }
+                else:
+                    response.status = 500
+                    return {
+                        'success': False,
+                        'provider': provider,
+                        'message': f'Failed to reinitialize provider {provider}'
+                    }
+
+            except Exception as e:
+                logger.error(f"Error reinitializing provider {provider}: {e}")
+                response.status = 500
+                return {'error': f'Internal server error: {str(e)}'}
 
         @self.app.route('/api/config/export')
         def export_config():

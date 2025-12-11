@@ -783,3 +783,106 @@ class ProviderManager:
         """Clear all registered DRM plugins"""
         logger.info("ProviderManager: Clearing all DRM plugins")
         self.drm_plugin_manager.clear_plugins()
+
+    @staticmethod
+    def get_provider_class(provider_name: str):
+        """
+        Get provider class from AVAILABLE_PROVIDERS registry.
+
+        Args:
+            provider_name: Name of the provider (without country suffix)
+
+        Returns:
+            Provider class or None if not found
+        """
+        from streaming_providers import AVAILABLE_PROVIDERS
+
+        # Remove country suffix if present (e.g., "joyn_de" -> "joyn")
+        base_name = provider_name
+        if '_' in provider_name:
+            # Check if suffix looks like a country code (2-3 letters)
+            name_parts = provider_name.rsplit('_', 1)
+            if len(name_parts[1]) in (2, 3) and name_parts[1].isalpha():
+                base_name = name_parts[0]
+
+        return AVAILABLE_PROVIDERS.get(base_name)
+
+
+    def reinitialize_provider(self, provider_name: str) -> bool:
+        """
+        Reinitialize a provider instance (e.g., after credentials change).
+
+        Args:
+            provider_name: Name of the provider to reinitialize
+
+        Returns:
+            True if successful, False otherwise
+
+        Note:
+            This creates a new provider instance with the same country,
+            preserving the original configuration but with fresh HTTP session.
+        """
+        logger.info(f"ProviderManager: Reinitializing provider '{provider_name}'")
+
+        # Get existing provider to extract configuration
+        existing_provider = self.get_provider(provider_name)
+        if not existing_provider:
+            logger.error(f"ProviderManager: Cannot reinitialize - provider '{provider_name}' not found")
+            return False
+
+        # Extract country from existing provider
+        country = getattr(existing_provider, 'country', 'DE')
+
+        # Get provider class
+        provider_class = self.get_provider_class(provider_name)
+        if not provider_class:
+            logger.error(f"ProviderManager: Provider class not found for '{provider_name}'")
+            return False
+
+        try:
+            # Create new provider instance with same country
+            new_provider = provider_class(country=country)
+
+            # Replace in registry
+            self.providers[provider_name] = new_provider
+
+            logger.info(f"ProviderManager: Successfully reinitialized provider '{provider_name}'")
+            return True
+
+        except Exception as e:
+            logger.error(f"ProviderManager: Failed to reinitialize provider '{provider_name}': {e}")
+            return False
+
+
+    def reinitialize_providers(self, provider_names: List[str]) -> Dict[str, bool]:
+        """
+        Reinitialize multiple providers.
+
+        Args:
+            provider_names: List of provider names to reinitialize
+
+        Returns:
+            Dictionary mapping provider names to success status
+        """
+        logger.info(f"ProviderManager: Reinitializing {len(provider_names)} providers")
+
+        results = {}
+        for provider_name in provider_names:
+            success = self.reinitialize_provider(provider_name)
+            results[provider_name] = success
+
+        successful = sum(1 for result in results.values() if result)
+        logger.info(f"ProviderManager: Reinitialization completed - {successful}/{len(provider_names)} successful")
+
+        return results
+
+
+    def reinitialize_all_providers(self) -> Dict[str, bool]:
+        """
+        Reinitialize all registered providers.
+
+        Returns:
+            Dictionary mapping provider names to success status
+        """
+        provider_names = list(self.providers.keys())
+        return self.reinitialize_providers(provider_names)
