@@ -1,0 +1,1211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ultimate Backend Configuration</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary-color: #4361ee;
+            --secondary-color: #3a0ca3;
+            --success-color: #4cc9f0;
+            --danger-color: #f72585;
+            --warning-color: #ff9e00;
+            --light-color: #f8f9fa;
+            --dark-color: #212529;
+            --gray-color: #6c757d;
+            --border-radius: 8px;
+            --box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            --transition: all 0.3s ease;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: var(--dark-color);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            color: white;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        .header p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+
+        .card {
+            background: white;
+            border-radius: var(--border-radius);
+            box-shadow: var(--box-shadow);
+            margin-bottom: 25px;
+            overflow: hidden;
+            transition: var(--transition);
+        }
+
+        .card:hover {
+            box-shadow: 0 8px 15px rgba(0, 0, 0, 0.15);
+        }
+
+        .card-header {
+            background: var(--primary-color);
+            color: white;
+            padding: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .card-header h2 {
+            font-size: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .card-body {
+            padding: 25px;
+        }
+
+        .tabs {
+            display: flex;
+            background: var(--light-color);
+            border-bottom: 2px solid #dee2e6;
+        }
+
+        .tab {
+            padding: 15px 25px;
+            cursor: pointer;
+            font-weight: 600;
+            color: var(--gray-color);
+            border-bottom: 3px solid transparent;
+            transition: var(--transition);
+        }
+
+        .tab:hover {
+            color: var(--primary-color);
+            background: rgba(67, 97, 238, 0.05);
+        }
+
+        .tab.active {
+            color: var(--primary-color);
+            border-bottom-color: var(--primary-color);
+            background: white;
+        }
+
+        .tab-content {
+            display: none;
+            animation: fadeIn 0.5s ease;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .providers-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 20px;
+        }
+
+        .provider-card {
+            background: var(--light-color);
+            border-radius: var(--border-radius);
+            padding: 20px;
+            border: 1px solid #dee2e6;
+            transition: var(--transition);
+        }
+
+        .provider-card:hover {
+            border-color: var(--primary-color);
+            transform: translateY(-5px);
+        }
+
+        .provider-header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 20px;
+            gap: 15px;
+        }
+
+        .provider-logo {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            object-fit: cover;
+            background: white;
+            padding: 5px;
+            border: 2px solid var(--primary-color);
+        }
+
+        .provider-info h3 {
+            font-size: 1.3rem;
+            margin-bottom: 5px;
+        }
+
+        .provider-info .provider-id {
+            color: var(--gray-color);
+            font-size: 0.9rem;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: var(--dark-color);
+        }
+
+        .form-control {
+            width: 100%;
+            padding: 12px 15px;
+            border: 2px solid #dee2e6;
+            border-radius: var(--border-radius);
+            font-size: 1rem;
+            transition: var(--transition);
+        }
+
+        .form-control:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px rgba(67, 97, 238, 0.2);
+        }
+
+        .btn {
+            padding: 12px 25px;
+            border: none;
+            border-radius: var(--border-radius);
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: var(--transition);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .btn-primary {
+            background: var(--primary-color);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: var(--secondary-color);
+            transform: translateY(-2px);
+        }
+
+        .btn-danger {
+            background: var(--danger-color);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #d63384;
+            transform: translateY(-2px);
+        }
+
+        .btn-success {
+            background: var(--success-color);
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #2dc2e3;
+            transform: translateY(-2px);
+        }
+
+        .btn-sm {
+            padding: 8px 15px;
+            font-size: 0.9rem;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .status-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            margin-top: 10px;
+        }
+
+        .status-success {
+            background: rgba(76, 201, 240, 0.2);
+            color: var(--success-color);
+        }
+
+        .status-error {
+            background: rgba(247, 37, 133, 0.2);
+            color: var(--danger-color);
+        }
+
+        .status-warning {
+            background: rgba(255, 158, 0, 0.2);
+            color: var(--warning-color);
+        }
+
+        .loader {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid var(--primary-color);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .alert {
+            padding: 15px;
+            border-radius: var(--border-radius);
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .alert-info {
+            background: rgba(67, 97, 238, 0.1);
+            border-left: 4px solid var(--primary-color);
+            color: var(--primary-color);
+        }
+
+        .alert-success {
+            background: rgba(76, 201, 240, 0.1);
+            border-left: 4px solid var(--success-color);
+            color: #0c5460;
+        }
+
+        .alert-error {
+            background: rgba(247, 37, 133, 0.1);
+            border-left: 4px solid var(--danger-color);
+            color: var(--danger-color);
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: var(--gray-color);
+        }
+
+        .empty-state i {
+            font-size: 3rem;
+            margin-bottom: 20px;
+            color: #dee2e6;
+        }
+
+        .config-section {
+            margin-bottom: 30px;
+        }
+
+        .config-section h3 {
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #dee2e6;
+            color: var(--primary-color);
+        }
+
+        .json-editor {
+            width: 100%;
+            min-height: 200px;
+            font-family: 'Courier New', monospace;
+            padding: 15px;
+            border: 2px solid #dee2e6;
+            border-radius: var(--border-radius);
+            resize: vertical;
+        }
+
+        .tooltip {
+            position: relative;
+            display: inline-block;
+        }
+
+        .tooltip .tooltip-text {
+            visibility: hidden;
+            width: 200px;
+            background-color: var(--dark-color);
+            color: white;
+            text-align: center;
+            border-radius: var(--border-radius);
+            padding: 10px;
+            position: absolute;
+            z-index: 1;
+            bottom: 125%;
+            left: 50%;
+            transform: translateX(-50%);
+            opacity: 0;
+            transition: opacity 0.3s;
+            font-size: 0.9rem;
+        }
+
+        .tooltip:hover .tooltip-text {
+            visibility: visible;
+            opacity: 1;
+        }
+
+        @media (max-width: 768px) {
+            .providers-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .header h1 {
+                font-size: 2rem;
+            }
+
+            .tabs {
+                flex-direction: column;
+            }
+
+            .tab {
+                text-align: center;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1><i class="fas fa-broadcast-tower"></i> Ultimate Backend Config</h1>
+            <p>Configure your streaming providers, credentials, and proxy settings</p>
+        </header>
+
+        <main class="card">
+            <div class="card-header">
+                <h2><i class="fas fa-sliders-h"></i> Configuration Dashboard</h2>
+                <div class="btn-group">
+                    <button id="btn-export" class="btn btn-success btn-sm">
+                        <i class="fas fa-download"></i> Export
+                    </button>
+                    <button id="btn-import" class="btn btn-primary btn-sm">
+                        <i class="fas fa-upload"></i> Import
+                    </button>
+                </div>
+            </div>
+
+            <div class="tabs">
+                <div class="tab active" data-tab="credentials">
+                    <i class="fas fa-key"></i> Credentials
+                </div>
+                <div class="tab" data-tab="proxy">
+                    <i class="fas fa-network-wired"></i> Proxy
+                </div>
+                <div class="tab" data-tab="advanced">
+                    <i class="fas fa-cogs"></i> Advanced
+                </div>
+            </div>
+
+            <!-- Credentials Tab -->
+            <div id="tab-credentials" class="tab-content active">
+                <div class="card-body">
+                    <div class="alert alert-info">
+                        <i class="fas fa-info-circle"></i>
+                        <div>
+                            <strong>Credentials Setup</strong>
+                            <p>Enter your login credentials for each streaming provider. Some providers may also require client ID/secret for API access.</p>
+                        </div>
+                    </div>
+
+                    <div id="credentials-container" class="providers-grid">
+                        <!-- Providers will be loaded here -->
+                        <div class="empty-state" id="loading-providers">
+                            <i class="fas fa-spinner loader"></i>
+                            <p>Loading providers...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Proxy Tab -->
+            <div id="tab-proxy" class="tab-content">
+                <div class="card-body">
+                    <div class="alert alert-info">
+                        <i class="fas fa-info-circle"></i>
+                        <div>
+                            <strong>Proxy Configuration</strong>
+                            <p>Configure proxy settings for each provider. This is useful if you need to route traffic through a specific proxy server.</p>
+                        </div>
+                    </div>
+
+                    <div id="proxy-container" class="providers-grid">
+                        <!-- Proxy forms will be loaded here -->
+                        <div class="empty-state">
+                            <i class="fas fa-network-wired"></i>
+                            <p>Select a provider from the credentials tab to configure proxy settings</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Advanced Tab -->
+            <div id="tab-advanced" class="tab-content">
+                <div class="card-body">
+                    <div class="config-section">
+                        <h3><i class="fas fa-file-export"></i> Import/Export Configuration</h3>
+                        <p>Export all settings to a JSON file or import from an existing configuration.</p>
+
+                        <div class="btn-group">
+                            <button id="btn-export-json" class="btn btn-success">
+                                <i class="fas fa-file-export"></i> Export to JSON
+                            </button>
+                            <button id="btn-import-json" class="btn btn-primary">
+                                <i class="fas fa-file-import"></i> Import from JSON
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="config-section">
+                        <h3><i class="fas fa-code"></i> Raw Configuration Editor</h3>
+                        <p>Advanced users can edit the raw JSON configuration:</p>
+                        <textarea id="json-editor" class="json-editor" placeholder="Paste JSON configuration here..."></textarea>
+                        <div class="btn-group" style="margin-top: 15px;">
+                            <button id="btn-apply-json" class="btn btn-primary">
+                                <i class="fas fa-check"></i> Apply Configuration
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="config-section">
+                        <h3><i class="fas fa-trash-alt"></i> Danger Zone</h3>
+                        <div class="alert alert-error">
+                            <i class="fas fa-exclamation-triangle"></i>
+                            <div>
+                                <strong>Warning: Irreversible Actions</strong>
+                                <p>These actions cannot be undone. Make sure you have a backup.</p>
+                            </div>
+                        </div>
+
+                        <div class="btn-group">
+                            <button id="btn-clear-all" class="btn btn-danger">
+                                <i class="fas fa-broom"></i> Clear All Configurations
+                            </button>
+                            <button id="btn-test-connection" class="btn btn-success">
+                                <i class="fas fa-wifi"></i> Test API Connection
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <footer style="text-align: center; margin-top: 30px; color: white; opacity: 0.8;">
+            <p>Ultimate Backend &copy; 2024 | Service running on <span id="service-url">...</span></p>
+        </footer>
+    </div>
+
+    <!-- Import Modal -->
+    <div id="import-modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; justify-content: center; align-items: center;">
+        <div style="background: white; padding: 30px; border-radius: var(--border-radius); max-width: 500px; width: 90%;">
+            <h3 style="margin-bottom: 20px;"><i class="fas fa-file-import"></i> Import Configuration</h3>
+            <p style="margin-bottom: 20px;">Upload a JSON configuration file:</p>
+            <input type="file" id="import-file" accept=".json" style="margin-bottom: 20px; width: 100%; padding: 10px;">
+            <div class="btn-group" style="justify-content: flex-end;">
+                <button id="btn-cancel-import" class="btn btn-danger">Cancel</button>
+                <button id="btn-confirm-import" class="btn btn-success">Import</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global state
+        let providers = [];
+        let authStatus = {};
+        let currentTab = 'credentials';
+        const API_BASE = window.location.origin;
+
+        // DOM Elements
+        const tabs = document.querySelectorAll('.tab');
+        const tabContents = document.querySelectorAll('.tab-content');
+        const credentialsContainer = document.getElementById('credentials-container');
+        const proxyContainer = document.getElementById('proxy-container');
+        const jsonEditor = document.getElementById('json-editor');
+        const importModal = document.getElementById('import-modal');
+        const importFile = document.getElementById('import-file');
+        const serviceUrlSpan = document.getElementById('service-url');
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            serviceUrlSpan.textContent = window.location.origin;
+            loadProviders();
+            setupEventListeners();
+        });
+
+        // Tab switching
+        tabs.forEach(tab => {
+            tab.addEventListener('click', () => {
+                const tabId = tab.dataset.tab;
+                switchTab(tabId);
+            });
+        });
+
+        function switchTab(tabId) {
+            // Update active tab
+            tabs.forEach(t => t.classList.remove('active'));
+            document.querySelector(`[data-tab="${tabId}"]`).classList.add('active');
+
+            // Update active content
+            tabContents.forEach(c => c.classList.remove('active'));
+            document.getElementById(`tab-${tabId}`).classList.add('active');
+
+            currentTab = tabId;
+
+            // Load proxy data if switching to proxy tab
+            if (tabId === 'proxy') {
+                loadProxyForms();
+            }
+        }
+
+        // Load providers from API
+        async function loadProviders() {
+            try {
+                const response = await fetch(`${API_BASE}/api/providers`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+                const data = await response.json();
+                providers = data.providers;
+
+                // Load auth status for each provider
+                await loadAuthStatus();
+
+                renderCredentialsForms();
+
+            } catch (error) {
+                credentialsContainer.innerHTML = `
+                    <div class="alert alert-error">
+                        <i class="fas fa-exclamation-circle"></i>
+                        <div>
+                            <strong>Failed to load providers</strong>
+                            <p>${error.message}</p>
+                            <p>Make sure the Ultimate Backend service is running.</p>
+                        </div>
+                    </div>
+                `;
+                console.error('Error loading providers:', error);
+            }
+        }
+
+        // Load authentication status for all providers
+        async function loadAuthStatus() {
+            for (const provider of providers) {
+                try {
+                    const response = await fetch(`${API_BASE}/api/providers/${provider.name}/auth/status`);
+                    if (response.ok) {
+                        authStatus[provider.name] = await response.json();
+                    }
+                } catch (error) {
+                    console.warn(`Failed to load auth status for ${provider.name}:`, error);
+                }
+            }
+        }
+
+        // Render credentials forms
+        function renderCredentialsForms() {
+            if (providers.length === 0) {
+                credentialsContainer.innerHTML = `
+                    <div class="empty-state">
+                        <i class="fas fa-tv"></i>
+                        <p>No providers configured</p>
+                        <p>Check your provider configuration files</p>
+                    </div>
+                `;
+                return;
+            }
+
+            credentialsContainer.innerHTML = providers.map(provider => `
+                <div class="provider-card" data-provider="${provider.name}">
+                    <div class="provider-header">
+                        ${provider.logo ? `<img src="${provider.logo}" alt="${provider.label}" class="provider-logo">` : ''}
+                        <div class="provider-info">
+                            <h3>${provider.label}</h3>
+                            <div class="provider-id">${provider.name} • ${provider.country}</div>
+                            <div id="status-${provider.name}" class="status-indicator">
+                                ${getStatusIcon(authStatus[provider.name])}
+                                ${getStatusText(authStatus[provider.name])}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="username-${provider.name}">
+                            <i class="fas fa-user"></i> Username/Email
+                        </label>
+                        <input type="text"
+                               id="username-${provider.name}"
+                               class="form-control"
+                               placeholder="user@example.com"
+                               value="${authStatus[provider.name]?.username || ''}">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="password-${provider.name}">
+                            <i class="fas fa-lock"></i> Password
+                        </label>
+                        <input type="password"
+                               id="password-${provider.name}"
+                               class="form-control"
+                               placeholder="••••••••"
+                               value="">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="client-id-${provider.name}">
+                            <i class="fas fa-id-card"></i> Client ID (Optional)
+                        </label>
+                        <input type="text"
+                               id="client-id-${provider.name}"
+                               class="form-control"
+                               placeholder="Client ID"
+                               value="${authStatus[provider.name]?.client_id || ''}">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="client-secret-${provider.name}">
+                            <i class="fas fa-key"></i> Client Secret (Optional)
+                        </label>
+                        <input type="password"
+                               id="client-secret-${provider.name}"
+                               class="form-control"
+                               placeholder="••••••••"
+                               value="">
+                    </div>
+
+                    <div class="btn-group">
+                        <button onclick="saveCredentials('${provider.name}')" class="btn btn-primary">
+                            <i class="fas fa-save"></i> Save
+                        </button>
+                        <button onclick="deleteCredentials('${provider.name}')" class="btn btn-danger">
+                            <i class="fas fa-trash"></i> Delete
+                        </button>
+                        <button onclick="testAuth('${provider.name}')" class="btn btn-success">
+                            <i class="fas fa-check"></i> Test
+                        </button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // Load proxy forms
+        function loadProxyForms() {
+            proxyContainer.innerHTML = providers.map(provider => `
+                <div class="provider-card" data-provider="${provider.name}">
+                    <div class="provider-header">
+                        ${provider.logo ? `<img src="${provider.logo}" alt="${provider.label}" class="provider-logo">` : ''}
+                        <div class="provider-info">
+                            <h3>${provider.label}</h3>
+                            <div class="provider-id">Proxy Configuration</div>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="proxy-host-${provider.name}">
+                            <i class="fas fa-server"></i> Proxy Host
+                        </label>
+                        <input type="text"
+                               id="proxy-host-${provider.name}"
+                               class="form-control"
+                               placeholder="proxy.example.com">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="proxy-port-${provider.name}">
+                            <i class="fas fa-plug"></i> Proxy Port
+                        </label>
+                        <input type="number"
+                               id="proxy-port-${provider.name}"
+                               class="form-control"
+                               placeholder="8080"
+                               min="1"
+                               max="65535">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="proxy-type-${provider.name}">
+                            <i class="fas fa-network-wired"></i> Proxy Type
+                        </label>
+                        <select id="proxy-type-${provider.name}" class="form-control">
+                            <option value="http">HTTP</option>
+                            <option value="https">HTTPS</option>
+                            <option value="socks4">SOCKS4</option>
+                            <option value="socks5">SOCKS5</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="proxy-user-${provider.name}">
+                            <i class="fas fa-user"></i> Username (Optional)
+                        </label>
+                        <input type="text"
+                               id="proxy-user-${provider.name}"
+                               class="form-control"
+                               placeholder="proxyuser">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="proxy-pass-${provider.name}">
+                            <i class="fas fa-lock"></i> Password (Optional)
+                        </label>
+                        <input type="password"
+                               id="proxy-pass-${provider.name}"
+                               class="form-control"
+                               placeholder="••••••••">
+                    </div>
+
+                    <div class="btn-group">
+                        <button onclick="saveProxy('${provider.name}')" class="btn btn-primary">
+                            <i class="fas fa-save"></i> Save Proxy
+                        </button>
+                        <button onclick="deleteProxy('${provider.name}')" class="btn btn-danger">
+                            <i class="fas fa-trash"></i> Delete Proxy
+                        </button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // Helper functions
+        function getStatusIcon(status) {
+            if (!status) return '<i class="fas fa-question-circle"></i>';
+
+            switch (status.auth_state) {
+                case 'user_authenticated':
+                case 'client_authenticated':
+                    return '<i class="fas fa-check-circle"></i>';
+                case 'credentials_only':
+                    return '<i class="fas fa-exclamation-triangle"></i>';
+                default:
+                    return '<i class="fas fa-times-circle"></i>';
+            }
+        }
+
+        function getStatusText(status) {
+            if (!status) return 'Unknown';
+
+            switch (status.auth_state) {
+                case 'user_authenticated':
+                    return 'Authenticated';
+                case 'client_authenticated':
+                    return 'Client Authenticated';
+                case 'credentials_only':
+                    return 'Credentials Saved';
+                case 'not_authenticated':
+                    return 'Not Authenticated';
+                default:
+                    return status.auth_state;
+            }
+        }
+
+        // API Functions
+        async function saveCredentials(providerName) {
+            const username = document.getElementById(`username-${providerName}`).value;
+            const password = document.getElementById(`password-${providerName}`).value;
+            const clientId = document.getElementById(`client-id-${providerName}`).value;
+            const clientSecret = document.getElementById(`client-secret-${providerName}`).value;
+
+            const credentials = {};
+            if (username) credentials.username = username;
+            if (password) credentials.password = password;
+            if (clientId) credentials.client_id = clientId;
+            if (clientSecret) credentials.client_secret = clientSecret;
+
+            const statusEl = document.getElementById(`status-${providerName}`);
+            statusEl.innerHTML = '<span class="loader"></span> Saving...';
+
+            try {
+                const response = await fetch(`${API_BASE}/api/providers/${providerName}/credentials`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(credentials)
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    statusEl.className = 'status-indicator status-success';
+                    statusEl.innerHTML = '<i class="fas fa-check-circle"></i> Saved successfully';
+
+                    // Clear password field
+                    document.getElementById(`password-${providerName}`).value = '';
+                    document.getElementById(`client-secret-${providerName}`).value = '';
+
+                    // Reload auth status
+                    await loadAuthStatus();
+                    renderCredentialsForms();
+
+                    // Show success message
+                    showAlert('success', `Credentials saved for ${providerName}`);
+                } else {
+                    statusEl.className = 'status-indicator status-error';
+                    statusEl.innerHTML = `<i class="fas fa-exclamation-circle"></i> ${result.error || 'Failed to save'}`;
+                    showAlert('error', result.error || `Failed to save credentials for ${providerName}`);
+                }
+            } catch (error) {
+                statusEl.className = 'status-indicator status-error';
+                statusEl.innerHTML = '<i class="fas fa-exclamation-circle"></i> Network error';
+                showAlert('error', `Network error: ${error.message}`);
+                console.error('Save error:', error);
+            }
+        }
+
+        async function deleteCredentials(providerName) {
+            if (!confirm(`Delete credentials for ${providerName}?`)) return;
+
+            const statusEl = document.getElementById(`status-${providerName}`);
+            statusEl.innerHTML = '<span class="loader"></span> Deleting...';
+
+            try {
+                const response = await fetch(`${API_BASE}/api/providers/${providerName}/credentials`, {
+                    method: 'DELETE'
+                });
+
+                if (response.ok) {
+                    statusEl.className = 'status-indicator status-warning';
+                    statusEl.innerHTML = '<i class="fas fa-info-circle"></i> Credentials deleted';
+
+                    // Clear fields
+                    document.getElementById(`username-${providerName}`).value = '';
+                    document.getElementById(`password-${providerName}`).value = '';
+                    document.getElementById(`client-id-${providerName}`).value = '';
+                    document.getElementById(`client-secret-${providerName}`).value = '';
+
+                    // Reload auth status
+                    await loadAuthStatus();
+                    renderCredentialsForms();
+
+                    showAlert('success', `Credentials deleted for ${providerName}`);
+                } else {
+                    const result = await response.json();
+                    statusEl.className = 'status-indicator status-error';
+                    statusEl.innerHTML = `<i class="fas fa-exclamation-circle"></i> ${result.error || 'Delete failed'}`;
+                    showAlert('error', result.error || `Failed to delete credentials for ${providerName}`);
+                }
+            } catch (error) {
+                statusEl.className = 'status-indicator status-error';
+                statusEl.innerHTML = '<i class="fas fa-exclamation-circle"></i> Network error';
+                showAlert('error', `Network error: ${error.message}`);
+                console.error('Delete error:', error);
+            }
+        }
+
+        async function testAuth(providerName) {
+            const statusEl = document.getElementById(`status-${providerName}`);
+            statusEl.innerHTML = '<span class="loader"></span> Testing...';
+
+            try {
+                const response = await fetch(`${API_BASE}/api/providers/${providerName}/auth/status`);
+                const result = await response.json();
+
+                if (response.ok) {
+                    if (result.is_authenticated) {
+                        statusEl.className = 'status-indicator status-success';
+                        statusEl.innerHTML = '<i class="fas fa-check-circle"></i> Authentication successful';
+                        showAlert('success', `Authentication successful for ${providerName}`);
+                    } else {
+                        statusEl.className = 'status-indicator status-warning';
+                        statusEl.innerHTML = `<i class="fas fa-exclamation-triangle"></i> ${result.auth_state}`;
+                        showAlert('warning', `Authentication status: ${result.auth_state}`);
+                    }
+                } else {
+                    statusEl.className = 'status-indicator status-error';
+                    statusEl.innerHTML = '<i class="fas fa-exclamation-circle"></i> Test failed';
+                    showAlert('error', `Test failed for ${providerName}`);
+                }
+            } catch (error) {
+                statusEl.className = 'status-indicator status-error';
+                statusEl.innerHTML = '<i class="fas fa-exclamation-circle"></i> Network error';
+                showAlert('error', `Network error: ${error.message}`);
+                console.error('Test error:', error);
+            }
+        }
+
+        async function saveProxy(providerName) {
+            const host = document.getElementById(`proxy-host-${providerName}`).value;
+            const port = document.getElementById(`proxy-port-${providerName}`).value;
+            const type = document.getElementById(`proxy-type-${providerName}`).value;
+            const user = document.getElementById(`proxy-user-${providerName}`).value;
+            const pass = document.getElementById(`proxy-pass-${providerName}`).value;
+
+            if (!host || !port) {
+                showAlert('error', 'Please fill in at least Host and Port fields');
+                return;
+            }
+
+            const proxyConfig = {
+                host,
+                port: parseInt(port),
+                proxy_type: type
+            };
+
+            if (user) proxyConfig.username = user;
+            if (pass) proxyConfig.password = pass;
+
+            try {
+                const response = await fetch(`${API_BASE}/api/providers/${providerName}/proxy`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(proxyConfig)
+                });
+
+                if (response.ok) {
+                    showAlert('success', `Proxy configuration saved for ${providerName}`);
+                    // Clear password field
+                    document.getElementById(`proxy-pass-${providerName}`).value = '';
+                } else {
+                    const result = await response.json();
+                    showAlert('error', result.error || `Failed to save proxy for ${providerName}`);
+                }
+            } catch (error) {
+                showAlert('error', `Network error: ${error.message}`);
+                console.error('Proxy save error:', error);
+            }
+        }
+
+        async function deleteProxy(providerName) {
+            if (!confirm(`Delete proxy configuration for ${providerName}?`)) return;
+
+            try {
+                const response = await fetch(`${API_BASE}/api/providers/${providerName}/proxy`, {
+                    method: 'DELETE'
+                });
+
+                if (response.ok) {
+                    showAlert('success', `Proxy configuration deleted for ${providerName}`);
+                    // Clear fields
+                    document.getElementById(`proxy-host-${providerName}`).value = '';
+                    document.getElementById(`proxy-port-${providerName}`).value = '';
+                    document.getElementById(`proxy-user-${providerName}`).value = '';
+                    document.getElementById(`proxy-pass-${providerName}`).value = '';
+                } else {
+                    const result = await response.json();
+                    showAlert('error', result.error || `Failed to delete proxy for ${providerName}`);
+                }
+            } catch (error) {
+                showAlert('error', `Network error: ${error.message}`);
+                console.error('Proxy delete error:', error);
+            }
+        }
+
+        // UI Helper Functions
+        function showAlert(type, message) {
+            const alert = document.createElement('div');
+            alert.className = `alert alert-${type}`;
+            alert.innerHTML = `
+                <i class="fas fa-${type === 'success' ? 'check-circle' : type === 'error' ? 'exclamation-circle' : 'info-circle'}"></i>
+                <div>${message}</div>
+            `;
+
+            // Insert at beginning of card body
+            const cardBody = document.querySelector('.card-body');
+            cardBody.insertBefore(alert, cardBody.firstChild);
+
+            // Remove after 5 seconds
+            setTimeout(() => alert.remove(), 5000);
+        }
+
+        function setupEventListeners() {
+            // Export button
+            document.getElementById('btn-export').addEventListener('click', exportConfig);
+            document.getElementById('btn-export-json').addEventListener('click', exportConfig);
+
+            // Import button
+            document.getElementById('btn-import').addEventListener('click', () => importModal.style.display = 'flex');
+            document.getElementById('btn-import-json').addEventListener('click', () => importModal.style.display = 'flex');
+
+            // Import modal
+            document.getElementById('btn-cancel-import').addEventListener('click', () => importModal.style.display = 'none');
+            document.getElementById('btn-confirm-import').addEventListener('click', importConfig);
+
+            // Apply JSON config
+            document.getElementById('btn-apply-json').addEventListener('click', applyJsonConfig);
+
+            // Test connection
+            document.getElementById('btn-test-connection').addEventListener('click', testApiConnection);
+
+            // Clear all
+            document.getElementById('btn-clear-all').addEventListener('click', clearAllConfigurations);
+        }
+
+        async function exportConfig() {
+            try {
+                const response = await fetch(`${API_BASE}/api/config/export`);
+                if (!response.ok) throw new Error('Export failed');
+
+                const data = await response.json();
+
+                // Create download link
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `ultimate_backend_config_${new Date().toISOString().slice(0,10)}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+
+                showAlert('success', 'Configuration exported successfully');
+            } catch (error) {
+                showAlert('error', `Export failed: ${error.message}`);
+            }
+        }
+
+        async function importConfig() {
+            const file = importFile.files[0];
+            if (!file) {
+                showAlert('error', 'Please select a file first');
+                return;
+            }
+
+            try {
+                const text = await file.text();
+                const config = JSON.parse(text);
+
+                const response = await fetch(`${API_BASE}/api/config/import`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+
+                if (response.ok) {
+                    showAlert('success', 'Configuration imported successfully');
+                    importModal.style.display = 'none';
+                    importFile.value = '';
+
+                    // Reload providers
+                    await loadProviders();
+                    loadProxyForms();
+                } else {
+                    const result = await response.json();
+                    showAlert('error', result.error || 'Import failed');
+                }
+            } catch (error) {
+                showAlert('error', `Import failed: ${error.message}`);
+            }
+        }
+
+        async function applyJsonConfig() {
+            const jsonText = jsonEditor.value.trim();
+            if (!jsonText) {
+                showAlert('error', 'Please enter JSON configuration');
+                return;
+            }
+
+            try {
+                const config = JSON.parse(jsonText);
+
+                const response = await fetch(`${API_BASE}/api/config/import`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+
+                if (response.ok) {
+                    showAlert('success', 'Configuration applied successfully');
+                    jsonEditor.value = '';
+
+                    // Reload providers
+                    await loadProviders();
+                    loadProxyForms();
+                } else {
+                    const result = await response.json();
+                    showAlert('error', result.error || 'Failed to apply configuration');
+                }
+            } catch (error) {
+                showAlert('error', `Invalid JSON: ${error.message}`);
+            }
+        }
+
+        async function testApiConnection() {
+            try {
+                const response = await fetch(`${API_BASE}/api/providers`);
+                if (response.ok) {
+                    showAlert('success', 'API connection successful');
+                } else {
+                    showAlert('error', `API returned ${response.status}`);
+                }
+            } catch (error) {
+                showAlert('error', `API connection failed: ${error.message}`);
+            }
+        }
+
+        async function clearAllConfigurations() {
+            if (!confirm('Are you sure you want to clear ALL configurations? This cannot be undone.')) {
+                return;
+            }
+
+            if (!confirm('This will delete all credentials and proxy settings. Are you REALLY sure?')) {
+                return;
+            }
+
+            try {
+                // Delete credentials for all providers
+                for (const provider of providers) {
+                    await fetch(`${API_BASE}/api/providers/${provider.name}/credentials`, {
+                        method: 'DELETE'
+                    });
+
+                    await fetch(`${API_BASE}/api/providers/${provider.name}/proxy`, {
+                        method: 'DELETE'
+                    });
+                }
+
+                showAlert('success', 'All configurations cleared');
+
+                // Reload providers
+                await loadProviders();
+                loadProxyForms();
+            } catch (error) {
+                showAlert('error', `Failed to clear configurations: ${error.message}`);
+            }
+        }
+
+        // Make functions available globally
+        window.saveCredentials = saveCredentials;
+        window.deleteCredentials = deleteCredentials;
+        window.testAuth = testAuth;
+        window.saveProxy = saveProxy;
+        window.deleteProxy = deleteProxy;
+    </script>
+</body>
+</html>
