@@ -57,6 +57,81 @@ class UltimateService:
 
         self.setup_routes()
 
+        self.config_html = self._load_config_html()
+
+    def _load_config_html(self):
+        """Load the web interface HTML template"""
+        html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 'resources', 'web', 'config.html')
+
+        if os.path.exists(html_path):
+            try:
+                with open(html_path, 'r', encoding='utf-8') as f:
+                    return f.read()
+            except Exception as e:
+                logger.error(f"Failed to load config HTML: {e}")
+                return self._get_fallback_html()
+        else:
+            logger.warning(f"Config HTML not found at {html_path}")
+            return self._get_fallback_html()
+
+    @staticmethod
+    def _get_fallback_html():
+        """Generate a minimal fallback HTML if file is not found"""
+        return """
+         <!DOCTYPE html>
+         <html>
+         <head>
+             <title>Ultimate Backend Config - Fallback</title>
+             <style>
+                 body { font-family: Arial, sans-serif; padding: 20px; }
+                 .error { color: red; }
+             </style>
+         </head>
+         <body>
+             <h1>Configuration Interface</h1>
+             <p class="error">Warning: Full interface not loaded. Using basic mode.</p>
+             <p><a href="/api/providers">View Providers</a></p>
+             <div id="providers-container"></div>
+             <script>
+                 async function loadProviders() {
+                     const response = await fetch('/api/providers');
+                     const data = await response.json();
+
+                     let html = '<h2>Providers</h2>';
+                     data.providers.forEach(provider => {
+                         html += `
+                         <div style="border:1px solid #ccc; padding:10px; margin:10px 0;">
+                             <h3>${provider.label}</h3>
+                             <input id="user-${provider.name}" placeholder="Username">
+                             <input id="pass-${provider.name}" type="password" placeholder="Password">
+                             <button onclick="save('${provider.name}')">Save</button>
+                         </div>`;
+                     });
+                     document.getElementById('providers-container').innerHTML = html;
+                 }
+
+                 async function save(provider) {
+                     const creds = {
+                         username: document.getElementById('user-' + provider).value,
+                         password: document.getElementById('pass-' + provider).value
+                     };
+
+                     await fetch(`/api/providers/${provider}/credentials`, {
+                         method: 'POST',
+                         headers: {'Content-Type': 'application/json'},
+                         body: JSON.stringify(creds)
+                     });
+
+                     alert('Saved');
+                 }
+
+                 loadProviders();
+             </script>
+         </body>
+         </html>
+         """
+
     def _get_setting(self, setting_id: str, default: str = None) -> str:
         """Get setting value from appropriate source"""
         # Try Kodi settings first if in Kodi environment
@@ -1331,6 +1406,83 @@ class UltimateService:
                 response.status = 500
                 return {'error': f'Internal server error: {str(api_err)}'}
 
+        @self.app.route('/api/config/export')
+        def export_config():
+            """Export all configurations as JSON"""
+            try:
+                config = {
+                    'credentials': {},
+                    'proxy': {},
+                    'settings': {}
+                }
+
+                # Export credentials and proxy for all providers
+                providers = self.manager.list_providers()
+                for provider in providers:
+                    # Get auth status (contains credential info)
+                    status = self.manager.settings_manager.get_auth_status(provider)
+                    if status.get('has_credentials'):
+                        config['credentials'][provider] = status
+
+                    # Get proxy info
+                    provider_instance = self.manager.get_provider(provider)
+                    if hasattr(provider_instance, 'http_manager'):
+                        proxy_config = getattr(provider_instance.http_manager.config, 'proxy_config', None)
+                        if proxy_config:
+                            config['proxy'][provider] = proxy_config
+
+                response.content_type = 'application/json'
+                response.headers['Content-Disposition'] = 'attachment; filename="ultimate_backup.json"'
+                return json.dumps(config, indent=2)
+
+            except Exception as e:
+                logger.error(f"Error exporting config: {e}")
+                response.status = 500
+                return {'error': str(e)}
+
+        @self.app.route('/api/config/import', method='POST')
+        def import_config():
+            """Import configurations from JSON"""
+            try:
+                import_data = request.json
+                if not import_data:
+                    response.status = 400
+                    return {'error': 'No data provided'}
+
+                # Import credentials
+                credentials = import_data.get('credentials', {})
+                for provider, cred_data in credentials.items():
+                    # Extract username/password from status data
+                    if 'username' in cred_data and 'password' in cred_data:
+                        self.manager.settings_manager.save_provider_credentials_from_api(
+                            provider,
+                            {'username': cred_data['username'], 'password': cred_data['password']}
+                        )
+
+                # Import proxy configs
+                proxies = import_data.get('proxy', {})
+                for provider, proxy_config in proxies.items():
+                    self.manager.settings_manager.save_provider_proxy_from_api(
+                        provider, proxy_config
+                    )
+
+                return {'success': True, 'imported': len(credentials) + len(proxies)}
+
+            except Exception as e:
+                logger.error(f"Error importing config: {e}")
+                response.status = 500
+                return {'error': str(e)}
+
+        @self.app.route('/config')
+        def serve_config_ui():
+            """Serve the web configuration interface"""
+            response.content_type = 'text/html; charset=utf-8'
+            return self.config_html
+
+        @self.app.route('/')
+        def serve_root():
+            """Redirect root to config page"""
+            redirect('/config')
 
 def start_service(service_instance):
     """Start the Bottle server"""
