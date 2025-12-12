@@ -61,19 +61,38 @@ class UltimateService:
         self.config_html = self._load_config_html()
 
     def _load_config_html(self):
-        """Load the web interface HTML template"""
-        html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                 'resources', 'web', 'config.html')
+        """Load the web interface HTML template with embedded CSS and JS"""
+        base_dir = os.path.dirname(os.path.abspath(__file__))
 
-        if os.path.exists(html_path):
-            try:
-                with open(html_path, 'r', encoding='utf-8') as f:
-                    return f.read()
-            except Exception as e:
-                logger.error(f"Failed to load config HTML: {e}")
-                return self._get_fallback_html()
-        else:
-            logger.warning(f"Config HTML not found at {html_path}")
+        # Define file paths
+        html_path = os.path.join(base_dir, 'resources', 'web', 'config.html')
+        css_path = os.path.join(base_dir, 'resources', 'web', 'config.css')
+        js_path = os.path.join(base_dir, 'resources', 'web', 'config.js')
+
+        try:
+            # Load HTML
+            with open(html_path, 'r', encoding='utf-8') as f:
+                html = f.read()
+
+            # Load CSS
+            with open(css_path, 'r', encoding='utf-8') as f:
+                css = f.read()
+
+            # Load JS
+            with open(js_path, 'r', encoding='utf-8') as f:
+                js = f.read()
+
+            # Simple replacements - we control the files so we know what's in them
+            html = html.replace('<link rel="stylesheet" href="config.css">',
+                                f'<style>\n{css}\n</style>')
+
+            html = html.replace('<script src="config.js"></script>',
+                                f'<script>\n{js}\n</script>')
+
+            return html
+
+        except Exception as e:
+            logger.error(f"Failed to load config files: {e}")
             return self._get_fallback_html()
 
     @staticmethod
@@ -1849,20 +1868,6 @@ class UltimateService:
             """Serve the web configuration interface"""
             response.content_type = 'text/html; charset=utf-8'
             return self.config_html
-
-        @app.route('/config.css')
-        def serve_config_css():
-            """Serve the CSS file"""
-            css_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                    'resources', 'web', 'config.css')
-            return send_file(css_path, mimetype='text/css')
-
-        @app.route('/config.js')
-        def serve_config_js():
-            """Serve the JavaScript file"""
-            js_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                   'resources', 'web', 'config.js')
-            return send_file(js_path, mimetype='application/javascript')
 
         @self.app.route('/')
         def serve_root():
