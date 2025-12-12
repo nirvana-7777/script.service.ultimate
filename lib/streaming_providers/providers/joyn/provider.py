@@ -73,6 +73,7 @@ class JoynProvider(StreamingProvider):
     """
     Joyn streaming provider implementation with centralized HTTP management
     """
+    SUPPORTED_COUNTRIES = SUPPORTED_COUNTRIES
 
     def __init__(self, country: str = 'de',
                  platform: str = DEFAULT_PLATFORM,
