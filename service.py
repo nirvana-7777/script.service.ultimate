@@ -1850,6 +1850,20 @@ class UltimateService:
             response.content_type = 'text/html; charset=utf-8'
             return self.config_html
 
+        @app.route('/config.css')
+        def serve_config_css():
+            """Serve the CSS file"""
+            css_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    'resources', 'web', 'config.css')
+            return send_file(css_path, mimetype='text/css')
+
+        @app.route('/config.js')
+        def serve_config_js():
+            """Serve the JavaScript file"""
+            js_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   'resources', 'web', 'config.js')
+            return send_file(js_path, mimetype='application/javascript')
+
         @self.app.route('/')
         def serve_root():
             """Redirect root to config page"""
