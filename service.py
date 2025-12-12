@@ -20,6 +20,7 @@ try:
     from streaming_providers.base.utils import logger, MPDRewriter, MPDCacheManager
     from streaming_providers.base.utils.environment import get_environment_manager, get_vfs_instance
     from streaming_providers.base.utils.environment import is_kodi_environment
+    from streaming_providers.base.settings.provider_enable_manager import ProviderEnableManager
 except ImportError as import_err:
     print(f"Ultimate Backend: Critical import failed - {str(import_err)}", file=sys.stderr)
     raise
@@ -425,10 +426,16 @@ class UltimateService:
                 except json.JSONDecodeError:
                     # If not JSON, try to parse as query string
                     try:
-                        headers_dict = dict(parse_qsl(req_headers))
+                        # parse_qsl can raise ValueError if the query string is malformed
+                        parsed_items = parse_qsl(req_headers)
+                        headers_dict = dict(parsed_items)
                         return urlencode(headers_dict)
-                    except:
-                        logger.warning(f"Failed to parse headers: {req_headers}")
+                    except ValueError as val_err:
+                        logger.warning(f"Invalid query string format in headers: {val_err}")
+                        return req_headers
+                    except Exception as parse_err:
+                        # Catch anything else unexpected
+                        logger.warning(f"Unexpected error parsing headers: {parse_err}")
                         return req_headers
             else:
                 # Assume it's already URL-encoded or query string format
@@ -1608,6 +1615,120 @@ class UltimateService:
                 response.status = 500
                 return {'error': f'Internal server error: {str(e)}'}
 
+        # Add to service.py setup_routes()
+
+        @self.app.route('/api/providers/enabled', method='GET')
+        def get_all_enabled_status():
+            """Get enabled status for all providers"""
+            try:
+                manager = self.manager  # ProviderManager
+                enable_manager = ProviderEnableManager()  # Our new class
+
+                all_providers = manager.list_providers()
+                result = {}
+
+                for provider in all_providers:
+                    # Get current status (following precedence)
+                    status = enable_manager.is_provider_enabled(provider)
+
+                    # Get source information
+                    source = enable_manager.get_enabled_source(provider)
+
+                    result[provider] = {
+                        'enabled': status,
+                        'source': source,  # 'kodi', 'file', or 'default'
+                        'can_modify': source != 'kodi'  # Can't modify if set in Kodi
+                    }
+
+                return {
+                    'success': True,
+                    'providers': result,
+                    'count': len(result)
+                }
+
+            except Exception as e:
+                logger.error(f"Error getting enabled status: {e}")
+                response.status = 500
+                return {'error': str(e)}
+
+        @self.app.route('/api/providers/<provider>/enabled', method='GET')
+        def get_provider_enabled(provider):
+            """Get enabled status for specific provider"""
+            try:
+                # Validate provider exists
+                if not self.manager.get_provider(provider):
+                    response.status = 404
+                    return {'error': f'Provider {provider} not found'}
+
+                enable_manager = ProviderEnableManager()
+                status = enable_manager.is_provider_enabled(provider)
+                source = enable_manager.get_enabled_source(provider)
+
+                return {
+                    'success': True,
+                    'provider': provider,
+                    'enabled': status,
+                    'source': source,
+                    'can_modify': source != 'kodi'
+                }
+
+            except Exception as e:
+                logger.error(f"Error getting enabled status for {provider}: {e}")
+                response.status = 500
+                return {'error': str(e)}
+
+        @self.app.route('/api/providers/<provider>/enabled', method='POST')
+        def set_provider_enabled(provider):
+            """Set enabled status for provider (writes to file only)"""
+            try:
+                # Validate provider exists
+                if not self.manager.get_provider(provider):
+                    response.status = 404
+                    return {'error': f'Provider {provider} not found'}
+
+                # Parse request
+                try:
+                    data = request.json
+                    if not data or 'enabled' not in data:
+                        response.status = 400
+                        return {'error': 'Missing "enabled" field'}
+
+                    enabled = bool(data['enabled'])
+                except ValueError:
+                    response.status = 400
+                    return {'error': 'Invalid JSON'}
+
+                # Check if controlled by Kodi
+                enable_manager = ProviderEnableManager()
+                source = enable_manager.get_enabled_source(provider)
+
+                if source == 'kodi':
+                    response.status = 403
+                    return {
+                        'error': f'Provider {provider} is controlled by Kodi settings',
+                        'hint': 'Change the setting in Kodi addon settings'
+                    }
+
+                # Write to file
+                success = enable_manager.set_provider_enabled(provider, enabled)
+
+                if success:
+                    return {
+                        'success': True,
+                        'provider': provider,
+                        'enabled': enabled,
+                        'source': 'file',
+                        'message': f'Provider {provider} {"enabled" if enabled else "disabled"} in file'
+                    }
+                else:
+                    response.status = 500
+                    return {'error': 'Failed to save setting'}
+
+            except Exception as e:
+                logger.error(f"Error setting enabled status for {provider}: {e}")
+                response.status = 500
+                return {'error': str(e)}
+
         @self.app.route('/api/config/export')
         def export_config():
             """Export all configurations as JSON"""
@@ -1635,65 +1756,93 @@ class UltimateService:
             """Import configurations from JSON"""
             try:
                 import_data = request.json
-                if not import_data:
-                    response.status = 400
-                    return {'error': 'No data provided'}
+            except ValueError:
+                response.status = 400
+                return {'error': 'Invalid JSON format'}
 
-                # First save the import data to a temp file
+            if not import_data:
+                response.status = 400
+                return {'error': 'No data provided'}
+
+            # Validate it's a dict
+            if not isinstance(import_data, dict):
+                response.status = 400
+                return {'error': 'Import data must be a JSON object'}
+
+            # Create temp file
+            try:
                 import tempfile
                 import uuid
+                import json
 
                 temp_dir = tempfile.gettempdir()
                 temp_file = os.path.join(temp_dir, f'import_{uuid.uuid4()}.json')
 
                 with open(temp_file, 'w', encoding='utf-8') as f:
                     json.dump(import_data, f)
+            except (IOError, OSError, PermissionError) as file_err:
+                logger.error(f"Failed to create temp file: {file_err}")
+                response.status = 500
+                return {'error': 'Failed to process import file'}
 
+            imported_count = 0
+            try:
                 # Use SettingsManager to import
                 settings_manager = self._get_settings_manager()
 
-                # Since SettingsManager doesn't have an import method, we'll process it manually
                 # Import credentials
                 credentials = import_data.get('providers', {})
-                imported_count = 0
 
                 for provider_name, provider_data in credentials.items():
+                    # Validate provider data
+                    if not isinstance(provider_data, dict):
+                        logger.warning(f"Skipping invalid provider data for {provider_name}")
+                        continue
+
                     # Extract credential data if available
                     if 'credentials' in provider_data:
                         cred_data = provider_data['credentials']
-                        success, message = settings_manager.save_provider_credentials_from_api(
-                            provider_name, cred_data
-                        )
-                        if success:
-                            imported_count += 1
-                            logger.info(f"Imported credentials for {provider_name}")
+                        if isinstance(cred_data, dict):
+                            success, message = settings_manager.save_provider_credentials_from_api(
+                                provider_name, cred_data
+                            )
+                            if success:
+                                imported_count += 1
+                                logger.info(f"Imported credentials for {provider_name}")
+                            else:
+                                logger.warning(f"Failed to import credentials for {provider_name}: {message}")
 
                     # Import proxy data if available
                     if 'proxy' in provider_data:
                         proxy_data = provider_data['proxy']
-                        success, message = settings_manager.save_provider_proxy_from_api(
-                            provider_name, proxy_data
-                        )
-                        if success:
-                            imported_count += 1
-                            logger.info(f"Imported proxy for {provider_name}")
+                        if isinstance(proxy_data, dict):
+                            success, message = settings_manager.save_provider_proxy_from_api(
+                                provider_name, proxy_data
+                            )
+                            if success:
+                                imported_count += 1
+                                logger.info(f"Imported proxy for {provider_name}")
+                            else:
+                                logger.warning(f"Failed to import proxy for {provider_name}: {message}")
 
-                # Clean up temp file
-                try:
-                    os.remove(temp_file)
-                except:
-                    pass
-
-                return {
-                    'success': True,
-                    'imported': imported_count,
-                    'message': f'Imported {imported_count} configurations'
-                }
-
-            except Exception as e:
-                logger.error(f"Error importing config: {e}")
+            except Exception as process_err:
+                logger.error(f"Error during import processing: {process_err}", exc_info=True)
                 response.status = 500
-                return {'error': str(e)}
+                return {'error': f'Import failed: {str(process_err)}'}
+
+            finally:
+                # Always try to clean up temp file
+                try:
+                    if os.path.exists(temp_file):
+                        os.remove(temp_file)
+                except (FileNotFoundError, PermissionError, OSError) as cleanup_err:
+                    logger.debug(f"Could not remove temp file {temp_file}: {cleanup_err}")
+
+            return {
+                'success': True,
+                'imported': imported_count,
+                'message': f'Imported {imported_count} configurations'
+            }
 
         @self.app.route('/config')
         def serve_config_ui():

@@ -14,7 +14,6 @@ services:
       - "7777:7777"
     environment:
       - ULTIMATE_PORT=7777
-      - ULTIMATE_COUNTRY=DE
       - ULTIMATE_DEBUG=false
       - TZ=${TZ:-Europe/Berlin}
     volumes:
