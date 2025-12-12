@@ -33,6 +33,9 @@ from .constants import (
 
 
 class MagentaProvider(StreamingProvider):
+
+    SUPPORTED_COUNTRIES = SUPPORTED_COUNTRIES
+
     def __init__(self, country: str = DEFAULT_COUNTRY,
                  config_dir: Optional[str] = None,
                  proxy_config: Optional[ProxyConfig] = None,
