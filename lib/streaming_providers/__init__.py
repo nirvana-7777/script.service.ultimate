@@ -100,14 +100,25 @@ def get_configured_manager(country: str = 'de') -> 'ProviderManager':
     # Initialize settings manager to detect providers
     settings_manager = SettingsManager(enable_kodi_integration=True)
 
-    # Detect providers from Kodi (if available) or use all available providers
-    detected_providers = None
-
+    # Detect providers from Kodi (if available) or auto-detect from AVAILABLE_PROVIDERS
     if settings_manager.kodi_bridge and settings_manager.kodi_bridge.is_kodi_environment():
         detected_providers = settings_manager.kodi_bridge.detect_all_providers_from_kodi()
         logger.info(f"Detected providers from Kodi: {detected_providers}")
     else:
-        logger.info(f"Not in Kodi environment, will register all available providers with default country '{country}'")
+        # Auto-generate detected_providers from AVAILABLE_PROVIDERS
+        logger.info(f"Not in Kodi environment, auto-detecting providers from AVAILABLE_PROVIDERS")
+        detected_providers = {}
+
+        for provider_name, provider_class in AVAILABLE_PROVIDERS.items():
+            # Check if provider supports multiple countries
+            if hasattr(provider_class, 'SUPPORTED_COUNTRIES'):
+                supported_countries = getattr(provider_class, 'SUPPORTED_COUNTRIES', [])
+                detected_providers[provider_name] = supported_countries
+                logger.debug(f"Provider '{provider_name}' supports countries: {supported_countries}")
+            else:
+                # Single-country provider (empty list means no multi-country support)
+                detected_providers[provider_name] = []
+                logger.debug(f"Provider '{provider_name}' is single-country")
 
     # Use the new discover_providers method with detected providers
     registered = manager.discover_providers(
@@ -118,7 +129,6 @@ def get_configured_manager(country: str = 'de') -> 'ProviderManager':
     logger.info(f"Registered {len(registered)} providers: {registered}")
 
     return manager
-
 
 # Initial discovery
 _discover_providers()
