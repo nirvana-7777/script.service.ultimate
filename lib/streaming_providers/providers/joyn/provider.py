@@ -89,6 +89,13 @@ class JoynProvider(StreamingProvider):
             proxy_config: Optional proxy configuration (highest priority)
             proxy_url: Optional proxy URL string (medium priority)
         """
+        if not self.validate_country(country):
+            supported = ', '.join(self.SUPPORTED_COUNTRIES)
+            raise ValueError(
+                f"Unsupported country: {country}. "
+                f"Joyn supports: {supported}"
+            )
+
         super().__init__(country=country)
 
         if country not in SUPPORTED_COUNTRIES:

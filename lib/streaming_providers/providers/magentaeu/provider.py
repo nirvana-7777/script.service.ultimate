@@ -39,6 +39,12 @@ class MagentaProvider(StreamingProvider):
                  proxy_url: Optional[str] = None):
 
         logger.info(f"=== MagentaProvider.__init__ START for country: {country} ===")
+        if not self.validate_country(country):
+            supported = ', '.join(self.SUPPORTED_COUNTRIES)
+            raise ValueError(
+                f"Unsupported country: {country}. "
+                f"MagentaTV EU supports: {supported}"
+            )
         super().__init__(country=country)
 
         if country not in SUPPORTED_COUNTRIES:
@@ -474,7 +480,7 @@ class MagentaProvider(StreamingProvider):
             logger.debug(f"Credential validation failed: {e}")
             return False
 
-    @staticmethod
-    def get_supported_countries() -> List[str]:
+    @classmethod
+    def get_supported_countries(cls) -> List[str]:
         """Get list of supported countries"""
-        return SUPPORTED_COUNTRIES.copy()
+        return cls.SUPPORTED_COUNTRIES.copy()

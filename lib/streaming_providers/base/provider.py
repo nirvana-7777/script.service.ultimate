@@ -27,6 +27,8 @@ class StreamingProvider(ABC):
     Abstract base class for streaming providers with centralized HTTP and auth management
     """
 
+    SUPPORTED_COUNTRIES: List[str] = []
+
     def __init__(self, country: str = 'DE'):
         self.country = country
         self.channels: List[StreamingChannel] = []
@@ -698,3 +700,41 @@ class StreamingProvider(ABC):
             # Default to query parameters
             separator = '&' if '?' in base_url else '?'
             return f"{base_url}{separator}start={start_time}&end={end_time}"
+
+    @classmethod
+    def get_supported_countries(cls) -> List[str]:
+        """
+        Get list of countries supported by this provider.
+
+        Returns:
+            List of ISO country codes (e.g., ['de', 'at', 'ch'])
+            Empty list means single-country provider using default country
+        """
+        return cls.SUPPORTED_COUNTRIES.copy()
+
+    @classmethod
+    def supports_multiple_countries(cls) -> bool:
+        """
+        Check if this provider supports multiple countries.
+
+        Returns:
+            True if provider supports country-specific instances
+        """
+        return len(cls.SUPPORTED_COUNTRIES) > 0
+
+    @classmethod
+    def validate_country(cls, country: str) -> bool:
+        """
+        Validate if a country is supported by this provider.
+
+        Args:
+            country: ISO country code to validate
+
+        Returns:
+            True if country is supported or provider is single-country
+        """
+        if not cls.supports_multiple_countries():
+            # Single-country providers accept any country (or ignore it)
+            return True
+
+        return country.lower() in [c.lower() for c in cls.SUPPORTED_COUNTRIES]
