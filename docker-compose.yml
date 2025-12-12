@@ -11,10 +11,11 @@ services:
     container_name: ultimate-backend
     restart: unless-stopped
     ports:
-      - "7777:7777"
+      - 7777:7777
     environment:
       - ULTIMATE_PORT=7777
       - ULTIMATE_DEBUG=false
+      - ULTIMATE_EPG_URL=https://raw.githubusercontent.com/epgshare01/share01/master/epg.xml.gz
       - TZ=${TZ:-Europe/Berlin}
     volumes:
       - ./config:/config

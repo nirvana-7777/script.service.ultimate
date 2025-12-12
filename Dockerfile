@@ -14,6 +14,7 @@ ENV PYTHONUNBUFFERED=1 \
     ULTIMATE_PORT=7777 \
     ULTIMATE_COUNTRY=DE \
     ULTIMATE_DEBUG=false \
+    ULTIMATE_EPG_URL="https://example.com/epg.xml.gz" \
     PYTHONPATH=/app/lib
 
 # Install system dependencies

@@ -21,6 +21,8 @@ try:
     from streaming_providers.base.utils.environment import get_environment_manager, get_vfs_instance
     from streaming_providers.base.utils.environment import is_kodi_environment
     from streaming_providers.base.settings.provider_enable_manager import ProviderEnableManager
+    # Add EPG Manager import
+    from streaming_providers.base.epg.epg_manager import EPGManager
 except ImportError as import_err:
     print(f"Ultimate Backend: Critical import failed - {str(import_err)}", file=sys.stderr)
     raise
@@ -56,8 +58,17 @@ class UltimateService:
         self.mpd_cache = MPDCacheManager()
         logger.info(f"MPD cache initialized: {self.mpd_cache.vfs.base_path}")
 
-        self.setup_routes()
+        # Initialize EPG Manager
+        self.epg_manager = None
+        try:
+            self.epg_manager = EPGManager()
+            logger.info("EPG Manager initialized successfully")
+        except ImportError as e:
+            logger.warning(f"Could not import EPG Manager: {e}")
+        except Exception as e:
+            logger.warning(f"Could not initialize EPG Manager: {e}")
 
+        self.setup_routes()
         self.config_html = self._load_config_html()
 
     def _load_config_html(self):
@@ -1862,6 +1873,169 @@ class UltimateService:
                 'imported': imported_count,
                 'message': f'Imported {imported_count} configurations'
             }
+
+        @self.app.route('/api/config/epg', method='GET')
+        def get_epg_config():
+            """Get current EPG configuration"""
+            try:
+                # Use the already imported get_environment_manager
+                env_mgr = get_environment_manager()
+
+                config = {
+                    'epg_url': env_mgr.get_config('epg_url', ''),
+                    'epg_cache_ttl': env_mgr.get_config('epg_cache_ttl', 86400),
+                    'source': 'config.json' if env_mgr.get_config('epg_url') else 'default'
+                }
+
+                # Also check environment variable for reference
+                import os
+                env_epg_url = os.environ.get('ULTIMATE_EPG_URL')
+                if env_epg_url:
+                    config['environment_variable'] = env_epg_url
+
+                return {
+                    'success': True,
+                    'config': config,
+                    'epg_manager_status': 'initialized' if hasattr(self, 'epg_manager') else 'not_initialized'
+                }
+            except Exception as e:
+                logger.error(f"API Error in /api/config/epg: {str(e)}")
+                response.status = 500
+                return {'error': f'Internal server error: {str(e)}'}
+
+        @self.app.route('/api/config/epg', method='POST')
+        def set_epg_config():
+            """Set EPG configuration"""
+            try:
+                # Parse JSON body
+                try:
+                    epg_data = request.json
+                except Exception as json_err:
+                    logger.error(f"Invalid JSON in request body: {json_err}")
+                    response.status = 400
+                    return {'error': 'Invalid JSON in request body'}
+
+                if not epg_data:
+                    response.status = 400
+                    return {'error': 'Request body must contain EPG configuration'}
+
+                # Validate it's a dictionary
+                if not isinstance(epg_data, dict):
+                    response.status = 400
+                    return {'error': 'EPG data must be a JSON object'}
+
+                # Validate URL format
+                epg_url = epg_data.get('epg_url', '').strip()
+                if epg_url:
+                    # Basic URL validation
+                    if not (epg_url.startswith('http://') or epg_url.startswith('https://')):
+                        response.status = 400
+                        return {'error': 'EPG URL must start with http:// or https://'}
+
+                    # Validate it's an XML/GZ file
+                    if not (epg_url.endswith('.xml') or epg_url.endswith('.xml.gz') or epg_url.endswith('.gz')):
+                        logger.warning(f"EPG URL doesn't end with .xml or .gz: {epg_url}")
+
+                # Use environment manager
+                env_mgr = get_environment_manager()
+
+                # Get current config
+                import os
+                import json
+                profile_path = env_mgr.get_config('profile_path', '')
+                config_file = os.path.join(profile_path, 'config.json')
+                config_data = {}
+
+                if os.path.exists(config_file):
+                    try:
+                        with open(config_file, 'r', encoding='utf-8') as f:
+                            config_data = json.load(f)
+                    except Exception as e:
+                        logger.error(f"Error reading config.json: {e}")
+                        config_data = {}
+
+                # Update with new values
+                config_data['epg_url'] = epg_url
+
+                # Optional: EPG cache TTL
+                if 'epg_cache_ttl' in epg_data:
+                    try:
+                        ttl = int(epg_data['epg_cache_ttl'])
+                        if ttl > 0:
+                            config_data['epg_cache_ttl'] = ttl
+                    except ValueError:
+                        pass
+
+                # Save back to config.json
+                try:
+                    with open(config_file, 'w', encoding='utf-8') as f:
+                        json.dump(config_data, f, indent=2, ensure_ascii=False)
+
+                    # Update environment manager cache
+                    env_mgr.set_config('epg_url', epg_url)
+                    if 'epg_cache_ttl' in config_data:
+                        env_mgr.set_config('epg_cache_ttl', config_data['epg_cache_ttl'])
+
+                    logger.info(f"Updated EPG configuration: URL={epg_url}")
+
+                    return {
+                        'success': True,
+                        'message': 'EPG configuration updated successfully',
+                        'config': {
+                            'epg_url': epg_url,
+                            'epg_cache_ttl': config_data.get('epg_cache_ttl', 86400)
+                        }
+                    }
+
+                except Exception as e:
+                    logger.error(f"Error writing config.json: {e}")
+                    response.status = 500
+                    return {'error': f'Failed to save configuration: {str(e)}'}
+
+            except Exception as e:
+                logger.error(f"API Error in POST /api/config/epg: {str(e)}")
+                response.status = 500
+                return {'error': f'Internal server error: {str(e)}'}
+
+        @self.app.route('/api/config/epg/clear-cache', method='POST')
+        def clear_epg_cache():
+            """Clear EPG cache"""
+            try:
+                if hasattr(self, 'epg_manager') and self.epg_manager:
+                    success = self.epg_manager.clear_cache()
+                    if success:
+                        return {'success': True, 'message': 'EPG cache cleared'}
+                    else:
+                        response.status = 500
+                        return {'error': 'Failed to clear EPG cache'}
+                else:
+                    response.status = 404
+                    return {'error': 'EPG manager not initialized'}
+            except Exception as e:
+                logger.error(f"API Error clearing EPG cache: {str(e)}")
+                response.status = 500
+                return {'error': f'Internal server error: {str(e)}'}
+
+        @self.app.route('/api/config/epg/cache-info', method='GET')
+        def get_epg_cache_info():
+            """Get EPG cache information"""
+            try:
+                if hasattr(self, 'epg_manager') and self.epg_manager:
+                    cache_info = self.epg_manager.get_cache_info()
+                    mapping_stats = self.epg_manager.get_mapping_stats()
+
+                    return {
+                        'success': True,
+                        'cache_info': cache_info,
+                        'mapping_stats': mapping_stats
+                    }
+                else:
+                    response.status = 404
+                    return {'error': 'EPG manager not initialized'}
+            except Exception as e:
+                logger.error(f"API Error getting EPG cache info: {str(e)}")
+                response.status = 500
+                return {'error': f'Internal server error: {str(e)}'}
 
         @self.app.route('/config')
         def serve_config_ui():

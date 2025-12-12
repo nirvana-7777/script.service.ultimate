@@ -42,6 +42,7 @@ from .epg_mapping import EPGMapping
 from .epg_parser import EPGParser
 from ..models.epg_models import EPGEntry
 from ..utils.logger import logger
+from ..utils.environment import get_environment_manager
 
 
 class EPGManager:
@@ -359,6 +360,47 @@ class EPGManager:
         """
         return self.parser.get_provider_from_broadcast_id(broadcast_id)
 
+    def _determine_epg_url(self, explicit_url: Optional[str]) -> str:
+        """
+        Determine EPG URL with priority:
+        1. Explicit parameter
+        2. config.json (via environment manager)
+        3. Environment variable ULTIMATE_EPG_URL
+        4. Kodi addon setting (if in Kodi)
+        5. Default
+        """
+        import os
+
+        # 1. Explicit parameter
+        if explicit_url:
+            logger.debug(f"EPGManager: Using explicit EPG URL: {explicit_url}")
+            return explicit_url
+
+        # 2. config.json via environment manager
+        try:
+            env_manager = get_environment_manager()
+            config_url = env_manager.get_config('epg_url')
+            if config_url:
+                logger.info(f"EPGManager: Using EPG URL from config.json: {config_url}")
+                return config_url
+        except Exception as e:
+            logger.debug(f"Could not get EPG URL from environment manager: {e}")
+
+        # 3. Environment variable
+        env_url = os.environ.get('ULTIMATE_EPG_URL')
+        if env_url and env_url.strip():  # Check for non-empty string
+            logger.info(f"EPGManager: Using EPG URL from environment: {env_url}")
+            return env_url.strip()
+
+        # 4. Kodi addon setting
+        settings_url = self._get_epg_url_from_settings()
+        if settings_url:
+            return settings_url
+
+        # 5. Default
+        logger.info(f"EPGManager: Using default EPG URL: {self.DEFAULT_EPG_URL}")
+        return self.DEFAULT_EPG_URL
+
     @staticmethod
     def verify_broadcast_id_provider(broadcast_id: int, provider_name: str) -> bool:
         """
@@ -372,3 +414,4 @@ class EPGManager:
             True if broadcast_id was generated for this provider
         """
         return EPGEntry.verify_provider(broadcast_id, provider_name)
+
