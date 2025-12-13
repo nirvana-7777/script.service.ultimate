@@ -74,31 +74,74 @@ class UltimateService:
     def _load_config_html(self):
         """Load the web interface HTML template with embedded CSS and JS"""
         base_dir = os.path.dirname(os.path.abspath(__file__))
+        web_dir = os.path.join(base_dir, 'resources', 'web')
 
         # Define file paths
-        html_path = os.path.join(base_dir, 'resources', 'web', 'config.html')
-        css_path = os.path.join(base_dir, 'resources', 'web', 'config.css')
-        js_path = os.path.join(base_dir, 'resources', 'web', 'config.js')
+        html_path = os.path.join(web_dir, 'config.html')
+        css_path = os.path.join(web_dir, 'config.css')
+        js_path = os.path.join(web_dir, 'config.js')
+
+        # NEW: EPG mapping files
+        epg_css_path = os.path.join(web_dir, 'epg_mapping.css')
+        epg_js_path = os.path.join(web_dir, 'epg_mapping.js')
+        fuzzyset_path = os.path.join(web_dir, 'lib', 'fuzzyset.js')
+        debounce_path = os.path.join(web_dir, 'lib', 'debounce.js')
 
         try:
             # Load HTML
             with open(html_path, 'r', encoding='utf-8') as f:
                 html = f.read()
 
-            # Load CSS
+            # Load CSS files
             with open(css_path, 'r', encoding='utf-8') as f:
                 css = f.read()
 
-            # Load JS
+            # NEW: Load EPG CSS
+            with open(epg_css_path, 'r', encoding='utf-8') as f:
+                epg_css = f.read()
+
+            # Load JS files
             with open(js_path, 'r', encoding='utf-8') as f:
                 js = f.read()
 
-            # Simple replacements - we control the files so we know what's in them
+            # NEW: Load EPG JS and libraries
+            with open(epg_js_path, 'r', encoding='utf-8') as f:
+                epg_js = f.read()
+
+            with open(fuzzyset_path, 'r', encoding='utf-8') as f:
+                fuzzyset_js = f.read()
+
+            with open(debounce_path, 'r', encoding='utf-8') as f:
+                debounce_js = f.read()
+
+            # Combine all CSS
+            combined_css = f"{css}\n\n/* EPG Mapping CSS */\n{epg_css}"
+
+            # Combine all JS (with proper order)
+            combined_js = f"""{debounce_js}
+
+            /* FuzzySet Library */
+            {fuzzyset_js}
+
+            /* Main Config JS */
+            {js}
+
+            /* EPG Mapping JS */
+            {epg_js}
+            """
+
+            # Replace in HTML
             html = html.replace('<link rel="stylesheet" href="config.css">',
-                                f'<style>\n{css}\n</style>')
+                                f'<style>\n{combined_css}\n</style>')
 
             html = html.replace('<script src="config.js"></script>',
-                                f'<script>\n{js}\n</script>')
+                                f'<script>\n{combined_js}\n</script>')
+
+            # Remove the additional script tags we added (they're now embedded)
+            html = html.replace('<link rel="stylesheet" href="epg_mapping.css">', '')
+            html = html.replace('<script src="lib/fuzzyset.js"></script>', '')
+            html = html.replace('<script src="lib/debounce.js"></script>', '')
+            html = html.replace('<script src="epg_mapping.js"></script>', '')
 
             return html
 
@@ -2042,6 +2085,188 @@ class UltimateService:
             """Serve the web configuration interface"""
             response.content_type = 'text/html; charset=utf-8'
             return self.config_html
+
+        @self.app.route("/api/epg/xmltv-channels", methods=["GET"])
+        def get_epg_xmltv_channels():
+            """Get all unique channel IDs from EPG XML file"""
+
+            try:
+                from streaming_providers.base.epg.epg_manager import EPGManager
+            except ImportError:
+                response.status = 404
+                return {"error": "EPG module not available"}
+
+            try:
+                epg_manager = EPGManager()
+
+                # Get the cached EPG file path
+                cache = epg_manager.cache
+                xml_path = cache.get_cached_file_path()
+
+                if not xml_path:
+                    response.status = 404
+                    return {"error": "EPG file not available. Please check EPG URL configuration."}
+
+                # Parse XML to get channel IDs
+                import xml.etree.ElementTree as ET
+                import gzip
+
+                channel_ids = set()
+
+                def open_xml_file(file_path):
+                    if file_path.endswith('.gz'):
+                        return gzip.open(file_path, 'rt', encoding='utf-8')
+                    else:
+                        return open(file_path, 'r', encoding='utf-8')
+
+                with open_xml_file(xml_path) as xml_file:
+                    # Use iterparse for memory efficiency
+                    context = ET.iterparse(xml_file, events=('start',))
+
+                    for event, elem in context:
+                        if elem.tag == 'channel':
+                            channel_id = elem.get('id')
+                            if channel_id:
+                                channel_ids.add(channel_id)
+                        elem.clear()
+
+                return {"channels": sorted(list(channel_ids))}
+
+            except Exception as e:
+                logger.error(f"Error getting EPG channels: {e}")
+                response.status = 500
+                return {"error": f"Failed to parse EPG file: {str(e)}"}
+
+        @self.app.route("/api/providers/<provider>/epg-mapping", methods=["GET"])
+        def get_epg_mapping(provider):
+            """Get current EPG mapping for a provider"""
+            try:
+                from streaming_providers.base.utils.vfs import VFS
+            except ImportError:
+                # If VFS is not available, return empty mapping
+                return {
+                    "provider": provider,
+                    "mapping": {},
+                    "exists": False
+                }
+
+            try:
+                mapping_file = f"{provider}_epg_mapping.json"
+                vfs = VFS(addon_subdir="")
+
+                if vfs.exists(mapping_file):
+                    mapping_data = vfs.read_json(mapping_file)
+                    if mapping_data:
+                        return {
+                            "provider": provider,
+                            "mapping": mapping_data,
+                            "exists": True
+                        }
+
+                # Return empty mapping if file doesn't exist
+                return {
+                    "provider": provider,
+                    "mapping": {},
+                    "exists": False
+                }
+
+            except Exception as e:
+                logger.error(f"Error getting EPG mapping for {provider}: {e}")
+                response.status = 500
+                return {"error": f"Failed to load mapping: {str(e)}"}
+
+        @self.app.route("/api/providers/<provider>/epg-mapping", methods=["POST"])
+        def save_epg_mapping(provider):
+            """Save EPG mapping for a provider"""
+            try:
+                from streaming_providers.base.utils.vfs import VFS
+            except ImportError:
+                response.status = 500
+                return {"error": "VFS module not available"}
+
+            try:
+                # Get JSON data from request body using Bottle's request object
+                try:
+                    mapping_data = request.json.get("mapping", {}) if request.json else {}
+                except Exception as json_err:
+                    logger.error(f"Invalid JSON in request body: {json_err}")
+                    response.status = 400
+                    return {"error": "Invalid JSON in request body"}
+
+                # Add provider name to mapping file
+                full_mapping = {
+                    "_provider_name": provider,
+                    **mapping_data
+                }
+
+                # Save to file
+                vfs = VFS(addon_subdir="")
+                mapping_file = f"{provider}_epg_mapping.json"
+
+                success = vfs.write_json(mapping_file, full_mapping)
+
+                if success:
+                    # Clear mapping cache if it exists
+                    try:
+                        from streaming_providers.base.epg.epg_mapping import EPGMapping
+                        mapping_manager = EPGMapping()
+                        mapping_manager.reload_mapping(provider)
+                    except ImportError:
+                        # EPGMapping not available, skip cache reload
+                        pass
+                    except Exception as reload_err:
+                        logger.warning(f"Could not reload mapping cache: {reload_err}")
+
+                    return {
+                        "success": True,
+                        "message": f"Mapping saved for {provider}"
+                    }
+                else:
+                    response.status = 500
+                    return {"error": "Failed to save mapping file"}
+
+            except Exception as e:
+                logger.error(f"Error saving EPG mapping for {provider}: {e}")
+                response.status = 500
+                return {"error": f"Failed to save mapping: {str(e)}"}
+
+        @self.app.route("/api/epg/preview/<epg_id>", methods=["GET"])
+        def get_epg_preview(epg_id):
+            """Get EPG preview data for a channel"""
+            # Import at the top of the function to avoid scope issues
+            from datetime import datetime, timedelta
+
+            try:
+                from streaming_providers.base.epg.epg_manager import EPGManager
+            except ImportError:
+                # If EPG module is not available, return empty data
+                return {
+                    "epg_id": epg_id,
+                    "programs": []
+                }
+
+            try:
+                # For demo - in reality, you'd parse the XML for this channel
+                # This is a simplified version
+                now = datetime.now()
+                end_time = now + timedelta(hours=1)
+
+                return {
+                    "epg_id": epg_id,
+                    "programs": [
+                        {
+                            "title": "Sample Program",
+                            "start": int(now.timestamp()),
+                            "end": int(end_time.timestamp()),
+                            "description": "Sample program description."
+                        }
+                    ]
+                }
+
+            except Exception as e:
+                logger.error(f"Error getting EPG preview for {epg_id}: {e}")
+                response.status = 500
+                return {"error": f"Failed to get EPG data: {str(e)}"}
 
         @self.app.route('/')
         def serve_root():

@@ -37,6 +37,9 @@
                 <div class="tab" data-tab="advanced">
                     <i class="fas fa-cogs"></i> Advanced
                 </div>
+                <div class="tab" data-tab="epg-mapping">
+                    <i class="fas fa-satellite-dish"></i> EPG Mapping
+                </div>
             </div>
 
             <!-- Credentials Tab -->
@@ -128,6 +131,27 @@
                     </div>
                 </div>
             </div>
+
+            <div id="tab-epg-mapping" class="tab-content">
+                <div class="card-body">
+                    <div class="alert alert-info">
+                        <i class="fas fa-info-circle"></i>
+                        <div>
+                            <strong>EPG Channel Mapping</strong>
+                            <p>Map provider channels to EPG IDs for electronic program guide data. Fuzzy matching suggests possible matches based on channel names.</p>
+                        </div>
+                    </div>
+
+                    <!-- EPG Mapping Container (loaded by epg_mapping.js) -->
+                    <div id="epg-mapping-container">
+                        <div class="empty-state" id="epg-loading">
+                            <i class="fas fa-satellite-dish fa-spin"></i>
+                            <p>Loading EPG Mapping...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
         </main>
 
         <footer style="text-align: center; margin-top: 30px; color: white; opacity: 0.8;">
@@ -148,6 +172,5 @@
         </div>
     </div>
 
-    <script src="config.js"></script>
 </body>
 </html>

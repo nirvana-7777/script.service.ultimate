@@ -44,6 +44,11 @@ function switchTab(tabId) {
     if (tabId === 'proxy') {
         loadProxyForms();
     }
+
+     // Load EPG mappings if switching to that tab
+    if (tabId === 'epg-mapping' && window.epgMappingManager) {
+        window.epgMappingManager.loadProviders();
+    }
 }
 
 // Load providers from API
