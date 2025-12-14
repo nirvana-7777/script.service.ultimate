@@ -58,18 +58,70 @@ class UltimateService:
         self.mpd_cache = MPDCacheManager()
         logger.info(f"MPD cache initialized: {self.mpd_cache.vfs.base_path}")
 
-        # Initialize EPG Manager
-        self.epg_manager = None
+        # 1. Determine EPG URL FIRST (with proper precedence)
+        self.epg_url = self._determine_epg_url()
+        logger.info(f"UltimateService: Final EPG URL determined: {self.epg_url}")
+
+        # 2. Initialize EPG Manager WITH the URL
         try:
-            self.epg_manager = EPGManager()
-            logger.info("EPG Manager initialized successfully")
+            self.epg_manager = EPGManager(self.epg_url)  # Pass the URL here
+            logger.info(f"EPG Manager initialized with URL: {self.epg_url}")
         except ImportError as e:
             logger.warning(f"Could not import EPG Manager: {e}")
+            self.epg_manager = None
         except Exception as e:
             logger.warning(f"Could not initialize EPG Manager: {e}")
+            self.epg_manager = None
 
         self.setup_routes()
         self.config_html = self._load_config_html()
+
+    def _determine_epg_url(self) -> str:
+        """
+        Determine EPG URL with proper precedence:
+        1. Explicit config_dir override (if provided)
+        2. Environment variable ULTIMATE_EPG_URL
+        3. config.json via environment manager
+        4. Kodi addon setting (if in Kodi)
+        5. Default fallback
+
+        Returns:
+            EPG URL as string
+        """
+        import os
+
+        # 1. Check environment variable FIRST (highest priority for Docker)
+        env_url = os.environ.get('ULTIMATE_EPG_URL')
+        if env_url and env_url.strip() and env_url != "https://example.com/epg.xml.gz":
+            logger.info(f"Using EPG URL from environment variable: {env_url}")
+            return env_url.strip()
+
+        # 2. Try config.json via environment manager
+        try:
+            config_url = self.env_manager.get_config('epg_url')
+            if config_url and config_url.strip() and config_url != "https://example.com/epg.xml.gz":
+                logger.info(f"Using EPG URL from config.json: {config_url}")
+                return config_url.strip()
+        except Exception as e:
+            logger.debug(f"Could not get EPG URL from environment manager: {e}")
+
+        # 3. Try Kodi addon setting
+        try:
+            if is_kodi_environment():
+                import xbmcaddon
+                addon = xbmcaddon.Addon()
+                kodi_url = addon.getSetting('epg_xml_url')
+                if kodi_url and kodi_url.strip():
+                    logger.info(f"Using EPG URL from Kodi settings: {kodi_url}")
+                    return kodi_url.strip()
+        except Exception as e:
+            logger.debug(f"Could not get EPG URL from Kodi settings: {e}")
+
+        # 4. Default fallback
+        default_url = "https://example.com/epg.xml.gz"
+        logger.warning(f"No valid EPG URL found, using default: {default_url}")
+        logger.warning("Please set ULTIMATE_EPG_URL environment variable!")
+        return default_url
 
     def _load_config_html(self):
         """Load the web interface HTML template with embedded CSS and JS"""
@@ -2094,24 +2146,24 @@ class UltimateService:
         def get_epg_status():
             """Get EPG configuration and cache status"""
             try:
-                from streaming_providers.base.epg.epg_manager import EPGManager
-                from streaming_providers.base.utils.environment import get_environment_manager
-
-                env_mgr = get_environment_manager()
-                epg_url = env_mgr.get_config('epg_url', '')
-
                 result = {
-                    "configured": bool(epg_url),
-                    "epg_url": epg_url if epg_url else "Not configured",
+                    "configured": bool(self.epg_url) and self.epg_url != "https://example.com/epg.xml.gz",
+                    "epg_url": self.epg_url if self.epg_url else "Not configured",
                     "cache_valid": False,
                     "cache_path": None,
-                    "channel_count": 0
+                    "channel_count": 0,
+                    "environment_used": False
                 }
 
-                if epg_url and epg_url != "https://example.com/epg.xml.gz":
+                # Check if we used the environment variable
+                import os
+                env_url = os.environ.get('ULTIMATE_EPG_URL')
+                if env_url and env_url == self.epg_url:
+                    result["environment_used"] = True
+
+                if result["configured"] and hasattr(self, 'epg_manager') and self.epg_manager:
                     try:
-                        epg_manager = EPGManager()
-                        cache = epg_manager.cache
+                        cache = self.epg_manager.cache
                         xml_path = cache.get_cached_file_path()
 
                         if xml_path:
@@ -2129,18 +2181,20 @@ class UltimateService:
                                     return open(file_path, 'r', encoding='utf-8')
 
                             channel_ids = set()
-                            with open_xml_file(xml_path) as xml_file:
-                                context = ET.iterparse(xml_file, events=('start',))
-                                for event, elem in context:
-                                    if elem.tag == 'channel':
-                                        channel_id = elem.get('id')
-                                        if channel_id:
-                                            channel_ids.add(channel_id)
-                                    elem.clear()
-
-                            result["channel_count"] = len(channel_ids)
-                    except Exception as e:
-                        result["error"] = str(e)
+                            try:
+                                with open_xml_file(xml_path) as xml_file:
+                                    context = ET.iterparse(xml_file, events=('start',))
+                                    for event, elem in context:
+                                        if elem.tag == 'channel':
+                                            channel_id = elem.get('id')
+                                            if channel_id:
+                                                channel_ids.add(channel_id)
+                                        elem.clear()
+                                result["channel_count"] = len(channel_ids)
+                            except Exception as parse_err:
+                                result["parse_error"] = str(parse_err)
+                    except Exception as cache_err:
+                        result["cache_error"] = str(cache_err)
                 else:
                     result["hint"] = "Please configure EPG URL in Advanced settings"
 
@@ -2154,52 +2208,36 @@ class UltimateService:
         @self.app.route("/api/epg/xmltv-channels", methods=["GET"])
         def get_epg_xmltv_channels():
             """Get all unique channel IDs from EPG XML file"""
-
             try:
-                from streaming_providers.base.epg.epg_manager import EPGManager
-            except ImportError:
-                response.status = 404
-                return {"error": "EPG module not available"}
+                # Check if EPG manager is available
+                if not hasattr(self, 'epg_manager') or not self.epg_manager:
+                    response.status = 404
+                    return {"error": "EPG module not available"}
 
-            try:
-                epg_manager = EPGManager()
+                # Check if we have a valid EPG URL configured
+                if not self.epg_url or self.epg_url == "https://example.com/epg.xml.gz":
+                    response.status = 400
+                    return {
+                        "error": "EPG URL not configured",
+                        "hint": "Please configure a valid EPG URL in Advanced settings",
+                        "current_url": self.epg_url
+                    }
 
-                # Get the cached EPG file path - this will download if not cached
-                cache = epg_manager.cache
+                # Get the cache manager from EPG manager
+                cache = self.epg_manager.cache
 
-                # Try to get cached file, if not available, fetch it
-                xml_path = cache.get_cached_file_path()
+                logger.info(f"EPG Channels: Using URL: {self.epg_url}")
 
-                if not xml_path:
-                    # Try to fetch the EPG
-                    logger.info("EPG file not cached, attempting to download...")
-                    try:
-                        # Trigger EPG download - just call get_epg() without parameters
-                        # This will download and cache the EPG file
-                        from datetime import datetime, timedelta
-                        now = datetime.now()
-                        end_time = now + timedelta(hours=1)
-
-                        # Try to get EPG for any channel to trigger download
-                        try:
-                            epg_manager.get_epg(start_time=now, end_time=end_time)
-                        except:
-                            # If that fails, try without parameters
-                            epg_manager.get_epg()
-
-                        xml_path = cache.get_cached_file_path()
-                    except Exception as fetch_error:
-                        logger.error(f"Failed to fetch EPG: {fetch_error}", exc_info=True)
-                        response.status = 404
-                        return {
-                            "error": "EPG file not available. Please configure a valid EPG URL in Advanced settings.",
-                            "details": str(fetch_error),
-                            "hint": "Current EPG URL is configured but may be invalid or unreachable."
-                        }
+                # This will download if not cached, or return cached path
+                xml_path = cache.get_or_download(self.epg_url)
 
                 if not xml_path:
                     response.status = 404
-                    return {"error": "EPG file not available. Please check EPG URL configuration."}
+                    return {
+                        "error": f"EPG file not available from {self.epg_url}",
+                        "details": "Failed to download or cache EPG file.",
+                        "hint": "Check if the URL is accessible and contains valid XMLTV data."
+                    }
 
                 # Parse XML to get channel IDs
                 import xml.etree.ElementTree as ET
@@ -2219,6 +2257,8 @@ class UltimateService:
                         return open(file_path, 'r', encoding='utf-8')
 
                 logger.info(f"Parsing EPG file: {xml_path}")
+                file_size = os.path.getsize(xml_path)
+                logger.info(f"EPG file size: {file_size} bytes")
 
                 with open_xml_file(xml_path) as xml_file:
                     # Use iterparse for memory efficiency
@@ -2232,12 +2272,29 @@ class UltimateService:
                         elem.clear()
 
                 logger.info(f"Found {len(channel_ids)} channels in EPG")
-                return {"channels": sorted(list(channel_ids))}
 
+                # Sort channels for consistent output
+                sorted_channels = sorted(list(channel_ids))
+
+                return {
+                    "channels": sorted_channels,
+                    "count": len(sorted_channels),
+                    "source_url": self.epg_url,
+                    "cache_path": xml_path,
+                    "cache_size_bytes": file_size
+                }
+
+            except ET.ParseError as parse_err:
+                logger.error(f"XML parse error in EPG file: {parse_err}")
+                response.status = 500
+                return {
+                    "error": f"Failed to parse EPG XML file: {str(parse_err)}",
+                    "hint": "The EPG file may be malformed or not valid XMLTV format."
+                }
             except Exception as e:
                 logger.error(f"Error getting EPG channels: {e}", exc_info=True)
                 response.status = 500
-                return {"error": f"Failed to parse EPG file: {str(e)}"}
+                return {"error": f"Failed to process EPG file: {str(e)}"}
 
         @self.app.route("/api/providers/<provider>/epg-mapping", methods=["GET"])
         def get_epg_mapping(provider):
