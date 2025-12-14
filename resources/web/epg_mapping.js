@@ -219,7 +219,22 @@ class EPGMappingManager {
 
     async loadProviderData(providerName) {
         try {
-            this.showLoading(true);
+            // Show loading in the channel list area only
+            const controlsContainer = document.getElementById('epg-controls');
+            const channelList = document.getElementById('channel-list');
+            const bulkActions = document.getElementById('bulk-actions');
+
+            if (controlsContainer) controlsContainer.style.display = 'none';
+            if (channelList) {
+                channelList.style.display = 'block';
+                channelList.innerHTML = `
+                    <div class="empty-state">
+                        <i class="fas fa-spinner fa-spin loader"></i>
+                        <p>Loading EPG data...</p>
+                    </div>
+                `;
+            }
+            if (bulkActions) bulkActions.style.display = 'none';
 
             // First check EPG status
             let epgStatusResponse;
@@ -231,11 +246,11 @@ class EPGMappingManager {
                         throw new Error('EPG URL not configured. Please configure a valid EPG URL in the Advanced tab first.');
                     }
                     if (!epgStatus.cache_valid) {
-                        console.log('EPG cache not valid, will attempt to download...'); // ← CHANGED TO console.log
+                        console.log('EPG cache not valid, will attempt to download...');
                     }
                 }
             } catch (statusError) {
-                console.warn('Could not check EPG status:', statusError); // ← CHANGED TO console.warn
+                console.warn('Could not check EPG status:', statusError);
             }
 
             // Load all data in parallel
@@ -278,17 +293,15 @@ class EPGMappingManager {
                 };
             });
 
-            document.getElementById('epg-controls').style.display = 'flex';
-            document.getElementById('channel-list').style.display = 'block';
-            document.getElementById('bulk-actions').style.display = 'flex';
+            if (controlsContainer) controlsContainer.style.display = 'flex';
+            if (channelList) channelList.style.display = 'block';
+            if (bulkActions) bulkActions.style.display = 'flex';
 
             this.updateStats();
             this.renderChannelList();
-            this.showLoading(false);
 
         } catch (error) {
             this.showError('Failed to load provider data', error);
-            this.showLoading(false);
         }
     }
 
@@ -314,12 +327,14 @@ class EPGMappingManager {
     renderChannelList() {
         const container = document.getElementById('channel-list');
         if (!container || this.channelData.length === 0) {
-            container.innerHTML = `
-                <div class="no-channels-message">
-                    <i class="fas fa-tv"></i>
-                    <p>No channels found for this provider.</p>
-                </div>
-            `;
+            if (container) {
+                container.innerHTML = `
+                    <div class="no-channels-message">
+                        <i class="fas fa-tv"></i>
+                        <p>No channels found for this provider.</p>
+                    </div>
+                `;
+            }
             return;
         }
 
@@ -749,20 +764,6 @@ class EPGMappingManager {
         const indicator = document.getElementById('save-indicator');
         if (indicator) {
             indicator.style.display = 'none';
-        }
-    }
-
-    showLoading(show) {
-        const container = document.getElementById('epg-mapping-container');
-        if (!container) return;
-
-        if (show) {
-            container.innerHTML = `
-                <div class="empty-state">
-                    <i class="fas fa-spinner fa-spin loader"></i>
-                    <p>Loading EPG data...</p>
-                </div>
-            `;
         }
     }
 
