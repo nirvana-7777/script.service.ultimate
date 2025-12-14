@@ -223,7 +223,7 @@ class EPGMappingManager {
 
             // First check EPG status
             let epgStatusResponse;
-            try {
+             try {
                 epgStatusResponse = await fetch(`${this.apiBase}/api/epg/status`);
                 if (epgStatusResponse.ok) {
                     const epgStatus = await epgStatusResponse.json();
@@ -231,11 +231,11 @@ class EPGMappingManager {
                         throw new Error('EPG URL not configured. Please configure a valid EPG URL in the Advanced tab first.');
                     }
                     if (!epgStatus.cache_valid) {
-                        logger.info('EPG cache not valid, will attempt to download...');
+                        console.log('EPG cache not valid, will attempt to download...'); // ← CHANGED TO console.log
                     }
                 }
             } catch (statusError) {
-                logger.warning('Could not check EPG status:', statusError);
+                console.warn('Could not check EPG status:', statusError); // ← CHANGED TO console.warn
             }
 
             // Load all data in parallel
