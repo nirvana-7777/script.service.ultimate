@@ -2207,7 +2207,7 @@ class UltimateService:
 
         @self.app.route("/api/epg/xmltv-channels", methods=["GET"])
         def get_epg_xmltv_channels():
-            """Get all unique channel IDs from EPG XML file"""
+            """Get all unique channel IDs from EPG XML file with display names"""
             try:
                 # Check if EPG manager is available
                 if not hasattr(self, 'epg_manager') or not self.epg_manager:
@@ -2239,7 +2239,7 @@ class UltimateService:
                         "hint": "Check if the URL is accessible and contains valid XMLTV data."
                     }
 
-                # Parse XML to get channel IDs
+                # Parse XML to get channel IDs and display names
                 import xml.etree.ElementTree as ET
                 import gzip
                 import os
@@ -2248,7 +2248,8 @@ class UltimateService:
                     response.status = 404
                     return {"error": f"EPG file does not exist at path: {xml_path}"}
 
-                channel_ids = set()
+                channel_ids = []
+                channel_map = {}  # Map of id -> display name
 
                 def open_xml_file(file_path):
                     if file_path.endswith('.gz'):
@@ -2262,22 +2263,42 @@ class UltimateService:
 
                 with open_xml_file(xml_path) as xml_file:
                     # Use iterparse for memory efficiency
-                    context = ET.iterparse(xml_file, events=('start',))
+                    context = ET.iterparse(xml_file, events=('start', 'end'))
+
+                    current_channel_id = None
+                    current_display_names = []
 
                     for event, elem in context:
-                        if elem.tag == 'channel':
-                            channel_id = elem.get('id')
-                            if channel_id:
-                                channel_ids.add(channel_id)
-                        elem.clear()
+                        if event == 'start' and elem.tag == 'channel':
+                            current_channel_id = elem.get('id')
+                            current_display_names = []
+
+                        elif event == 'end' and elem.tag == 'display-name':
+                            if current_channel_id and elem.text:
+                                current_display_names.append(elem.text.strip())
+
+                        elif event == 'end' and elem.tag == 'channel':
+                            if current_channel_id:
+                                channel_ids.append(current_channel_id)
+                                # Use the first display name as the primary name
+                                if current_display_names:
+                                    channel_map[current_channel_id] = current_display_names[0]
+                                else:
+                                    channel_map[current_channel_id] = current_channel_id
+                                current_channel_id = None
+
+                        # Clear element to save memory
+                        if event == 'end':
+                            elem.clear()
 
                 logger.info(f"Found {len(channel_ids)} channels in EPG")
 
                 # Sort channels for consistent output
-                sorted_channels = sorted(list(channel_ids))
+                sorted_channels = sorted(channel_ids)
 
                 return {
                     "channels": sorted_channels,
+                    "channel_map": channel_map,  # NEW: Map of id -> display name
                     "count": len(sorted_channels),
                     "source_url": self.epg_url,
                     "cache_path": xml_path,
