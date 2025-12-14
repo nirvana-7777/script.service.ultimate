@@ -221,6 +221,24 @@ class EPGMappingManager {
         try {
             this.showLoading(true);
 
+            // First check EPG status
+            let epgStatusResponse;
+            try {
+                epgStatusResponse = await fetch(`${this.apiBase}/api/epg/status`);
+                if (epgStatusResponse.ok) {
+                    const epgStatus = await epgStatusResponse.json();
+                    if (!epgStatus.configured || epgStatus.epg_url === "https://example.com/epg.xml.gz") {
+                        throw new Error('EPG URL not configured. Please configure a valid EPG URL in the Advanced tab first.');
+                    }
+                    if (!epgStatus.cache_valid) {
+                        logger.info('EPG cache not valid, will attempt to download...');
+                    }
+                }
+            } catch (statusError) {
+                logger.warning('Could not check EPG status:', statusError);
+            }
+
+            // Load all data in parallel
             const [channelsResponse, mappingsResponse, epgResponse] = await Promise.all([
                 fetch(`${this.apiBase}/api/providers/${providerName}/channels`),
                 fetch(`${this.apiBase}/api/providers/${providerName}/epg-mapping`),
@@ -228,7 +246,11 @@ class EPGMappingManager {
             ]);
 
             if (!channelsResponse.ok) throw new Error('Failed to load provider channels');
-            if (!epgResponse.ok) throw new Error('Failed to load EPG channels');
+
+            if (!epgResponse.ok) {
+                const epgError = await epgResponse.json();
+                throw new Error(epgError.error || 'Failed to load EPG channels. Please check EPG configuration in Advanced tab.');
+            }
 
             const providerChannels = await channelsResponse.json();
             const currentMappings = mappingsResponse.ok ? await mappingsResponse.json() : { mapping: {} };

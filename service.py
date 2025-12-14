@@ -2090,6 +2090,67 @@ class UltimateService:
             response.content_type = 'text/html; charset=utf-8'
             return self.config_html
 
+        @self.app.route("/api/epg/status", methods=["GET"])
+        def get_epg_status():
+            """Get EPG configuration and cache status"""
+            try:
+                from streaming_providers.base.epg.epg_manager import EPGManager
+                from streaming_providers.base.utils.environment import get_environment_manager
+
+                env_mgr = get_environment_manager()
+                epg_url = env_mgr.get_config('epg_url', '')
+
+                result = {
+                    "configured": bool(epg_url),
+                    "epg_url": epg_url if epg_url else "Not configured",
+                    "cache_valid": False,
+                    "cache_path": None,
+                    "channel_count": 0
+                }
+
+                if epg_url and epg_url != "https://example.com/epg.xml.gz":
+                    try:
+                        epg_manager = EPGManager()
+                        cache = epg_manager.cache
+                        xml_path = cache.get_cached_file_path()
+
+                        if xml_path:
+                            result["cache_valid"] = True
+                            result["cache_path"] = xml_path
+
+                            # Try to count channels
+                            import xml.etree.ElementTree as ET
+                            import gzip
+
+                            def open_xml_file(file_path):
+                                if file_path.endswith('.gz'):
+                                    return gzip.open(file_path, 'rt', encoding='utf-8')
+                                else:
+                                    return open(file_path, 'r', encoding='utf-8')
+
+                            channel_ids = set()
+                            with open_xml_file(xml_path) as xml_file:
+                                context = ET.iterparse(xml_file, events=('start',))
+                                for event, elem in context:
+                                    if elem.tag == 'channel':
+                                        channel_id = elem.get('id')
+                                        if channel_id:
+                                            channel_ids.add(channel_id)
+                                    elem.clear()
+
+                            result["channel_count"] = len(channel_ids)
+                    except Exception as e:
+                        result["error"] = str(e)
+                else:
+                    result["hint"] = "Please configure EPG URL in Advanced settings"
+
+                return result
+
+            except Exception as e:
+                logger.error(f"Error getting EPG status: {e}")
+                response.status = 500
+                return {"error": str(e)}
+
         @self.app.route("/api/epg/xmltv-channels", methods=["GET"])
         def get_epg_xmltv_channels():
             """Get all unique channel IDs from EPG XML file"""
@@ -2113,15 +2174,27 @@ class UltimateService:
                     # Try to fetch the EPG
                     logger.info("EPG file not cached, attempting to download...")
                     try:
-                        # Trigger EPG download
-                        epg_manager.get_epg(force_refresh=False)
+                        # Trigger EPG download - just call get_epg() without parameters
+                        # This will download and cache the EPG file
+                        from datetime import datetime, timedelta
+                        now = datetime.now()
+                        end_time = now + timedelta(hours=1)
+
+                        # Try to get EPG for any channel to trigger download
+                        try:
+                            epg_manager.get_epg(start_time=now, end_time=end_time)
+                        except:
+                            # If that fails, try without parameters
+                            epg_manager.get_epg()
+
                         xml_path = cache.get_cached_file_path()
                     except Exception as fetch_error:
-                        logger.error(f"Failed to fetch EPG: {fetch_error}")
+                        logger.error(f"Failed to fetch EPG: {fetch_error}", exc_info=True)
                         response.status = 404
                         return {
-                            "error": "EPG file not available. Please configure EPG URL in Advanced settings.",
-                            "details": str(fetch_error)
+                            "error": "EPG file not available. Please configure a valid EPG URL in Advanced settings.",
+                            "details": str(fetch_error),
+                            "hint": "Current EPG URL is configured but may be invalid or unreachable."
                         }
 
                 if not xml_path:
