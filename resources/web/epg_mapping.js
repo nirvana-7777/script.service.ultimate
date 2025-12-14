@@ -16,9 +16,10 @@ class EPGMappingManager {
     }
 
     init() {
-        this.loadProviders();
+        // Don't load providers on init - wait for tab activation
         this.setupEventListeners();
         this.createSaveIndicator();
+        this.initialized = false;
     }
 
     async loadProviders() {
@@ -29,6 +30,7 @@ class EPGMappingManager {
             const data = await response.json();
             this.providers = data.providers;
             this.renderProviderSelector();
+            this.initialized = true;
         } catch (error) {
             this.showError('Failed to load providers', error);
         }
@@ -36,6 +38,8 @@ class EPGMappingManager {
 
     renderProviderSelector() {
         const container = document.getElementById('epg-mapping-container');
+        if (!container) return;
+
         container.innerHTML = `
             <div class="epg-mapping-container">
                 <div class="mapping-header">
@@ -114,16 +118,27 @@ class EPGMappingManager {
     }
 
     setupEventListeners() {
-        document.addEventListener('DOMContentLoaded', () => {
+        // Listen for tab switches - this is the key change
+        const checkTabSwitch = () => {
             const tabs = document.querySelectorAll('.tab');
             tabs.forEach(tab => {
                 tab.addEventListener('click', () => {
                     if (tab.dataset.tab === 'epg-mapping') {
-                        this.loadProviders();
+                        // Only load providers when EPG tab is first activated
+                        if (!this.initialized) {
+                            this.loadProviders();
+                        }
                     }
                 });
             });
-        });
+        };
+
+        // Check if DOM is already loaded
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', checkTabSwitch);
+        } else {
+            checkTabSwitch();
+        }
     }
 
     setupDynamicEventListeners() {
@@ -751,10 +766,16 @@ class EPGMappingManager {
     }
 }
 
-// Initialize when page loads
+// Initialize when page loads - but don't load data yet
 let epgMappingManager;
 
-document.addEventListener('DOMContentLoaded', () => {
+// Only create the manager instance, don't load data
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+        epgMappingManager = new EPGMappingManager();
+        window.epgMappingManager = epgMappingManager;
+    });
+} else {
     epgMappingManager = new EPGMappingManager();
     window.epgMappingManager = epgMappingManager;
-});
+}
