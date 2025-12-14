@@ -2103,9 +2103,26 @@ class UltimateService:
             try:
                 epg_manager = EPGManager()
 
-                # Get the cached EPG file path
+                # Get the cached EPG file path - this will download if not cached
                 cache = epg_manager.cache
+
+                # Try to get cached file, if not available, fetch it
                 xml_path = cache.get_cached_file_path()
+
+                if not xml_path:
+                    # Try to fetch the EPG
+                    logger.info("EPG file not cached, attempting to download...")
+                    try:
+                        # Trigger EPG download
+                        epg_manager.get_epg(force_refresh=False)
+                        xml_path = cache.get_cached_file_path()
+                    except Exception as fetch_error:
+                        logger.error(f"Failed to fetch EPG: {fetch_error}")
+                        response.status = 404
+                        return {
+                            "error": "EPG file not available. Please configure EPG URL in Advanced settings.",
+                            "details": str(fetch_error)
+                        }
 
                 if not xml_path:
                     response.status = 404
@@ -2114,6 +2131,11 @@ class UltimateService:
                 # Parse XML to get channel IDs
                 import xml.etree.ElementTree as ET
                 import gzip
+                import os
+
+                if not os.path.exists(xml_path):
+                    response.status = 404
+                    return {"error": f"EPG file does not exist at path: {xml_path}"}
 
                 channel_ids = set()
 
@@ -2122,6 +2144,8 @@ class UltimateService:
                         return gzip.open(file_path, 'rt', encoding='utf-8')
                     else:
                         return open(file_path, 'r', encoding='utf-8')
+
+                logger.info(f"Parsing EPG file: {xml_path}")
 
                 with open_xml_file(xml_path) as xml_file:
                     # Use iterparse for memory efficiency
@@ -2134,10 +2158,11 @@ class UltimateService:
                                 channel_ids.add(channel_id)
                         elem.clear()
 
+                logger.info(f"Found {len(channel_ids)} channels in EPG")
                 return {"channels": sorted(list(channel_ids))}
 
             except Exception as e:
-                logger.error(f"Error getting EPG channels: {e}")
+                logger.error(f"Error getting EPG channels: {e}", exc_info=True)
                 response.status = 500
                 return {"error": f"Failed to parse EPG file: {str(e)}"}
 
@@ -2161,6 +2186,10 @@ class UltimateService:
                 if vfs.exists(mapping_file):
                     mapping_data = vfs.read_json(mapping_file)
                     if mapping_data:
+                        # Remove internal fields before returning
+                        if '_provider_name' in mapping_data:
+                            del mapping_data['_provider_name']
+
                         return {
                             "provider": provider,
                             "mapping": mapping_data,
@@ -2215,8 +2244,10 @@ class UltimateService:
                         from streaming_providers.base.epg.epg_mapping import EPGMapping
                         mapping_manager = EPGMapping()
                         mapping_manager.reload_mapping(provider)
+                        logger.info(f"Reloaded EPG mapping cache for {provider}")
                     except ImportError:
                         # EPGMapping not available, skip cache reload
+                        logger.debug("EPGMapping not available for cache reload")
                         pass
                     except Exception as reload_err:
                         logger.warning(f"Could not reload mapping cache: {reload_err}")
@@ -2230,7 +2261,7 @@ class UltimateService:
                     return {"error": "Failed to save mapping file"}
 
             except Exception as e:
-                logger.error(f"Error saving EPG mapping for {provider}: {e}")
+                logger.error(f"Error saving EPG mapping for {provider}: {e}", exc_info=True)
                 response.status = 500
                 return {"error": f"Failed to save mapping: {str(e)}"}
 
@@ -2250,8 +2281,41 @@ class UltimateService:
                 }
 
             try:
-                # For demo - in reality, you'd parse the XML for this channel
-                # This is a simplified version
+                epg_manager = EPGManager()
+
+                # Try to get actual EPG data for the channel
+                try:
+                    # Get EPG data for the next 12 hours
+                    now = datetime.now()
+                    end_time = now + timedelta(hours=12)
+
+                    # This should call the actual EPG parsing method
+                    epg_data = epg_manager.get_channel_epg(
+                        epg_id=epg_id,
+                        start_time=now,
+                        end_time=end_time
+                    )
+
+                    if epg_data:
+                        # Convert to the format expected by the frontend
+                        programs = []
+                        for program in epg_data[:5]:  # Limit to 5 programs
+                            programs.append({
+                                "title": program.get('title', 'No title'),
+                                "start": int(program.get('start', now.timestamp())),
+                                "end": int(program.get('end', (now + timedelta(hours=1)).timestamp())),
+                                "description": program.get('description', 'No description available.'),
+                                "episode_name": program.get('episode_name')
+                            })
+
+                        return {
+                            "epg_id": epg_id,
+                            "programs": programs
+                        }
+                except Exception as epg_error:
+                    logger.warning(f"Could not get real EPG data for {epg_id}: {epg_error}")
+
+                # Fallback: return sample data
                 now = datetime.now()
                 end_time = now + timedelta(hours=1)
 
@@ -2262,13 +2326,13 @@ class UltimateService:
                             "title": "Sample Program",
                             "start": int(now.timestamp()),
                             "end": int(end_time.timestamp()),
-                            "description": "Sample program description."
+                            "description": "EPG preview not available. This is sample data."
                         }
                     ]
                 }
 
             except Exception as e:
-                logger.error(f"Error getting EPG preview for {epg_id}: {e}")
+                logger.error(f"Error getting EPG preview for {epg_id}: {e}", exc_info=True)
                 response.status = 500
                 return {"error": f"Failed to get EPG data: {str(e)}"}
 
