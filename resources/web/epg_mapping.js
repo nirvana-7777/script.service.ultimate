@@ -271,25 +271,34 @@ class EPGMappingManager {
             const currentMappings = mappingsResponse.ok ? await mappingsResponse.json() : { mapping: {} };
             const epgData = await epgResponse.json();
 
+            // Store EPG channels with their display names
             this.epgChannels = epgData.channels || [];
+            this.epgChannelMap = epgData.channel_map || {}; // Map of id -> display name
             this.fuzzySet = new FuzzySet(this.epgChannels);
 
             this.channelData = providerChannels.channels.map(channel => {
+                // Use exact property names from StreamingChannel.to_dict()
+                const channelName = channel.Name;
+                const channelId = channel.Id;
+                const channelLogo = channel.LogoUrl || '';
+
                 let currentEpgId = null;
-                const mappingValue = currentMappings.mapping?.[channel.id];
+                const mappingValue = currentMappings.mapping?.[channelId];
                 if (typeof mappingValue === 'string') {
                     currentEpgId = mappingValue;
                 } else if (mappingValue && mappingValue.epg_id) {
                     currentEpgId = mappingValue.epg_id;
                 }
 
-                const suggestions = this.getSuggestions(channel.name);
+                const suggestions = this.getSuggestions(channelName);
 
                 return {
-                    ...channel,
+                    id: channelId,
+                    name: channelName,
+                    logo: channelLogo,
                     currentEpgId,
                     suggestions: suggestions.slice(0, 3),
-                    status: this.calculateStatus(channel, currentEpgId, suggestions)
+                    status: this.calculateStatus({ name: channelName }, currentEpgId, suggestions)
                 };
             });
 
@@ -346,7 +355,6 @@ class EPGMappingManager {
                     ${channel.logo ? `<img src="${channel.logo}" alt="${this.escapeHtml(channel.name)}" class="channel-logo" onerror="this.style.display='none'">` : ''}
                     <div class="channel-details">
                         <h4>${this.escapeHtml(channel.name)}</h4>
-                        <div class="channel-id">ID: ${this.escapeHtml(channel.id)}</div>
                         <div class="channel-source">${this.escapeHtml(this.currentProvider)}</div>
                     </div>
                 </div>
@@ -357,11 +365,13 @@ class EPGMappingManager {
                         <option value="${this.escapeHtml(channel.id)}" ${channel.currentEpgId === channel.id ? 'selected' : ''}>
                             ${this.escapeHtml(channel.id)} (Use channel ID)
                         </option>
-                        ${this.epgChannels.map(epgId => `
+                        ${this.epgChannels.map(epgId => {
+                            const displayName = this.epgChannelMap[epgId] || epgId;
+                            return `
                             <option value="${this.escapeHtml(epgId)}" ${channel.currentEpgId === epgId ? 'selected' : ''}>
-                                ${this.escapeHtml(epgId)}
+                                ${this.escapeHtml(displayName)} (${this.escapeHtml(epgId)})
                             </option>
-                        `).join('')}
+                        `}).join('')}
                     </select>
 
                     <div class="mapping-status">
