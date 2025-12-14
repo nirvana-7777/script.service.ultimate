@@ -23,6 +23,9 @@ class EPGMappingManager {
     }
 
     async loadProviders() {
+        // Only load once
+        if (this.initialized) return;
+
         try {
             const response = await fetch(`${this.apiBase}/api/providers`);
             if (!response.ok) throw new Error('Failed to load providers');

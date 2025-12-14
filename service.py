@@ -81,7 +81,7 @@ class UltimateService:
         css_path = os.path.join(web_dir, 'config.css')
         js_path = os.path.join(web_dir, 'config.js')
 
-        # NEW: EPG mapping files
+        # EPG mapping files
         epg_css_path = os.path.join(web_dir, 'epg_mapping.css')
         epg_js_path = os.path.join(web_dir, 'epg_mapping.js')
         fuzzyset_path = os.path.join(web_dir, 'lib', 'fuzzyset.js')
@@ -96,7 +96,7 @@ class UltimateService:
             with open(css_path, 'r', encoding='utf-8') as f:
                 css = f.read()
 
-            # NEW: Load EPG CSS
+            # Load EPG CSS
             with open(epg_css_path, 'r', encoding='utf-8') as f:
                 epg_css = f.read()
 
@@ -104,7 +104,7 @@ class UltimateService:
             with open(js_path, 'r', encoding='utf-8') as f:
                 js = f.read()
 
-            # NEW: Load EPG JS and libraries
+            # Load EPG JS and libraries
             with open(epg_js_path, 'r', encoding='utf-8') as f:
                 epg_js = f.read()
 
@@ -118,30 +118,34 @@ class UltimateService:
             combined_css = f"{css}\n\n/* EPG Mapping CSS */\n{epg_css}"
 
             # Combine all JS (with proper order)
-            combined_js = f"""{debounce_js}
+            combined_js = f"""
 
+            /* Debounce Utility */
+            {debounce_js}
+            
             /* FuzzySet Library */
             {fuzzyset_js}
-
+            
             /* Main Config JS */
             {js}
-
+            
             /* EPG Mapping JS */
             {epg_js}
             """
 
-            # Replace in HTML
+            # Replace CSS in HTML
             html = html.replace('<link rel="stylesheet" href="config.css">',
                                 f'<style>\n{combined_css}\n</style>')
 
-            html = html.replace('<script src="config.js"></script>',
-                                f'<script>\n{combined_js}\n</script>')
+            # Inject JavaScript before </body> tag since <script src="config.js"> was removed
+            script_tag = f'<script>\n{combined_js}\n</script>'
 
-            # Remove the additional script tags we added (they're now embedded)
-            html = html.replace('<link rel="stylesheet" href="epg_mapping.css">', '')
-            html = html.replace('<script src="lib/fuzzyset.js"></script>', '')
-            html = html.replace('<script src="lib/debounce.js"></script>', '')
-            html = html.replace('<script src="epg_mapping.js"></script>', '')
+            # Check if script tag exists in HTML (for backward compatibility)
+            if '<script src="config.js"></script>' in html:
+                html = html.replace('<script src="config.js"></script>', script_tag)
+            else:
+                # Script tag was removed, inject before </body>
+                html = html.replace('</body>', f'{script_tag}\n</body>')
 
             return html
 
