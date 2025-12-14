@@ -271,6 +271,11 @@ class EPGMappingManager {
             const currentMappings = mappingsResponse.ok ? await mappingsResponse.json() : { mapping: {} };
             const epgData = await epgResponse.json();
 
+            console.log('Provider channels received:', providerChannels.channels?.length || 0);
+            console.log('Current mappings:', currentMappings);
+            console.log('Sample mapping keys:', Object.keys(currentMappings.mapping || {}).slice(0, 5));
+            console.log('Sample channel IDs:', providerChannels.channels?.slice(0, 5).map(c => c.Id) || []);
+
             // Store EPG channels with their display names
             this.epgChannels = epgData.channels || [];
             this.epgChannelMap = epgData.channel_map || {}; // Map of id -> display name
@@ -284,6 +289,9 @@ class EPGMappingManager {
 
                 let currentEpgId = null;
                 const mappingValue = currentMappings.mapping?.[channelId];
+
+                console.log(`Channel ${channelId}: mapping value =`, mappingValue);
+
                 if (typeof mappingValue === 'string') {
                     currentEpgId = mappingValue;
                 } else if (mappingValue && mappingValue.epg_id) {
@@ -355,6 +363,7 @@ class EPGMappingManager {
                     ${channel.logo ? `<img src="${channel.logo}" alt="${this.escapeHtml(channel.name)}" class="channel-logo" onerror="this.style.display='none'">` : ''}
                     <div class="channel-details">
                         <h4>${this.escapeHtml(channel.name)}</h4>
+                        <div class="channel-id">ID: ${this.escapeHtml(channel.id)}</div>
                         <div class="channel-source">${this.escapeHtml(this.currentProvider)}</div>
                     </div>
                 </div>
