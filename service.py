@@ -2142,7 +2142,7 @@ class UltimateService:
             response.content_type = 'text/html; charset=utf-8'
             return self.config_html
 
-        @self.app.route("/api/epg/status", methods=["GET"])
+        @self.app.route("/api/epg/status", method='GET')
         def get_epg_status():
             """Get EPG configuration and cache status"""
             try:
@@ -2205,7 +2205,7 @@ class UltimateService:
                 response.status = 500
                 return {"error": str(e)}
 
-        @self.app.route("/api/epg/xmltv-channels", methods=["GET"])
+        @self.app.route("/api/epg/xmltv-channels", method='GET')
         def get_epg_xmltv_channels():
             """Get all unique channel IDs from EPG XML file with display names"""
             try:
@@ -2317,7 +2317,7 @@ class UltimateService:
                 response.status = 500
                 return {"error": f"Failed to process EPG file: {str(e)}"}
 
-        @self.app.route("/api/providers/<provider>/epg-mapping", methods=["GET"])
+        @self.app.route("/api/providers/<provider>/epg-mapping", method='GET')
         def get_epg_mapping(provider):
             """Get current EPG mapping for a provider"""
             try:
@@ -2371,7 +2371,7 @@ class UltimateService:
                 response.status = 500
                 return {"error": f"Failed to load mapping: {str(e)}"}
 
-        @self.app.route("/api/providers/<provider>/epg-mapping", methods=["POST"])
+        @self.app.route("/api/providers/<provider>/epg-mapping", method='POST')
         def save_epg_mapping(provider):
             """Save EPG mapping for a provider"""
             try:
@@ -2454,7 +2454,7 @@ class UltimateService:
                 response.status = 500
                 return {"error": f"Failed to save mapping: {str(e)}"}
 
-        @self.app.route("/api/epg/preview/<epg_id>", methods=["GET"])
+        @self.app.route("/api/epg/preview/<epg_id>", method='GET')
         def get_epg_preview(epg_id):
             """Get EPG preview data for a channel"""
             # Import at the top of the function to avoid scope issues
