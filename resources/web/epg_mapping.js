@@ -284,7 +284,10 @@ class EPGMappingManager {
             // Store EPG channels with their display names
             this.epgChannels = epgData.channels || [];
             this.epgChannelMap = epgData.channel_map || {}; // Map of id -> display name
-            this.fuzzySet = new FuzzySet(this.epgChannels);
+
+            // Create FuzzySet with DISPLAY NAMES, not IDs
+            const displayNames = Object.values(this.epgChannelMap);
+            this.fuzzySet = new FuzzySet(displayNames);
 
             this.channelData = providerChannels.channels.map(channel => {
                 // Use exact property names from StreamingChannel.to_dict()
