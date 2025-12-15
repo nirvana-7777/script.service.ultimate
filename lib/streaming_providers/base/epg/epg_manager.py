@@ -42,7 +42,7 @@ from .epg_mapping import EPGMapping
 from .epg_parser import EPGParser
 from ..models.epg_models import EPGEntry
 from ..utils.logger import logger
-from ..utils.environment import get_environment_manager
+from ..utils.environment import get_environment_manager, is_kodi_environment
 
 
 class EPGManager:
@@ -65,15 +65,15 @@ class EPGManager:
         Initialize EPG manager with all components.
 
         Args:
-            epg_url: EPG source URL (defaults to setting or DEFAULT_EPG_URL)
+            epg_url: EPG source URL (if None, will be determined automatically)
         """
         # Initialize components - they handle paths internally
         self.cache = EPGCache(vfs_subdir="epg_cache")
         self.mapping = EPGMapping()  # No paths needed - handles internally
         self.parser = EPGParser()
 
-        # Get EPG URL from settings or use default
-        self.epg_url = epg_url or self._get_epg_url_from_settings() or self.DEFAULT_EPG_URL
+        # Determine EPG URL with proper precedence
+        self.epg_url = self._determine_epg_url(epg_url)
 
         logger.info(f"EPGManager: Initialized with EPG URL: {self.epg_url}")
 
@@ -362,44 +362,72 @@ class EPGManager:
 
     def _determine_epg_url(self, explicit_url: Optional[str]) -> str:
         """
-        Determine EPG URL with priority:
+        Determine EPG URL with proper precedence:
         1. Explicit parameter
-        2. config.json (via environment manager)
-        3. Environment variable ULTIMATE_EPG_URL
-        4. Kodi addon setting (if in Kodi)
-        5. Default
+        2. Kodi addon setting (if in Kodi)
+        3. config.json (via environment manager)
+        4. Environment variable ULTIMATE_EPG_URL
+        5. Current cached URL (from metadata)
+        6. Default fallback
+
+        Args:
+            explicit_url: Explicitly provided URL
+
+        Returns:
+            EPG URL as string
         """
         import os
 
-        # 1. Explicit parameter
+        # 1. Explicit parameter (highest priority)
         if explicit_url:
             logger.debug(f"EPGManager: Using explicit EPG URL: {explicit_url}")
             return explicit_url
 
-        # 2. config.json via environment manager
+        # 2. Kodi addon setting (if in Kodi environment)
+        try:
+            if is_kodi_environment():
+                import xbmcaddon
+                addon = xbmcaddon.Addon()
+                kodi_url = addon.getSetting('epg_xml_url')
+                if kodi_url and kodi_url.strip() and kodi_url != "https://example.com/epg.xml.gz":
+                    logger.info(f"EPGManager: Using EPG URL from Kodi settings: {kodi_url}")
+                    return kodi_url.strip()
+        except Exception as e:
+            logger.debug(f"EPGManager: Could not get EPG URL from Kodi settings: {e}")
+
+        # 3. config.json via environment manager
         try:
             env_manager = get_environment_manager()
             config_url = env_manager.get_config('epg_url')
-            if config_url:
+            if config_url and config_url.strip() and config_url != "https://example.com/epg.xml.gz":
                 logger.info(f"EPGManager: Using EPG URL from config.json: {config_url}")
-                return config_url
+                return config_url.strip()
         except Exception as e:
-            logger.debug(f"Could not get EPG URL from environment manager: {e}")
+            logger.debug(f"EPGManager: Could not get EPG URL from environment manager: {e}")
 
-        # 3. Environment variable
+        # 4. Environment variable
         env_url = os.environ.get('ULTIMATE_EPG_URL')
-        if env_url and env_url.strip():  # Check for non-empty string
-            logger.info(f"EPGManager: Using EPG URL from environment: {env_url}")
+        if env_url and env_url.strip() and env_url != "https://example.com/epg.xml.gz":
+            logger.info(f"EPGManager: Using EPG URL from environment variable: {env_url}")
             return env_url.strip()
 
-        # 4. Kodi addon setting
-        settings_url = self._get_epg_url_from_settings()
-        if settings_url:
-            return settings_url
+        # 5. Try to get the last known URL from cache metadata
+        try:
+            # Check if we have cache metadata with a valid URL
+            metadata = self.cache._get_metadata() if hasattr(self, 'cache') else None
+            if metadata and 'url' in metadata:
+                cached_url = metadata.get('url')
+                if cached_url and cached_url.strip() and cached_url != "https://example.com/epg.xml.gz":
+                    logger.info(f"EPGManager: Using last known URL from cache metadata: {cached_url}")
+                    return cached_url.strip()
+        except Exception as e:
+            logger.debug(f"EPGManager: Could not get URL from cache metadata: {e}")
 
-        # 5. Default
-        logger.info(f"EPGManager: Using default EPG URL: {self.DEFAULT_EPG_URL}")
-        return self.DEFAULT_EPG_URL
+        # 6. Default fallback (LAST RESORT - should rarely be used)
+        default_url = "https://example.com/epg.xml.gz"
+        logger.warning(f"EPGManager: No valid EPG URL found, using default: {default_url}")
+        logger.warning("Please set ULTIMATE_EPG_URL environment variable or configure in settings!")
+        return default_url
 
     @staticmethod
     def verify_broadcast_id_provider(broadcast_id: int, provider_name: str) -> bool:

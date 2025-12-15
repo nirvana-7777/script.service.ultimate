@@ -78,32 +78,25 @@ class UltimateService:
 
     def _determine_epg_url(self) -> str:
         """
-        Determine EPG URL with proper precedence:
-        1. Explicit config_dir override (if provided)
-        2. Environment variable ULTIMATE_EPG_URL
-        3. config.json via environment manager
-        4. Kodi addon setting (if in Kodi)
-        5. Default fallback
-
-        Returns:
-            EPG URL as string
+        Determine EPG URL with proper precedence.
+        Must match the precedence logic in EPGManager.
         """
         import os
 
-        # 1. Check environment variable FIRST (highest priority for Docker)
+        # 1. Environment variable (highest priority for Docker)
         env_url = os.environ.get('ULTIMATE_EPG_URL')
         if env_url and env_url.strip() and env_url != "https://example.com/epg.xml.gz":
-            logger.info(f"Using EPG URL from environment variable: {env_url}")
+            logger.info(f"UltimateService: Using EPG URL from environment variable: {env_url}")
             return env_url.strip()
 
         # 2. Try config.json via environment manager
         try:
             config_url = self.env_manager.get_config('epg_url')
             if config_url and config_url.strip() and config_url != "https://example.com/epg.xml.gz":
-                logger.info(f"Using EPG URL from config.json: {config_url}")
+                logger.info(f"UltimateService: Using EPG URL from config.json: {config_url}")
                 return config_url.strip()
         except Exception as e:
-            logger.debug(f"Could not get EPG URL from environment manager: {e}")
+            logger.debug(f"UltimateService: Could not get EPG URL from environment manager: {e}")
 
         # 3. Try Kodi addon setting
         try:
@@ -111,15 +104,15 @@ class UltimateService:
                 import xbmcaddon
                 addon = xbmcaddon.Addon()
                 kodi_url = addon.getSetting('epg_xml_url')
-                if kodi_url and kodi_url.strip():
-                    logger.info(f"Using EPG URL from Kodi settings: {kodi_url}")
+                if kodi_url and kodi_url.strip() and kodi_url != "https://example.com/epg.xml.gz":
+                    logger.info(f"UltimateService: Using EPG URL from Kodi settings: {kodi_url}")
                     return kodi_url.strip()
         except Exception as e:
-            logger.debug(f"Could not get EPG URL from Kodi settings: {e}")
+            logger.debug(f"UltimateService: Could not get EPG URL from Kodi settings: {e}")
 
         # 4. Default fallback
         default_url = "https://example.com/epg.xml.gz"
-        logger.warning(f"No valid EPG URL found, using default: {default_url}")
+        logger.warning(f"UltimateService: No valid EPG URL found, using default: {default_url}")
         logger.warning("Please set ULTIMATE_EPG_URL environment variable!")
         return default_url
 
