@@ -215,6 +215,21 @@ class EPGMappingManager {
                 }
             });
         }
+
+        // Use event delegation for suggestion tags (they're dynamic)
+        document.addEventListener('click', (e) => {
+            if (e.target.classList.contains('suggestion-tag')) {
+                e.preventDefault();
+                const channelId = e.target.dataset.channel;
+                const epgId = e.target.dataset.epgId;
+
+                const selector = document.querySelector(`.epg-selector[data-channel="${channelId}"]`);
+                if (selector) {
+                    selector.value = epgId;
+                    this.updateChannelMapping(channelId, epgId);
+                }
+            }
+        });
     }
 
     async loadProviderData(providerName) {
@@ -341,11 +356,22 @@ class EPGMappingManager {
         const results = this.fuzzySet.get(channelName);
         if (!results) return [];
 
-        return results.map(([score, epgId]) => ({
-            epgId,
-            score: Math.round(score * 100),
-            name: epgId
-        }));
+        return results.map(([score, epgDisplayName]) => {
+            // Find the EPG ID for this display name
+            let epgId = null;
+            for (const [id, name] of Object.entries(this.epgChannelMap)) {
+                if (name === epgDisplayName) {
+                    epgId = id;
+                    break;
+                }
+            }
+
+            return {
+                epgId: epgId || epgDisplayName,
+                displayName: epgDisplayName,
+                score: Math.round(score * 100)
+            };
+        }).filter(s => s.score > 60 && s.epgId).slice(0, 3); // Filter and limit to 3
     }
 
     calculateStatus(channel, currentEpgId, suggestions) {
@@ -377,7 +403,7 @@ class EPGMappingManager {
                     <div class="channel-details">
                         <h4>${this.escapeHtml(channel.name)}</h4>
                         <div class="channel-id">ID: ${this.escapeHtml(channel.id)}</div>
-                        <div class="channel-source">${this.escapeHtml(this.currentProvider)}</div>
+                        <!-- REMOVED: <div class="channel-source">${this.escapeHtml(this.currentProvider)}</div> -->
                     </div>
                 </div>
 
@@ -404,28 +430,32 @@ class EPGMappingManager {
                         ${channel.status === 'recommended' && channel.suggestions.length > 0 ? `
                             <div class="epg-suggestions">
                                 <small>Suggestions:</small>
-                                ${channel.suggestions.map(s => `
+                                ${channel.suggestions.map(s => {
+                                    const displayName = this.epgChannelMap[s.epgId] || s.epgId;
+                                    return `
                                     <span class="suggestion-tag"
                                           data-epg-id="${this.escapeHtml(s.epgId)}"
                                           data-channel="${this.escapeHtml(channel.id)}"
-                                          title="Match: ${s.score}%">
-                                        ${this.escapeHtml(s.epgId)}
+                                          title="Match: ${s.score}% - ${this.escapeHtml(displayName)}">
+                                        ${this.escapeHtml(displayName)}
                                     </span>
-                                `).join('')}
+                                `}).join('')}
                             </div>
                         ` : ''}
 
                         ${channel.status === 'unmapped' && channel.suggestions.length > 0 ? `
                             <div class="epg-suggestions">
                                 <small>Low confidence matches:</small>
-                                ${channel.suggestions.slice(0, 2).map(s => `
+                                ${channel.suggestions.slice(0, 2).map(s => {
+                                    const displayName = this.epgChannelMap[s.epgId] || s.epgId;
+                                    return `
                                     <span class="suggestion-tag"
                                           data-epg-id="${this.escapeHtml(s.epgId)}"
                                           data-channel="${this.escapeHtml(channel.id)}"
-                                          title="Match: ${s.score}%">
-                                        ${this.escapeHtml(s.epgId)} (${s.score}%)
+                                          title="Match: ${s.score}% - ${this.escapeHtml(displayName)}">
+                                        ${this.escapeHtml(displayName)} (${s.score}%)
                                     </span>
-                                `).join('')}
+                                `}).join('')}
                             </div>
                         ` : ''}
 
@@ -445,25 +475,12 @@ class EPGMappingManager {
     }
 
     setupChannelEventListeners() {
+        // Only handle static elements here
         document.querySelectorAll('.epg-selector').forEach(select => {
             select.addEventListener('change', (e) => {
                 const channelId = e.target.dataset.channel;
                 const epgId = e.target.value;
                 this.updateChannelMapping(channelId, epgId);
-            });
-        });
-
-        document.querySelectorAll('.suggestion-tag').forEach(tag => {
-            tag.addEventListener('click', (e) => {
-                e.preventDefault();
-                const channelId = e.target.dataset.channel;
-                const epgId = e.target.dataset.epgId;
-
-                const selector = document.querySelector(`.epg-selector[data-channel="${channelId}"]`);
-                if (selector) {
-                    selector.value = epgId;
-                    this.updateChannelMapping(channelId, epgId);
-                }
             });
         });
 
@@ -481,7 +498,17 @@ class EPGMappingManager {
         if (!channel) return;
 
         channel.currentEpgId = epgId;
-        channel.status = epgId ? 'mapped' : 'unmapped';
+
+        // Update status based on whether we have a mapping
+        if (epgId) {
+            channel.status = 'mapped';
+            // Clear suggestions when mapped (they're no longer needed)
+            channel.suggestions = [];
+        } else {
+            // If unmapped, recalculate suggestions
+            channel.suggestions = this.getSuggestions(channel.name);
+            channel.status = this.calculateStatus(channel, null, channel.suggestions);
+        }
 
         const card = document.querySelector(`.channel-card[data-channel-id="${channelId}"]`);
         if (card) {
@@ -491,6 +518,28 @@ class EPGMappingManager {
             if (badge) {
                 badge.className = `status-badge ${channel.status}`;
                 badge.innerHTML = `${this.getStatusIcon(channel.status)} ${channel.status.charAt(0).toUpperCase() + channel.status.slice(1)}`;
+            }
+
+            // Update suggestions section (event delegation handles clicks)
+            const suggestionsContainer = card.querySelector('.epg-suggestions');
+            if (suggestionsContainer) {
+                if (channel.status === 'recommended' && channel.suggestions.length > 0) {
+                    suggestionsContainer.innerHTML = `
+                        <small>Suggestions:</small>
+                        ${channel.suggestions.map(s => {
+                            const displayName = this.epgChannelMap[s.epgId] || s.epgId;
+                            return `
+                            <span class="suggestion-tag"
+                                  data-epg-id="${this.escapeHtml(s.epgId)}"
+                                  data-channel="${this.escapeHtml(channel.id)}"
+                                  title="Match: ${s.score}% - ${this.escapeHtml(displayName)}">
+                                ${this.escapeHtml(displayName)}
+                            </span>
+                        `}).join('')}
+                    `;
+                } else {
+                    suggestionsContainer.innerHTML = '';
+                }
             }
 
             const previewContainer = card.querySelector('.epg-preview');
@@ -511,6 +560,12 @@ class EPGMappingManager {
                 } else {
                     previewContainer.innerHTML = '';
                 }
+            }
+
+            // Update the selector value
+            const selector = card.querySelector('.epg-selector');
+            if (selector) {
+                selector.value = epgId || '';
             }
         }
 
