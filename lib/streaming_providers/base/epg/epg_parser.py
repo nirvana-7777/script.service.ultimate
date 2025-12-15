@@ -333,10 +333,6 @@ class EPGParser:
             provider_name
         )
 
-        # Register provider if given
-        if provider_name and hasattr(self, '_provider_registry'):
-            self.register_provider(provider_name)
-
         # Build EPGEntry with required fields
         entry_kwargs: Dict[str, Any] = {
             'broadcast_id': broadcast_id,
@@ -508,6 +504,17 @@ class EPGParser:
         """
         logger.info(f"Parsing EPG for channel '{epg_channel_id}' from {xml_path}")
 
+        # Register provider once at the beginning (if provided)
+        if provider_name and hasattr(self, '_provider_registry'):
+            # Check if already registered
+            import hashlib
+            hash_obj = hashlib.sha256(provider_name.encode('utf-8'))
+            provider_hash = int(hash_obj.hexdigest()[:4], 16)
+
+            if provider_hash not in self._provider_registry:
+                self._provider_registry[provider_hash] = provider_name
+                logger.debug(f"Registered provider '{provider_name}' with hash {provider_hash:04x}")
+
         programmes: List[EPGEntry] = []
 
         try:
@@ -519,7 +526,7 @@ class EPGParser:
                     if elem.tag == 'programme':
                         # Check if this programme matches our channel
                         if elem.get('channel') == epg_channel_id:
-                            # Parse the programme with provider info
+                            # Parse the programme WITHOUT calling register_provider again
                             epg_entry = self.parse_programme(
                                 elem,
                                 epg_channel_id,
