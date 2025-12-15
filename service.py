@@ -2344,9 +2344,10 @@ class UltimateService:
                         # }
 
                         # Extract mapping (skip internal fields starting with _)
+                        internal_fields = ['_provider_name', '_created_at', '_updated_at', '_version']
                         actual_mapping = {
                             k: v for k, v in mapping_data.items()
-                            if not k.startswith('_')
+                            if k not in internal_fields
                         }
 
                         logger.info(f"Loaded EPG mapping for {provider}: {len(actual_mapping)} channels")
@@ -2453,77 +2454,6 @@ class UltimateService:
                 logger.error(f"Error saving EPG mapping for {provider}: {e}", exc_info=True)
                 response.status = 500
                 return {"error": f"Failed to save mapping: {str(e)}"}
-
-        @self.app.route("/api/epg/preview/<epg_id>", method='GET')
-        def get_epg_preview(epg_id):
-            """Get EPG preview data for a channel"""
-            # Import at the top of the function to avoid scope issues
-            from datetime import datetime, timedelta
-
-            try:
-                from streaming_providers.base.epg.epg_manager import EPGManager
-            except ImportError:
-                # If EPG module is not available, return empty data
-                return {
-                    "epg_id": epg_id,
-                    "programs": []
-                }
-
-            try:
-                epg_manager = EPGManager()
-
-                # Try to get actual EPG data for the channel
-                try:
-                    # Get EPG data for the next 12 hours
-                    now = datetime.now()
-                    end_time = now + timedelta(hours=12)
-
-                    # This should call the actual EPG parsing method
-                    epg_data = epg_manager.get_channel_epg(
-                        epg_id=epg_id,
-                        start_time=now,
-                        end_time=end_time
-                    )
-
-                    if epg_data:
-                        # Convert to the format expected by the frontend
-                        programs = []
-                        for program in epg_data[:5]:  # Limit to 5 programs
-                            programs.append({
-                                "title": program.get('title', 'No title'),
-                                "start": int(program.get('start', now.timestamp())),
-                                "end": int(program.get('end', (now + timedelta(hours=1)).timestamp())),
-                                "description": program.get('description', 'No description available.'),
-                                "episode_name": program.get('episode_name')
-                            })
-
-                        return {
-                            "epg_id": epg_id,
-                            "programs": programs
-                        }
-                except Exception as epg_error:
-                    logger.warning(f"Could not get real EPG data for {epg_id}: {epg_error}")
-
-                # Fallback: return sample data
-                now = datetime.now()
-                end_time = now + timedelta(hours=1)
-
-                return {
-                    "epg_id": epg_id,
-                    "programs": [
-                        {
-                            "title": "Sample Program",
-                            "start": int(now.timestamp()),
-                            "end": int(end_time.timestamp()),
-                            "description": "EPG preview not available. This is sample data."
-                        }
-                    ]
-                }
-
-            except Exception as e:
-                logger.error(f"Error getting EPG preview for {epg_id}: {e}", exc_info=True)
-                response.status = 500
-                return {"error": f"Failed to get EPG data: {str(e)}"}
 
         @self.app.route('/')
         def serve_root():

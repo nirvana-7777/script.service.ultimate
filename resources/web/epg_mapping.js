@@ -624,7 +624,29 @@ class EPGMappingManager {
 
     async showEPGPreview(epgId) {
         try {
-            const response = await fetch(`${this.apiBase}/api/epg/preview/${encodeURIComponent(epgId)}`);
+            // We need to find which channel in the current provider uses this EPG ID
+            const channel = this.channelData.find(c => c.currentEpgId === epgId);
+
+            if (!channel) {
+                // If no channel is mapped to this EPG ID yet, we can't get EPG data
+                const modal = document.getElementById('epg-preview-modal');
+                const body = document.getElementById('epg-preview-body');
+
+                body.innerHTML = `
+                    <h4>EPG Data for: ${this.escapeHtml(epgId)}</h4>
+                    <p>No channel is currently mapped to this EPG ID.</p>
+                    <p>Map a channel first to see EPG data.</p>
+                `;
+
+                modal.style.display = 'flex';
+                return;
+            }
+
+            // Use the same endpoint as Kodi addon
+            const response = await fetch(
+                `${this.apiBase}/api/providers/${this.currentProvider}/channels/${channel.id}/epg`
+            );
+
             if (!response.ok) throw new Error('No EPG data available');
 
             const epgData = await response.json();
@@ -632,10 +654,10 @@ class EPGMappingManager {
             const body = document.getElementById('epg-preview-body');
 
             body.innerHTML = `
-                <h4>EPG Data for: ${this.escapeHtml(epgId)}</h4>
-                ${epgData.programs && epgData.programs.length > 0 ? `
+                <h4>EPG Data for: ${this.escapeHtml(channel.name)} → ${this.escapeHtml(epgId)}</h4>
+                ${epgData.epg && epgData.epg.length > 0 ? `
                     <div class="epg-programs">
-                        ${epgData.programs.slice(0, 5).map(program => `
+                        ${epgData.epg.slice(0, 5).map(program => `
                             <div class="epg-program">
                                 <div class="epg-program-time">
                                     ${new Date(program.start * 1000).toLocaleString()} -
