@@ -2337,17 +2337,29 @@ class UltimateService:
                 if vfs.exists(mapping_file):
                     mapping_data = vfs.read_json(mapping_file)
                     if mapping_data:
-                        # Remove internal fields before returning
-                        if '_provider_name' in mapping_data:
-                            del mapping_data['_provider_name']
+                        # The file structure is:
+                        # {
+                        #   "_provider_name": "...",
+                        #   "channel_id": {"epg_id": "...", "name": "..."}
+                        # }
+
+                        # Extract mapping (skip internal fields starting with _)
+                        actual_mapping = {
+                            k: v for k, v in mapping_data.items()
+                            if not k.startswith('_')
+                        }
+
+                        logger.info(f"Loaded EPG mapping for {provider}: {len(actual_mapping)} channels")
+                        logger.debug(f"Sample mappings: {list(actual_mapping.items())[:3]}")
 
                         return {
                             "provider": provider,
-                            "mapping": mapping_data,
+                            "mapping": actual_mapping,
                             "exists": True
                         }
 
                 # Return empty mapping if file doesn't exist
+                logger.info(f"No EPG mapping file found for {provider}")
                 return {
                     "provider": provider,
                     "mapping": {},
@@ -2355,7 +2367,7 @@ class UltimateService:
                 }
 
             except Exception as e:
-                logger.error(f"Error getting EPG mapping for {provider}: {e}")
+                logger.error(f"Error getting EPG mapping for {provider}: {e}", exc_info=True)
                 response.status = 500
                 return {"error": f"Failed to load mapping: {str(e)}"}
 
@@ -2377,11 +2389,35 @@ class UltimateService:
                     response.status = 400
                     return {"error": "Invalid JSON in request body"}
 
-                # Add provider name to mapping file
+                # Get provider label if available
+                provider_label = provider
+                try:
+                    provider_instance = self.manager.get_provider(provider)
+                    if provider_instance:
+                        provider_label = getattr(provider_instance, 'provider_label', provider)
+                except:
+                    pass
+
+                # Build the file structure:
+                # {
+                #   "_provider_name": "Provider Label",
+                #   "channel_id": {"epg_id": "...", "name": "..."}
+                # }
                 full_mapping = {
-                    "_provider_name": provider,
-                    **mapping_data
+                    "_provider_name": provider_label
                 }
+
+                # Add each mapping entry
+                for channel_id, mapping_value in mapping_data.items():
+                    if isinstance(mapping_value, dict):
+                        # Already has structure {"epg_id": "...", "name": "..."}
+                        full_mapping[channel_id] = mapping_value
+                    elif isinstance(mapping_value, str):
+                        # Simple string, convert to object
+                        full_mapping[channel_id] = {
+                            "epg_id": mapping_value,
+                            "name": ""  # Name not provided
+                        }
 
                 # Save to file
                 vfs = VFS(addon_subdir="")
@@ -2390,6 +2426,8 @@ class UltimateService:
                 success = vfs.write_json(mapping_file, full_mapping)
 
                 if success:
+                    logger.info(f"Saved EPG mapping for {provider}: {len(mapping_data)} channels")
+
                     # Clear mapping cache if it exists
                     try:
                         from streaming_providers.base.epg.epg_mapping import EPGMapping
@@ -2397,7 +2435,6 @@ class UltimateService:
                         mapping_manager.reload_mapping(provider)
                         logger.info(f"Reloaded EPG mapping cache for {provider}")
                     except ImportError:
-                        # EPGMapping not available, skip cache reload
                         logger.debug("EPGMapping not available for cache reload")
                         pass
                     except Exception as reload_err:
@@ -2405,7 +2442,8 @@ class UltimateService:
 
                     return {
                         "success": True,
-                        "message": f"Mapping saved for {provider}"
+                        "message": f"Mapping saved for {provider}",
+                        "channels_mapped": len(mapping_data)
                     }
                 else:
                     response.status = 500

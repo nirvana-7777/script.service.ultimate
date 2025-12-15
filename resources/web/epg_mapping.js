@@ -272,9 +272,14 @@ class EPGMappingManager {
             const epgData = await epgResponse.json();
 
             console.log('Provider channels received:', providerChannels.channels?.length || 0);
-            console.log('Current mappings:', currentMappings);
+            console.log('Current mappings response:', currentMappings);
+            console.log('Mapping object:', currentMappings.mapping);
             console.log('Sample mapping keys:', Object.keys(currentMappings.mapping || {}).slice(0, 5));
+            console.log('Total mapping keys:', Object.keys(currentMappings.mapping || {}).length);
             console.log('Sample channel IDs:', providerChannels.channels?.slice(0, 5).map(c => c.Id) || []);
+            console.log('Sample channel names:', providerChannels.channels?.slice(0, 5).map(c => c.Name) || []);
+            console.log('EPG channels loaded:', epgData.channels?.length || 0);
+            console.log('EPG channel map size:', Object.keys(epgData.channel_map || {}).length);
 
             // Store EPG channels with their display names
             this.epgChannels = epgData.channels || [];
@@ -290,15 +295,20 @@ class EPGMappingManager {
                 let currentEpgId = null;
                 const mappingValue = currentMappings.mapping?.[channelId];
 
-                console.log(`Channel ${channelId}: mapping value =`, mappingValue);
+                console.log(`Channel ${channelId} (${channelName}): mapping value =`, mappingValue);
 
+                // Handle different mapping structures:
+                // 1. String: "epg_id"
+                // 2. Object: {"epg_id": "...", "name": "..."}
                 if (typeof mappingValue === 'string') {
                     currentEpgId = mappingValue;
-                } else if (mappingValue && mappingValue.epg_id) {
+                } else if (mappingValue && typeof mappingValue === 'object') {
                     currentEpgId = mappingValue.epg_id;
                 }
 
                 const suggestions = this.getSuggestions(channelName);
+
+                console.log(`  -> EPG ID: ${currentEpgId}, Suggestions:`, suggestions.map(s => `${s.epgId} (${s.score}%)`));
 
                 return {
                     id: channelId,
@@ -643,7 +653,11 @@ class EPGMappingManager {
         const mappings = {};
         this.channelData.forEach(channel => {
             if (channel.currentEpgId) {
-                mappings[channel.id] = channel.currentEpgId;
+                // Save in the same structure as loaded
+                mappings[channel.id] = {
+                    epg_id: channel.currentEpgId,
+                    name: channel.name
+                };
             }
         });
 
