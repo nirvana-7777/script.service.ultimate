@@ -1414,7 +1414,8 @@ class SettingsManager:
             has_credentials=has_credentials,
             has_token=has_token,
             token_valid=token_valid,
-            credential_type=credentials.credential_type if credentials else None
+            credential_type=credentials.credential_type if credentials else None,
+            token_auth_level=token_data.get('auth_level') if has_token else None
         )
 
         # Build response
@@ -1430,39 +1431,58 @@ class SettingsManager:
 
         return status
 
-
     @staticmethod
     def _determine_auth_state(has_credentials: bool, has_token: bool,
-                              token_valid: bool, credential_type: Optional[str]) -> str:
+                              token_valid: bool, credential_type: Optional[str],
+                              token_auth_level: Optional[str] = None) -> str:
         """
         Determine authentication state from credential and token status
+        ENHANCED: Now considers token classification when credentials not saved
 
         Args:
-            has_credentials: Whether valid credentials exist
-            has_token: Whether token data exists
+            has_credentials: Whether valid credentials exist in credential manager
+            has_token: Whether token data exists in session manager
             token_valid: Whether token is valid (not expired)
             credential_type: Type of credential ("user_password" or "client_credentials")
+            token_auth_level: Token's authentication level from metadata
 
         Returns:
-            One of: "not_authenticated", "credentials_only", "user_authenticated", "client_authenticated"
+            One of: "not_authenticated", "credentials_only",
+                    "user_authenticated", "client_authenticated"
         """
-        # No credentials and no token
-        if not has_credentials and not has_token:
-            return "not_authenticated"
+        # CASE 1: Valid token exists - check its classification FIRST
+        if has_token and token_valid:
+            if token_auth_level == "client_credentials":
+                return "client_authenticated"
+            elif token_auth_level == "user_authenticated":
+                return "user_authenticated"
+            # If token has unknown/no auth_level but is valid, still authenticated
+            elif token_auth_level == "anonymous":
+                return "client_authenticated"  # Anonymous tokens count as client auth
+            elif token_auth_level == "unknown":
+                # Valid token but unknown type - assume client credentials
+                return "client_authenticated"
 
-        # No credentials but has token (shouldn't happen, but handle it)
-        if not has_credentials and has_token:
-            return "not_authenticated"
-
-        # Has credentials but no token (lazy auth - hasn't authenticated yet)
-        if has_credentials and not has_token:
+        # CASE 2: Token exists but expired - credentials determine state
+        if has_token and not token_valid and has_credentials:
             return "credentials_only"
 
-        # Has credentials and token but token expired (needs re-auth)
-        if has_credentials and has_token and not token_valid:
+        # CASE 3: No token but has credentials (lazy auth - hasn't authenticated yet)
+        if not has_token and has_credentials:
             return "credentials_only"
 
-        # Has credentials and valid token - determine type
+        # CASE 4: Valid token exists but no credentials saved (common for client credentials)
+        # This handles cases like Joyn where fallback credentials aren't saved
+        if has_token and token_valid and not has_credentials:
+            # Valid token without saved credentials - assume client authenticated
+            # (This covers embedded/client credentials flows)
+            return "client_authenticated"
+
+        # CASE 5: No credentials and no token (or invalid token without credentials)
+        if not has_credentials and (not has_token or (has_token and not token_valid)):
+            return "not_authenticated"
+
+        # CASE 6: Has credentials and valid token - determine by credential type
         if has_credentials and has_token and token_valid:
             if credential_type == "user_password":
                 return "user_authenticated"
@@ -1470,11 +1490,10 @@ class SettingsManager:
                 return "client_authenticated"
             else:
                 # Unknown credential type but authenticated
-                return "user_authenticated"
+                return "user_authenticated"  # Default to user authenticated for safety
 
-        # Fallback
+        # Fallback - shouldn't reach here with above logic
         return "not_authenticated"
-
 
     def save_provider_credentials_from_api(self, provider_name: str,
                                            credentials_data: Dict[str, Any]) -> Tuple[bool, str]:
