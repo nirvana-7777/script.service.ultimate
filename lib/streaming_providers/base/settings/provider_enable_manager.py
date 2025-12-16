@@ -207,33 +207,26 @@ class ProviderEnableManager:
             return None
 
     def is_provider_enabled(self, provider_name: str) -> bool:
-        """
-        Check if provider is enabled using precedence rules.
+        logger.debug(f"DEBUG ProviderEnableManager.is_provider_enabled('{provider_name}')")
 
-        Precedence:
-        1. Kodi settings (if in Kodi and setting exists)
-        2. providers_enabled.json file
-        3. Default to True
-
-        Args:
-            provider_name: Provider name (e.g., "joyn_de", "rtlplus")
-
-        Returns:
-            True if enabled, False if disabled
-        """
         # 1. Check Kodi settings first
         kodi_enabled = self._get_kodi_enabled_status(provider_name)
+        logger.debug(f"DEBUG _get_kodi_enabled_status returned: {kodi_enabled}")
+
         if kodi_enabled is not None:
+            logger.debug(f"DEBUG Using Kodi setting: {kodi_enabled}")
             return kodi_enabled
 
         # 2. Check file
         data = self._load_file()
         file_enabled = data["providers"].get(provider_name)
+        logger.debug(f"DEBUG File check returned: {file_enabled}")
 
         if file_enabled is not None:
             return file_enabled
 
         # 3. Default to enabled
+        logger.debug(f"DEBUG No setting found, defaulting to enabled")
         return True
 
     def get_enabled_source(self, provider_name: str) -> EnableSource:

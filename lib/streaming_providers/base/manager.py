@@ -113,7 +113,6 @@ class ProviderManager:
                     enabled_countries = []
                     for country_code in countries:
                         # CHECK COUNTRY-SPECIFIC ENABLED STATUS
-                        logger.debug(f"DEBUG: Checking enable for {provider_name}_{country_code}")
                         if not self._is_provider_enabled(provider_name, country_code):
                             logger.debug(
                                 f"ProviderManager: Provider '{provider_name}_{country_code}' is disabled, skipping")
