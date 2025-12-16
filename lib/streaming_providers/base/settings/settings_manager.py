@@ -1320,7 +1320,6 @@ class SettingsManager:
 
     def is_provider_enabled(self, provider_name: str, country: Optional[str] = None) -> bool:
         """Check if provider is enabled (using ProviderEnableManager)"""
-
         # Import here to avoid circular imports
         from .provider_enable_manager import ProviderEnableManager
 
