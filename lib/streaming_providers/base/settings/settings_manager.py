@@ -1320,6 +1320,16 @@ class SettingsManager:
 
     def is_provider_enabled(self, provider_name: str, country: Optional[str] = None) -> bool:
         """Check if provider is enabled (using ProviderEnableManager)"""
+        logger.debug(f"DEBUG SettingsManager.is_provider_enabled({provider_name}, {country})")
+
+        # Handle country parameter if provider_name doesn't have suffix
+        if country and '_' not in provider_name:
+            provider_to_check = f"{provider_name}_{country}"
+        else:
+            provider_to_check = provider_name
+
+        logger.debug(f"DEBUG provider_to_check: {provider_to_check}")
+
         # Import here to avoid circular imports
         from .provider_enable_manager import ProviderEnableManager
 
