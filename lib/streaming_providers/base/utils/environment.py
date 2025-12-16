@@ -64,64 +64,35 @@ class EnvironmentManager:
             # Import inside the method where we know Kodi is available
             import xbmcaddon as kodi_xbmcaddon
             import xbmcvfs as kodi_xbmcvfs
-            print("DEBUG: Imports successful", file=sys.stderr)
 
             # Create addon instance
             self._addon = kodi_xbmcaddon.Addon()
-            print(f"DEBUG: Addon created: {self._addon.getAddonInfo('id')}", file=sys.stderr)
 
             self._config['environment'] = 'kodi'
             self._config['addon_id'] = self._addon.getAddonInfo('id')
-            print(f"DEBUG: addon_id set: {self._config['addon_id']}", file=sys.stderr)
-
             self._config['addon_name'] = self._addon.getAddonInfo('name')
-            print(f"DEBUG: addon_name set: {self._config['addon_name']}", file=sys.stderr)
-
             self._config['addon_version'] = self._addon.getAddonInfo('version')
-            print(f"DEBUG: addon_version set: {self._config['addon_version']}", file=sys.stderr)
-
             self._config['addon_path'] = self._addon.getAddonInfo('path')
-            print(f"DEBUG: addon_path set: {self._config['addon_path']}", file=sys.stderr)
 
             # Get profile path
-            print("DEBUG: Getting profile info...", file=sys.stderr)
             profile_info = self._addon.getAddonInfo('profile')
-            print(f"DEBUG: profile_info: {profile_info}", file=sys.stderr)
-
-            print("DEBUG: Translating path...", file=sys.stderr)
             profile_path = kodi_xbmcvfs.translatePath(profile_info)
-            print(f"DEBUG: profile_path translated: {profile_path}", file=sys.stderr)
 
             self._config['profile_path'] = str(profile_path)
-            print(f"DEBUG: profile_path set in config", file=sys.stderr)
 
             # Get settings
-            print("DEBUG: Getting default_country setting...", file=sys.stderr)
             default_country = self._addon.getSetting('default_country')
-            print(f"DEBUG: default_country raw value: {repr(default_country)}", file=sys.stderr)
             self._config['default_country'] = str(default_country) if default_country else 'DE'
-            print(f"DEBUG: default_country set: {self._config['default_country']}", file=sys.stderr)
 
-            print("DEBUG: Getting server_port setting...", file=sys.stderr)
             server_port = self._addon.getSetting('server_port')
-            print(f"DEBUG: server_port raw value: {repr(server_port)}", file=sys.stderr)
             try:
                 self._config['server_port'] = int(str(server_port)) if server_port else 7777
-                print(f"DEBUG: server_port set: {self._config['server_port']}", file=sys.stderr)
-            except ValueError as ve:
-                print(f"DEBUG: ValueError converting port: {ve}", file=sys.stderr)
+            except ValueError:
                 self._config['server_port'] = 7777
 
-            print("DEBUG: _init_kodi completed successfully!", file=sys.stderr)
-
-        except Exception as init_error:
-            print(f"DEBUG: Exception caught in _init_kodi!", file=sys.stderr)
+        except Exception as init_error:  # noqa: B902
             print(f"DEBUG: Exception type: {type(init_error).__name__}", file=sys.stderr)
             print(f"DEBUG: Exception message: {str(init_error)}", file=sys.stderr)
-            import traceback
-            print("DEBUG: Full traceback:", file=sys.stderr)
-            traceback.print_exc()
-
             # Log the error and fallback to standalone
             self._log_init_error("Kodi initialization failed", init_error)
             self._is_kodi = False
@@ -317,15 +288,21 @@ _env_manager: Optional[EnvironmentManager] = None
 def get_environment_manager() -> EnvironmentManager:
     """Get the global environment manager instance"""
     global _env_manager
+    print(f"DEBUG get_environment_manager(): _env_manager is {_env_manager}, id={id(_env_manager) if _env_manager else 'None'}", file=sys.stderr)
     if _env_manager is None:
+        print(f"DEBUG get_environment_manager(): Creating new EnvironmentManager", file=sys.stderr)
         _env_manager = EnvironmentManager()
+        print(f"DEBUG get_environment_manager(): Created _env_manager, id={id(_env_manager)}", file=sys.stderr)
     return _env_manager
 
 
-# Convenience functions for common operations
 def is_kodi_environment() -> bool:
     """Check if we're running in Kodi environment (convenience function)"""
-    return get_environment_manager().is_kodi()
+    manager = get_environment_manager()
+    print(f"DEBUG is_kodi_environment(): Got manager id={id(manager)}", file=sys.stderr)
+    result = manager.is_kodi()
+    print(f"DEBUG is_kodi_environment(): Returning {result}", file=sys.stderr)
+    return result
 
 
 def get_logger_instance() -> 'BaseLogger':
