@@ -65,7 +65,9 @@ class RemoteLoginHandler:
         self.backchannel_start_url = backchannel_start_url
         self.token_endpoint = token_endpoint
         self.qr_code_url_template = qr_code_url_template
-        self.platform_config = MAGENTA2_PLATFORMS.get(MAGENTA2_PLATFORMS[DEFAULT_PLATFORM])
+
+        # FIX: Get platform config correctly
+        self.platform_config = MAGENTA2_PLATFORMS[DEFAULT_PLATFORM]
         self.user_agent = self.platform_config['user_agent']
 
         # Get or create notifier with http_manager
