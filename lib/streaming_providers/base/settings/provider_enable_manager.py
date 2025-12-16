@@ -161,48 +161,49 @@ class ProviderEnableManager:
             return False
 
     def _get_kodi_enabled_status(self, provider_name: str) -> Optional[bool]:
-        logger.debug(f"DEBUG _get_kodi_enabled_status called with: '{provider_name}'")
+        """
+        Get enabled status from Kodi settings.
 
+        Args:
+            provider_name: Provider name (e.g., "joyn_de", "rtlplus")
+
+        Returns:
+            True/False if setting exists in Kodi, None if not set
+        """
         if not is_kodi_environment() or not self._kodi_bridge:
-            logger.debug(f"DEBUG: Not in Kodi environment or bridge unavailable")
             return None
 
         try:
+            # Parse provider_name for potential country suffix
             parts = provider_name.rsplit('_', 1)
-            logger.debug(f"DEBUG: Parts after split: {parts}")
 
-            # Check country-specific setting first
-            if len(parts) == 2 and len(parts[1]) in (2, 3):
+            # Check country-specific setting first (e.g., "enable_joyn_de")
+            if len(parts) == 2 and len(parts[1]) in (2, 3):  # Country code length
                 provider, country = parts
                 country_setting = f"enable_{provider}_{country}"
-                logger.debug(f"DEBUG: Looking for Kodi setting: '{country_setting}'")
 
+                # Try country-specific setting
                 country_value = self._kodi_bridge.get_setting(country_setting)
-                logger.debug(f"DEBUG: Kodi bridge returned value: '{country_value}' (type: {type(country_value)})")
-
                 if country_value:
                     enabled = country_value.lower() in ['true', '1', 'yes']
-                    logger.debug(f"DEBUG: Parsed '{country_value}' as enabled={enabled}")
+                    logger.debug(f"ProviderEnableManager: Found Kodi setting {country_setting}={enabled}")
                     return enabled
-                else:
-                    logger.debug(f"DEBUG: Kodi bridge returned empty/falsy value")
 
-            # Try general provider setting
+            # Try general provider setting (e.g., "enable_joyn")
             general_setting = f"enable_{provider_name}"
-            logger.debug(f"DEBUG: Trying general setting: '{general_setting}'")
             general_value = self._kodi_bridge.get_setting(general_setting)
-            logger.debug(f"DEBUG: General Kodi returned: '{general_value}'")
 
             if general_value:
                 enabled = general_value.lower() in ['true', '1', 'yes']
-                logger.debug(f"DEBUG: General parsed as: {enabled}")
+                logger.debug(f"ProviderEnableManager: Found Kodi setting {general_setting}={enabled}")
                 return enabled
 
-            logger.debug(f"DEBUG: No Kodi setting found for {provider_name}")
+            # No Kodi setting found
+            logger.debug(f"ProviderEnableManager: No Kodi setting found for {provider_name}")
             return None
 
         except Exception as e:
-            logger.debug(f"DEBUG: Exception in _get_kodi_enabled_status: {e}")
+            logger.warning(f"ProviderEnableManager: Error reading Kodi setting for {provider_name}: {e}")
             return None
 
     def is_provider_enabled(self, provider_name: str) -> bool:

@@ -65,8 +65,10 @@ class EnvironmentManager:
             import xbmcaddon as kodi_xbmcaddon
             import xbmcvfs as kodi_xbmcvfs
 
-            # Create addon instance
+            print("DEBUG: Imports successful", file=sys.stderr)
+
             self._addon = kodi_xbmcaddon.Addon()
+            print(f"DEBUG: Addon created: {self._addon.getAddonInfo('id')}", file=sys.stderr)
 
             self._config['environment'] = 'kodi'
             self._config['addon_id'] = self._addon.getAddonInfo('id')
@@ -91,6 +93,8 @@ class EnvironmentManager:
                 self._config['server_port'] = 7777
 
         except Exception as init_error:  # noqa: B902
+            print(f"DEBUG: Exception type: {type(init_error).__name__}", file=sys.stderr)
+            print(f"DEBUG: Exception message: {str(init_error)}", file=sys.stderr)
             # Log the error and fallback to standalone
             self._log_init_error("Kodi initialization failed", init_error)
             self._is_kodi = False
