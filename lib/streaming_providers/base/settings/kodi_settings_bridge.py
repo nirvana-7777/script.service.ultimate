@@ -70,7 +70,9 @@ class KodiSettingsBridge:
         """Get setting value, works in both Kodi and standalone mode"""
         if self.is_kodi_environment():
             try:
-                return self.addon.getSetting(setting_id) or default
+                value = self.addon.getSetting(setting_id)
+                logger.debug(f"DEBUG Kodi getSetting('{setting_id}') returned: '{value}'")
+                return value or default
             except Exception as e:
                 logger.error(f"Error getting setting {setting_id}: {e}")
                 return default
