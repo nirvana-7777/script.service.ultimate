@@ -288,21 +288,15 @@ _env_manager: Optional[EnvironmentManager] = None
 def get_environment_manager() -> EnvironmentManager:
     """Get the global environment manager instance"""
     global _env_manager
-    print(f"DEBUG get_environment_manager(): _env_manager is {_env_manager}, id={id(_env_manager) if _env_manager else 'None'}", file=sys.stderr)
     if _env_manager is None:
-        print(f"DEBUG get_environment_manager(): Creating new EnvironmentManager", file=sys.stderr)
         _env_manager = EnvironmentManager()
-        print(f"DEBUG get_environment_manager(): Created _env_manager, id={id(_env_manager)}", file=sys.stderr)
     return _env_manager
 
 
+# Convenience functions for common operations
 def is_kodi_environment() -> bool:
     """Check if we're running in Kodi environment (convenience function)"""
-    manager = get_environment_manager()
-    print(f"DEBUG is_kodi_environment(): Got manager id={id(manager)}", file=sys.stderr)
-    result = manager.is_kodi()
-    print(f"DEBUG is_kodi_environment(): Returning {result}", file=sys.stderr)
-    return result
+    return get_environment_manager().is_kodi()
 
 
 def get_logger_instance() -> 'BaseLogger':

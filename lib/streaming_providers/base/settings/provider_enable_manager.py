@@ -48,11 +48,15 @@ class ProviderEnableManager:
         # Try to initialize Kodi bridge if in Kodi environment
         if is_kodi_environment():
             try:
-                from .settings.kodi_settings_bridge import KodiSettingsBridge
+                # Fixed import path - kodi_settings_bridge is in the same directory
+                from .kodi_settings_bridge import KodiSettingsBridge
                 self._kodi_bridge = KodiSettingsBridge(config_dir=config_dir)
                 logger.debug("ProviderEnableManager: Kodi bridge initialized")
             except ImportError as e:
                 logger.debug(f"ProviderEnableManager: Kodi bridge not available: {e}")
+                self._kodi_bridge = None
+            except Exception as e:
+                logger.error(f"ProviderEnableManager: Error initializing Kodi bridge: {e}")
                 self._kodi_bridge = None
 
     def _load_file(self, force_reload: bool = False) -> Dict[str, Any]:
