@@ -187,6 +187,10 @@ class JoynProvider(StreamingProvider):
     def implements_epg(self) -> bool:
         return False
 
+    @property
+    def supported_auth_types(self) -> List[str]:
+        return ['client_credentials','user_credentials']
+
     def authenticate(self, **kwargs) -> str:
         """Authenticate and return bearer token"""
         self.bearer_token = self.authenticator.get_bearer_token(

@@ -95,6 +95,7 @@ async function loadAuthStatus() {
 }
 
 // Render credentials forms
+// Render credentials forms
 async function renderCredentialsForms() {
     if (providers.length === 0) {
         credentialsContainer.innerHTML = `
@@ -121,66 +122,141 @@ async function renderCredentialsForms() {
                 }
             }
 
-            // Check if this provider requires user credentials
-            const isClientOnly = !provider.requires_user_credentials;
-            const providerCardClass = isClientOnly ? 'provider-card client-credentials-only' : 'provider-card';
+            // Get auth information from provider
+            const auth = provider.auth || {};
+            const supportedAuthTypes = auth.supported_auth_types || [];
 
-            // Get the current auth status
+            // Determine UI based on auth properties
+            const needsUserCredentials = auth.needs_user_credentials || false;
+            const needsClientCredentials = auth.needs_client_credentials || false;
+            const isAnonymous = auth.is_anonymous || false;
+            const isNetworkBased = auth.is_network_based || false;
+            const usesEmbeddedClient = auth.uses_embedded_client || false;
+            const usesDeviceRegistration = auth.uses_device_registration || false;
+
+            // Get current auth status
             const status = authStatus[provider.name] || {};
 
-            // Create form groups HTML based on provider type
-            const formGroupsHTML = isClientOnly ? '' : `
-            <div class="form-group">
-                <label for="username-${provider.name}">
-                    <i class="fas fa-user"></i> Username/Email
-                </label>
-                <input type="text"
-                       id="username-${provider.name}"
-                       class="form-control"
-                       placeholder="user@example.com"
-                       value="${existingCreds?.username_masked || ''}"
-                       ${existingCreds?.username_masked ? 'readonly style="background-color:#f5f5f5;"' : ''}>
-                ${existingCreds?.username_masked ? `
-                <small style="color:#666; display:block; margin-top:5px;">
-                    <i class="fas fa-info-circle"></i> Credentials saved. Enter new values to update.
-                </small>
-                ` : ''}
-            </div>
+            // Determine provider card class
+            let providerCardClass = 'provider-card';
+            if (!needsUserCredentials) {
+                providerCardClass += ' client-credentials-only';
+            }
 
-            <div class="form-group">
-                <label for="password-${provider.name}">
-                    <i class="fas fa-lock"></i> ${existingCreds ? 'New Password (leave blank to keep current)' : 'Password'}
-                </label>
-                <input type="password"
-                       id="password-${provider.name}"
-                       class="form-control"
-                       placeholder="${existingCreds ? '•••••••• (optional)' : '••••••••'}"
-                       value="">
-            </div>
-            `;
+            // Create form content based on auth type
+            let formContent = '';
+            let authDescription = '';
 
-            // Create buttons HTML - only show save/delete for providers that need credentials
-            const buttonsHTML = isClientOnly ? `
-            <div class="btn-group">
-                <button onclick="testAuth('${provider.name}')" class="btn btn-success">
-                    <i class="fas fa-check"></i> Test Connection
-                </button>
-            </div>
-            ` : `
-            <div class="btn-group">
-                <button onclick="saveCredentials('${provider.name}')" class="btn btn-primary">
-                    <i class="fas fa-save"></i> ${existingCreds ? 'Update' : 'Save'}
-                </button>
-                ${existingCreds ? `
-                <button onclick="deleteCredentials('${provider.name}')" class="btn btn-danger">
-                    <i class="fas fa-trash"></i> Delete
-                </button>
-                ` : ''}
-                <button onclick="testAuth('${provider.name}')" class="btn btn-success">
-                    <i class="fas fa-check"></i> Test
-                </button>
-            </div>
-            `;
+            if (needsUserCredentials) {
+                // User credentials form
+                formContent = `
+                <div class="form-group">
+                    <label for="username-${provider.name}">
+                        <i class="fas fa-user"></i> Username/Email
+                    </label>
+                    <input type="text"
+                           id="username-${provider.name}"
+                           class="form-control"
+                           placeholder="user@example.com"
+                           value="${existingCreds?.username_masked || ''}"
+                           ${existingCreds?.username_masked ? 'readonly style="background-color:#f5f5f5;"' : ''}>
+                    ${existingCreds?.username_masked ? `
+                    <small style="color:#666; display:block; margin-top:5px;">
+                        <i class="fas fa-info-circle"></i> Credentials saved. Enter new values to update.
+                    </small>
+                    ` : ''}
+                </div>
+
+                <div class="form-group">
+                    <label for="password-${provider.name}">
+                        <i class="fas fa-lock"></i> ${existingCreds ? 'New Password (leave blank to keep current)' : 'Password'}
+                    </label>
+                    <input type="password"
+                           id="password-${provider.name}"
+                           class="form-control"
+                           placeholder="${existingCreds ? '•••••••• (optional)' : '••••••••'}"
+                           value="">
+                </div>
+                `;
+                authDescription = 'Requires username and password';
+            } else if (needsClientCredentials && !needsUserCredentials) {
+                // Client credentials only (no user input needed)
+                formContent = `
+                <div class="no-credentials-required">
+                    <i class="fas fa-key"></i>
+                    <strong>Client Credentials Only</strong>
+                    <p>This provider uses hardcoded client credentials that don't require manual setup.</p>
+                    <small>Authentication type: ${auth.preferred_auth_type || 'client_credentials'}</small>
+                </div>
+                `;
+                authDescription = 'Uses client credentials';
+            } else if (isAnonymous || isNetworkBased || usesEmbeddedClient) {
+                // No credentials required
+                formContent = `
+                <div class="no-credentials-required">
+                    <i class="fas fa-check-circle"></i>
+                    <strong>No Credentials Required</strong>
+                    <p>This provider uses ${auth.preferred_auth_type?.replace('_', ' ') || 'automatic'} authentication.</p>
+                    ${supportedAuthTypes.length > 0 ? `
+                    <small>Supported auth types: ${supportedAuthTypes.join(', ')}</small>
+                    ` : ''}
+                </div>
+                `;
+                authDescription = 'No credentials required';
+            } else if (usesDeviceRegistration) {
+                // Device registration
+                formContent = `
+                <div class="no-credentials-required">
+                    <i class="fas fa-mobile-alt"></i>
+                    <strong>Device Registration</strong>
+                    <p>This provider requires device registration. Follow provider-specific setup instructions.</p>
+                    <small>Authentication type: ${auth.preferred_auth_type || 'device_registration'}</small>
+                </div>
+                `;
+                authDescription = 'Requires device registration';
+            } else {
+                // Fallback for unknown auth types
+                formContent = `
+                <div class="no-credentials-required">
+                    <i class="fas fa-question-circle"></i>
+                    <strong>Authentication Type Unknown</strong>
+                    <p>This provider's authentication method could not be determined.</p>
+                    ${supportedAuthTypes.length > 0 ? `
+                    <small>Supported auth types: ${supportedAuthTypes.join(', ')}</small>
+                    ` : ''}
+                </div>
+                `;
+                authDescription = 'Unknown authentication';
+            }
+
+            // Create buttons based on auth type
+            let buttonsHTML = '';
+            if (needsUserCredentials) {
+                buttonsHTML = `
+                <div class="btn-group">
+                    <button onclick="saveCredentials('${provider.name}')" class="btn btn-primary">
+                        <i class="fas fa-save"></i> ${existingCreds ? 'Update' : 'Save'}
+                    </button>
+                    ${existingCreds ? `
+                    <button onclick="deleteCredentials('${provider.name}')" class="btn btn-danger">
+                        <i class="fas fa-trash"></i> Delete
+                    </button>
+                    ` : ''}
+                    <button onclick="testAuth('${provider.name}')" class="btn btn-success">
+                        <i class="fas fa-check"></i> Test
+                    </button>
+                </div>
+                `;
+            } else {
+                // For non-user-credential providers, only show test button
+                buttonsHTML = `
+                <div class="btn-group">
+                    <button onclick="testAuth('${provider.name}')" class="btn btn-success">
+                        <i class="fas fa-check"></i> Test Connection
+                    </button>
+                </div>
+                `;
+            }
 
             return `
             <div class="${providerCardClass}" data-provider="${provider.name}">
@@ -189,6 +265,9 @@ async function renderCredentialsForms() {
                     <div class="provider-info">
                         <h3>${provider.label}</h3>
                         <div class="provider-id">${provider.name} • ${provider.country}</div>
+                        <div class="auth-info">
+                            <small><i class="fas fa-fingerprint"></i> ${authDescription}</small>
+                        </div>
                         <div id="status-${provider.name}" class="status-indicator">
                             ${getStatusIcon(status)}
                             ${getStatusText(status)}
@@ -196,15 +275,7 @@ async function renderCredentialsForms() {
                     </div>
                 </div>
 
-                ${isClientOnly ? `
-                <div class="no-credentials-required">
-                    <i class="fas fa-info-circle"></i>
-                    <strong>No manual credentials required</strong>
-                    <p>This provider uses client credentials that are hardcoded in the application.</p>
-                </div>
-                ` : ''}
-
-                ${formGroupsHTML}
+                ${formContent}
                 ${buttonsHTML}
             </div>
             `;
@@ -326,30 +397,43 @@ function getStatusIcon(status) {
     if (!status) return '<i class="fas fa-question-circle"></i>';
 
     switch (status.auth_state) {
+        case 'AUTHENTICATED':
         case 'user_authenticated':
         case 'client_authenticated':
             return '<i class="fas fa-check-circle"></i>';
+        case 'EXPIRED':
         case 'credentials_only':
             return '<i class="fas fa-exclamation-triangle"></i>';
-        default:
+        case 'NOT_AUTHENTICATED':
             return '<i class="fas fa-times-circle"></i>';
+        case 'NOT_APPLICABLE':
+            return '<i class="fas fa-info-circle"></i>';
+        default:
+            return '<i class="fas fa-question-circle"></i>';
     }
 }
 
 function getStatusText(status) {
     if (!status) return 'Unknown';
 
+    // Map Python AuthState values to readable text
     switch (status.auth_state) {
-        case 'user_authenticated':
+        case 'AUTHENTICATED':
             return 'Authenticated';
+        case 'EXPIRED':
+            return 'Token Expired (can refresh)';
+        case 'NOT_AUTHENTICATED':
+            return 'Not Authenticated';
+        case 'NOT_APPLICABLE':
+            return 'No Auth Required';
+        case 'user_authenticated': // Keep old values for backward compatibility
+            return 'User Authenticated';
         case 'client_authenticated':
             return 'Client Authenticated';
         case 'credentials_only':
             return 'Credentials Saved';
-        case 'not_authenticated':
-            return 'Not Authenticated';
         default:
-            return status.auth_state;
+            return status.auth_state || 'Unknown';
     }
 }
 
@@ -362,9 +446,27 @@ async function saveCredentials(providerName) {
         return;
     }
 
-    // Check if provider is client-only
-    if (!provider.requires_user_credentials) {
-        showAlert('info', `${provider.label} uses hardcoded client credentials - no manual setup needed`);
+    // Check auth properties
+    const auth = provider.auth || {};
+
+    // Check if provider actually needs user credentials
+    if (!auth.needs_user_credentials) {
+        const authType = auth.preferred_auth_type || 'unknown';
+        const authTypeName = authType.replace('_', ' ');
+
+        if (auth.needs_client_credentials && !auth.needs_user_credentials) {
+            showAlert('info', `${provider.label} uses client credentials - credentials are hardcoded in the application`);
+        } else if (auth.is_anonymous) {
+            showAlert('info', `${provider.label} is an anonymous provider - no credentials needed`);
+        } else if (auth.is_network_based) {
+            showAlert('info', `${provider.label} uses network-based authentication - no manual setup needed`);
+        } else if (auth.uses_embedded_client) {
+            showAlert('info', `${provider.label} uses embedded client credentials - no manual setup needed`);
+        } else if (auth.uses_device_registration) {
+            showAlert('info', `${provider.label} requires device registration - follow provider setup instructions`);
+        } else {
+            showAlert('info', `${provider.label} uses ${authTypeName} authentication - no manual credential setup`);
+        }
         return;
     }
 
@@ -485,16 +587,36 @@ async function deleteCredentials(providerName) {
         return;
     }
 
-    // Check if provider is client-only
-    if (!provider.requires_user_credentials) {
-        showAlert('info', `${provider.label} uses hardcoded client credentials - nothing to delete`);
+    // Check auth properties
+    const auth = provider.auth || {};
+
+    // Check if provider actually uses user credentials
+    if (!auth.needs_user_credentials) {
+        const authType = auth.preferred_auth_type || 'unknown';
+        const authTypeName = authType.replace('_', ' ');
+
+        if (auth.needs_client_credentials && !auth.needs_user_credentials) {
+            showAlert('info', `${provider.label} uses hardcoded client credentials - nothing to delete`);
+        } else if (auth.is_anonymous) {
+            showAlert('info', `${provider.label} is an anonymous provider - no credentials to delete`);
+        } else if (auth.is_network_based) {
+            showAlert('info', `${provider.label} uses network-based authentication - no credentials stored`);
+        } else if (auth.uses_embedded_client) {
+            showAlert('info', `${provider.label} uses embedded client credentials - nothing to delete`);
+        } else if (auth.uses_device_registration) {
+            showAlert('info', `${provider.label} uses device registration - no stored credentials to delete`);
+        } else {
+            showAlert('info', `${provider.label} uses ${authTypeName} authentication - no credentials to delete`);
+        }
         return;
     }
 
     if (!confirm(`Delete credentials for ${providerName}?`)) return;
 
     const statusEl = document.getElementById(`status-${providerName}`);
-    statusEl.innerHTML = '<span class="loader"></span> Deleting...';
+    if (statusEl) {
+        statusEl.innerHTML = '<span class="loader"></span> Deleting...';
+    }
 
     try {
         const response = await fetch(`${API_BASE}/api/providers/${providerName}/credentials`, {
@@ -502,12 +624,17 @@ async function deleteCredentials(providerName) {
         });
 
         if (response.ok) {
-            statusEl.className = 'status-indicator status-warning';
-            statusEl.innerHTML = '<i class="fas fa-info-circle"></i> Credentials deleted';
+            if (statusEl) {
+                statusEl.className = 'status-indicator status-warning';
+                statusEl.innerHTML = '<i class="fas fa-info-circle"></i> Credentials deleted';
+            }
 
-            // Clear fields
-            document.getElementById(`username-${providerName}`).value = '';
-            document.getElementById(`password-${providerName}`).value = '';
+            // Clear fields if they exist
+            const usernameInput = document.getElementById(`username-${providerName}`);
+            const passwordInput = document.getElementById(`password-${providerName}`);
+
+            if (usernameInput) usernameInput.value = '';
+            if (passwordInput) passwordInput.value = '';
 
             // Reload auth status
             await loadAuthStatus();
@@ -516,13 +643,17 @@ async function deleteCredentials(providerName) {
             showAlert('success', `Credentials deleted for ${providerName}`);
         } else {
             const result = await response.json();
-            statusEl.className = 'status-indicator status-error';
-            statusEl.innerHTML = `<i class="fas fa-exclamation-circle"></i> ${result.error || 'Delete failed'}`;
+            if (statusEl) {
+                statusEl.className = 'status-indicator status-error';
+                statusEl.innerHTML = `<i class="fas fa-exclamation-circle"></i> ${result.error || 'Delete failed'}`;
+            }
             showAlert('error', result.error || `Failed to delete credentials for ${providerName}`);
         }
     } catch (error) {
-        statusEl.className = 'status-indicator status-error';
-        statusEl.innerHTML = '<i class="fas fa-exclamation-circle"></i> Network error';
+        if (statusEl) {
+            statusEl.className = 'status-indicator status-error';
+            statusEl.innerHTML = '<i class="fas fa-exclamation-circle"></i> Network error';
+        }
         showAlert('error', `Network error: ${error.message}`);
         console.error('Delete error:', error);
     }

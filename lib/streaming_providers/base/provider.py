@@ -1,7 +1,75 @@
 # streaming_providers/base/provider.py - Enhanced with Header Abstractions
+"""
+Streaming Provider Base Class
+
+Authentication System:
+---------------------
+Providers implement authentication through three core components:
+
+1. CAPABILITIES (Declarative):
+   - supported_auth_types: List[str] - What auth methods the provider CAN use
+   - preferred_auth_type: str - Which method SHOULD be used by default
+
+2. STATE (Dynamic):
+   - get_current_auth_type(context) -> str - Which method IS currently active
+   - get_auth_status(context) -> AuthStatus - Complete authentication status
+
+3. LOGIC (Optional Overrides):
+   - _calculate_auth_state(context) -> Optional[AuthState] - Custom auth state logic
+   - _calculate_readiness(context) -> Optional[Tuple[bool, str]] - Custom readiness
+   - get_auth_details(context) -> Dict[str, Any] - Provider-specific details
+
+Auth Type Definitions:
+   - 'user_credentials': Username/password (Joyn, RTL+)
+   - 'client_credentials': Client ID/secret (Joyn fallback, some APIs)
+   - 'network_based': Fixed-line/network auth (Magenta2, cable providers)
+   - 'anonymous': No auth needed (ZDF, ARD)
+   - 'device_registration': Device-based auth (Smart TV apps)
+   - 'embedded_client': Built-in credentials
+
+Implementation Examples:
+----------------------
+# Simple provider (ZDF)
+class ZDFProvider(StreamingProvider):
+    @property
+    def supported_auth_types(self) -> List[str]:
+        return ['anonymous']  # Just one type
+
+# Multi-auth provider (Joyn)
+class JoynProvider(StreamingProvider):
+    @property
+    def supported_auth_types(self) -> List[str]:
+        return ['client_credentials', 'user_credentials']
+
+    @property
+    def preferred_auth_type(self) -> str:
+        return 'user_credentials'  # Prefer full access
+
+    def get_current_auth_type(self, context: AuthContext) -> str:
+        # Custom logic to detect current auth mode
+        token = context.get_token(self.provider_name, None, self.country)
+        return 'user_credentials' if token and token.get('auth_level') == 'user_authenticated' else 'client_credentials'
+
+# Network-based provider (Magenta2)
+class Magenta2Provider(StreamingProvider):
+    @property
+    def supported_auth_types(self) -> List[str]:
+        return ['network_based']
+
+    @property
+    def primary_token_scope(self) -> Optional[str]:
+        return 'yo_digital'  # Uses scoped tokens
+
+    def _calculate_readiness(self, context: AuthContext):
+        # Check multiple token scopes
+        yo_token = context.get_token(self.provider_name, 'yo_digital', self.country)
+        if yo_token and not context.session._is_token_expired(yo_token):
+            return True, "Has valid streaming token"
+        return False, "No valid tokens found"
+"""
 
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Callable
+from typing import Dict, List, Optional, Callable, Any
 from enum import Enum
 import json
 from datetime import datetime
@@ -11,6 +79,7 @@ from .models.drm_models import DRMConfig
 from .models.proxy_models import ProxyConfig
 from .network import HTTPManagerFactory, HTTPManager
 from .utils.logger import logger
+from ..providers.auth import AuthContext, AuthStatus
 
 
 class AuthType(Enum):
@@ -448,16 +517,6 @@ class StreamingProvider(ABC):
         """
         return self.catchup_window > 0
 
-    @property
-    def requires_user_credentials(self) -> bool:
-        """
-        Some providers do not need to authenticate
-
-        Returns:
-            bool: True if user credentials are required
-        """
-        return True
-
     def get_epg(self, channel_id: str,
                 start_time: Optional[datetime] = None,
                 end_time: Optional[datetime] = None,
@@ -738,3 +797,235 @@ class StreamingProvider(ABC):
             return True
 
         return country.lower() in [c.lower() for c in cls.SUPPORTED_COUNTRIES]
+
+    def validate_auth_type(self, auth_type: str) -> bool:
+        """
+        Check if an auth type is supported by this provider.
+
+        Useful for:
+        - Validating user input in configuration UI
+        - Safely switching auth modes
+        - Error messages when unsupported auth is requested
+
+        Args:
+            auth_type: Auth type to check (e.g., 'user_credentials')
+
+        Returns:
+            True if supported, False otherwise
+
+        Example:
+            if provider.validate_auth_type('user_credentials'):
+                # Safe to request user credentials
+        """
+        return auth_type in self.supported_auth_types
+
+    def get_auth_type_description(self, auth_type: str) -> str:
+        """
+        Get human-readable description of an auth type.
+
+        Args:
+            auth_type: Auth type to describe
+
+        Returns:
+            Description string or empty string if not supported
+        """
+        descriptions = {
+            'user_credentials': 'Username and password authentication',
+            'client_credentials': 'Client ID and secret authentication',
+            'network_based': 'Network/fixed-line authentication',
+            'anonymous': 'No authentication required',
+            'device_registration': 'Device registration authentication',
+            'embedded_client': 'Built-in credentials authentication'
+        }
+
+        if auth_type in descriptions:
+            return descriptions[auth_type]
+
+        # For custom auth types
+        return f"Custom authentication: {auth_type}"
+
+    def get_auth_requirements(self, auth_type: str) -> Dict[str, Any]:
+        """
+        Get requirements for a specific auth type.
+
+        Args:
+            auth_type: Auth type to get requirements for
+
+        Returns:
+            Dictionary with requirement information
+
+        Raises:
+            ValueError: If auth_type is not supported
+        """
+        if not self.validate_auth_type(auth_type):
+            raise ValueError(f"Auth type '{auth_type}' not supported by {self.provider_name}")
+
+        requirements = {
+            'auth_type': auth_type,
+            'needs_storage': auth_type in ['user_credentials', 'client_credentials'],
+            'provides_token': auth_type != 'anonymous',
+            'user_interaction_required': auth_type in ['user_credentials', 'device_registration']
+        }
+
+        # Type-specific details
+        if auth_type == 'user_credentials':
+            requirements.update({
+                'fields': ['username', 'password'],
+                'optional_fields': ['client_id'],
+                'storage_key': 'user_password'
+            })
+        elif auth_type == 'client_credentials':
+            requirements.update({
+                'fields': ['client_id', 'client_secret'],
+                'storage_key': 'client_credentials'
+            })
+        elif auth_type == 'network_based':
+            requirements.update({
+                'description': 'Authenticates via your network provider',
+                'automatic': True
+            })
+
+        return requirements
+
+    # ===== AUTHENTICATION PROPERTIES AND METHODS =====
+
+    @property
+    @abstractmethod
+    def supported_auth_types(self) -> List[str]:
+        """List of authentication types this provider supports."""
+        pass
+
+    @property
+    def preferred_auth_type(self) -> str:
+        """Preferred authentication type (first in supported list)."""
+        types = self.supported_auth_types
+        return types[0] if types else 'unknown'
+
+    @property
+    def requires_stored_credentials(self) -> bool:
+        """True if provider needs credentials stored in settings."""
+        credential_types = ['user_credentials', 'client_credentials']
+        return any(auth_type in credential_types
+                   for auth_type in self.supported_auth_types)
+
+    # ===== AUTHENTICATION PROPERTIES =====
+
+    def get_current_auth_type(self, context: AuthContext) -> str:
+        """
+        Determine which auth type is currently active.
+
+        Default implementation checks tokens/credentials.
+        Override for providers with complex auth logic.
+
+        Args:
+            context: AuthContext for accessing tokens/credentials
+
+        Returns:
+            Current active auth type
+        """
+        return self._determine_current_auth_type_default(context)
+
+    def _determine_current_auth_type_default(self, context: AuthContext) -> str:
+        """
+        Default logic for determining current auth type.
+        Providers can override get_current_auth_type() directly instead.
+        """
+        # 1. Check if provider requires stored credentials
+        if self.requires_stored_credentials:
+            credentials = context.get_credentials(self.provider_name, self.country)
+            if credentials:
+                # Map credential type to auth type
+                if hasattr(credentials, 'credential_type'):
+                    if credentials.credential_type == 'user_password':
+                        return 'user_credentials'
+                    elif credentials.credential_type == 'client_credentials':
+                        return 'client_credentials'
+
+        # 2. Check token auth level
+        primary_token = context.get_token(
+            self.provider_name,
+            self.primary_token_scope,
+            self.country
+        )
+        if primary_token:
+            auth_level = primary_token.get('auth_level')
+            if auth_level == 'user_authenticated':
+                return 'user_credentials'
+            elif auth_level == 'client_credentials':
+                return 'client_credentials'
+            elif auth_level == 'anonymous':
+                return 'anonymous'
+            elif auth_level == 'network_based':
+                return 'network_based'
+
+        # 3. Return first supported type as default
+        return self.preferred_auth_type
+
+    # Token management properties (keep these)
+    @property
+    def primary_token_scope(self) -> Optional[str]:
+        """
+        Primary token scope for this provider.
+        None = uses root-level token or no token needed.
+
+        Returns:
+            Token scope string or None
+        """
+        return None
+
+    @property
+    def token_scopes(self) -> List[str]:
+        """
+        All token scopes this provider uses.
+
+        Returns:
+            List of token scope strings
+        """
+        scope = self.primary_token_scope
+        return [scope] if scope else []
+
+    def get_auth_status(self, context: AuthContext) -> 'AuthStatus':
+        """
+        Get authentication status for this provider.
+        Uses AuthStatusBuilder by default.
+
+        Override only for providers with special requirements.
+
+        Args:
+            context: AuthContext with access to settings
+
+        Returns:
+            AuthStatus object
+        """
+        from ..providers.auth_builder import AuthStatusBuilder  # Import here to avoid circular imports
+        return AuthStatusBuilder.for_provider(self, context)
+
+    # Optional override methods for providers with special logic
+    def _calculate_auth_state(self, context: AuthContext):
+        """
+        Override to provide custom auth state calculation.
+        Return None to use standard calculation.
+
+        Returns:
+            AuthState or None
+        """
+        return None
+
+    def _calculate_readiness(self, context: AuthContext):
+        """
+        Override to provide custom readiness calculation.
+        Return None to use standard calculation.
+
+        Returns:
+            Tuple of (is_ready: bool, reason: str) or None
+        """
+        return None
+
+    def get_auth_details(self, context: AuthContext) -> Dict[str, Any]:
+        """
+        Override to provide provider-specific auth details.
+
+        Returns:
+            Dictionary with provider-specific information
+        """
+        return {}

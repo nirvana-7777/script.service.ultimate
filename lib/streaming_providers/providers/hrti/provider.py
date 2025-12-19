@@ -65,6 +65,10 @@ class HRTiProvider(StreamingProvider):
     def implements_epg(self) -> bool:
         return False
 
+    @property
+    def supported_auth_types(self) -> List[str]:
+        return ['user_credentials']
+
     def _get_hrti_authenticated_headers(self) -> Dict[str, str]:
         """
         Get headers with HRTi authentication for API requests

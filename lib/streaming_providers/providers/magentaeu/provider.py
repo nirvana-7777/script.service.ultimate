@@ -141,6 +141,10 @@ class MagentaProvider(StreamingProvider):
         # This provider offers 168 hours (7 days) of catchup
         return 168
 
+    @property
+    def supported_auth_types(self) -> List[str]:
+        return ['user_credentials']
+
     def authenticate(self, **kwargs) -> str:
         logger.info(f"=== MagentaProvider.authenticate() CALLED with kwargs: {kwargs} ===")
         self.bearer_token = self.authenticator.get_bearer_token(force_refresh=kwargs.get('force_refresh', False))

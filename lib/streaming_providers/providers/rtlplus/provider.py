@@ -69,7 +69,11 @@ class RTLPlusProvider(StreamingProvider):
     def implements_epg(self) -> bool:
         return False
 
-    # ============================================================================
+    @property
+    def supported_auth_types(self) -> List[str]:
+        return ['user_credentials']
+
+        # ============================================================================
     # OPTION 1: Provider-specific method (RECOMMENDED - No signature conflict)
     # ============================================================================
     def _get_rtlplus_authenticated_headers(self) -> Dict[str, str]:

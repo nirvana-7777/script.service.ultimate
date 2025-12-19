@@ -406,8 +406,16 @@ class Magenta2Provider(StreamingProvider):
         return 4
 
     @property
-    def requires_user_credentials(self) -> bool:
-        return False
+    def supported_auth_types(self) -> List[str]:
+        return ['network_based']  # ← Change 1
+
+    @property
+    def primary_token_scope(self) -> Optional[str]:
+        return 'persona'  # ← Keep this
+
+    @property
+    def token_scopes(self) -> List[str]:
+        return ['yo_digital', 'tvhubs', 'taa', 'persona']
 
     def get_discovery_status(self) -> Dict[str, Any]:
         """Get discovery and configuration status"""

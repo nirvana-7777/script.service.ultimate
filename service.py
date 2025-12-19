@@ -692,9 +692,8 @@ class UltimateService:
         def list_providers():
             try:
                 provider_names = self.manager.list_providers()
-                default_country = self._get_setting('default_country', 'DE')  # Changed
+                default_country = self._get_setting('default_country', 'DE')
 
-                # Enhanced response with provider details including labels
                 providers_details = []
                 for provider_name in provider_names:
                     provider_instance = self.manager.get_provider(provider_name)
@@ -702,18 +701,51 @@ class UltimateService:
                         provider_label = getattr(provider_instance, 'provider_label', provider_name)
                         country = getattr(provider_instance, 'country', default_country)
                         provider_logo = getattr(provider_instance, 'provider_logo', '')
-                        requires_user_credentials = getattr(
-                            provider_instance,
-                            'requires_user_credentials',
-                            True  # Default to True if property doesn't exist (for backward compatibility)
+
+                        # Get authentication properties
+                        supported_auth_types = getattr(provider_instance, 'supported_auth_types', [])
+                        preferred_auth_type = getattr(provider_instance, 'preferred_auth_type', 'unknown')
+                        requires_stored_credentials = getattr(
+                            provider_instance, 'requires_stored_credentials', False
                         )
+
+                        # Check specific auth type needs
+                        needs_user_creds = 'user_credentials' in supported_auth_types
+                        needs_client_creds = 'client_credentials' in supported_auth_types
+                        is_network_based = 'network_based' in supported_auth_types
+                        is_anonymous = 'anonymous' in supported_auth_types
+                        uses_device_reg = 'device_registration' in supported_auth_types
+                        uses_embedded = 'embedded_client' in supported_auth_types
 
                         providers_details.append({
                             'name': provider_name,
                             'label': provider_label,
                             'logo': provider_logo,
                             'country': country,
-                            'requires_user_credentials': requires_user_credentials
+
+                            # Core authentication properties
+                            'auth': {
+                                'supported_auth_types': supported_auth_types,
+                                'preferred_auth_type': preferred_auth_type,
+                                'requires_stored_credentials': requires_stored_credentials,
+
+                                # Specific auth type flags for easy UI decisions
+                                'needs_user_credentials': needs_user_creds,
+                                'needs_client_credentials': needs_client_creds,
+                                'is_network_based': is_network_based,
+                                'is_anonymous': is_anonymous,
+                                'uses_device_registration': uses_device_reg,
+                                'uses_embedded_client': uses_embedded,
+
+                                # Derived summary for UI
+                                'needs_user_input': needs_user_creds or uses_device_reg,
+                                'needs_configuration': needs_user_creds or needs_client_creds,
+                                'is_automatic': is_network_based or is_anonymous or uses_embedded,
+                            },
+
+                            # Token properties
+                            'primary_token_scope': getattr(provider_instance, 'primary_token_scope', None),
+                            'token_scopes': getattr(provider_instance, 'token_scopes', []),
                         })
 
                 return {
@@ -1341,28 +1373,52 @@ class UltimateService:
 
         @self.app.route('/api/providers/<provider>/auth/status')
         def get_provider_auth_status(provider):
-            """
-            Get authentication status for a provider
-
-            Returns current authentication state including:
-            - Authentication state (not_authenticated, credentials_only, user_authenticated, client_authenticated)
-            - Credential type
-            - Token validity and expiration
-            - Whether provider is ready to use
-
-            Example: GET /api/providers/joyn_de/auth/status
-            """
+            """Get authentication status from provider itself"""
             try:
+                # Get provider instance
+                provider_instance = self.manager.get_provider(provider)
+                if not provider_instance:
+                    response.status = 404
+                    return {'error': f'Provider {provider} not found'}
+
+                # Get SettingsManager
                 settings_manager = self._get_settings_manager()
-                status = settings_manager.get_auth_status(provider)
+                if not settings_manager:
+                    response.status = 500
+                    return {'error': 'Settings manager not available'}
 
-                response.content_type = 'application/json; charset=utf-8'
-                return status
+                # Import and use new auth system
+                from streaming_providers.base.provider.auth_context import AuthContext
 
-            except Exception as api_err:
-                logger.error(f"API Error in /api/providers/{provider}/auth/status: {str(api_err)}")
+                try:
+                    auth_context = AuthContext(settings_manager)
+                    auth_status = provider_instance.get_auth_status(auth_context)
+                    return auth_status.to_dict()
+                except AttributeError as attr_err:
+                    logger.error(f"Provider {provider} missing required auth property: {attr_err}")
+                    response.status = 501  # Not Implemented
+                    return {
+                        'error': f'Provider {provider} does not fully implement auth status',
+                        'details': str(attr_err)
+                    }
+                except Exception as e:
+                    logger.error(f"Error getting auth status: {e}", exc_info=True)
+                    response.status = 500
+                    return {'error': str(e)}
+
+            except ImportError as import_error:
+                # This happens during development if modules not created yet
+                logger.warning(f"Auth modules not available: {import_error}")
+                return {
+                    'provider': provider,
+                    'auth_state': 'not_implemented',
+                    'is_ready': False,
+                    'message': 'New auth system in development'
+                }
+            except Exception as e:
+                logger.error(f"Error getting auth status for {provider}: {e}", exc_info=True)
                 response.status = 500
-                return {'error': f'Internal server error: {str(api_err)}'}
+                return {'error': f'Internal server error: {str(e)}'}
 
         @self.app.route('/api/providers/<provider>/credentials', method='GET')
         def get_provider_credentials(provider):
