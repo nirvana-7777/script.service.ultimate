@@ -46,7 +46,10 @@ class CredentialManager:
 
     def load_credentials(self, provider: str, country: Optional[str] = None) -> Optional[BaseCredentials]:
         """
-        Load credentials for a specific provider and optional country
+        Load credentials for a specific provider and optional country.
+
+        Now with fallback: tries with country first, then without country
+        for backward compatibility with credentials stored without country nesting.
 
         Args:
             provider: Provider name (e.g., 'rtlplus', 'joyn')
@@ -56,6 +59,7 @@ class CredentialManager:
             BaseCredentials instance or None if not found
         """
         country_str = f" (country: {country})" if country else ""
+
         try:
             logger.debug(f"CredentialManager: Loading credentials for '{provider}{country_str}'")
 
@@ -73,8 +77,42 @@ class CredentialManager:
 
             logger.debug(f"CredentialManager: Available providers in file: {list(data.keys())}")
 
-            # Navigate to the correct credential data
-            keys_path, is_nested = self._get_credential_path(provider, country)
+            # Try with country first (new format: {"provider": {"country": {...}}})
+            if country:
+                keys_path, _ = self._get_credential_path(provider, country)
+                provider_data = data
+                found = True
+
+                for key in keys_path:
+                    if not isinstance(provider_data, dict) or key not in provider_data:
+                        found = False
+                        break
+                    provider_data = provider_data[key]
+
+                if found and provider_data:
+                    logger.debug(
+                        f"CredentialManager: Found credentials with country nesting for '{provider}{country_str}'")
+                    return self._create_credential_from_data(provider, country, provider_data)
+
+                # Fallback: try without country (legacy format: {"provider": {...}})
+                logger.debug(f"CredentialManager: No country-nested credentials found, trying legacy format")
+                keys_path, _ = self._get_credential_path(provider, None)
+                provider_data = data
+
+                for key in keys_path:
+                    if not isinstance(provider_data, dict) or key not in provider_data:
+                        logger.debug(f"CredentialManager: No credentials found at path: {' -> '.join(keys_path)}")
+                        return None
+                    provider_data = provider_data[key]
+
+                if provider_data:
+                    logger.debug(f"CredentialManager: Found credentials in legacy format for '{provider}{country_str}'")
+                    return self._create_credential_from_data(provider, country, provider_data)
+
+                return None
+
+            # No country specified - direct lookup
+            keys_path, _ = self._get_credential_path(provider, None)
             provider_data = data
 
             for key in keys_path:
@@ -84,59 +122,75 @@ class CredentialManager:
                 provider_data = provider_data[key]
 
             if not provider_data:
-                logger.debug(f"CredentialManager: No data found for provider '{provider}{country_str}'")
+                logger.debug(f"CredentialManager: No data found for provider '{provider}'")
                 return None
 
-            logger.debug(f"CredentialManager: Found data for '{provider}{country_str}': {list(provider_data.keys())}")
-
-            credential_type = provider_data.get('type')
-            logger.debug(f"CredentialManager: Credential type for '{provider}{country_str}': {credential_type}")
-
-            if credential_type == 'user_password':
-                username = provider_data.get('username', '')
-                password_present = 'password' in provider_data
-                client_id = provider_data.get('client_id')
-
-                logger.debug(f"CredentialManager: Creating UserPasswordCredentials for '{provider}{country_str}'")
-                logger.debug(
-                    f"CredentialManager: Username: '{username}', Password present: {password_present}, Client ID: {client_id}")
-
-                creds = UserPasswordCredentials(
-                    username=username,
-                    password=self._decode_password(provider_data.get('password', '')),
-                    client_id=client_id,
-                    grant_type=provider_data.get('grant_type', 'password')
-                )
-
-                logger.debug(
-                    f"CredentialManager: Successfully created UserPasswordCredentials for '{provider}{country_str}'")
-                return creds
-
-            elif credential_type == 'client_credentials':
-                client_id = provider_data.get('client_id', '')
-                client_secret_present = 'client_secret' in provider_data
-
-                logger.debug(f"CredentialManager: Creating ClientCredentials for '{provider}{country_str}'")
-                logger.debug(
-                    f"CredentialManager: Client ID: '{client_id}', Client secret present: {client_secret_present}")
-
-                creds = ClientCredentials(
-                    client_id=client_id,
-                    client_secret=self._decode_password(provider_data.get('client_secret', '')),
-                    grant_type=provider_data.get('grant_type', 'client_credentials')
-                )
-
-                logger.debug(f"CredentialManager: Successfully created ClientCredentials for '{provider}{country_str}'")
-                return creds
-
-            else:
-                logger.error(
-                    f"CredentialManager: Unknown credential type for '{provider}{country_str}': {credential_type}")
-                return None
+            return self._create_credential_from_data(provider, None, provider_data)
 
         except Exception as e:
-            country_str = f" (country: {country})" if country else ""
             logger.error(f"CredentialManager: Error loading credentials for '{provider}{country_str}': {e}")
+            return None
+
+    def _create_credential_from_data(self, provider: str, country: Optional[str],
+                                     provider_data: dict) -> Optional[BaseCredentials]:
+        """
+        Helper method to create credential object from loaded data.
+
+        Args:
+            provider: Provider name
+            country: Optional country code (for logging)
+            provider_data: Dictionary containing credential data
+
+        Returns:
+            BaseCredentials instance or None
+        """
+        country_str = f" (country: {country})" if country else ""
+
+        logger.debug(f"CredentialManager: Found data for '{provider}{country_str}': {list(provider_data.keys())}")
+
+        credential_type = provider_data.get('type')
+        logger.debug(f"CredentialManager: Credential type for '{provider}{country_str}': {credential_type}")
+
+        if credential_type == 'user_password':
+            username = provider_data.get('username', '')
+            password_present = 'password' in provider_data
+            client_id = provider_data.get('client_id')
+
+            logger.debug(f"CredentialManager: Creating UserPasswordCredentials for '{provider}{country_str}'")
+            logger.debug(
+                f"CredentialManager: Username: '{username}', Password present: {password_present}, Client ID: {client_id}")
+
+            creds = UserPasswordCredentials(
+                username=username,
+                password=self._decode_password(provider_data.get('password', '')),
+                client_id=client_id,
+                grant_type=provider_data.get('grant_type', 'password')
+            )
+
+            logger.debug(
+                f"CredentialManager: Successfully created UserPasswordCredentials for '{provider}{country_str}'")
+            return creds
+
+        elif credential_type == 'client_credentials':
+            client_id = provider_data.get('client_id', '')
+            client_secret_present = 'client_secret' in provider_data
+
+            logger.debug(f"CredentialManager: Creating ClientCredentials for '{provider}{country_str}'")
+            logger.debug(
+                f"CredentialManager: Client ID: '{client_id}', Client secret present: {client_secret_present}")
+
+            creds = ClientCredentials(
+                client_id=client_id,
+                client_secret=self._decode_password(provider_data.get('client_secret', '')),
+                grant_type=provider_data.get('grant_type', 'client_credentials')
+            )
+
+            logger.debug(f"CredentialManager: Successfully created ClientCredentials for '{provider}{country_str}'")
+            return creds
+
+        else:
+            logger.error(
+                f"CredentialManager: Unknown credential type for '{provider}{country_str}': {credential_type}")
             return None
 
     def save_credentials(self, provider: str, credentials: BaseCredentials,
