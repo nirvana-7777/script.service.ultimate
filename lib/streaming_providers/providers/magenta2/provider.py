@@ -14,6 +14,7 @@ from ...base.models.streaming_channel import StreamingChannel
 from ...base.network import HTTPManagerFactory, ProxyConfigManager
 from ...base.models.proxy_models import ProxyConfig
 from ...base.utils.logger import logger
+from ...base.models.auth import AuthState
 from .models import Magenta2Channel, Magenta2PlaybackRestrictedException
 from .auth import Magenta2Authenticator, Magenta2Credentials, Magenta2UserCredentials
 from .discovery import DiscoveryService
@@ -1538,6 +1539,137 @@ class Magenta2Provider(StreamingProvider):
         except Exception as e:
             logger.error(f"Error getting EPG for channel {channel_id}: {e}")
             return []
+
+    def _calculate_auth_state(self, context) -> 'AuthState':
+        """
+        Custom auth state calculation for Magenta2.
+        Checks persona token with its special structure.
+        """
+        from ...base.models.auth import AuthState
+        import time
+
+        # Get persona token data
+        persona_token = context.get_token(self.provider_name, 'persona', self.country)
+
+        if not persona_token:
+            logger.debug("No persona token found")
+            return AuthState.NOT_AUTHENTICATED
+
+        # Validate persona token structure
+        if not isinstance(persona_token, dict) or 'persona_token' not in persona_token:
+            logger.warning("Invalid persona token structure")
+            return AuthState.NOT_AUTHENTICATED
+
+        # Check if persona token is expired
+        if 'expires_at' in persona_token:
+            current_time = time.time()
+            expires_at = persona_token['expires_at']
+
+            # Add 5-minute buffer
+            if current_time >= (expires_at - 300):
+                logger.debug(f"Persona token expired (expires_at: {expires_at}, now: {current_time})")
+                return AuthState.EXPIRED
+
+        # Token exists and is valid
+        logger.debug("Persona token is valid")
+        return AuthState.AUTHENTICATED
+
+    def _calculate_readiness(self, context) -> Tuple[bool, str]:
+        """
+        Custom readiness calculation for Magenta2.
+        Ready if we have a valid persona token.
+        """
+        import time
+
+        # Get persona token data
+        persona_token = context.get_token(self.provider_name, 'persona', self.country)
+
+        if not persona_token:
+            return False, "No persona token available"
+
+        # Validate structure
+        if not isinstance(persona_token, dict) or 'persona_token' not in persona_token:
+            return False, "Invalid persona token structure"
+
+        # Check expiration
+        if 'expires_at' in persona_token:
+            current_time = time.time()
+            expires_at = persona_token['expires_at']
+
+            # Add 5-minute buffer
+            if current_time >= (expires_at - 300):
+                # Token expired but might be refreshable
+                # Check if we have yo_digital token with refresh capability
+                yo_token = context.get_token(self.provider_name, 'yo_digital', self.country)
+                if yo_token and 'refresh_token' in yo_token:
+                    # Check if yo_digital refresh token is still valid
+                    if 'refresh_token_expires_in' in yo_token and 'refresh_token_issued_at' in yo_token:
+                        refresh_expires_at = yo_token['refresh_token_issued_at'] + yo_token['refresh_token_expires_in']
+                        if current_time < (refresh_expires_at - 300):
+                            return True, "Persona token expired but can be refreshed via yo_digital"
+
+                return False, f"Persona token expired (expired at {time.ctime(expires_at)})"
+
+        # Valid persona token
+        return True, "Has valid persona token"
+
+    def get_auth_details(self, context) -> Dict[str, Any]:
+        """
+        Provide Magenta2-specific auth details.
+        Shows status of all token scopes.
+        """
+        import time
+
+        details = {}
+
+        # Check all token scopes
+        for scope in self.token_scopes:
+            token = context.get_token(self.provider_name, scope, self.country)
+
+            if not token:
+                details[scope] = {"available": False}
+                continue
+
+            scope_info = {"available": True}
+
+            # Handle persona token specially
+            if scope == 'persona':
+                if 'expires_at' in token:
+                    current_time = time.time()
+                    expires_at = token['expires_at']
+                    scope_info['expires_at'] = expires_at
+                    scope_info['is_expired'] = current_time >= expires_at
+                    scope_info['time_remaining'] = int(max(0, expires_at - current_time))
+
+                if 'composed_at' in token:
+                    scope_info['composed_at'] = token['composed_at']
+
+            # Handle yo_digital token
+            elif scope == 'yo_digital':
+                if 'access_token_expires_in' in token and 'access_token_issued_at' in token:
+                    current_time = time.time()
+                    expires_at = token['access_token_issued_at'] + token['access_token_expires_in']
+                    scope_info['access_token_expires_at'] = expires_at
+                    scope_info['access_token_is_expired'] = current_time >= expires_at
+
+                if 'refresh_token_expires_in' in token and 'refresh_token_issued_at' in token:
+                    current_time = time.time()
+                    refresh_expires_at = token['refresh_token_issued_at'] + token['refresh_token_expires_in']
+                    scope_info['refresh_token_expires_at'] = refresh_expires_at
+                    scope_info['refresh_token_is_expired'] = current_time >= refresh_expires_at
+                    scope_info['has_refresh_token'] = True
+
+            # Standard token handling (tvhubs, taa)
+            else:
+                if 'expires_in' in token and 'issued_at' in token:
+                    current_time = time.time()
+                    expires_at = token['issued_at'] + token['expires_in']
+                    scope_info['expires_at'] = expires_at
+                    scope_info['is_expired'] = current_time >= expires_at
+
+            details[scope] = scope_info
+
+        return details
 
     def debug_authentication(self) -> Dict[str, Any]:
         """
