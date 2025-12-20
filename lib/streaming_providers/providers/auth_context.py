@@ -21,14 +21,47 @@ class AuthContext:
 
     def get_token(self, provider_name: str, scope: str = None,
                   country: str = None) -> Optional[Dict[str, Any]]:
-        """Get token for provider (scoped or root-level)"""
+        """
+        Get token for provider (scoped or root-level).
+
+        Now with fallback: tries with country first, then without country
+        for backward compatibility with tokens stored without country nesting.
+
+        Args:
+            provider_name: Provider name
+            scope: Optional token scope
+            country: Optional country code
+
+        Returns:
+            Token data dictionary or None
+        """
         if not self.session:
             return None
 
+        # Try with country first (new format)
+        if country:
+            if scope:
+                token = self.session.load_scoped_token(provider_name, scope, country)
+            else:
+                token = self.session.load_token_data(provider_name, country)
+
+            if token:
+                return token
+
+            # Fallback: try without country (legacy format)
+            # This handles tokens stored as {"provider": {...}} instead of {"provider": {"country": {...}}}
+            if scope:
+                token = self.session.load_scoped_token(provider_name, scope, None)
+            else:
+                token = self.session.load_token_data(provider_name, None)
+
+            return token
+
+        # No country specified - direct lookup
         if scope:
-            return self.session.load_scoped_token(provider_name, scope, country)
+            return self.session.load_scoped_token(provider_name, scope, None)
         else:
-            return self.session.load_token_data(provider_name, country)
+            return self.session.load_token_data(provider_name, None)
 
     def get_all_scopes(self, provider_name: str, country: str = None) -> List[str]:
         """Get all token scopes for provider"""
