@@ -110,27 +110,44 @@ class AuthStatusBuilder:
 
     @staticmethod
     def _calculate_readiness(provider, context: AuthContext) -> Tuple[bool, str]:
-        """Standard readiness calculation"""
+        """
+        Standard readiness calculation.
+
+        Priority order:
+        1. Anonymous providers are always ready
+        2. Valid token = ready (credentials not needed if already authenticated)
+        3. Expired refreshable token = ready (can refresh)
+        4. Check for stored credentials
+        5. Network-based providers (special case)
+        """
 
         # 1. Anonymous providers are always ready
         if 'anonymous' in provider.supported_auth_types:
             return True, "Anonymous provider always ready"
 
-        # 2. Check credentials if required
+        # 2. Check if we have a valid token (MOST IMPORTANT)
+        if AuthStatusBuilder._has_valid_token(provider, context):
+            return True, "Has valid authentication token"
+
+        # 3. Check if we have an expired token that can be refreshed
+        expired_token = AuthStatusBuilder._get_expired_token_with_refresh(provider, context)
+        if expired_token:
+            return True, "Has expired token with refresh capability"
+
+        # 4. Check credentials if required (only matters if no valid token)
         if provider.requires_stored_credentials:
             credentials = context.get_credentials(provider.provider_name, provider.country)
             if not credentials:
                 return False, "Missing required credentials"
 
-        # 3. Check if we have a valid token
-        if AuthStatusBuilder._has_valid_token(provider, context):
-            return True, "Has valid authentication token"
+            # Has credentials but no token yet
+            return False, "Has credentials but needs authentication"
 
-        # 4. Network-based providers might be authenticating
+        # 5. Network-based providers might be authenticating
         if 'network_based' in provider.supported_auth_types:
             return False, "Network authentication in progress"
 
-        # 5. Not ready
+        # 6. Not ready
         return False, "Not authenticated"
 
     # ===== Helper Methods =====
