@@ -1388,7 +1388,7 @@ class UltimateService:
                     return {'error': 'Settings manager not available'}
 
                 # Import and use new auth system
-                from streaming_providers.base.provider.auth_context import AuthContext
+                from streaming_providers.providers.auth_context import AuthContext
 
                 try:
                     auth_context = AuthContext(settings_manager)
