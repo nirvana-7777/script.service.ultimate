@@ -196,3 +196,83 @@ Ultimate Backend automatically caches:
 - **Advanced Settings**: More configuration options for power users
 
 Stay tuned for updates!
+
+---
+
+## 🕒 Catchup & EPG Support (Now Available)
+
+Ultimate Backend now includes **fully working Catchup TV and EPG support**.
+
+### 🕒 Catchup TV
+- Provider-based catchup windows (hours configurable per provider)
+- Seamless playback via the same stream endpoint
+- Works transparently with Kodi PVR IPTV Simple Client
+- Automatic validation to ensure playback stays within allowed catchup ranges
+
+### 🗓️ EPG (Electronic Program Guide)
+- Live EPG data support is now enabled
+- XMLTV-compatible output
+- Per-provider EPG endpoints
+- Supports external EPG sources via URL
+
+### 🧩 EPG Channel Mapping
+- Built-in **EPG mapping interface**
+- Fuzzy matching to map provider channels to EPG channels
+- Manual override and fine-tuning via web UI
+- Mapping is persisted and reused automatically
+
+Access the web UI at:
+http://localhost:7777/
+
+---
+
+## 🐳 Docker Support
+
+Ultimate Backend can be run **fully standalone using Docker**.
+
+### docker-compose.yml
+
+```yaml
+version: '3.8'
+
+services:
+  ultimate-backend:
+    build:
+      context: .
+      args:
+        - USER_ID=1000
+        - GROUP_ID=1000
+    image: nirvana777/ultimate-backend:latest
+    container_name: ultimate-backend
+    restart: unless-stopped
+    ports:
+      - 7777:7777
+    environment:
+      - ULTIMATE_PORT=7777
+      - ULTIMATE_DEBUG=false
+      - ULTIMATE_EPG_URL=https://raw.githubusercontent.com/epgshare01/share01/master/epg.xml.gz
+      - TZ=${TZ:-Europe/Berlin}
+    volumes:
+      - ./config:/config
+      - ./logs:/logs
+      - ./cache:/cache
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7777/api/providers"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - ultimate-network
+    
+networks:
+  ultimate-network:
+    driver: bridge
+```
+
+### 🚀 Docker Notes
+- Perfect for **NAS, servers, and headless setups**
+- No Kodi installation required
+- Web UI, API, M3U, EPG, and Catchup all work identically
+
+---
