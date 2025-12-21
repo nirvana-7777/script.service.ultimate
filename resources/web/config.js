@@ -51,6 +51,145 @@ function switchTab(tabId) {
     }
 }
 
+// Helper function to format timestamp to local date/time
+function formatDateTime(timestamp) {
+    try {
+        if (!timestamp) return null;
+        const date = new Date(timestamp * 1000); // Convert Unix timestamp to milliseconds
+        if (isNaN(date.getTime())) return null;
+        const day = String(date.getDate()).padStart(2, '0');
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const year = date.getFullYear();
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        return `${day}.${month}.${year} ${hours}:${minutes}`;
+    } catch (error) {
+        console.error('Error formatting date:', error);
+        return null;
+    }
+}
+
+// Helper function to format relative time
+function formatRelativeTime(seconds) {
+    try {
+        if (seconds === null || seconds === undefined) return null;
+
+        const absSeconds = Math.abs(seconds);
+        const isPast = seconds < 0;
+
+        if (absSeconds < 60) {
+            return isPast ? 'just expired' : 'in less than a minute';
+        }
+
+        const minutes = Math.floor(absSeconds / 60);
+        if (minutes < 60) {
+            const text = minutes === 1 ? '1 minute' : `${minutes} minutes`;
+            return isPast ? `${text} ago` : `in ${text}`;
+        }
+
+        const hours = Math.floor(minutes / 60);
+        if (hours < 24) {
+            const text = hours === 1 ? '1 hour' : `${hours} hours`;
+            return isPast ? `${text} ago` : `in ${text}`;
+        }
+
+        const days = Math.floor(hours / 24);
+        const text = days === 1 ? '1 day' : `${days} days`;
+        return isPast ? `${text} ago` : `in ${text}`;
+    } catch (error) {
+        console.error('Error formatting relative time:', error);
+        return null;
+    }
+}
+
+// Helper function to get authentication type description
+function getAuthTypeDescription(status) {
+    try {
+        if (!status || !status.auth_type) {
+            return 'Unknown authentication';
+        }
+
+        const authType = status.auth_type;
+
+        // Map auth types to readable descriptions
+        const authTypeMap = {
+            'user_credentials': 'User Credentials authentication',
+            'client_credentials': 'Client Credentials authentication',
+            'anonymous': 'Anonymous authentication',
+            'network_based': 'Network-based authentication',
+            'device_registration': 'Device Registration authentication',
+            'embedded_client': 'Embedded Client authentication'
+        };
+
+        return authTypeMap[authType] || `${authType.replace(/_/g, ' ')} authentication`;
+    } catch (error) {
+        console.error('Error getting auth type description:', error);
+        return 'Unknown authentication';
+    }
+}
+
+// Helper function to format token expiration info
+function formatTokenExpiration(status) {
+    try {
+        if (!status) return '';
+
+        let expirationHTML = '';
+
+        // Main token expiration
+        if (status.token_expires_at) {
+            const formattedDate = formatDateTime(status.token_expires_at);
+            const relativeTime = formatRelativeTime(status.token_expires_in_seconds);
+
+            if (formattedDate && relativeTime) {
+                if (status.token_expires_in_seconds < 0) {
+                    // Expired
+                    expirationHTML += `
+                        <div class="token-expiration expired">
+                            <i class="fas fa-clock"></i> Token expired ${relativeTime}
+                        </div>
+                    `;
+                } else {
+                    // Valid
+                    expirationHTML += `
+                        <div class="token-expiration">
+                            <i class="fas fa-clock"></i> Token expires: ${formattedDate} (${relativeTime})
+                        </div>
+                    `;
+                }
+            }
+        }
+
+        // Refresh token expiration (if available)
+        if (status.refresh_token_expires_at) {
+            const formattedDate = formatDateTime(status.refresh_token_expires_at);
+            const relativeTime = formatRelativeTime(status.refresh_token_expires_in_seconds);
+
+            if (formattedDate && relativeTime) {
+                if (status.refresh_token_expires_in_seconds < 0) {
+                    // Expired
+                    expirationHTML += `
+                        <div class="token-expiration expired">
+                            <i class="fas fa-sync-alt"></i> Refresh token expired ${relativeTime}
+                        </div>
+                    `;
+                } else {
+                    // Valid
+                    expirationHTML += `
+                        <div class="token-expiration">
+                            <i class="fas fa-sync-alt"></i> Refresh token expires: ${formattedDate} (${relativeTime})
+                        </div>
+                    `;
+                }
+            }
+        }
+
+        return expirationHTML;
+    } catch (error) {
+        console.error('Error formatting token expiration:', error);
+        return '';
+    }
+}
+
 // Load providers from API
 async function loadProviders() {
     try {
@@ -95,7 +234,6 @@ async function loadAuthStatus() {
 }
 
 // Render credentials forms
-// Render credentials forms
 async function renderCredentialsForms() {
     if (providers.length === 0) {
         credentialsContainer.innerHTML = `
@@ -124,7 +262,6 @@ async function renderCredentialsForms() {
 
             // Get auth information from provider
             const auth = provider.auth || {};
-            const supportedAuthTypes = auth.supported_auth_types || [];
 
             // Determine UI based on auth properties
             const needsUserCredentials = auth.needs_user_credentials || false;
@@ -145,7 +282,6 @@ async function renderCredentialsForms() {
 
             // Create form content based on auth type
             let formContent = '';
-            let authDescription = '';
 
             if (needsUserCredentials) {
                 // User credentials form
@@ -174,11 +310,10 @@ async function renderCredentialsForms() {
                     <input type="password"
                            id="password-${provider.name}"
                            class="form-control"
-                           placeholder="${existingCreds ? '•••••••• (optional)' : '••••••••'}"
+                           placeholder="${existingCreds ? '••••••••• (optional)' : '•••••••••'}"
                            value="">
                 </div>
                 `;
-                authDescription = 'Requires username and password';
             } else if (needsClientCredentials && !needsUserCredentials) {
                 // Client credentials only (no user input needed)
                 formContent = `
@@ -186,10 +321,8 @@ async function renderCredentialsForms() {
                     <i class="fas fa-key"></i>
                     <strong>Client Credentials Only</strong>
                     <p>This provider uses hardcoded client credentials that don't require manual setup.</p>
-                    <small>Authentication type: ${auth.preferred_auth_type || 'client_credentials'}</small>
                 </div>
                 `;
-                authDescription = 'Uses client credentials';
             } else if (isAnonymous || isNetworkBased || usesEmbeddedClient) {
                 // No credentials required
                 formContent = `
@@ -197,12 +330,8 @@ async function renderCredentialsForms() {
                     <i class="fas fa-check-circle"></i>
                     <strong>No Credentials Required</strong>
                     <p>This provider uses ${auth.preferred_auth_type?.replace('_', ' ') || 'automatic'} authentication.</p>
-                    ${supportedAuthTypes.length > 0 ? `
-                    <small>Supported auth types: ${supportedAuthTypes.join(', ')}</small>
-                    ` : ''}
                 </div>
                 `;
-                authDescription = 'No credentials required';
             } else if (usesDeviceRegistration) {
                 // Device registration
                 formContent = `
@@ -210,10 +339,8 @@ async function renderCredentialsForms() {
                     <i class="fas fa-mobile-alt"></i>
                     <strong>Device Registration</strong>
                     <p>This provider requires device registration. Follow provider-specific setup instructions.</p>
-                    <small>Authentication type: ${auth.preferred_auth_type || 'device_registration'}</small>
                 </div>
                 `;
-                authDescription = 'Requires device registration';
             } else {
                 // Fallback for unknown auth types
                 formContent = `
@@ -221,12 +348,8 @@ async function renderCredentialsForms() {
                     <i class="fas fa-question-circle"></i>
                     <strong>Authentication Type Unknown</strong>
                     <p>This provider's authentication method could not be determined.</p>
-                    ${supportedAuthTypes.length > 0 ? `
-                    <small>Supported auth types: ${supportedAuthTypes.join(', ')}</small>
-                    ` : ''}
                 </div>
                 `;
-                authDescription = 'Unknown authentication';
             }
 
             // Create buttons based on auth type
@@ -266,12 +389,13 @@ async function renderCredentialsForms() {
                         <h3>${provider.label}</h3>
                         <div class="provider-id">${provider.name} • ${provider.country}</div>
                         <div class="auth-info">
-                            <small><i class="fas fa-fingerprint"></i> ${authDescription}</small>
+                            <small><i class="fas fa-fingerprint"></i> ${getAuthTypeDescription(status)}</small>
                         </div>
                         <div id="status-${provider.name}" class="status-indicator">
                             ${getStatusIcon(status)}
                             ${getStatusText(status)}
                         </div>
+                        ${formatTokenExpiration(status)}
                     </div>
                 </div>
 
@@ -286,8 +410,21 @@ async function renderCredentialsForms() {
     });
 
     // Wait for all promises and render
-    const htmls = await Promise.all(credentialsPromises);
-    credentialsContainer.innerHTML = htmls.join('');
+    try {
+        const htmls = await Promise.all(credentialsPromises);
+        credentialsContainer.innerHTML = htmls.join('');
+    } catch (error) {
+        console.error('Error rendering credentials forms:', error);
+        credentialsContainer.innerHTML = `
+            <div class="alert alert-error">
+                <i class="fas fa-exclamation-circle"></i>
+                <div>
+                    <strong>Failed to render credentials</strong>
+                    <p>${error.message}</p>
+                </div>
+            </div>
+        `;
+    }
 }
 
 // Load proxy forms
@@ -397,15 +534,19 @@ function getStatusIcon(status) {
     if (!status) return '<i class="fas fa-question-circle"></i>';
 
     switch (status.auth_state) {
+        case 'authenticated':
         case 'AUTHENTICATED':
         case 'user_authenticated':
         case 'client_authenticated':
             return '<i class="fas fa-check-circle"></i>';
+        case 'expired':
         case 'EXPIRED':
         case 'credentials_only':
             return '<i class="fas fa-exclamation-triangle"></i>';
+        case 'not_authenticated':
         case 'NOT_AUTHENTICATED':
             return '<i class="fas fa-times-circle"></i>';
+        case 'not_applicable':
         case 'NOT_APPLICABLE':
             return '<i class="fas fa-info-circle"></i>';
         default:
@@ -416,17 +557,19 @@ function getStatusIcon(status) {
 function getStatusText(status) {
     if (!status) return 'Unknown';
 
-    // Map Python AuthState values to readable text
-    switch (status.auth_state) {
-        case 'AUTHENTICATED':
+    // Normalize auth_state to lowercase for comparison
+    const authState = (status.auth_state || '').toLowerCase();
+
+    switch (authState) {
+        case 'authenticated':
             return 'Authenticated';
-        case 'EXPIRED':
+        case 'expired':
             return 'Token Expired (can refresh)';
-        case 'NOT_AUTHENTICATED':
+        case 'not_authenticated':
             return 'Not Authenticated';
-        case 'NOT_APPLICABLE':
+        case 'not_applicable':
             return 'No Auth Required';
-        case 'user_authenticated': // Keep old values for backward compatibility
+        case 'user_authenticated':
             return 'User Authenticated';
         case 'client_authenticated':
             return 'Client Authenticated';
@@ -553,11 +696,14 @@ async function saveCredentials(providerName) {
                     existingInfo.remove();
                 }
 
-                usernameInput.parentNode.insertBefore(infoText, passwordInput);
+                usernameInput.parentNode.insertBefore(infoText, passwordInput.parentNode);
             }
 
             // Reload auth status
             await loadAuthStatus();
+
+            // Re-render to show updated status and expiration
+            await renderCredentialsForms();
 
             // Show success message
             const action = isMaskedUsername && !username ? 'Updated' : 'Saved';
@@ -624,18 +770,6 @@ async function deleteCredentials(providerName) {
         });
 
         if (response.ok) {
-            if (statusEl) {
-                statusEl.className = 'status-indicator status-warning';
-                statusEl.innerHTML = '<i class="fas fa-info-circle"></i> Credentials deleted';
-            }
-
-            // Clear fields if they exist
-            const usernameInput = document.getElementById(`username-${providerName}`);
-            const passwordInput = document.getElementById(`password-${providerName}`);
-
-            if (usernameInput) usernameInput.value = '';
-            if (passwordInput) passwordInput.value = '';
-
             // Reload auth status
             await loadAuthStatus();
             renderCredentialsForms();
@@ -661,6 +795,11 @@ async function deleteCredentials(providerName) {
 
 async function testAuth(providerName) {
     const statusEl = document.getElementById(`status-${providerName}`);
+    if (!statusEl) {
+        console.error(`Status element not found for ${providerName}`);
+        return;
+    }
+
     statusEl.innerHTML = '<span class="loader"></span> Testing...';
 
     try {
@@ -668,13 +807,15 @@ async function testAuth(providerName) {
         const result = await response.json();
 
         if (response.ok) {
+            // Update auth status in memory
+            authStatus[providerName] = result;
+
+            // Re-render to show updated status and expiration
+            await renderCredentialsForms();
+
             if (result.is_ready) {
-                statusEl.className = 'status-indicator status-success';
-                statusEl.innerHTML = '<i class="fas fa-check-circle"></i> Ready to use';
                 showAlert('success', `${providerName} is ready to use`);
             } else {
-                statusEl.className = 'status-indicator status-warning';
-                statusEl.innerHTML = `<i class="fas fa-exclamation-triangle"></i> ${result.auth_state}`;
                 showAlert('warning', `${providerName} status: ${result.auth_state}`);
             }
         } else {
