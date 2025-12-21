@@ -41,6 +41,11 @@ class AuthStatusBuilder:
             provider, context, current_auth_type
         )
 
+        # Get token expiration info
+        (token_expires_at, token_expires_in_seconds,
+         refresh_token_expires_at, refresh_token_expires_in_seconds) = \
+            AuthStatusBuilder._get_token_expiration_info(provider, context)
+
         # Build and return
         return AuthStatus(
             provider_name=provider.provider_name,
@@ -57,7 +62,11 @@ class AuthStatusBuilder:
             primary_token_scope=provider.primary_token_scope,
             token_scopes=token_scopes,
             last_authentication=AuthStatusBuilder._get_last_auth_time(provider, context),
-            provider_specific=provider_specific
+            provider_specific=provider_specific,
+            token_expires_at=token_expires_at,
+            token_expires_in_seconds=token_expires_in_seconds,
+            refresh_token_expires_at=refresh_token_expires_at,
+            refresh_token_expires_in_seconds=refresh_token_expires_in_seconds
         )
 
     # ===== Calculation Methods (with provider override support) =====
@@ -269,3 +278,91 @@ class AuthStatusBuilder:
             details.update(custom_details)
 
         return details
+
+    @staticmethod
+    def _get_token_expiration_info(provider, context: AuthContext) -> Tuple[
+        Optional[float], Optional[int], Optional[float], Optional[int]
+    ]:
+        """
+        Get token expiration information.
+
+        Returns:
+            Tuple of (token_expires_at, token_expires_in_seconds,
+                     refresh_token_expires_at, refresh_token_expires_in_seconds)
+        """
+        import time
+        current_time = time.time()
+
+        token_expires_at: Optional[float] = None
+        token_expires_in_seconds: Optional[int] = None
+        refresh_token_expires_at: Optional[float] = None
+        refresh_token_expires_in_seconds: Optional[int] = None
+
+        # Try to get the primary token
+        token_data: Optional[Dict[str, Any]] = None
+
+        # Check primary scope first
+        if provider.primary_token_scope:
+            token_data = context.get_token(
+                provider.provider_name,
+                provider.primary_token_scope,
+                provider.country
+            )
+
+        # If no primary scope or no token, check root-level token
+        if not token_data:
+            token_data = context.get_token(
+                provider.provider_name,
+                None,
+                provider.country
+            )
+
+        # If still no token, try first available scope
+        if not token_data and provider.token_scopes:
+            for scope in provider.token_scopes:
+                token_data = context.get_token(
+                    provider.provider_name,
+                    scope,
+                    provider.country
+                )
+                if token_data:
+                    break
+
+        if not token_data:
+            return None, None, None, None
+
+        # Calculate access token expiration
+        # Standard format: expires_in + issued_at
+        if 'expires_in' in token_data and 'issued_at' in token_data:
+            expires_in = token_data['expires_in']
+            issued_at = token_data['issued_at']
+            if isinstance(expires_in, (int, float)) and isinstance(issued_at, (int, float)):
+                token_expires_at = float(issued_at) + float(expires_in)
+                token_expires_in_seconds = int(token_expires_at - current_time)
+
+        # yo_digital format: separate access token expiration
+        elif 'access_token_expires_in' in token_data and 'access_token_issued_at' in token_data:
+            expires_in = token_data['access_token_expires_in']
+            issued_at = token_data['access_token_issued_at']
+            if isinstance(expires_in, (int, float)) and isinstance(issued_at, (int, float)):
+                token_expires_at = float(issued_at) + float(expires_in)
+                token_expires_in_seconds = int(token_expires_at - current_time)
+
+        # Direct expiration timestamp
+        elif 'expires_at' in token_data:
+            expires_at = token_data['expires_at']
+            if isinstance(expires_at, (int, float)):
+                token_expires_at = float(expires_at)
+                token_expires_in_seconds = int(token_expires_at - current_time)
+
+        # Calculate refresh token expiration (yo_digital format)
+        if ('refresh_token_expires_in' in token_data and
+                'refresh_token_issued_at' in token_data):
+            refresh_expires_in = token_data['refresh_token_expires_in']
+            refresh_issued_at = token_data['refresh_token_issued_at']
+            if isinstance(refresh_expires_in, (int, float)) and isinstance(refresh_issued_at, (int, float)):
+                refresh_token_expires_at = float(refresh_issued_at) + float(refresh_expires_in)
+                refresh_token_expires_in_seconds = int(refresh_token_expires_at - current_time)
+
+        return (token_expires_at, token_expires_in_seconds,
+                refresh_token_expires_at, refresh_token_expires_in_seconds)
