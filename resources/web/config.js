@@ -237,7 +237,6 @@ async function renderCredentialsForms() {
 
             // Get auth information from provider
             const auth = provider.auth || {};
-            const supportedAuthTypes = auth.supported_auth_types || [];
 
             // Determine UI based on auth properties
             const needsUserCredentials = auth.needs_user_credentials || false;
@@ -324,9 +323,6 @@ async function renderCredentialsForms() {
                     <i class="fas fa-question-circle"></i>
                     <strong>Authentication Type Unknown</strong>
                     <p>This provider's authentication method could not be determined.</p>
-                    ${supportedAuthTypes.length > 0 ? `
-                    <small>Supported auth types: ${supportedAuthTypes.join(', ')}</small>
-                    ` : ''}
                 </div>
                 `;
             }
@@ -389,8 +385,21 @@ async function renderCredentialsForms() {
     });
 
     // Wait for all promises and render
-    const htmls = await Promise.all(credentialsPromises);
-    credentialsContainer.innerHTML = htmls.join('');
+    try {
+        const htmls = await Promise.all(credentialsPromises);
+        credentialsContainer.innerHTML = htmls.join('');
+    } catch (error) {
+        console.error('Error rendering credentials forms:', error);
+        credentialsContainer.innerHTML = `
+            <div class="alert alert-error">
+                <i class="fas fa-exclamation-circle"></i>
+                <div>
+                    <strong>Failed to render credentials</strong>
+                    <p>${error.message}</p>
+                </div>
+            </div>
+        `;
+    }
 }
 
 // Load proxy forms
