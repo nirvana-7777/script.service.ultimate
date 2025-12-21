@@ -73,10 +73,10 @@ MIIBIDANBgkqhkiG9w0BAQEFAAOCAQ0AMIIBCAKCAQEA0EsuGonW8+y5Oq2Hopru5oFCaXEDMBrWPDkz
 # Application Configuration
 # ============================================================================
 
-APP_VERSION = "02.0.1080"
+APP_VERSION = "02.0.1340"
 OS = "Linux"
 BROWSER = "Chrome"
-BROWSER_VERSION = "132"
+BROWSER_VERSION = "143"
 DEVICE_NAME = f"{OS} - {BROWSER}"
 
 # ============================================================================

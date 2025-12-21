@@ -574,7 +574,6 @@ class MagentaAuthenticator(BaseAuthenticator):
 
             # Add the specific headers from your working example
             headers.update({
-                'Authorization': f'Bearer {self._current_token.access_token}',
                 'Refresh_token': self._current_token.refresh_token,
                 'channel': 'Tv',
             })
