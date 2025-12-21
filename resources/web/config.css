@@ -475,3 +475,39 @@ body {
         flex-direction: column;
     }
 }
+
+.token-expiration {
+    font-size: 0.875rem;
+    color: #666;
+    margin-top: 8px;
+    padding: 6px 10px;
+    background-color: #f8f9fa;
+    border-left: 3px solid #4CAF50;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.token-expiration i {
+    color: #4CAF50;
+    font-size: 0.95rem;
+}
+
+.token-expiration.expired {
+    background-color: #fff3cd;
+    border-left-color: #ff9800;
+}
+
+.token-expiration.expired i {
+    color: #ff9800;
+}
+
+/* Adjust provider info spacing when token expiration is shown */
+.provider-info .token-expiration:first-of-type {
+    margin-top: 12px;
+}
+
+.provider-info .token-expiration + .token-expiration {
+    margin-top: 6px;
+}

@@ -51,6 +51,120 @@ function switchTab(tabId) {
     }
 }
 
+// Helper function to format timestamp to local date/time
+function formatDateTime(timestamp) {
+    if (!timestamp) return null;
+    const date = new Date(timestamp * 1000); // Convert Unix timestamp to milliseconds
+    const day = String(date.getDate()).padStart(2, '0');
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const year = date.getFullYear();
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    return `${day}.${month}.${year} ${hours}:${minutes}`;
+}
+
+// Helper function to format relative time
+function formatRelativeTime(seconds) {
+    if (!seconds && seconds !== 0) return null;
+
+    const absSeconds = Math.abs(seconds);
+    const isPast = seconds < 0;
+
+    if (absSeconds < 60) {
+        return isPast ? 'just expired' : 'in less than a minute';
+    }
+
+    const minutes = Math.floor(absSeconds / 60);
+    if (minutes < 60) {
+        const text = minutes === 1 ? '1 minute' : `${minutes} minutes`;
+        return isPast ? `${text} ago` : `in ${text}`;
+    }
+
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) {
+        const text = hours === 1 ? '1 hour' : `${hours} hours`;
+        return isPast ? `${text} ago` : `in ${text}`;
+    }
+
+    const days = Math.floor(hours / 24);
+    const text = days === 1 ? '1 day' : `${days} days`;
+    return isPast ? `${text} ago` : `in ${text}`;
+}
+
+// Helper function to get authentication type description
+function getAuthTypeDescription(status) {
+    if (!status || !status.auth_type) {
+        return 'Unknown authentication';
+    }
+
+    const authType = status.auth_type;
+
+    // Map auth types to readable descriptions
+    const authTypeMap = {
+        'user_credentials': 'User Credentials authentication',
+        'client_credentials': 'Client Credentials authentication',
+        'anonymous': 'Anonymous authentication',
+        'network_based': 'Network-based authentication',
+        'device_registration': 'Device Registration authentication',
+        'embedded_client': 'Embedded Client authentication'
+    };
+
+    return authTypeMap[authType] || `${authType.replace(/_/g, ' ')} authentication`;
+}
+
+// Helper function to format token expiration info
+function formatTokenExpiration(status) {
+    if (!status) return '';
+
+    let expirationHTML = '';
+
+    // Main token expiration
+    if (status.token_expires_at) {
+        const formattedDate = formatDateTime(status.token_expires_at);
+        const relativeTime = formatRelativeTime(status.token_expires_in_seconds);
+
+        if (status.token_expires_in_seconds < 0) {
+            // Expired
+            expirationHTML += `
+                <div class="token-expiration expired">
+                    <i class="fas fa-clock"></i> Token expired ${relativeTime}
+                </div>
+            `;
+        } else {
+            // Valid
+            expirationHTML += `
+                <div class="token-expiration">
+                    <i class="fas fa-clock"></i> Token expires: ${formattedDate} (${relativeTime})
+                </div>
+            `;
+        }
+    }
+
+    // Refresh token expiration (if available)
+    if (status.refresh_token_expires_at) {
+        const formattedDate = formatDateTime(status.refresh_token_expires_at);
+        const relativeTime = formatRelativeTime(status.refresh_token_expires_in_seconds);
+
+        if (status.refresh_token_expires_in_seconds < 0) {
+            // Expired
+            expirationHTML += `
+                <div class="token-expiration expired">
+                    <i class="fas fa-sync-alt"></i> Refresh token expired ${relativeTime}
+                </div>
+            `;
+        } else {
+            // Valid
+            expirationHTML += `
+                <div class="token-expiration">
+                    <i class="fas fa-sync-alt"></i> Refresh token expires: ${formattedDate} (${relativeTime})
+                </div>
+            `;
+        }
+    }
+
+    return expirationHTML;
+}
+
 // Load providers from API
 async function loadProviders() {
     try {
@@ -94,7 +208,6 @@ async function loadAuthStatus() {
     }
 }
 
-// Render credentials forms
 // Render credentials forms
 async function renderCredentialsForms() {
     if (providers.length === 0) {
@@ -145,7 +258,6 @@ async function renderCredentialsForms() {
 
             // Create form content based on auth type
             let formContent = '';
-            let authDescription = '';
 
             if (needsUserCredentials) {
                 // User credentials form
@@ -174,11 +286,10 @@ async function renderCredentialsForms() {
                     <input type="password"
                            id="password-${provider.name}"
                            class="form-control"
-                           placeholder="${existingCreds ? '•••••••• (optional)' : '••••••••'}"
+                           placeholder="${existingCreds ? '••••••••• (optional)' : '•••••••••'}"
                            value="">
                 </div>
                 `;
-                authDescription = 'Requires username and password';
             } else if (needsClientCredentials && !needsUserCredentials) {
                 // Client credentials only (no user input needed)
                 formContent = `
@@ -186,10 +297,8 @@ async function renderCredentialsForms() {
                     <i class="fas fa-key"></i>
                     <strong>Client Credentials Only</strong>
                     <p>This provider uses hardcoded client credentials that don't require manual setup.</p>
-                    <small>Authentication type: ${auth.preferred_auth_type || 'client_credentials'}</small>
                 </div>
                 `;
-                authDescription = 'Uses client credentials';
             } else if (isAnonymous || isNetworkBased || usesEmbeddedClient) {
                 // No credentials required
                 formContent = `
@@ -197,12 +306,8 @@ async function renderCredentialsForms() {
                     <i class="fas fa-check-circle"></i>
                     <strong>No Credentials Required</strong>
                     <p>This provider uses ${auth.preferred_auth_type?.replace('_', ' ') || 'automatic'} authentication.</p>
-                    ${supportedAuthTypes.length > 0 ? `
-                    <small>Supported auth types: ${supportedAuthTypes.join(', ')}</small>
-                    ` : ''}
                 </div>
                 `;
-                authDescription = 'No credentials required';
             } else if (usesDeviceRegistration) {
                 // Device registration
                 formContent = `
@@ -210,10 +315,8 @@ async function renderCredentialsForms() {
                     <i class="fas fa-mobile-alt"></i>
                     <strong>Device Registration</strong>
                     <p>This provider requires device registration. Follow provider-specific setup instructions.</p>
-                    <small>Authentication type: ${auth.preferred_auth_type || 'device_registration'}</small>
                 </div>
                 `;
-                authDescription = 'Requires device registration';
             } else {
                 // Fallback for unknown auth types
                 formContent = `
@@ -226,7 +329,6 @@ async function renderCredentialsForms() {
                     ` : ''}
                 </div>
                 `;
-                authDescription = 'Unknown authentication';
             }
 
             // Create buttons based on auth type
@@ -266,12 +368,13 @@ async function renderCredentialsForms() {
                         <h3>${provider.label}</h3>
                         <div class="provider-id">${provider.name} • ${provider.country}</div>
                         <div class="auth-info">
-                            <small><i class="fas fa-fingerprint"></i> ${authDescription}</small>
+                            <small><i class="fas fa-fingerprint"></i> ${getAuthTypeDescription(status)}</small>
                         </div>
                         <div id="status-${provider.name}" class="status-indicator">
                             ${getStatusIcon(status)}
                             ${getStatusText(status)}
                         </div>
+                        ${formatTokenExpiration(status)}
                     </div>
                 </div>
 
@@ -397,15 +500,19 @@ function getStatusIcon(status) {
     if (!status) return '<i class="fas fa-question-circle"></i>';
 
     switch (status.auth_state) {
+        case 'authenticated':
         case 'AUTHENTICATED':
         case 'user_authenticated':
         case 'client_authenticated':
             return '<i class="fas fa-check-circle"></i>';
+        case 'expired':
         case 'EXPIRED':
         case 'credentials_only':
             return '<i class="fas fa-exclamation-triangle"></i>';
+        case 'not_authenticated':
         case 'NOT_AUTHENTICATED':
             return '<i class="fas fa-times-circle"></i>';
+        case 'not_applicable':
         case 'NOT_APPLICABLE':
             return '<i class="fas fa-info-circle"></i>';
         default:
@@ -416,17 +523,19 @@ function getStatusIcon(status) {
 function getStatusText(status) {
     if (!status) return 'Unknown';
 
-    // Map Python AuthState values to readable text
-    switch (status.auth_state) {
-        case 'AUTHENTICATED':
+    // Normalize auth_state to lowercase for comparison
+    const authState = (status.auth_state || '').toLowerCase();
+
+    switch (authState) {
+        case 'authenticated':
             return 'Authenticated';
-        case 'EXPIRED':
+        case 'expired':
             return 'Token Expired (can refresh)';
-        case 'NOT_AUTHENTICATED':
+        case 'not_authenticated':
             return 'Not Authenticated';
-        case 'NOT_APPLICABLE':
+        case 'not_applicable':
             return 'No Auth Required';
-        case 'user_authenticated': // Keep old values for backward compatibility
+        case 'user_authenticated':
             return 'User Authenticated';
         case 'client_authenticated':
             return 'Client Authenticated';
@@ -553,11 +662,14 @@ async function saveCredentials(providerName) {
                     existingInfo.remove();
                 }
 
-                usernameInput.parentNode.insertBefore(infoText, passwordInput);
+                usernameInput.parentNode.insertBefore(infoText, passwordInput.parentNode);
             }
 
             // Reload auth status
             await loadAuthStatus();
+
+            // Re-render to show updated status and expiration
+            await renderCredentialsForms();
 
             // Show success message
             const action = isMaskedUsername && !username ? 'Updated' : 'Saved';
@@ -624,18 +736,6 @@ async function deleteCredentials(providerName) {
         });
 
         if (response.ok) {
-            if (statusEl) {
-                statusEl.className = 'status-indicator status-warning';
-                statusEl.innerHTML = '<i class="fas fa-info-circle"></i> Credentials deleted';
-            }
-
-            // Clear fields if they exist
-            const usernameInput = document.getElementById(`username-${providerName}`);
-            const passwordInput = document.getElementById(`password-${providerName}`);
-
-            if (usernameInput) usernameInput.value = '';
-            if (passwordInput) passwordInput.value = '';
-
             // Reload auth status
             await loadAuthStatus();
             renderCredentialsForms();
@@ -668,13 +768,15 @@ async function testAuth(providerName) {
         const result = await response.json();
 
         if (response.ok) {
+            // Update auth status in memory
+            authStatus[providerName] = result;
+
+            // Re-render to show updated status and expiration
+            await renderCredentialsForms();
+
             if (result.is_ready) {
-                statusEl.className = 'status-indicator status-success';
-                statusEl.innerHTML = '<i class="fas fa-check-circle"></i> Ready to use';
                 showAlert('success', `${providerName} is ready to use`);
             } else {
-                statusEl.className = 'status-indicator status-warning';
-                statusEl.innerHTML = `<i class="fas fa-exclamation-triangle"></i> ${result.auth_state}`;
                 showAlert('warning', `${providerName} status: ${result.auth_state}`);
             }
         } else {
@@ -683,264 +785,4 @@ async function testAuth(providerName) {
             showAlert('error', `Test failed for ${providerName}`);
         }
     } catch (error) {
-        statusEl.className = 'status-indicator status-error';
-        statusEl.innerHTML = '<i class="fas fa-exclamation-circle"></i> Network error';
-        showAlert('error', `Network error: ${error.message}`);
-        console.error('Test error:', error);
-    }
-}
-
-async function saveProxy(providerName) {
-    const host = document.getElementById(`proxy-host-${providerName}`).value;
-    const port = document.getElementById(`proxy-port-${providerName}`).value;
-    const type = document.getElementById(`proxy-type-${providerName}`).value;
-    const user = document.getElementById(`proxy-user-${providerName}`).value;
-    const pass = document.getElementById(`proxy-pass-${providerName}`).value;
-
-    if (!host || !port) {
-        showAlert('error', 'Please fill in at least Host and Port fields');
-        return;
-    }
-
-    const proxyConfig = {
-        host,
-        port: parseInt(port),
-        proxy_type: type
-    };
-
-    if (user) proxyConfig.username = user;
-    if (pass) proxyConfig.password = pass;
-
-    try {
-        const response = await fetch(`${API_BASE}/api/providers/${providerName}/proxy`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(proxyConfig)
-        });
-
-        if (response.ok) {
-            showAlert('success', `Proxy configuration saved for ${providerName}`);
-            // Clear password field
-            document.getElementById(`proxy-pass-${providerName}`).value = '';
-        } else {
-            const result = await response.json();
-            showAlert('error', result.error || `Failed to save proxy for ${providerName}`);
-        }
-    } catch (error) {
-        showAlert('error', `Network error: ${error.message}`);
-        console.error('Proxy save error:', error);
-    }
-}
-
-async function deleteProxy(providerName) {
-    if (!confirm(`Delete proxy configuration for ${providerName}?`)) return;
-
-    try {
-        const response = await fetch(`${API_BASE}/api/providers/${providerName}/proxy`, {
-            method: 'DELETE'
-        });
-
-        if (response.ok) {
-            showAlert('success', `Proxy configuration deleted for ${providerName}`);
-            // Clear fields
-            document.getElementById(`proxy-host-${providerName}`).value = '';
-            document.getElementById(`proxy-port-${providerName}`).value = '';
-            document.getElementById(`proxy-user-${providerName}`).value = '';
-            document.getElementById(`proxy-pass-${providerName}`).value = '';
-        } else {
-            const result = await response.json();
-            showAlert('error', result.error || `Failed to delete proxy for ${providerName}`);
-        }
-    } catch (error) {
-        showAlert('error', `Network error: ${error.message}`);
-        console.error('Proxy delete error:', error);
-    }
-}
-
-// UI Helper Functions
-function showAlert(type, message) {
-    const alert = document.createElement('div');
-    alert.className = `alert alert-${type}`;
-    alert.innerHTML = `
-        <i class="fas fa-${type === 'success' ? 'check-circle' : type === 'error' ? 'exclamation-circle' : 'info-circle'}"></i>
-        <div>${message}</div>
-    `;
-
-    // Insert at beginning of card body
-    const cardBody = document.querySelector('.card-body');
-    cardBody.insertBefore(alert, cardBody.firstChild);
-
-    // Remove after 5 seconds
-    setTimeout(() => alert.remove(), 5000);
-}
-
-function setupEventListeners() {
-    // Export button
-    document.getElementById('btn-export').addEventListener('click', exportConfig);
-    document.getElementById('btn-export-json').addEventListener('click', exportConfig);
-
-    // Import button
-    document.getElementById('btn-import').addEventListener('click', () => importModal.style.display = 'flex');
-    document.getElementById('btn-import-json').addEventListener('click', () => importModal.style.display = 'flex');
-
-    // Import modal
-    document.getElementById('btn-cancel-import').addEventListener('click', () => importModal.style.display = 'none');
-    document.getElementById('btn-confirm-import').addEventListener('click', importConfig);
-
-    // Apply JSON config
-    document.getElementById('btn-apply-json').addEventListener('click', applyJsonConfig);
-
-    // Test connection
-    document.getElementById('btn-test-connection').addEventListener('click', testApiConnection);
-
-    // Clear all
-    document.getElementById('btn-clear-all').addEventListener('click', clearAllConfigurations);
-}
-
-async function exportConfig() {
-    try {
-        const response = await fetch(`${API_BASE}/api/config/export`);
-        if (!response.ok) throw new Error('Export failed');
-
-        const data = await response.json();
-
-        // Create download link
-        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `ultimate_backend_config_${new Date().toISOString().slice(0,10)}.json`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-
-        showAlert('success', 'Configuration exported successfully');
-    } catch (error) {
-        showAlert('error', `Export failed: ${error.message}`);
-    }
-}
-
-async function importConfig() {
-    const file = importFile.files[0];
-    if (!file) {
-        showAlert('error', 'Please select a file first');
-        return;
-    }
-
-    try {
-        const text = await file.text();
-        const config = JSON.parse(text);
-
-        const response = await fetch(`${API_BASE}/api/config/import`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(config)
-        });
-
-        if (response.ok) {
-            showAlert('success', 'Configuration imported successfully');
-            importModal.style.display = 'none';
-            importFile.value = '';
-
-            // Reload providers
-            await loadProviders();
-            loadProxyForms();
-        } else {
-            const result = await response.json();
-            showAlert('error', result.error || 'Import failed');
-        }
-    } catch (error) {
-        showAlert('error', `Import failed: ${error.message}`);
-    }
-}
-
-async function applyJsonConfig() {
-    const jsonText = jsonEditor.value.trim();
-    if (!jsonText) {
-        showAlert('error', 'Please enter JSON configuration');
-        return;
-    }
-
-    try {
-        const config = JSON.parse(jsonText);
-
-        const response = await fetch(`${API_BASE}/api/config/import`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(config)
-        });
-
-        if (response.ok) {
-            showAlert('success', 'Configuration applied successfully');
-            jsonEditor.value = '';
-
-            // Reload providers
-            await loadProviders();
-            loadProxyForms();
-        } else {
-            const result = await response.json();
-            showAlert('error', result.error || 'Failed to apply configuration');
-        }
-    } catch (error) {
-        showAlert('error', `Invalid JSON: ${error.message}`);
-    }
-}
-
-async function testApiConnection() {
-    try {
-        const response = await fetch(`${API_BASE}/api/providers`);
-        if (response.ok) {
-            showAlert('success', 'API connection successful');
-        } else {
-            showAlert('error', `API returned ${response.status}`);
-        }
-    } catch (error) {
-        showAlert('error', `API connection failed: ${error.message}`);
-    }
-}
-
-async function clearAllConfigurations() {
-    if (!confirm('Are you sure you want to clear ALL configurations? This cannot be undone.')) {
-        return;
-    }
-
-    if (!confirm('This will delete all credentials and proxy settings. Are you REALLY sure?')) {
-        return;
-    }
-
-    try {
-        // Get all providers first
-        const response = await fetch(`${API_BASE}/api/providers`);
-        const data = await response.json();
-
-        // Delete credentials for all providers
-        for (const provider of data.providers) {
-            // Skip client-only providers
-            if (provider.requires_user_credentials) {
-                await fetch(`${API_BASE}/api/providers/${provider.name}/credentials`, {
-                    method: 'DELETE'
-                });
-            }
-
-            await fetch(`${API_BASE}/api/providers/${provider.name}/proxy`, {
-                method: 'DELETE'
-            });
-        }
-
-        showAlert('success', 'All configurations cleared');
-
-        // Reload providers
-        await loadProviders();
-        loadProxyForms();
-    } catch (error) {
-        showAlert('error', `Failed to clear configurations: ${error.message}`);
-    }
-}
-
-// Make functions available globally
-window.saveCredentials = saveCredentials;
-window.deleteCredentials = deleteCredentials;
-window.testAuth = testAuth;
-window.saveProxy = saveProxy;
-window.deleteProxy = deleteProxy;
+        statusEl.className = 'status-indicator status
