@@ -2,7 +2,7 @@
 from typing import Dict, List, Optional
 from .provider import StreamingProvider
 from .models import StreamingChannel, DRMSystem
-from .models import UserSubscription
+from .models import UserSubscription, SubscriptionPackage
 from .drm import DRMPluginManager
 from .epg import EPGManager
 from .utils.logger import logger
