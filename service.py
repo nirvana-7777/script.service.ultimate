@@ -2039,9 +2039,12 @@ class UltimateService:
                     # Get source information
                     source = enable_manager.get_enabled_source(provider)
 
+                    # FIX: Convert enum to string value for JSON serialization
+                    source_value = source.value if hasattr(source, 'value') else str(source)
+
                     result[provider] = {
                         'enabled': status,
-                        'source': source,  # 'kodi', 'file', or 'default'
+                        'source': source_value,  # Now a string, not an enum
                         'can_modify': source != 'kodi'  # Can't modify if set in Kodi
                     }
 
@@ -2069,11 +2072,14 @@ class UltimateService:
                 status = enable_manager.is_provider_enabled(provider)
                 source = enable_manager.get_enabled_source(provider)
 
+                # FIX: Convert enum to string value
+                source_value = source.value if hasattr(source, 'value') else str(source)
+
                 return {
                     'success': True,
                     'provider': provider,
                     'enabled': status,
-                    'source': source,
+                    'source': source_value,  # Now a string
                     'can_modify': source != 'kodi'
                 }
 

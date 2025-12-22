@@ -321,7 +321,7 @@ class ProviderEnableManager:
 
             result[provider_name] = {
                 "enabled": enabled,
-                "source": source.value,
+                "source": source.value,  # Convert enum to string
                 "can_modify": source != EnableSource.KODI
             }
 
@@ -348,7 +348,7 @@ class ProviderEnableManager:
         return {
             "provider": provider_name,
             "enabled": enabled,
-            "source": source.value,
+            "source": source.value,  # Convert enum to string
             "can_modify": source != EnableSource.KODI,
             "in_file": True
         }
