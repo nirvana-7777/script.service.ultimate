@@ -8,7 +8,6 @@ const API_BASE = window.location.origin;
 const tabs = document.querySelectorAll('.tab');
 const tabContents = document.querySelectorAll('.tab-content');
 const credentialsContainer = document.getElementById('credentials-container');
-const proxyContainer = document.getElementById('proxy-container');
 const jsonEditor = document.getElementById('json-editor');
 const importModal = document.getElementById('import-modal');
 const importFile = document.getElementById('import-file');
@@ -41,11 +40,12 @@ function switchTab(tabId) {
     currentTab = tabId;
 
     // Load proxy data if switching to proxy tab
-    if (tabId === 'proxy') {
-        loadProxyForms();
+    if (tabId === 'proxy' && window.proxyManager) {
+        window.proxyManager.init(providers);
+        window.proxyManager.loadProxyForms();
     }
 
-     // Load EPG mappings if switching to that tab
+    // Load EPG mappings if switching to that tab
     if (tabId === 'epg-mapping' && window.epgMappingManager) {
         window.epgMappingManager.loadProviders();
     }
@@ -427,108 +427,6 @@ async function renderCredentialsForms() {
     }
 }
 
-// Load proxy forms
-async function loadProxyForms() {
-    proxyContainer.innerHTML = await Promise.all(providers.map(async (provider) => {
-        try {
-            // Try to load existing proxy config
-            const proxyResponse = await fetch(`${API_BASE}/api/providers/${provider.name}/proxy`);
-            let existingProxy = null;
-
-            if (proxyResponse.ok) {
-                const proxyData = await proxyResponse.json();
-                if (proxyData.proxy_config) {
-                    existingProxy = proxyData.proxy_config;
-                }
-            }
-
-            return `
-            <div class="provider-card" data-provider="${provider.name}">
-                <div class="provider-header">
-                    ${provider.logo ? `<img src="${provider.logo}" alt="${provider.label}" class="provider-logo">` : ''}
-                    <div class="provider-info">
-                        <h3>${provider.label}</h3>
-                        <div class="provider-id">Proxy Configuration</div>
-                    </div>
-                </div>
-
-                <div class="form-group">
-                    <label for="proxy-host-${provider.name}">
-                        <i class="fas fa-server"></i> Proxy Host
-                    </label>
-                    <input type="text"
-                           id="proxy-host-${provider.name}"
-                           class="form-control"
-                           placeholder="proxy.example.com"
-                           value="${existingProxy?.host || ''}">
-                </div>
-
-                <div class="form-group">
-                    <label for="proxy-port-${provider.name}">
-                        <i class="fas fa-plug"></i> Proxy Port
-                    </label>
-                    <input type="number"
-                           id="proxy-port-${provider.name}"
-                           class="form-control"
-                           placeholder="8080"
-                           min="1"
-                           max="65535"
-                           value="${existingProxy?.port || ''}">
-                </div>
-
-                <div class="form-group">
-                    <label for="proxy-type-${provider.name}">
-                        <i class="fas fa-network-wired"></i> Proxy Type
-                    </label>
-                    <select id="proxy-type-${provider.name}" class="form-control">
-                        <option value="http" ${(!existingProxy || existingProxy.proxy_type === 'http') ? 'selected' : ''}>HTTP</option>
-                        <option value="https" ${(existingProxy?.proxy_type === 'https') ? 'selected' : ''}>HTTPS</option>
-                        <option value="socks4" ${(existingProxy?.proxy_type === 'socks4') ? 'selected' : ''}>SOCKS4</option>
-                        <option value="socks5" ${(existingProxy?.proxy_type === 'socks5') ? 'selected' : ''}>SOCKS5</option>
-                    </select>
-                </div>
-
-                <div class="form-group">
-                    <label for="proxy-user-${provider.name}">
-                        <i class="fas fa-user"></i> Username (Optional)
-                    </label>
-                    <input type="text"
-                           id="proxy-user-${provider.name}"
-                           class="form-control"
-                           placeholder="proxyuser"
-                           value="${existingProxy?.auth?.username || ''}">
-                </div>
-
-                <div class="form-group">
-                    <label for="proxy-pass-${provider.name}">
-                        <i class="fas fa-lock"></i> Password (Optional)
-                    </label>
-                    <input type="password"
-                           id="proxy-pass-${provider.name}"
-                           class="form-control"
-                           placeholder="••••••••"
-                           value="${existingProxy?.auth?.password || ''}">
-                </div>
-
-                <div class="btn-group">
-                    <button onclick="saveProxy('${provider.name}')" class="btn btn-primary">
-                        <i class="fas fa-save"></i> ${existingProxy ? 'Update' : 'Save'} Proxy
-                    </button>
-                    ${existingProxy ? `
-                    <button onclick="deleteProxy('${provider.name}')" class="btn btn-danger">
-                        <i class="fas fa-trash"></i> Delete Proxy
-                    </button>
-                    ` : ''}
-                </div>
-            </div>
-            `;
-        } catch (error) {
-            console.error(`Error loading proxy for ${provider.name}:`, error);
-            return ''; // Return empty string on error
-        }
-    })).then(htmls => htmls.join(''));
-}
-
 // Helper functions
 function getStatusIcon(status) {
     if (!status) return '<i class="fas fa-question-circle"></i>';
@@ -831,73 +729,6 @@ async function testAuth(providerName) {
     }
 }
 
-async function saveProxy(providerName) {
-    const host = document.getElementById(`proxy-host-${providerName}`).value;
-    const port = document.getElementById(`proxy-port-${providerName}`).value;
-    const type = document.getElementById(`proxy-type-${providerName}`).value;
-    const user = document.getElementById(`proxy-user-${providerName}`).value;
-    const pass = document.getElementById(`proxy-pass-${providerName}`).value;
-
-    if (!host || !port) {
-        showAlert('error', 'Please fill in at least Host and Port fields');
-        return;
-    }
-
-    const proxyConfig = {
-        host,
-        port: parseInt(port),
-        proxy_type: type
-    };
-
-    if (user) proxyConfig.username = user;
-    if (pass) proxyConfig.password = pass;
-
-    try {
-        const response = await fetch(`${API_BASE}/api/providers/${providerName}/proxy`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(proxyConfig)
-        });
-
-        if (response.ok) {
-            showAlert('success', `Proxy configuration saved for ${providerName}`);
-            // Clear password field
-            document.getElementById(`proxy-pass-${providerName}`).value = '';
-        } else {
-            const result = await response.json();
-            showAlert('error', result.error || `Failed to save proxy for ${providerName}`);
-        }
-    } catch (error) {
-        showAlert('error', `Network error: ${error.message}`);
-        console.error('Proxy save error:', error);
-    }
-}
-
-async function deleteProxy(providerName) {
-    if (!confirm(`Delete proxy configuration for ${providerName}?`)) return;
-
-    try {
-        const response = await fetch(`${API_BASE}/api/providers/${providerName}/proxy`, {
-            method: 'DELETE'
-        });
-
-        if (response.ok) {
-            showAlert('success', `Proxy configuration deleted for ${providerName}`);
-            // Clear fields
-            document.getElementById(`proxy-host-${providerName}`).value = '';
-            document.getElementById(`proxy-port-${providerName}`).value = '';
-            document.getElementById(`proxy-user-${providerName}`).value = '';
-            document.getElementById(`proxy-pass-${providerName}`).value = '';
-        } else {
-            const result = await response.json();
-            showAlert('error', result.error || `Failed to delete proxy for ${providerName}`);
-        }
-    } catch (error) {
-        showAlert('error', `Network error: ${error.message}`);
-        console.error('Proxy delete error:', error);
-    }
-}
-
 // UI Helper Functions
 function showAlert(type, message) {
     const alert = document.createElement('div');
@@ -986,7 +817,6 @@ async function importConfig() {
 
             // Reload providers
             await loadProviders();
-            loadProxyForms();
         } else {
             const result = await response.json();
             showAlert('error', result.error || 'Import failed');
@@ -1018,7 +848,6 @@ async function applyJsonConfig() {
 
             // Reload providers
             await loadProviders();
-            loadProxyForms();
         } else {
             const result = await response.json();
             showAlert('error', result.error || 'Failed to apply configuration');
@@ -1064,6 +893,7 @@ async function clearAllConfigurations() {
                 });
             }
 
+            // Delete proxy configurations
             await fetch(`${API_BASE}/api/providers/${provider.name}/proxy`, {
                 method: 'DELETE'
             });
@@ -1073,7 +903,12 @@ async function clearAllConfigurations() {
 
         // Reload providers
         await loadProviders();
-        loadProxyForms();
+
+        // Reload proxy forms if proxy manager exists and we're on proxy tab
+        if (window.proxyManager && currentTab === 'proxy') {
+            window.proxyManager.init(data.providers);
+            window.proxyManager.loadProxyForms();
+        }
     } catch (error) {
         showAlert('error', `Failed to clear configurations: ${error.message}`);
     }
@@ -1083,5 +918,3 @@ async function clearAllConfigurations() {
 window.saveCredentials = saveCredentials;
 window.deleteCredentials = deleteCredentials;
 window.testAuth = testAuth;
-window.saveProxy = saveProxy;
-window.deleteProxy = deleteProxy;

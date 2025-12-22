@@ -446,36 +446,6 @@ body {
     margin-top: 20px;
 }
 
-@media (max-width: 768px) {
-    .providers-grid {
-        grid-template-columns: 1fr;
-    }
-
-    .header h1 {
-        font-size: 2rem;
-    }
-
-    .tabs {
-        flex-direction: column;
-    }
-
-    .tab {
-        text-align: center;
-    }
-
-    .btn-group {
-        flex-direction: column;
-    }
-
-    .btn {
-        width: 100%;
-    }
-
-    .modal-buttons {
-        flex-direction: column;
-    }
-}
-
 .token-expiration {
     font-size: 0.875rem;
     color: #666;
@@ -510,4 +480,37 @@ body {
 
 .provider-info .token-expiration + .token-expiration {
     margin-top: 6px;
+}
+
+/* EPG Mapping specific styles - moved to separate file */
+/* .epg-mapping-container etc. */
+
+@media (max-width: 768px) {
+    .providers-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .header h1 {
+        font-size: 2rem;
+    }
+
+    .tabs {
+        flex-direction: column;
+    }
+
+    .tab {
+        text-align: center;
+    }
+
+    .btn-group {
+        flex-direction: column;
+    }
+
+    .btn {
+        width: 100%;
+    }
+
+    .modal-buttons {
+        flex-direction: column;
+    }
 }

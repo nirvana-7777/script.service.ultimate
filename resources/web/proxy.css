@@ -1,0 +1,263 @@
+/* Proxy-specific styles */
+
+.proxy-card {
+    background: var(--light-color);
+    border-radius: var(--border-radius);
+    padding: 20px;
+    border: 1px solid #dee2e6;
+    transition: var(--transition);
+    position: relative;
+}
+
+.proxy-card:hover {
+    border-color: var(--primary-color);
+    transform: translateY(-5px);
+}
+
+.proxy-header {
+    display: flex;
+    align-items: center;
+    margin-bottom: 20px;
+    gap: 15px;
+}
+
+.proxy-logo {
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    object-fit: contain;
+    background: white;
+    padding: 8px;
+    border: 2px solid var(--primary-color);
+    box-sizing: content-box;
+}
+
+.proxy-info h3 {
+    font-size: 1.3rem;
+    margin-bottom: 5px;
+}
+
+.proxy-info .proxy-id {
+    color: var(--gray-color);
+    font-size: 0.9rem;
+}
+
+/* Proxy form specific styles */
+.proxy-form-group {
+    margin-bottom: 20px;
+}
+
+.proxy-form-group label {
+    display: block;
+    margin-bottom: 8px;
+    font-weight: 600;
+    color: var(--dark-color);
+    align-items: center;
+    gap: 8px;
+}
+
+.proxy-form-control {
+    width: 100%;
+    padding: 12px 15px;
+    border: 2px solid #dee2e6;
+    border-radius: var(--border-radius);
+    font-size: 1rem;
+    transition: var(--transition);
+}
+
+.proxy-form-control:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(67, 97, 238, 0.2);
+}
+
+.proxy-select {
+    width: 100%;
+    padding: 12px 15px;
+    border: 2px solid #dee2e6;
+    border-radius: var(--border-radius);
+    font-size: 1rem;
+    background-color: white;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.proxy-select:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(67, 97, 238, 0.2);
+}
+
+.proxy-btn-group {
+    display: flex;
+    gap: 10px;
+    margin-top: 20px;
+    flex-wrap: wrap;
+}
+
+/* Proxy type indicators */
+.proxy-type-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 15px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    margin-left: 10px;
+}
+
+.proxy-type-http {
+    background: rgba(67, 97, 238, 0.1);
+    color: var(--primary-color);
+    border: 1px solid rgba(67, 97, 238, 0.3);
+}
+
+.proxy-type-https {
+    background: rgba(76, 201, 240, 0.1);
+    color: var(--success-color);
+    border: 1px solid rgba(76, 201, 240, 0.3);
+}
+
+.proxy-type-socks4 {
+    background: rgba(255, 158, 0, 0.1);
+    color: var(--warning-color);
+    border: 1px solid rgba(255, 158, 0, 0.3);
+}
+
+.proxy-type-socks5 {
+    background: rgba(247, 37, 133, 0.1);
+    color: var(--danger-color);
+    border: 1px solid rgba(247, 37, 133, 0.3);
+}
+
+/* Proxy status */
+.proxy-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    margin-top: 10px;
+}
+
+.proxy-status-active {
+    background: rgba(76, 201, 240, 0.2);
+    color: var(--success-color);
+}
+
+.proxy-status-inactive {
+    background: rgba(108, 117, 125, 0.2);
+    color: var(--gray-color);
+}
+
+.proxy-status-error {
+    background: rgba(247, 37, 133, 0.2);
+    color: var(--danger-color);
+}
+
+/* Proxy scope settings */
+.proxy-scope-settings {
+    background: rgba(0, 0, 0, 0.02);
+    border-radius: var(--border-radius);
+    padding: 15px;
+    margin-top: 15px;
+    border-left: 3px solid var(--primary-color);
+}
+
+.proxy-scope-settings h4 {
+    margin-bottom: 10px;
+    font-size: 1rem;
+    color: var(--dark-color);
+}
+
+.scope-checkboxes {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 10px;
+    margin-top: 10px;
+}
+
+.scope-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.scope-checkbox input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+}
+
+.scope-checkbox label {
+    margin-bottom: 0;
+    font-weight: normal;
+    cursor: pointer;
+}
+
+/* Advanced proxy options */
+.proxy-advanced-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 15px;
+    cursor: pointer;
+    color: var(--primary-color);
+    font-weight: 600;
+}
+
+.proxy-advanced-content {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.3s ease;
+}
+
+.proxy-advanced-content.expanded {
+    max-height: 500px;
+    margin-top: 15px;
+}
+
+/* Proxy test panel */
+.proxy-test-panel {
+    background: rgba(0, 0, 0, 0.03);
+    border-radius: var(--border-radius);
+    padding: 15px;
+    margin-top: 20px;
+    border: 1px dashed #dee2e6;
+}
+
+.proxy-test-result {
+    margin-top: 10px;
+    padding: 10px;
+    border-radius: var(--border-radius);
+    display: none;
+}
+
+.proxy-test-result.success {
+    background: rgba(76, 201, 240, 0.1);
+    border-left: 4px solid var(--success-color);
+    display: block;
+}
+
+.proxy-test-result.error {
+    background: rgba(247, 37, 133, 0.1);
+    border-left: 4px solid var(--danger-color);
+    display: block;
+}
+
+/* Responsive design for proxy */
+@media (max-width: 768px) {
+    .scope-checkboxes {
+        grid-template-columns: 1fr;
+    }
+
+    .proxy-btn-group {
+        flex-direction: column;
+    }
+
+    .proxy-btn-group .btn {
+        width: 100%;
+    }
+}

@@ -246,7 +246,7 @@ services:
     container_name: ultimate-backend
     restart: unless-stopped
     ports:
-      - 7777:7777
+      - "7777:7777"
     environment:
       - ULTIMATE_PORT=7777
       - ULTIMATE_DEBUG=false

@@ -2,6 +2,7 @@
 from typing import Dict, List, Optional
 from .provider import StreamingProvider
 from .models import StreamingChannel, DRMSystem
+from .models import UserSubscription
 from .drm import DRMPluginManager
 from .epg import EPGManager
 from .utils.logger import logger
@@ -711,6 +712,124 @@ class ProviderManager:
                 }
 
         return capabilities
+
+    # ============================================================================
+    # SUBSCRIPTION METHODS (NEW)
+    # ============================================================================
+
+    def get_subscription_status(self, provider_name: str, **kwargs) -> Optional[UserSubscription]:
+        """
+        Get subscription status for a specific provider.
+
+        Args:
+            provider_name: Name of the provider
+            **kwargs: Additional arguments passed to provider
+
+        Returns:
+            UserSubscription object or None if not supported/available
+
+        Raises:
+            ValueError: If provider not found
+        """
+        provider = self.get_provider(provider_name)
+        if not provider:
+            raise ValueError(f"Provider '{provider_name}' not found")
+
+        try:
+            subscription = provider.get_subscription_status(**kwargs)
+            if subscription:
+                logger.debug(f"Got subscription status for {provider_name}: "
+                             f"{subscription.package_count} packages, "
+                             f"{subscription.accessible_channel_count} channels")
+            else:
+                logger.debug(f"No subscription info available for {provider_name}")
+
+            return subscription
+        except Exception as e:
+            logger.warning(f"Error getting subscription status for {provider_name}: {e}")
+            return None
+
+    def get_subscribed_channels(self, provider_name: str, **kwargs) -> List[StreamingChannel]:
+        """
+        Get subscribed channels for a specific provider.
+
+        Args:
+            provider_name: Name of the provider
+            **kwargs: Additional arguments passed to provider
+
+        Returns:
+            List of StreamingChannel objects the user can access
+
+        Raises:
+            ValueError: If provider not found
+        """
+        provider = self.get_provider(provider_name)
+        if not provider:
+            raise ValueError(f"Provider '{provider_name}' not found")
+
+        try:
+            channels = provider.get_subscribed_channels(**kwargs)
+            logger.info(f"Got {len(channels)} subscribed channels from {provider_name}")
+            return channels
+        except Exception as e:
+            logger.error(f"Error getting subscribed channels for {provider_name}: {e}")
+            # Fallback to all channels on error
+            return provider.get_channels(**kwargs)
+
+    def get_available_packages(self, provider_name: str, **kwargs) -> List[SubscriptionPackage]:
+        """
+        Get available subscription packages for a provider.
+
+        Args:
+            provider_name: Name of the provider
+            **kwargs: Additional arguments passed to provider
+
+        Returns:
+            List of available SubscriptionPackage objects
+            Empty list if not supported/available
+
+        Raises:
+            ValueError: If provider not found
+        """
+        provider = self.get_provider(provider_name)
+        if not provider:
+            raise ValueError(f"Provider '{provider_name}' not found")
+
+        try:
+            packages = provider.get_available_packages(**kwargs)
+            logger.debug(f"Got {len(packages)} available packages from {provider_name}")
+            return packages
+        except Exception as e:
+            logger.warning(f"Error getting available packages for {provider_name}: {e}")
+            return []
+
+    def is_channel_accessible(self, provider_name: str, channel_id: str, **kwargs) -> bool:
+        """
+        Check if a channel is accessible with current subscription.
+
+        Args:
+            provider_name: Name of the provider
+            channel_id: ID of the channel to check
+            **kwargs: Additional arguments passed to provider
+
+        Returns:
+            True if accessible, False otherwise
+            True if subscription checking not supported
+
+        Raises:
+            ValueError: If provider not found
+        """
+        provider = self.get_provider(provider_name)
+        if not provider:
+            raise ValueError(f"Provider '{provider_name}' not found")
+
+        try:
+            accessible = provider.is_channel_accessible(channel_id, **kwargs)
+            logger.debug(f"Channel {channel_id} accessible for {provider_name}: {accessible}")
+            return accessible
+        except Exception as e:
+            logger.warning(f"Error checking channel accessibility for {provider_name}/{channel_id}: {e}")
+            return True  # Assume accessible on error (backward compatibility)
 
     def _extract_pssh_from_manifest(self, manifest_url: str) -> List:
         """

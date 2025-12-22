@@ -126,6 +126,10 @@ class UltimateService:
         css_path = os.path.join(web_dir, 'config.css')
         js_path = os.path.join(web_dir, 'config.js')
 
+        # NEW: Proxy files
+        proxy_css_path = os.path.join(web_dir, 'proxy.css')
+        proxy_js_path = os.path.join(web_dir, 'proxy.js')
+
         # EPG mapping files
         epg_css_path = os.path.join(web_dir, 'epg_mapping.css')
         epg_js_path = os.path.join(web_dir, 'epg_mapping.js')
@@ -141,6 +145,10 @@ class UltimateService:
             with open(css_path, 'r', encoding='utf-8') as f:
                 css = f.read()
 
+            # NEW: Load proxy CSS
+            with open(proxy_css_path, 'r', encoding='utf-8') as f:
+                proxy_css = f.read()
+
             # Load EPG CSS
             with open(epg_css_path, 'r', encoding='utf-8') as f:
                 epg_css = f.read()
@@ -148,6 +156,10 @@ class UltimateService:
             # Load JS files
             with open(js_path, 'r', encoding='utf-8') as f:
                 js = f.read()
+
+            # NEW: Load proxy JS
+            with open(proxy_js_path, 'r', encoding='utf-8') as f:
+                proxy_js = f.read()
 
             # Load EPG JS and libraries
             with open(epg_js_path, 'r', encoding='utf-8') as f:
@@ -159,21 +171,23 @@ class UltimateService:
             with open(debounce_path, 'r', encoding='utf-8') as f:
                 debounce_js = f.read()
 
-            # Combine all CSS
-            combined_css = f"{css}\n\n/* EPG Mapping CSS */\n{epg_css}"
+            # Combine all CSS (correct order: base -> proxy -> epg)
+            combined_css = f"{css}\n\n/* Proxy CSS */\n{proxy_css}\n\n/* EPG Mapping CSS */\n{epg_css}"
 
             # Combine all JS (with proper order)
             combined_js = f"""
-
             /* Debounce Utility */
             {debounce_js}
-            
+
             /* FuzzySet Library */
             {fuzzyset_js}
-            
+
             /* Main Config JS */
             {js}
-            
+
+            /* Proxy Management JS */
+            {proxy_js}
+
             /* EPG Mapping JS */
             {epg_js}
             """
@@ -182,14 +196,12 @@ class UltimateService:
             html = html.replace('<link rel="stylesheet" href="config.css">',
                                 f'<style>\n{combined_css}\n</style>')
 
-            # Inject JavaScript before </body> tag since <script src="config.js"> was removed
+            # Inject JavaScript before </body> tag
             script_tag = f'<script>\n{combined_js}\n</script>'
 
-            # Check if script tag exists in HTML (for backward compatibility)
             if '<script src="config.js"></script>' in html:
                 html = html.replace('<script src="config.js"></script>', script_tag)
             else:
-                # Script tag was removed, inject before </body>
                 html = html.replace('</body>', f'{script_tag}\n</body>')
 
             return html
@@ -1793,7 +1805,222 @@ class UltimateService:
                 response.status = 500
                 return {'error': f'Internal server error: {str(e)}'}
 
-        # Add to service.py setup_routes()
+        @self.app.route('/api/providers/<provider>/subscription')
+        def get_provider_subscription(provider):
+            """Get subscription status for a provider"""
+            try:
+                subscription = self.manager.get_subscription_status(provider)
+
+                if subscription:
+                    return {
+                        'success': True,
+                        'subscription': subscription.to_dict()
+                    }
+                else:
+                    return {
+                        'success': True,
+                        'subscription': None,
+                        'message': 'No subscription information available'
+                    }
+
+            except ValueError as val_err:
+                response.status = 404
+                return {'error': str(val_err)}
+            except Exception as api_err:
+                logger.error(f"API Error in subscription endpoint: {str(api_err)}")
+                response.status = 500
+                return {'error': f'Internal server error: {str(api_err)}'}
+
+        @self.app.route('/api/providers/<provider>/channels/subscribed')
+        def get_subscribed_channels(provider):
+            """Get channels the user is subscribed to for a provider"""
+            try:
+                channels = self.manager.get_subscribed_channels(provider)
+
+                # Get provider instance for additional info
+                provider_instance = self.manager.get_provider(provider)
+                provider_catchup_hours = getattr(provider_instance, 'catchup_window', 0) if provider_instance else 0
+
+                channels_data = []
+                for c in channels:
+                    channel_dict = c.to_dict()
+
+                    # Add catchup hours
+                    if hasattr(c, 'catchup_hours'):
+                        channel_dict['CatchupHours'] = c.catchup_hours
+                    else:
+                        channel_dict['CatchupHours'] = provider_catchup_hours
+
+                    channels_data.append(channel_dict)
+
+                return {
+                    'provider': provider,
+                    'channels': channels_data,
+                    'count': len(channels_data),
+                    'is_filtered': True  # Indicates subscription filtering was applied
+                }
+
+            except ValueError as val_err:
+                response.status = 404
+                return {'error': str(val_err)}
+            except Exception as api_err:
+                logger.error(f"API Error in subscribed channels endpoint: {str(api_err)}")
+                response.status = 500
+                return {'error': f'Internal server error: {str(api_err)}'}
+
+        @self.app.route('/api/providers/<provider>/packages')
+        def get_provider_packages(provider):
+            """Get available subscription packages for a provider"""
+            try:
+                packages = self.manager.get_available_packages(provider)
+
+                return {
+                    'success': True,
+                    'provider': provider,
+                    'packages': [
+                        {
+                            'package_id': pkg.package_id,
+                            'name': pkg.name,
+                            'description': pkg.description,
+                            'price_info': pkg.price_info,
+                            'channel_count': pkg.channel_count,
+                            'metadata': pkg.metadata
+                        }
+                        for pkg in packages
+                    ],
+                    'count': len(packages)
+                }
+
+            except ValueError as val_err:
+                response.status = 404
+                return {'error': str(val_err)}
+            except Exception as api_err:
+                logger.error(f"API Error in packages endpoint: {str(api_err)}")
+                response.status = 500
+                return {'error': f'Internal server error: {str(api_err)}'}
+
+        @self.app.route('/api/providers/channels/subscribed')
+        def get_all_subscribed_channels():
+            """Get all subscribed channels across all providers"""
+            try:
+                all_subscribed = {}
+                provider_list = self.manager.list_providers()
+
+                for provider in provider_list:
+                    try:
+                        channels = self.manager.get_subscribed_channels(provider)
+                        if channels:
+                            all_subscribed[provider] = [c.to_dict() for c in channels]
+                    except Exception as provider_err:
+                        logger.warning(f"Could not get subscribed channels for {provider}: {provider_err}")
+                        continue
+
+                total_channels = sum(len(channels) for channels in all_subscribed.values())
+
+                return {
+                    'success': True,
+                    'providers': list(all_subscribed.keys()),
+                    'channels_by_provider': all_subscribed,
+                    'total_channels': total_channels,
+                    'provider_count': len(all_subscribed)
+                }
+
+            except Exception as api_err:
+                logger.error(f"API Error in all subscribed channels endpoint: {str(api_err)}")
+                response.status = 500
+                return {'error': f'Internal server error: {str(api_err)}'}
+
+        @self.app.route('/api/m3u/subscribed')
+        def get_m3u_subscribed():
+            """
+            Generate M3U playlist with only subscribed channels.
+
+            Note: This uses the same caching mechanism as regular M3U,
+            but with '_subscribed' suffix in cache filename.
+            """
+            try:
+                cache_file = "playlist_subscribed.m3u"
+
+                # Try cached version
+                cached_content = self.vfs.read_text(cache_file)
+                if cached_content:
+                    logger.info("Serving cached subscribed M3U playlist")
+                    response.content_type = 'audio/x-mpegurl; charset=utf-8'
+                    response.headers['Content-Disposition'] = 'attachment; filename="playlist_subscribed.m3u8"'
+                    return cached_content
+
+                # Generate new M3U with subscribed channels
+                base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
+                m3u_content = "#EXTM3U\n"
+
+                provider_list = self.manager.list_providers()
+                for provider_name in provider_list:
+                    try:
+                        channels = self.manager.get_subscribed_channels(provider_name)
+
+                        for channel in channels:
+                            # Generate M3U entry for each subscribed channel
+                            channel_id = channel.channel_id
+                            channel_name = channel.name
+                            channel_logo = channel.logo_url or ''
+
+                            # Get provider label
+                            try:
+                                provider_instance = self.manager.get_provider(provider_name)
+                                provider_label = getattr(provider_instance, 'provider_label', provider_name)
+                            except:
+                                provider_label = provider_name
+
+                            # Build stream URL
+                            stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream"
+
+                            # Add M3U entry
+                            m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
+
+                            # Add DRM directives if available
+                            try:
+                                drm_configs = self.manager.get_channel_drm_configs(provider_name, channel_id)
+                                if drm_configs:
+                                    drm_directives = self._generate_drm_directives(drm_configs)
+                                    m3u_content += drm_directives
+                            except Exception as drm_err:
+                                logger.debug(f"Could not get DRM for {provider_name}/{channel_id}: {drm_err}")
+
+                            m3u_content += f'{stream_url}\n'
+
+                    except Exception as provider_err:
+                        logger.warning(
+                            f"Failed to process subscribed channels for '{provider_name}': {str(provider_err)}")
+                        continue
+
+                # Cache the result
+                if self.vfs.write_text(cache_file, m3u_content):
+                    logger.info(f"Subscribed M3U playlist cached to {cache_file}")
+
+                response.content_type = 'audio/x-mpegurl; charset=utf-8'
+                response.headers['Content-Disposition'] = 'attachment; filename="playlist_subscribed.m3u8"'
+                return m3u_content
+
+            except Exception as api_err:
+                logger.error(f"API Error in /api/m3u/subscribed: {str(api_err)}")
+                response.status = 500
+                return {'error': f'Internal server error: {str(api_err)}'}
+
+        @self.app.route('/api/m3u/subscribed/generate')
+        def generate_m3u_subscribed():
+            """Force regenerate subscribed M3U playlist"""
+            try:
+                # Clear cache and regenerate
+                cache_file = "playlist_subscribed.m3u"
+                self.vfs.delete(cache_file)  # Delete if exists
+
+                # Call the subscribed M3U endpoint which will regenerate
+                return get_m3u_subscribed()
+
+            except Exception as api_err:
+                logger.error(f"API Error in /api/m3u/subscribed/generate: {str(api_err)}")
+                response.status = 500
+                return {'error': f'Internal server error: {str(api_err)}'}
 
         @self.app.route('/api/providers/enabled', method='GET')
         def get_all_enabled_status():
