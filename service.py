@@ -126,7 +126,7 @@ class UltimateService:
         css_path = os.path.join(web_dir, 'config.css')
         js_path = os.path.join(web_dir, 'config.js')
 
-        # NEW: Proxy files
+        # Proxy files
         proxy_css_path = os.path.join(web_dir, 'proxy.css')
         proxy_js_path = os.path.join(web_dir, 'proxy.js')
 
@@ -135,6 +135,10 @@ class UltimateService:
         epg_js_path = os.path.join(web_dir, 'epg_mapping.js')
         fuzzyset_path = os.path.join(web_dir, 'lib', 'fuzzyset.js')
         debounce_path = os.path.join(web_dir, 'lib', 'debounce.js')
+
+        # Enable/disable files
+        enable_css_path = os.path.join(web_dir, 'provider_enable.css')
+        enable_js_path = os.path.join(web_dir, 'provider_enable.js')
 
         try:
             # Load HTML
@@ -145,23 +149,22 @@ class UltimateService:
             with open(css_path, 'r', encoding='utf-8') as f:
                 css = f.read()
 
-            # NEW: Load proxy CSS
             with open(proxy_css_path, 'r', encoding='utf-8') as f:
                 proxy_css = f.read()
 
-            # Load EPG CSS
             with open(epg_css_path, 'r', encoding='utf-8') as f:
                 epg_css = f.read()
+
+            with open(enable_css_path, 'r', encoding='utf-8') as f:
+                enable_css = f.read()
 
             # Load JS files
             with open(js_path, 'r', encoding='utf-8') as f:
                 js = f.read()
 
-            # NEW: Load proxy JS
             with open(proxy_js_path, 'r', encoding='utf-8') as f:
                 proxy_js = f.read()
 
-            # Load EPG JS and libraries
             with open(epg_js_path, 'r', encoding='utf-8') as f:
                 epg_js = f.read()
 
@@ -171,8 +174,11 @@ class UltimateService:
             with open(debounce_path, 'r', encoding='utf-8') as f:
                 debounce_js = f.read()
 
-            # Combine all CSS (correct order: base -> proxy -> epg)
-            combined_css = f"{css}\n\n/* Proxy CSS */\n{proxy_css}\n\n/* EPG Mapping CSS */\n{epg_css}"
+            with open(enable_js_path, 'r', encoding='utf-8') as f:
+                enable_js = f.read()
+
+            # Combine all CSS (correct order: base -> proxy -> epg -> enable)
+            combined_css = f"{css}\n\n/* Proxy CSS */\n{proxy_css}\n\n/* EPG Mapping CSS */\n{epg_css}\n\n/* Provider Enable/Disable CSS */\n{enable_css}"
 
             # Combine all JS (with proper order)
             combined_js = f"""
@@ -190,6 +196,9 @@ class UltimateService:
 
             /* EPG Mapping JS */
             {epg_js}
+
+            /* Provider Enable/Disable JS */
+            {enable_js}
             """
 
             # Replace CSS in HTML

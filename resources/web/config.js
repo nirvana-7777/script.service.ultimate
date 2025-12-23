@@ -41,7 +41,11 @@ function switchTab(tabId) {
 
     // Load proxy data if switching to proxy tab
     if (tabId === 'proxy' && window.proxyManager) {
-        window.proxyManager.init(providers);
+        // Filter to only enabled providers
+        const enabledProviders = window.providerEnableManager
+            ? window.providerEnableManager.getFilteredProviders('proxy')
+            : providers;
+        window.proxyManager.init(enabledProviders);
         window.proxyManager.loadProxyForms();
     }
 
@@ -199,6 +203,11 @@ async function loadProviders() {
         const data = await response.json();
         providers = data.providers;
 
+        // Initialize enable manager
+        if (window.providerEnableManager) {
+            await window.providerEnableManager.init(providers);
+        }
+
         // Load auth status for each provider
         await loadAuthStatus();
 
@@ -246,6 +255,11 @@ async function renderCredentialsForms() {
         return;
     }
 
+    // Add filter UI
+    if (window.addFilterUI) {
+        window.addFilterUI();
+    }
+
     // Load credentials for all providers in parallel
     const credentialsPromises = providers.map(async (provider) => {
         try {
@@ -274,11 +288,27 @@ async function renderCredentialsForms() {
             // Get current auth status
             const status = authStatus[provider.name] || {};
 
+            // Get enable/disable status
+            const isEnabled = window.providerEnableManager
+                ? window.providerEnableManager.isEnabled(provider.name)
+                : true;
+            const canModify = window.providerEnableManager
+                ? window.providerEnableManager.canModify(provider.name)
+                : true;
+
             // Determine provider card class
             let providerCardClass = 'provider-card';
             if (!needsUserCredentials) {
                 providerCardClass += ' client-credentials-only';
             }
+            if (!isEnabled) {
+                providerCardClass += ' disabled';
+            }
+
+            // Create toggle switch
+            const toggleSwitch = window.createToggleSwitch
+                ? window.createToggleSwitch(provider.name, isEnabled, canModify)
+                : '';
 
             // Create form content based on auth type
             let formContent = '';
@@ -310,7 +340,7 @@ async function renderCredentialsForms() {
                     <input type="password"
                            id="password-${provider.name}"
                            class="form-control"
-                           placeholder="${existingCreds ? '••••••••• (optional)' : '•••••••••'}"
+                           placeholder="${existingCreds ? '•••••••••' : '•••••••••'}"
                            value="">
                 </div>
                 `;
@@ -352,9 +382,9 @@ async function renderCredentialsForms() {
                 `;
             }
 
-            // Create buttons based on auth type
+            // Create buttons based on auth type and enabled state
             let buttonsHTML = '';
-            if (needsUserCredentials) {
+            if (isEnabled && needsUserCredentials) {
                 buttonsHTML = `
                 <div class="btn-group">
                     <button onclick="saveCredentials('${provider.name}')" class="btn btn-primary">
@@ -370,7 +400,7 @@ async function renderCredentialsForms() {
                     </button>
                 </div>
                 `;
-            } else {
+            } else if (isEnabled) {
                 // For non-user-credential providers, only show test button
                 buttonsHTML = `
                 <div class="btn-group">
@@ -388,6 +418,7 @@ async function renderCredentialsForms() {
                     <div class="provider-info">
                         <h3>${provider.label}</h3>
                         <div class="provider-id">${provider.name} • ${provider.country}</div>
+                        ${isEnabled ? `
                         <div class="auth-info">
                             <small><i class="fas fa-fingerprint"></i> ${getAuthTypeDescription(status)}</small>
                         </div>
@@ -396,7 +427,9 @@ async function renderCredentialsForms() {
                             ${getStatusText(status)}
                         </div>
                         ${formatTokenExpiration(status)}
+                        ` : ''}
                     </div>
+                    ${toggleSwitch}
                 </div>
 
                 ${formContent}
@@ -413,6 +446,11 @@ async function renderCredentialsForms() {
     try {
         const htmls = await Promise.all(credentialsPromises);
         credentialsContainer.innerHTML = htmls.join('');
+
+        // Apply current filter
+        if (window.providerEnableManager) {
+            window.providerEnableManager.applyFilter();
+        }
     } catch (error) {
         console.error('Error rendering credentials forms:', error);
         credentialsContainer.innerHTML = `
