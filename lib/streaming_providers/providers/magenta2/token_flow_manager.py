@@ -407,11 +407,20 @@ class TokenFlowManager:
             )
 
             if not yo_digital_result:
-                return TokenFlowResult(
-                    success=False,
-                    error="Failed to get yo_digital tokens from taa",
-                    flow_path="yo_digital_from_taa"
+                # EDGE CASE: TAA token exists but yo_digital failed
+                # This happens when cached TAA is from ISP account, not TV account
+                logger.warning(
+                    "yo_digital acquisition failed with valid taa token - "
+                    "likely cached TAA from ISP account, TV subscription on different account"
                 )
+                logger.info("Clearing cached tokens and falling back to remote_login")
+
+                # Clear the invalid cached tokens to prevent repeated failures
+                self.session_manager.clear_scoped_token(self.provider_name, 'taa', self.country)
+                self.session_manager.clear_scoped_token(self.provider_name, 'tvhubs', self.country)
+
+                # Fallback to remote_login
+                return self._get_yo_digital_via_remote_login()
 
             # Convert YoDigitalTokens to dict for saving
             yo_digital_dict = {
@@ -485,11 +494,26 @@ class TokenFlowManager:
             )
 
             if not yo_digital_result:
-                return TokenFlowResult(
-                    success=False,
-                    error="Failed to get yo_digital from exchanged taa",
-                    flow_path="yo_digital_via_taa_exchange"
+                # EDGE CASE: Refresh token exchange succeeded but yo_digital failed
+                # This happens when shared refresh_token is from ISP account, not TV account
+                logger.warning(
+                    "yo_digital acquisition failed after successful taa exchange - "
+                    "likely shared refresh_token from ISP account, TV subscription on different account"
                 )
+                logger.info("Clearing cached tokens and falling back to remote_login")
+
+                # Clear the invalid cached tokens and refresh_token
+                self.session_manager.clear_scoped_token(self.provider_name, 'taa', self.country)
+                self.session_manager.clear_scoped_token(self.provider_name, 'tvhubs', self.country)
+
+                # Clear the shared refresh_token from session data
+                session_data = self.session_manager.load_session(self.provider_name, self.country)
+                if session_data and 'refresh_token' in session_data:
+                    del session_data['refresh_token']
+                    self.session_manager.save_session(self.provider_name, session_data, self.country)
+
+                # Fallback to remote_login
+                return self._get_yo_digital_via_remote_login()
 
             # Convert YoDigitalTokens to dict for saving
             yo_digital_dict = {
@@ -577,11 +601,16 @@ class TokenFlowManager:
             )
 
             if not yo_digital_result:
-                return TokenFlowResult(
-                    success=False,
-                    error="Failed to get yo_digital from line_auth taa",
-                    flow_path="yo_digital_via_line_auth"
+                # EDGE CASE: Line auth succeeded but yo_digital failed
+                # This happens when ISP account != TV account
+                logger.warning(
+                    "yo_digital acquisition failed after successful line_auth - "
+                    "likely ISP account differs from TV subscription account"
                 )
+                logger.info("Falling back to remote_login for TV account authentication")
+
+                # Fallback to remote_login (tokens will be overwritten)
+                return self._get_yo_digital_via_remote_login()
 
             # Convert YoDigitalTokens to dict for saving
             yo_digital_dict = {
