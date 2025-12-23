@@ -1,7 +1,7 @@
 # streaming_providers/providers/magentaeu/provider.py
 # -*- coding: utf-8 -*-
 import time
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, ClassVar
 
 from ...base.auth import UserPasswordCredentials
 from ...base.provider import StreamingProvider
@@ -21,6 +21,7 @@ from .constants import (
     DRM_SYSTEM_WIDEVINE,
     MAGENTA_TV_AT_LOGO,
     MAGENTA_TV_PL_LOGO,
+    MAX_TV_LOGO,
     WV_URL,
     CONTENT_TYPE_LIVE,
     STREAMING_FORMAT_DASH,
@@ -28,11 +29,15 @@ from .constants import (
     get_natco_key,
     get_guest_headers,
     get_base_url,
-    get_language, MAX_TV_LOGO
+    get_language
 )
 
 
 class MagentaProvider(StreamingProvider):
+    # Provider constants with country-specific logos
+    PROVIDER_LOGO_AT: ClassVar[str] = MAGENTA_TV_AT_LOGO
+    PROVIDER_LOGO_PL: ClassVar[str] = MAGENTA_TV_PL_LOGO
+    PROVIDER_LOGO_HR: ClassVar[str] = MAX_TV_LOGO
 
     SUPPORTED_COUNTRIES = SUPPORTED_COUNTRIES
 
@@ -52,21 +57,6 @@ class MagentaProvider(StreamingProvider):
 
         if country not in SUPPORTED_COUNTRIES:
             raise ValueError(f"Unsupported country: {country}")
-
-        # ✅ BEFORE: Complex proxy resolution logic (10+ lines)
-        # self.proxy_config = (
-        #     proxy_config or
-        #     (ProxyConfig.from_url(proxy_url) if proxy_url else None) or
-        #     self._load_proxy_from_manager(config_dir)
-        # )
-        #
-        # self.http_manager = HTTPManagerFactory.create_for_provider(
-        #     provider_name='magentaeu',
-        #     proxy_config=self.proxy_config,
-        #     user_agent=USER_AGENT,
-        #     timeout=DEFAULT_REQUEST_TIMEOUT,
-        #     max_retries=DEFAULT_MAX_RETRIES
-        # )
 
         # ✅ AFTER: Using abstraction with automatic proxy resolution (6 lines)
         self.http_manager = self._setup_http_manager(
@@ -119,12 +109,13 @@ class MagentaProvider(StreamingProvider):
 
     @property
     def provider_logo(self) -> str:
-        if self.country.lower() == 'at':
-            return MAGENTA_TV_AT_LOGO
-        if self.country.lower() == 'hr':
-            return MAX_TV_LOGO
-        elif self.country.lower() == 'pl':
-            return MAGENTA_TV_PL_LOGO
+        country_lower = self.country.lower()
+        if country_lower == 'at':
+            return self.PROVIDER_LOGO_AT
+        elif country_lower == 'hr':
+            return self.PROVIDER_LOGO_HR
+        elif country_lower == 'pl':
+            return self.PROVIDER_LOGO_PL
         else:
             return ''
 

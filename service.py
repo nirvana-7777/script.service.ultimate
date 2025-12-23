@@ -712,66 +712,71 @@ class UltimateService:
         @self.app.route('/api/providers')
         def list_providers():
             try:
-                provider_names = self.manager.list_providers()
-                default_country = self._get_setting('default_country', 'DE')
+                # Get metadata for ALL providers (enabled + disabled)
+                all_metadata = self.manager.get_all_providers_metadata()
 
-                providers_details = []
-                for provider_name in provider_names:
-                    provider_instance = self.manager.get_provider(provider_name)
-                    if provider_instance:
-                        provider_label = getattr(provider_instance, 'provider_label', provider_name)
-                        country = getattr(provider_instance, 'country', default_country)
-                        provider_logo = getattr(provider_instance, 'provider_logo', '')
+                # For backward compatibility, also get details for enabled providers
+                enabled_providers = []
+                for metadata in all_metadata:
+                    if metadata['enabled'] and metadata['instance_ready']:
+                        provider_instance = self.manager.get_provider(metadata['name'])
+                        if provider_instance:
+                            # Get detailed auth info from instance
+                            supported_auth_types = getattr(provider_instance, 'supported_auth_types', [])
+                            preferred_auth_type = getattr(provider_instance, 'preferred_auth_type', 'unknown')
+                            requires_stored_credentials = getattr(
+                                provider_instance, 'requires_stored_credentials', False
+                            )
 
-                        # Get authentication properties
-                        supported_auth_types = getattr(provider_instance, 'supported_auth_types', [])
-                        preferred_auth_type = getattr(provider_instance, 'preferred_auth_type', 'unknown')
-                        requires_stored_credentials = getattr(
-                            provider_instance, 'requires_stored_credentials', False
-                        )
+                            # Check specific auth type needs
+                            needs_user_creds = 'user_credentials' in supported_auth_types
+                            needs_client_creds = 'client_credentials' in supported_auth_types
+                            is_network_based = 'network_based' in supported_auth_types
+                            is_anonymous = 'anonymous' in supported_auth_types
+                            uses_device_reg = 'device_registration' in supported_auth_types
+                            uses_embedded = 'embedded_client' in supported_auth_types
 
-                        # Check specific auth type needs
-                        needs_user_creds = 'user_credentials' in supported_auth_types
-                        needs_client_creds = 'client_credentials' in supported_auth_types
-                        is_network_based = 'network_based' in supported_auth_types
-                        is_anonymous = 'anonymous' in supported_auth_types
-                        uses_device_reg = 'device_registration' in supported_auth_types
-                        uses_embedded = 'embedded_client' in supported_auth_types
+                            provider_details = {
+                                'name': metadata['name'],
+                                'label': metadata['label'],
+                                'logo': metadata['logo'],
+                                'country': metadata['country'],
 
-                        providers_details.append({
-                            'name': provider_name,
-                            'label': provider_label,
-                            'logo': provider_logo,
-                            'country': country,
+                                # Core authentication properties
+                                'auth': {
+                                    'supported_auth_types': supported_auth_types,
+                                    'preferred_auth_type': preferred_auth_type,
+                                    'requires_stored_credentials': requires_stored_credentials,
 
-                            # Core authentication properties
-                            'auth': {
-                                'supported_auth_types': supported_auth_types,
-                                'preferred_auth_type': preferred_auth_type,
-                                'requires_stored_credentials': requires_stored_credentials,
+                                    # Specific auth type flags for easy UI decisions
+                                    'needs_user_credentials': needs_user_creds,
+                                    'needs_client_credentials': needs_client_creds,
+                                    'is_network_based': is_network_based,
+                                    'is_anonymous': is_anonymous,
+                                    'uses_device_registration': uses_device_reg,
+                                    'uses_embedded_client': uses_embedded,
 
-                                # Specific auth type flags for easy UI decisions
-                                'needs_user_credentials': needs_user_creds,
-                                'needs_client_credentials': needs_client_creds,
-                                'is_network_based': is_network_based,
-                                'is_anonymous': is_anonymous,
-                                'uses_device_registration': uses_device_reg,
-                                'uses_embedded_client': uses_embedded,
+                                    # Derived summary for UI
+                                    'needs_user_input': needs_user_creds or uses_device_reg,
+                                    'needs_configuration': needs_user_creds or needs_client_creds,
+                                    'is_automatic': is_network_based or is_anonymous or uses_embedded,
+                                },
 
-                                # Derived summary for UI
-                                'needs_user_input': needs_user_creds or uses_device_reg,
-                                'needs_configuration': needs_user_creds or needs_client_creds,
-                                'is_automatic': is_network_based or is_anonymous or uses_embedded,
-                            },
+                                # Token properties
+                                'primary_token_scope': getattr(provider_instance, 'primary_token_scope', None),
+                                'token_scopes': getattr(provider_instance, 'token_scopes', []),
 
-                            # Token properties
-                            'primary_token_scope': getattr(provider_instance, 'primary_token_scope', None),
-                            'token_scopes': getattr(provider_instance, 'token_scopes', []),
-                        })
+                                # Metadata fields
+                                'enabled': metadata['enabled'],
+                                'instance_ready': metadata['instance_ready'],
+                                'requires_credentials': metadata['requires_credentials']
+                            }
+                            enabled_providers.append(provider_details)
 
                 return {
-                    'providers': providers_details,
-                    'default_country': default_country
+                    'providers': enabled_providers,
+                    'all_providers': all_metadata,  # NEW: Include all providers metadata
+                    'default_country': self.default_country
                 }
             except Exception as api_err:
                 logger.error(f"API Error in /api/providers: {str(api_err)}")
@@ -2099,13 +2104,8 @@ class UltimateService:
 
         @self.app.route('/api/providers/<provider>/enabled', method='POST')
         def set_provider_enabled(provider):
-            """Set enabled status for provider (writes to file only)"""
+            """Set enabled status for provider"""
             try:
-                # Validate provider exists
-                if not self.manager.get_provider(provider):
-                    response.status = 404
-                    return {'error': f'Provider {provider} not found'}
-
                 # Parse request
                 try:
                     data = request.json
@@ -2118,31 +2118,28 @@ class UltimateService:
                     response.status = 400
                     return {'error': 'Invalid JSON'}
 
-                # Check if controlled by Kodi
-                enable_manager = ProviderEnableManager()
-                source = enable_manager.get_enabled_source(provider)
-
-                if source == 'kodi':
-                    response.status = 403
-                    return {
-                        'error': f'Provider {provider} is controlled by Kodi settings',
-                        'hint': 'Change the setting in Kodi addon settings'
-                    }
-
-                # Write to file
-                success = enable_manager.set_provider_enabled(provider, enabled)
+                # Use the new manager method
+                success = self.manager.set_provider_enabled(provider, enabled)
 
                 if success:
+                    # Get updated metadata
+                    metadata = None
+                    all_metadata = self.manager.get_all_providers_metadata()
+                    for md in all_metadata:
+                        if md['name'] == provider:
+                            metadata = md
+                            break
+
                     return {
                         'success': True,
                         'provider': provider,
                         'enabled': enabled,
-                        'source': 'file',
-                        'message': f'Provider {provider} {"enabled" if enabled else "disabled"} in file'
+                        'metadata': metadata,
+                        'message': f'Provider {provider} {"enabled" if enabled else "disabled"}'
                     }
                 else:
                     response.status = 500
-                    return {'error': 'Failed to save setting'}
+                    return {'error': f'Failed to {"enable" if enabled else "disable"} provider {provider}'}
 
             except Exception as e:
                 logger.error(f"Error setting enabled status for {provider}: {e}")

@@ -1,6 +1,6 @@
 # streaming_providers/providers/joyn/provider.py
 # -*- coding: utf-8 -*-
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, ClassVar
 import json
 import time
 import hashlib
@@ -73,7 +73,14 @@ class JoynProvider(StreamingProvider):
     """
     Joyn streaming provider implementation with centralized HTTP management
     """
-    SUPPORTED_COUNTRIES = SUPPORTED_COUNTRIES
+
+    # ============================================================================
+    # STATIC METADATA (NEW)
+    # ============================================================================
+    PROVIDER_LABEL: ClassVar[str] = "Joyn"
+    SUPPORTED_AUTH_TYPES: ClassVar[List[str]] = ['client_credentials', 'user_credentials']
+    PROVIDER_LOGO: ClassVar[str] = JOYN_LOGO
+    SUPPORTED_COUNTRIES: ClassVar[List[str]] = SUPPORTED_COUNTRIES
 
     def __init__(self, country: str = 'de',
                  platform: str = DEFAULT_PLATFORM,
@@ -105,27 +112,7 @@ class JoynProvider(StreamingProvider):
         self.distribution_tenant = COUNTRY_TENANT_MAPPING[country]
         self.platform = platform
 
-        # ✅ BEFORE: Manual proxy resolution and HTTP manager setup (15 lines)
-        # self.proxy_config = (
-        #     proxy_config or
-        #     (ProxyConfig.from_url(proxy_url) if proxy_url else None) or
-        #     self._load_proxy_from_manager(config_dir)
-        # )
-        #
-        # if self.proxy_config:
-        #     logger.info("Using proxy configuration for Joyn")
-        # else:
-        #     logger.debug("No proxy configuration found for Joyn")
-        #
-        # self.http_manager = HTTPManagerFactory.create_for_provider(
-        #     provider_name='joyn',
-        #     proxy_config=self.proxy_config,
-        #     user_agent=JOYN_USER_AGENT,
-        #     timeout=DEFAULT_REQUEST_TIMEOUT,
-        #     max_retries=DEFAULT_MAX_RETRIES
-        # )
-
-        # ✅ AFTER: Using abstraction (6 lines)
+        # Setup HTTP manager using abstraction
         self.http_manager = self._setup_http_manager(
             provider_name='joyn',
             proxy_config=proxy_config,
@@ -145,9 +132,6 @@ class JoynProvider(StreamingProvider):
             proxy_config=self.http_manager.config.proxy_config  # Use resolved proxy
         )
 
-        # ✅ Optional: Share HTTP manager (if authenticator might have its own)
-        # self.http_manager = self._share_http_manager_with_authenticator(self.authenticator)
-
         # Authenticate
         try:
             self.bearer_token = self.authenticator.get_bearer_token()
@@ -155,29 +139,28 @@ class JoynProvider(StreamingProvider):
             logger.warning(f"Could not authenticate during initialization: {e}")
             self.bearer_token = None
 
-    # ✅ BEFORE: Had to implement this helper method (12 lines)
-    # def _load_proxy_from_manager(self, config_dir: Optional[str]) -> Optional[ProxyConfig]:
-    #     """Load proxy configuration from ProxyConfigManager"""
-    #     try:
-    #         proxy_manager = ProxyConfigManager(config_dir)
-    #         return proxy_manager.get_proxy_config('joyn', self.country)
-    #     except Exception as e:
-    #         logger.warning(f"Could not load proxy from ProxyConfigManager: {e}")
-    #         return None
-
-    # ✅ AFTER: No longer needed - handled by abstraction!
-
     @property
     def provider_name(self) -> str:
         return 'joyn'
 
+    # Override provider_label to provide custom country formatting
     @property
     def provider_label(self) -> str:
-        return f'Joyn ({self.country})'
+        """Return country-specific label"""
+        country_map = {
+            'de': 'Joyn Germany',
+            'at': 'Joyn Austria',
+            'ch': 'Joyn Switzerland'
+        }
+        return country_map.get(self.country, f"Joyn ({self.country.upper()})")
 
     @property
     def provider_logo(self) -> str:
-        return JOYN_LOGO
+        return self.PROVIDER_LOGO  # Use class attribute
+
+    @property
+    def supported_auth_types(self) -> List[str]:
+        return self.SUPPORTED_AUTH_TYPES  # Use class attribute
 
     @property
     def uses_dynamic_manifests(self) -> bool:
@@ -186,10 +169,6 @@ class JoynProvider(StreamingProvider):
     @property
     def implements_epg(self) -> bool:
         return False
-
-    @property
-    def supported_auth_types(self) -> List[str]:
-        return ['client_credentials','user_credentials']
 
     def authenticate(self, **kwargs) -> str:
         """Authenticate and return bearer token"""
@@ -221,10 +200,10 @@ class JoynProvider(StreamingProvider):
         return self.bearer_token
 
     def get_channels(self,
-                       time_window_hours: int = DEFAULT_EPG_WINDOW_HOURS,
-                       fetch_manifests: bool = False,
-                       populate_streaming_data: bool = True,
-                       **kwargs) -> List[StreamingChannel]:
+                     time_window_hours: int = DEFAULT_EPG_WINDOW_HOURS,
+                     fetch_manifests: bool = False,
+                     populate_streaming_data: bool = True,
+                     **kwargs) -> List[StreamingChannel]:
         """
         Fetch available channels from Joyn GraphQL API
 
@@ -263,7 +242,6 @@ class JoynProvider(StreamingProvider):
 
             url = f"{JOYN_GRAPHQL_ENDPOINTS['LIVE_CHANNELS']}&variables={variables_encoded}&extensions={extensions_encoded}"
 
-            # ✅ Already using http_manager correctly
             response = self.http_manager.get(
                 url,
                 operation='api',
@@ -369,7 +347,6 @@ class JoynProvider(StreamingProvider):
         }
 
         try:
-            # ✅ Already using http_manager correctly
             response = self.http_manager.post(
                 JOYN_STREAMING_ENDPOINTS['ENTITLEMENT'],
                 operation='auth',
@@ -426,7 +403,6 @@ class JoynProvider(StreamingProvider):
         headers['Authorization'] = f'Bearer {entitlement_token}'
 
         try:
-            # ✅ Already using http_manager correctly
             response = self.http_manager.post(
                 url,
                 operation='manifest',

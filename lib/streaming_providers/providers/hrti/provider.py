@@ -1,18 +1,31 @@
 # lib/streaming_providers/providers/hrti/provider.py
 import json
 import requests
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, ClassVar
 
-from ...base.provider import StreamingProvider, AuthType  # ← ADD AuthType import
+from ...base.provider import StreamingProvider, AuthType
 from ...base.models.streaming_channel import StreamingChannel
 from ...base.models import DRMConfig, LicenseConfig, DRMSystem, LicenseUnwrapperParams
 from .auth import HRTiAuthenticator
 from .constants import HRTiConfig
 from ...base.utils import logger
 from ...base.models.proxy_models import ProxyConfig
+from .constants import HRTiDefaults
 
 
 class HRTiProvider(StreamingProvider):
+    """
+    HRTi (Croatian Radio Television Internet) provider implementation.
+    """
+
+    # ============================================================================
+    # STATIC METADATA (NEW)
+    # ============================================================================
+    PROVIDER_LABEL: ClassVar[str] = "HRTi"
+    SUPPORTED_AUTH_TYPES: ClassVar[List[str]] = ['user_credentials']
+    PROVIDER_LOGO: ClassVar[str] = HRTiDefaults.PROVIDER_LOGO
+    SUPPORTED_COUNTRIES: ClassVar[List[str]] = ['HR']  # Croatia only
+
     def __init__(self, country: str = 'HR', config: Optional[Dict] = None, proxy_config: Optional[ProxyConfig] = None):
         super().__init__(country)
 
@@ -20,7 +33,7 @@ class HRTiProvider(StreamingProvider):
         self.hrti_config = HRTiConfig(config)
         self.channels_cache = None
 
-        # ✅ Use abstraction for HTTP manager setup
+        # Setup HTTP manager using abstraction
         self.http_manager = self._setup_http_manager(
             provider_name='hrti',
             proxy_config=proxy_config,
@@ -50,11 +63,13 @@ class HRTiProvider(StreamingProvider):
 
     @property
     def provider_label(self) -> str:
-        return 'HRTi'
+        # Override to use static metadata with country context
+        return self.get_static_label(self.country)
 
     @property
     def provider_logo(self) -> str:
-        return self.hrti_config.logo
+        # Use instance config for backward compatibility
+        return self.hrti_config.logo or self.PROVIDER_LOGO
 
     @property
     def uses_dynamic_manifests(self) -> bool:
@@ -67,7 +82,7 @@ class HRTiProvider(StreamingProvider):
 
     @property
     def supported_auth_types(self) -> List[str]:
-        return ['user_credentials']
+        return self.SUPPORTED_AUTH_TYPES  # Use class attribute
 
     def _get_hrti_authenticated_headers(self) -> Dict[str, str]:
         """
@@ -76,7 +91,7 @@ class HRTiProvider(StreamingProvider):
         This is a provider-specific wrapper that uses the base class abstraction.
         """
         return self._build_provider_headers(
-            auth_type=AuthType.CLIENT,  # ← Now properly imported
+            auth_type=AuthType.CLIENT,
             token_key='authorization',  # HRTi uses lowercase
             provider_headers={
                 'deviceid': self.authenticator.get_device_id(),
@@ -93,7 +108,7 @@ class HRTiProvider(StreamingProvider):
         Fetch channels from HRTi API
         """
         try:
-            # ✅ Use provider-specific method
+            # Use provider-specific method
             headers = self._get_hrti_authenticated_headers()
 
             # Log the request for debugging
@@ -452,7 +467,7 @@ class HRTiProvider(StreamingProvider):
             logger.error(f"Traceback: {traceback.format_exc()}")
             return []
 
-    def get_epg_data(self, channel_id: str, **kwargs) -> Optional[Dict]:
+    def get_epg(self, channel_id: str, **kwargs) -> List[Dict]:
         """
         Get EPG data for a channel
         """
@@ -479,12 +494,22 @@ class HRTiProvider(StreamingProvider):
 
             epg_data = response.json()
             if 'Result' in epg_data:
-                return epg_data['Result']
-            return None
+                # Convert to standard EPG format
+                epg_entries = []
+                for entry in epg_data['Result']:
+                    epg_entries.append({
+                        'title': entry.get('Title', ''),
+                        'description': entry.get('Description', ''),
+                        'start': entry.get('StartTime', ''),
+                        'end': entry.get('EndTime', ''),
+                        'genre': entry.get('Genre', '')
+                    })
+                return epg_entries
+            return []
 
         except Exception as e:
             logger.error(f"Error getting EPG data for channel {channel_id}: {e}")
-            return None
+            return []
 
     def get_license_url(self, channel: StreamingChannel, **kwargs) -> Optional[str]:
         """
@@ -493,4 +518,41 @@ class HRTiProvider(StreamingProvider):
         drm_configs = self.get_drm(channel.channel_id, **kwargs)
         if drm_configs:
             return drm_configs[0].license.server_url
+        return None
+
+    # ============================================================================
+    # CATCHUP METHODS (Implementing abstract methods)
+    # ============================================================================
+
+    @property
+    def catchup_window(self) -> int:
+        """
+        Return the catchup window in HOURS for HRTi.
+
+        Note: HRTi doesn't officially support catchup for live channels,
+        but may have some VOD content available.
+        """
+        return 0  # No catchup support for live streams
+
+    def get_epg_xmltv(self, **kwargs) -> Optional[str]:
+        """
+        Get complete EPG data for HRTi in XMLTV format.
+
+        Returns:
+            XMLTV formatted string, or None if not available
+        """
+        # HRTi doesn't provide XMLTV format natively
+        return None
+
+    def get_dynamic_manifest_params(self, channel: StreamingChannel, **kwargs) -> Optional[str]:
+        """
+        Get dynamic manifest parameters for HRTi channels.
+
+        Args:
+            channel: StreamingChannel to get parameters for
+
+        Returns:
+            Parameters string or None
+        """
+        # HRTi requires session authorization which is handled in enrich_channel_data
         return None

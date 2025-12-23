@@ -1,75 +1,15 @@
-# streaming_providers/base/provider.py - Enhanced with Header Abstractions
+# streaming_providers/base/provider.py - Enhanced with Static Metadata
 """
-Streaming Provider Base Class
+Streaming Provider Base Class with Static Metadata Support
 
-Authentication System:
----------------------
-Providers implement authentication through three core components:
-
-1. CAPABILITIES (Declarative):
-   - supported_auth_types: List[str] - What auth methods the provider CAN use
-   - preferred_auth_type: str - Which method SHOULD be used by default
-
-2. STATE (Dynamic):
-   - get_current_auth_type(context) -> str - Which method IS currently active
-   - get_auth_status(context) -> AuthStatus - Complete authentication status
-
-3. LOGIC (Optional Overrides):
-   - _calculate_auth_state(context) -> Optional[AuthState] - Custom auth state logic
-   - _calculate_readiness(context) -> Optional[Tuple[bool, str]] - Custom readiness
-   - get_auth_details(context) -> Dict[str, Any] - Provider-specific details
-
-Auth Type Definitions:
-   - 'user_credentials': Username/password (Joyn, RTL+)
-   - 'client_credentials': Client ID/secret (Joyn fallback, some APIs)
-   - 'network_based': Fixed-line/network auth (Magenta2, cable providers)
-   - 'anonymous': No auth needed (ZDF, ARD)
-   - 'device_registration': Device-based auth (Smart TV apps)
-   - 'embedded_client': Built-in credentials
-
-Implementation Examples:
-----------------------
-# Simple provider (ZDF)
-class ZDFProvider(StreamingProvider):
-    @property
-    def supported_auth_types(self) -> List[str]:
-        return ['anonymous']  # Just one type
-
-# Multi-auth provider (Joyn)
-class JoynProvider(StreamingProvider):
-    @property
-    def supported_auth_types(self) -> List[str]:
-        return ['client_credentials', 'user_credentials']
-
-    @property
-    def preferred_auth_type(self) -> str:
-        return 'user_credentials'  # Prefer full access
-
-    def get_current_auth_type(self, context: AuthContext) -> str:
-        # Custom logic to detect current auth mode
-        token = context.get_token(self.provider_name, None, self.country)
-        return 'user_credentials' if token and token.get('auth_level') == 'user_authenticated' else 'client_credentials'
-
-# Network-based provider (Magenta2)
-class Magenta2Provider(StreamingProvider):
-    @property
-    def supported_auth_types(self) -> List[str]:
-        return ['network_based']
-
-    @property
-    def primary_token_scope(self) -> Optional[str]:
-        return 'yo_digital'  # Uses scoped tokens
-
-    def _calculate_readiness(self, context: AuthContext):
-        # Check multiple token scopes
-        yo_token = context.get_token(self.provider_name, 'yo_digital', self.country)
-        if yo_token and not context.session._is_token_expired(yo_token):
-            return True, "Has valid streaming token"
-        return False, "No valid tokens found"
+New Features:
+- Class attributes for static metadata (PROVIDER_LABEL, etc.)
+- Static methods to get metadata without instantiation
+- Backward compatible with existing @property methods
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Callable, Any
+from typing import Dict, List, Optional, Callable, Any, ClassVar
 from enum import Enum
 import json
 from datetime import datetime
@@ -97,7 +37,22 @@ class StreamingProvider(ABC):
     Abstract base class for streaming providers with centralized HTTP and auth management
     """
 
-    SUPPORTED_COUNTRIES: List[str] = []
+    # ============================================================================
+    # STATIC METADATA (NEW)
+    # ============================================================================
+
+    # Class attributes for static metadata (accessible without instantiation)
+    PROVIDER_LABEL: ClassVar[str] = ""
+    """Base provider label without country suffix (e.g., 'Joyn', 'RTL+')"""
+
+    SUPPORTED_AUTH_TYPES: ClassVar[List[str]] = []
+    """Authentication types supported by this provider"""
+
+    PROVIDER_LOGO: ClassVar[str] = ""
+    """URL to provider logo"""
+
+    SUPPORTED_COUNTRIES: ClassVar[List[str]] = []
+    """List of ISO country codes this provider supports (empty = single country)"""
 
     def __init__(self, country: str = 'DE'):
         self.country = country
@@ -105,6 +60,215 @@ class StreamingProvider(ABC):
         self._http_manager = None
         self._default_user_agent = 'StreamingProvider/1.0'
         self.authenticator = None  # Optional: set by concrete providers
+
+    # ============================================================================
+    # STATIC METHODS FOR METADATA EXTRACTION (NEW)
+    # ============================================================================
+
+    @classmethod
+    def get_static_label(cls, country: str = None) -> str:
+        """
+        Get provider label without instantiation.
+
+        Args:
+            country: Optional country code for country-specific labels
+
+        Returns:
+            Provider label string
+        """
+        base_label = cls.PROVIDER_LABEL or cls.__name__.replace('Provider', '')
+
+        if country:
+            # Format country code
+            country_upper = country.upper()
+
+            # Special handling for common cases
+            if country_upper == 'DE':
+                return f"{base_label} Germany"
+            elif country_upper == 'AT':
+                return f"{base_label} Austria"
+            elif country_upper == 'CH':
+                return f"{base_label} Switzerland"
+            else:
+                return f"{base_label} ({country_upper})"
+
+        return base_label
+
+    @classmethod
+    def get_static_auth_types(cls) -> List[str]:
+        """
+        Get supported authentication types without instantiation.
+
+        Returns:
+            List of supported auth type strings
+        """
+        return cls.SUPPORTED_AUTH_TYPES.copy()
+
+    @classmethod
+    def get_static_logo(cls) -> str:
+        """
+        Get provider logo URL without instantiation.
+
+        Returns:
+            Logo URL string
+        """
+        return cls.PROVIDER_LOGO
+
+    @classmethod
+    def get_static_supported_countries(cls) -> List[str]:
+        """
+        Get supported countries without instantiation.
+
+        Returns:
+            List of ISO country codes
+        """
+        return cls.SUPPORTED_COUNTRIES.copy()
+
+    @classmethod
+    def get_all_possible_instances(cls) -> List[Dict[str, Any]]:
+        """
+        Get metadata for all possible instances of this provider.
+
+        Returns:
+            List of instance metadata dictionaries
+        """
+        instances = []
+
+        if cls.supports_multiple_countries():
+            for country in cls.SUPPORTED_COUNTRIES:
+                instances.append({
+                    'plugin': cls.__name__.lower().replace('provider', ''),
+                    'country': country.upper(),
+                    'label': cls.get_static_label(country),
+                    'requires_country_suffix': True
+                })
+        else:
+            # Single-country provider
+            instances.append({
+                'plugin': cls.__name__.lower().replace('provider', ''),
+                'country': 'DE',  # Default country for single-country providers
+                'label': cls.get_static_label(),
+                'requires_country_suffix': False
+            })
+
+        return instances
+
+    # ============================================================================
+    # INSTANCE PROPERTIES (Backward Compatible)
+    # ============================================================================
+
+    @property
+    @abstractmethod
+    def provider_name(self) -> str:
+        """Return the provider name (e.g., 'joyn', 'zdf', 'ard')"""
+        pass
+
+    @property
+    def provider_label(self) -> str:
+        """Return the provider label (e.g., 'JOYN', 'ZDF', 'RTL+')"""
+        # Use static method with instance's country
+        return self.get_static_label(self.country)
+
+    @property
+    def provider_logo(self) -> str:
+        """Return the provider logo URL"""
+        return self.get_static_logo()
+
+    @property
+    def supported_auth_types(self) -> List[str]:
+        """List of authentication types this provider supports."""
+        return self.get_static_auth_types()
+
+    @property
+    @abstractmethod
+    def uses_dynamic_manifests(self) -> bool:
+        """Return True if provider uses truly dynamic manifests"""
+        pass
+
+    @property
+    @abstractmethod
+    def implements_epg(self) -> bool:
+        """
+        Indicates whether this provider has its own EPG implementation.
+        If False, the generic EPG manager will be used.
+
+        Override in subclass and return True if provider has native EPG.
+
+        Returns:
+            True if provider implements its own EPG, False to use generic EPG
+        """
+        pass
+
+    @abstractmethod
+    def get_channels(self, **kwargs) -> List[StreamingChannel]:
+        """Fetch channels from the provider"""
+        pass
+
+    @abstractmethod
+    def get_drm(self, channel_id: str, **kwargs) -> List[DRMConfig]:
+        """Get all DRM configurations for a channel by ID"""
+        return []
+
+    @property
+    def catchup_window(self) -> int:
+        """
+        Return the catchup window in HOURS for this provider.
+
+        Returns:
+            int: Number of hours of catchup available (0 = no catchup support)
+        """
+        return 0
+
+    @property
+    def supports_catchup(self) -> bool:
+        """
+        Check if provider supports catchup/timeshift functionality.
+
+        Returns:
+            bool: True if catchup is supported
+        """
+        return self.catchup_window > 0
+
+    def get_epg(self, channel_id: str,
+                start_time: Optional[datetime] = None,
+                end_time: Optional[datetime] = None,
+                **kwargs) -> List[Dict]:
+        """Get EPG data for a channel"""
+        return []
+
+    @staticmethod
+    def get_epg_xmltv(**kwargs) -> Optional[str]:
+        """Get complete EPG data for this provider in XMLTV format"""
+        return None
+
+    @abstractmethod
+    def enrich_channel_data(self, channel: StreamingChannel, **kwargs) -> Optional[StreamingChannel]:
+        """Enrich channel with additional data including manifest URL"""
+        return None
+
+    @abstractmethod
+    def get_manifest(self, channel_id: str, **kwargs) -> Optional[str]:
+        """Get manifest URL for a specific channel by ID"""
+        return None
+
+    def get_dynamic_manifest_params(self, channel: StreamingChannel, **kwargs) -> Optional[str]:
+        """Optional: Get dynamic manifest parameters for a channel"""
+        return None
+
+    def to_output_format(self, channels: List[StreamingChannel] = None) -> Dict:
+        """Convert channels to output format"""
+        if channels is None:
+            channels = self.channels
+
+        return {
+            'Provider': self.provider_name,
+            'Country': self.country,
+            'Channels': [channel.to_dict() for channel in channels]
+        }
+
+    def to_json(self, channels: List[StreamingChannel] = None, indent: int = 2) -> str:
+        """Convert to JSON string"""
+        return json.dumps(self.to_output_format(channels), indent=indent, ensure_ascii=False)
 
     # ============================================================================
     # HTTP MANAGER SETUP (Already Implemented)
@@ -212,7 +376,7 @@ class StreamingProvider(ABC):
 
         if 'user_agent' in manager_kwargs:
             ua_preview = manager_kwargs['user_agent'][:50] + '...' if len(manager_kwargs['user_agent']) > 50 else \
-            manager_kwargs['user_agent']
+                manager_kwargs['user_agent']
             info_parts.append(f"user-agent: {ua_preview}")
 
         if 'timeout' in manager_kwargs:
@@ -241,7 +405,7 @@ class StreamingProvider(ABC):
         return http_manager
 
     # ============================================================================
-    # AUTHENTICATION HEADER ABSTRACTIONS (NEW)
+    # AUTHENTICATION HEADER ABSTRACTIONS
     # ============================================================================
 
     def _get_base_headers(self,
@@ -447,120 +611,6 @@ class StreamingProvider(ABC):
             return None
 
     # ============================================================================
-    # ABSTRACT METHODS (Required by all providers)
-    # ============================================================================
-
-    @property
-    @abstractmethod
-    def provider_name(self) -> str:
-        """Return the provider name (e.g., 'joyn', 'zdf', 'ard')"""
-        pass
-
-    @property
-    @abstractmethod
-    def provider_label(self) -> str:
-        """Return the provider label (e.g., 'JOYN', 'ZDF', 'RTL+')"""
-        pass
-
-    @property
-    @abstractmethod
-    def provider_logo(self) -> str:
-        """Return the provider logo URL"""
-        pass
-
-    @property
-    @abstractmethod
-    def uses_dynamic_manifests(self) -> bool:
-        """Return True if provider uses truly dynamic manifests"""
-        pass
-
-    @property
-    @abstractmethod
-    def implements_epg(self) -> bool:
-        """
-        Indicates whether this provider has its own EPG implementation.
-        If False, the generic EPG manager will be used.
-
-        Override in subclass and return True if provider has native EPG.
-
-        Returns:
-            True if provider implements its own EPG, False to use generic EPG
-        """
-        pass
-
-    @abstractmethod
-    def get_channels(self, **kwargs) -> List[StreamingChannel]:
-        """Fetch channels from the provider"""
-        pass
-
-    @abstractmethod
-    def get_drm(self, channel_id: str, **kwargs) -> List[DRMConfig]:
-        """Get all DRM configurations for a channel by ID"""
-        return []
-
-    @property
-    def catchup_window(self) -> int:
-        """
-        Return the catchup window in HOURS for this provider.
-
-        Returns:
-            int: Number of hours of catchup available (0 = no catchup support)
-        """
-        return 0
-
-    @property
-    def supports_catchup(self) -> bool:
-        """
-        Check if provider supports catchup/timeshift functionality.
-
-        Returns:
-            bool: True if catchup is supported
-        """
-        return self.catchup_window > 0
-
-    def get_epg(self, channel_id: str,
-                start_time: Optional[datetime] = None,
-                end_time: Optional[datetime] = None,
-                **kwargs) -> List[Dict]:
-        """Get EPG data for a channel"""
-        return []
-
-    @staticmethod
-    def get_epg_xmltv(**kwargs) -> Optional[str]:
-        """Get complete EPG data for this provider in XMLTV format"""
-        return None
-
-    @abstractmethod
-    def enrich_channel_data(self, channel: StreamingChannel, **kwargs) -> Optional[StreamingChannel]:
-        """Enrich channel with additional data including manifest URL"""
-        return None
-
-    @abstractmethod
-    def get_manifest(self, channel_id: str, **kwargs) -> Optional[str]:
-        """Get manifest URL for a specific channel by ID"""
-        return None
-
-    def get_dynamic_manifest_params(self, channel: StreamingChannel, **kwargs) -> Optional[str]:
-        """Optional: Get dynamic manifest parameters for a channel"""
-        return None
-
-    def to_output_format(self, channels: List[StreamingChannel] = None) -> Dict:
-        """Convert channels to output format"""
-        if channels is None:
-            channels = self.channels
-
-        return {
-            'Provider': self.provider_name,
-            'Country': self.country,
-            'Channels': [channel.to_dict() for channel in channels]
-        }
-
-    def to_json(self, channels: List[StreamingChannel] = None, indent: int = 2) -> str:
-        """Convert to JSON string"""
-        return json.dumps(self.to_output_format(channels), indent=indent, ensure_ascii=False)
-
-
-    # ============================================================================
     # CATCHUP ABSTRACT METHODS
     # ============================================================================
 
@@ -762,7 +812,7 @@ class StreamingProvider(ABC):
             return f"{base_url}{separator}start={start_time}&end={end_time}"
 
     # ============================================================================
-    # SUBSCRIPTION METHODS (NEW)
+    # SUBSCRIPTION METHODS
     # ============================================================================
 
     def get_subscription_status(self, **kwargs) -> Optional[UserSubscription]:

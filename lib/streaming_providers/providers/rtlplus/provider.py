@@ -1,8 +1,8 @@
 # lib/streaming_providers/providers/rtlplus/provider.py
 import json
-import requests
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, ClassVar
 
+import requests
 from ...base.provider import StreamingProvider
 from ...base.models.streaming_channel import StreamingChannel
 from ...base.models import DRMConfig, LicenseConfig, DRMSystem
@@ -13,6 +13,9 @@ from ...base.models.proxy_models import ProxyConfig
 
 
 class RTLPlusProvider(StreamingProvider):
+    # Provider constants
+    PROVIDER_LOGO: ClassVar[str] = RTLPlusDefaults.RTLPLUS_LOGO
+
     def __init__(self, country: str = 'DE', config: Optional[Dict] = None,
                  proxy_config: Optional[ProxyConfig] = None):
         super().__init__(country)
@@ -58,7 +61,7 @@ class RTLPlusProvider(StreamingProvider):
 
     @property
     def provider_logo(self) -> str:
-        return self.rtl_config.logo
+        return self.PROVIDER_LOGO
 
     @property
     def uses_dynamic_manifests(self) -> bool:
@@ -73,7 +76,7 @@ class RTLPlusProvider(StreamingProvider):
     def supported_auth_types(self) -> List[str]:
         return ['user_credentials']
 
-        # ============================================================================
+    # ============================================================================
     # OPTION 1: Provider-specific method (RECOMMENDED - No signature conflict)
     # ============================================================================
     def _get_rtlplus_authenticated_headers(self) -> Dict[str, str]:
