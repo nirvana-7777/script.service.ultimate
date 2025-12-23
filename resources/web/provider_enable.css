@@ -1,0 +1,193 @@
+/* Provider Enable/Disable Styles */
+
+/* Toggle Switch */
+.provider-toggle {
+    position: relative;
+    display: inline-block;
+    width: 50px;
+    height: 26px;
+    margin-left: auto;
+}
+
+.provider-toggle input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.toggle-slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #ccc;
+    transition: 0.3s;
+    border-radius: 26px;
+}
+
+.toggle-slider:before {
+    position: absolute;
+    content: "";
+    height: 20px;
+    width: 20px;
+    left: 3px;
+    bottom: 3px;
+    background-color: white;
+    transition: 0.3s;
+    border-radius: 50%;
+}
+
+.provider-toggle input:checked + .toggle-slider {
+    background-color: var(--success-color);
+}
+
+.provider-toggle input:checked + .toggle-slider:before {
+    transform: translateX(24px);
+}
+
+.provider-toggle input:disabled + .toggle-slider {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.toggle-slider.loading {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+.toggle-slider.loading:after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 16px;
+    height: 16px;
+    border: 2px solid white;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+/* Disabled Provider Card */
+.provider-card.disabled {
+    opacity: 0.5;
+    background: #f5f5f5;
+    border-color: #ddd;
+    position: relative;
+}
+
+.provider-card.disabled::after {
+    content: "DISABLED";
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: var(--warning-color);
+    color: white;
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+
+.provider-card.disabled:hover {
+    transform: none;
+    border-color: #ddd;
+}
+
+.provider-card.disabled .provider-logo {
+    filter: grayscale(100%);
+    opacity: 0.6;
+}
+
+.provider-card.disabled .provider-info h3,
+.provider-card.disabled .provider-info {
+    color: var(--gray-color);
+}
+
+/* Hide forms and buttons when disabled */
+.provider-card.disabled .form-group,
+.provider-card.disabled .btn-group,
+.provider-card.disabled .no-credentials-required,
+.provider-card.disabled .status-indicator,
+.provider-card.disabled .token-expiration,
+.provider-card.disabled .auth-info {
+    display: none;
+}
+
+/* Filter Section */
+.filter-section {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    padding: 15px;
+    background: white;
+    border-radius: var(--border-radius);
+    box-shadow: var(--box-shadow);
+}
+
+.filter-section label {
+    font-weight: 600;
+    margin-right: 10px;
+    color: var(--dark-color);
+}
+
+.filter-select {
+    padding: 8px 35px 8px 12px;
+    border: 2px solid #dee2e6;
+    border-radius: var(--border-radius);
+    font-size: 0.95rem;
+    background: white;
+    cursor: pointer;
+    transition: var(--transition);
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23333' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+}
+
+.filter-select:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(67, 97, 238, 0.2);
+}
+
+.filter-info {
+    color: var(--gray-color);
+    font-size: 0.9rem;
+}
+
+.filter-info strong {
+    color: var(--primary-color);
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .filter-section {
+        flex-direction: column;
+        gap: 10px;
+        align-items: flex-start;
+    }
+
+    .filter-select {
+        width: 100%;
+    }
+
+    .provider-toggle {
+        width: 44px;
+        height: 24px;
+    }
+
+    .toggle-slider:before {
+        height: 18px;
+        width: 18px;
+    }
+
+    .provider-toggle input:checked + .toggle-slider:before {
+        transform: translateX(20px);
+    }
+}
