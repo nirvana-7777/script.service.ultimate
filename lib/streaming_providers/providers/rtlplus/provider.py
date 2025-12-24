@@ -14,6 +14,7 @@ from ...base.models.proxy_models import ProxyConfig
 
 class RTLPlusProvider(StreamingProvider):
     # Provider constants
+    PROVIDER_LABEL: ClassVar[str] = "RTL+"
     PROVIDER_LOGO: ClassVar[str] = RTLPlusDefaults.RTLPLUS_LOGO
 
     def __init__(self, country: str = 'DE', config: Optional[Dict] = None,

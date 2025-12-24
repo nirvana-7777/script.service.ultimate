@@ -1,6 +1,6 @@
 # streaming_providers/providers/magenta2/provider.py
 # -*- coding: utf-8 -*-
-from typing import Dict, Optional, List, Any, Tuple
+from typing import Dict, Optional, List, Any, Tuple, ClassVar
 import json
 import base64
 import time
@@ -41,6 +41,8 @@ from .constants import (
 
 
 class Magenta2Provider(StreamingProvider):
+    PROVIDER_LABEL: ClassVar[str] = "Magenta TV 2.0"
+    PROVIDER_LOGO: ClassVar[str] = MAGENTA2_LOGO
     """
     Magenta2 streaming provider implementation with enhanced dynamic discovery
     """
@@ -391,7 +393,7 @@ class Magenta2Provider(StreamingProvider):
 
     @property
     def provider_logo(self) -> str:
-        return MAGENTA2_LOGO
+        return self.PROVIDER_LOGO
 
     @property
     def uses_dynamic_manifests(self) -> bool:

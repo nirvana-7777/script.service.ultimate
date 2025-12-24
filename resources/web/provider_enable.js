@@ -3,33 +3,29 @@ class ProviderEnableManager {
     constructor() {
         this.enabledStatus = {};
         this.currentFilter = 'all'; // 'all', 'enabled', 'disabled'
+        this.allProviders = [];
+        this.providers = [];
     }
 
-    async init(providers) {
-        this.providers = providers;
-        await this.loadEnabledStatus();
-    }
+    async init(allProvidersMetadata) {
+        // allProvidersMetadata now comes from /api/providers response's "all_providers" field
+        // It contains ALL providers (enabled and disabled) with metadata
+        this.allProviders = allProvidersMetadata || [];
 
-    async loadEnabledStatus() {
-        try {
-            const response = await fetch(`${API_BASE}/api/providers/enabled`);
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
-            }
-            const data = await response.json();
-            this.enabledStatus = data.providers || {};
-            console.log('Loaded enabled status:', this.enabledStatus);
-        } catch (error) {
-            console.error('Error loading enabled status:', error);
-            // Initialize with defaults (all enabled)
-            this.providers.forEach(p => {
-                this.enabledStatus[p.name] = {
-                    enabled: true,
-                    source: 'default',
-                    can_modify: true
-                };
-            });
-        }
+        // Extract just the enabled providers for backward compatibility
+        this.providers = this.allProviders.filter(p => p.enabled && p.instance_ready);
+
+        // Build enabledStatus from metadata (no separate API call needed)
+        this.enabledStatus = {};
+        this.allProviders.forEach(provider => {
+            this.enabledStatus[provider.name] = {
+                enabled: provider.enabled,
+                source: 'config', // Could be enhanced to detect source from metadata
+                can_modify: true  // All providers can be toggled via POST
+            };
+        });
+
+        console.log('Loaded enabled status from metadata:', this.enabledStatus);
     }
 
     isEnabled(providerName) {
@@ -72,6 +68,15 @@ class ProviderEnableManager {
                 source: result.source || 'file',
                 can_modify: true
             };
+
+            // Also update in allProviders array
+            const providerIndex = this.allProviders.findIndex(p => p.name === providerName);
+            if (providerIndex !== -1) {
+                this.allProviders[providerIndex].enabled = newState;
+            }
+
+            // Rebuild enabled providers list
+            this.providers = this.allProviders.filter(p => p.enabled && p.instance_ready);
 
             return true;
         } catch (error) {
@@ -152,10 +157,16 @@ class ProviderEnableManager {
     }
 
     getFilteredProviders(tabId) {
-        if (!this.providers) return [];
+        if (!this.allProviders) return [];
 
-        return this.providers.filter(provider =>
-            this.shouldShowInTab(provider.name, tabId)
+        // In credentials tab, show all providers (enabled and disabled)
+        if (tabId === 'credentials') {
+            return this.allProviders;
+        }
+
+        // In other tabs (proxy, epg-mapping), only show enabled providers
+        return this.allProviders.filter(provider =>
+            provider.enabled && provider.instance_ready
         );
     }
 }

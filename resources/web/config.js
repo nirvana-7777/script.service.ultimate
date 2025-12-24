@@ -201,11 +201,14 @@ async function loadProviders() {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
         const data = await response.json();
-        providers = data.providers;
+        providers = data.providers; // Enabled providers with full details
 
-        // Initialize enable manager
+        // NEW: Store all_providers metadata for enable/disable functionality
+        window.allProvidersMetadata = data.all_providers || [];
+
+        // Initialize enable manager with all_providers metadata
         if (window.providerEnableManager) {
-            await window.providerEnableManager.init(providers);
+            await window.providerEnableManager.init(data.all_providers || []);
         }
 
         // Load auth status for each provider
