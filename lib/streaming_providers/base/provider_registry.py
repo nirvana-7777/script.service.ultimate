@@ -21,25 +21,37 @@ class ProviderMetadata:
         """Extract static metadata from provider class without instantiation"""
         self.plugin_name = self.plugin_class.__name__.lower().replace('provider', '')
 
-        if self.plugin_class.supports_multiple_countries():
-            self.name = f"{self.plugin_name}_{self.country}"
-            # For multi-country providers, include country in label
-            self.label = self.plugin_class.get_static_label(self.country)
-        else:
-            self.name = self.plugin_name  # e.g., "hrti" (no country suffix)
-            # For single-country providers, don't include country in label
-            self.label = self.plugin_class.get_static_label()  # Call WITHOUT country!
+        # Check if provider supports multiple countries
+        supports_multiple = self.plugin_class.supports_multiple_countries()
 
+        if supports_multiple:
+            # Multi-country provider: include country in name
+            self.name = f"{self.plugin_name}_{self.country}"
+            self.is_multi_country = True
+        else:
+            # Single-country provider
+            self.name = self.plugin_name
+
+            # Check if provider has an explicit single country
+            supported_countries = self.plugin_class.get_static_supported_countries()
+            if len(supported_countries) == 1:
+                # Provider has exactly one supported country (e.g., HRTi with ["HR"])
+                # Use that country instead of the passed-in country
+                self.country = supported_countries[0].upper()
+                self.is_multi_country = False
+            else:
+                # True single-country or country-agnostic (empty list)
+                self.is_multi_country = False
+
+        # Rest of the method remains the same...
+        self.label = self.plugin_class.get_static_label(self.country)
         self.supported_auth_types = self.plugin_class.get_static_auth_types()
         self.logo = self.plugin_class.get_static_logo()
-
         self.supported_countries = self.plugin_class.get_static_supported_countries()
-
         self.requires_credentials = any(
             auth_type in ['user_credentials', 'client_credentials']
             for auth_type in self.supported_auth_types
         )
-        self.is_multi_country = len(self.supported_countries) > 0
 
     def create_instance(self) -> Optional[StreamingProvider]:
         """Lazily create provider instance if enabled"""
