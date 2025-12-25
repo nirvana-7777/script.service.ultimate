@@ -105,9 +105,12 @@ class StreamingProvider(ABC):
         return cls.SUPPORTED_AUTH_TYPES.copy()
 
     @classmethod
-    def get_static_logo(cls) -> str:
+    def get_static_logo(cls, country: str = None) -> str:
         """
         Get provider logo URL without instantiation.
+
+        Args:
+            country: Optional country code for country-specific logos
 
         Returns:
             Logo URL string
