@@ -28,11 +28,11 @@ class ProviderMetadata:
         else:
             self.name = self.plugin_name  # e.g., "hrti" (no country suffix)
             # For single-country providers, don't include country in label
-            self.label = self.plugin_class.get_static_label()  # ← Call WITHOUT country!
+            self.label = self.plugin_class.get_static_label()  # Call WITHOUT country!
 
-        self.label = self.plugin_class.get_static_label(self.country)
         self.supported_auth_types = self.plugin_class.get_static_auth_types()
         self.logo = self.plugin_class.get_static_logo()
+
         self.supported_countries = self.plugin_class.get_static_supported_countries()
 
         self.requires_credentials = any(
