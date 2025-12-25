@@ -482,3 +482,13 @@ class MagentaProvider(StreamingProvider):
     def get_supported_countries(cls) -> List[str]:
         """Get list of supported countries"""
         return cls.SUPPORTED_COUNTRIES.copy()
+
+    @classmethod
+    def get_static_label(cls, country: str = None) -> str:
+        """Override to provide country-specific labels including Max TV for Croatia"""
+        if country and country.upper() == 'HR':
+            return "Max TV (HR)"
+        elif country:
+            return f"Magenta TV ({country.upper()})"
+        else:
+            return "Magenta TV"
