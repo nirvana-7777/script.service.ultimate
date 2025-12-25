@@ -484,6 +484,20 @@ class MagentaEUProvider(StreamingProvider):
         return cls.SUPPORTED_COUNTRIES.copy()
 
     @classmethod
+    def get_static_logo(cls, country: str = None) -> str:
+        """Static version for metadata extraction."""
+        if country:
+            country_lower = country.lower()
+            if country_lower == 'at':
+                return cls.PROVIDER_LOGO_AT
+            elif country_lower == 'hr':
+                return cls.PROVIDER_LOGO_HR
+            elif country_lower == 'pl':
+                return cls.PROVIDER_LOGO_PL
+        # Return HR logo as default
+        return cls.PROVIDER_LOGO_HR
+
+    @classmethod
     def get_static_label(cls, country: str = None) -> str:
         """Override to provide country-specific labels including Max TV for Croatia"""
         if country and country.upper() == 'HR':
