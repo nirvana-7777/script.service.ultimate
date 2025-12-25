@@ -39,6 +39,8 @@ class MagentaEUProvider(StreamingProvider):
     PROVIDER_LOGO_PL: ClassVar[str] = MAGENTA_TV_PL_LOGO
     PROVIDER_LOGO_HR: ClassVar[str] = MAX_TV_LOGO
 
+    PROVIDER_LOGO: ClassVar[str] = ""
+
     SUPPORTED_COUNTRIES = SUPPORTED_COUNTRIES
 
     def __init__(self, country: str = DEFAULT_COUNTRY,
@@ -107,17 +109,11 @@ class MagentaEUProvider(StreamingProvider):
         else:
             return f'Magenta TV ({self.country.upper()})'
 
+    # Also update the instance property for consistency
     @property
     def provider_logo(self) -> str:
-        country_lower = self.country.lower()
-        if country_lower == 'at':
-            return self.PROVIDER_LOGO_AT
-        elif country_lower == 'hr':
-            return self.PROVIDER_LOGO_HR
-        elif country_lower == 'pl':
-            return self.PROVIDER_LOGO_PL
-        else:
-            return ''
+        """Instance property that returns country-specific logo."""
+        return self.get_static_logo(self.country)
 
     @property
     def uses_dynamic_manifests(self) -> bool:
@@ -485,7 +481,16 @@ class MagentaEUProvider(StreamingProvider):
 
     @classmethod
     def get_static_logo(cls, country: str = None) -> str:
-        """Static version for metadata extraction."""
+        """
+        Override to provide country-specific logos.
+
+        Args:
+            country: Optional country code to get specific logo
+
+        Returns:
+            Logo URL for the specified country, or default if not available
+        """
+        # If country is provided, return country-specific logo
         if country:
             country_lower = country.lower()
             if country_lower == 'at':
@@ -494,8 +499,15 @@ class MagentaEUProvider(StreamingProvider):
                 return cls.PROVIDER_LOGO_HR
             elif country_lower == 'pl':
                 return cls.PROVIDER_LOGO_PL
-        # Return HR logo as default
-        return cls.PROVIDER_LOGO_HR
+            elif country_lower == 'hu':
+                # Hungary - use AT logo as fallback or add specific one
+                return cls.PROVIDER_LOGO_AT or cls.PROVIDER_LOGO_HR
+            elif country_lower == 'me':
+                # Montenegro - use HR logo as fallback or add specific one
+                return cls.PROVIDER_LOGO_HR
+
+        # No country specified - return a sensible default
+        return cls.PROVIDER_LOGO_HR  # or cls.PROVIDER_LOGO_AT
 
     @classmethod
     def get_static_label(cls, country: str = None) -> str:
