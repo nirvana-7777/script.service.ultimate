@@ -247,7 +247,10 @@ async function loadAuthStatus() {
 
 // Render credentials forms
 async function renderCredentialsForms() {
-    if (providers.length === 0) {
+    // Use all_providers metadata instead of just enabled providers
+    const allProviders = window.allProvidersMetadata || [];
+
+    if (allProviders.length === 0) {
         credentialsContainer.innerHTML = `
             <div class="empty-state">
                 <i class="fas fa-tv"></i>
@@ -264,16 +267,34 @@ async function renderCredentialsForms() {
     }
 
     // Load credentials for all providers in parallel
-    const credentialsPromises = providers.map(async (provider) => {
+    const credentialsPromises = allProviders.map(async (providerMetadata) => {
+        const provider_name = providerMetadata.name;
+
+        // Get full provider details from the enabled providers array if available
+        const provider = providers.find(p => p.name === provider_name) || {
+            name: provider_name,
+            label: providerMetadata.label,
+            logo: providerMetadata.logo,
+            country: providerMetadata.country,
+            auth: providerMetadata.auth || {}
+        };
+
         try {
-            // Try to fetch existing credentials
-            const credsResponse = await fetch(`${API_BASE}/api/providers/${provider.name}/credentials`);
+            // Only try to fetch credentials for enabled providers with full details
             let existingCreds = null;
 
-            if (credsResponse.ok) {
-                const credsData = await credsResponse.json();
-                if (credsData.has_credentials) {
-                    existingCreds = credsData;
+            // Only fetch credentials if provider is enabled and instance_ready
+            if (providerMetadata.enabled && providerMetadata.instance_ready) {
+                try {
+                    const credsResponse = await fetch(`${API_BASE}/api/providers/${provider_name}/credentials`);
+                    if (credsResponse.ok) {
+                        const credsData = await credsResponse.json();
+                        if (credsData.has_credentials) {
+                            existingCreds = credsData;
+                        }
+                    }
+                } catch (credErr) {
+                    console.debug(`Could not fetch credentials for ${provider_name}:`, credErr);
                 }
             }
 
@@ -288,15 +309,15 @@ async function renderCredentialsForms() {
             const usesEmbeddedClient = auth.uses_embedded_client || false;
             const usesDeviceRegistration = auth.uses_device_registration || false;
 
-            // Get current auth status
-            const status = authStatus[provider.name] || {};
+            // Get current auth status (only for enabled providers)
+            const status = (providerMetadata.enabled && providerMetadata.instance_ready)
+                ? (authStatus[provider_name] || {})
+                : {};
 
-            // Get enable/disable status
-            const isEnabled = window.providerEnableManager
-                ? window.providerEnableManager.isEnabled(provider.name)
-                : true;
+            // Get enable/disable status from metadata
+            const isEnabled = providerMetadata.enabled && providerMetadata.instance_ready;
             const canModify = window.providerEnableManager
-                ? window.providerEnableManager.canModify(provider.name)
+                ? window.providerEnableManager.canModify(provider_name)
                 : true;
 
             // Determine provider card class
@@ -310,7 +331,7 @@ async function renderCredentialsForms() {
 
             // Create toggle switch
             const toggleSwitch = window.createToggleSwitch
-                ? window.createToggleSwitch(provider.name, isEnabled, canModify)
+                ? window.createToggleSwitch(provider_name, isEnabled, canModify)
                 : '';
 
             // Create form content based on auth type
@@ -320,11 +341,11 @@ async function renderCredentialsForms() {
                 // User credentials form
                 formContent = `
                 <div class="form-group">
-                    <label for="username-${provider.name}">
+                    <label for="username-${provider_name}">
                         <i class="fas fa-user"></i> Username/Email
                     </label>
                     <input type="text"
-                           id="username-${provider.name}"
+                           id="username-${provider_name}"
                            class="form-control"
                            placeholder="user@example.com"
                            value="${existingCreds?.username_masked || ''}"
@@ -337,11 +358,11 @@ async function renderCredentialsForms() {
                 </div>
 
                 <div class="form-group">
-                    <label for="password-${provider.name}">
+                    <label for="password-${provider_name}">
                         <i class="fas fa-lock"></i> ${existingCreds ? 'New Password (leave blank to keep current)' : 'Password'}
                     </label>
                     <input type="password"
-                           id="password-${provider.name}"
+                           id="password-${provider_name}"
                            class="form-control"
                            placeholder="${existingCreds ? '•••••••••' : '•••••••••'}"
                            value="">
@@ -390,15 +411,15 @@ async function renderCredentialsForms() {
             if (isEnabled && needsUserCredentials) {
                 buttonsHTML = `
                 <div class="btn-group">
-                    <button onclick="saveCredentials('${provider.name}')" class="btn btn-primary">
+                    <button onclick="saveCredentials('${provider_name}')" class="btn btn-primary">
                         <i class="fas fa-save"></i> ${existingCreds ? 'Update' : 'Save'}
                     </button>
                     ${existingCreds ? `
-                    <button onclick="deleteCredentials('${provider.name}')" class="btn btn-danger">
+                    <button onclick="deleteCredentials('${provider_name}')" class="btn btn-danger">
                         <i class="fas fa-trash"></i> Delete
                     </button>
                     ` : ''}
-                    <button onclick="testAuth('${provider.name}')" class="btn btn-success">
+                    <button onclick="testAuth('${provider_name}')" class="btn btn-success">
                         <i class="fas fa-check"></i> Test
                     </button>
                 </div>
@@ -407,7 +428,7 @@ async function renderCredentialsForms() {
                 // For non-user-credential providers, only show test button
                 buttonsHTML = `
                 <div class="btn-group">
-                    <button onclick="testAuth('${provider.name}')" class="btn btn-success">
+                    <button onclick="testAuth('${provider_name}')" class="btn btn-success">
                         <i class="fas fa-check"></i> Test Connection
                     </button>
                 </div>
@@ -415,22 +436,26 @@ async function renderCredentialsForms() {
             }
 
             return `
-            <div class="${providerCardClass}" data-provider="${provider.name}">
+            <div class="${providerCardClass}" data-provider="${provider_name}">
                 <div class="provider-header">
                     ${provider.logo ? `<img src="${provider.logo}" alt="${provider.label}" class="provider-logo">` : ''}
                     <div class="provider-info">
                         <h3>${provider.label}</h3>
-                        <div class="provider-id">${provider.name} • ${provider.country}</div>
+                        <div class="provider-id">${provider_name} • ${provider.country}</div>
                         ${isEnabled ? `
                         <div class="auth-info">
                             <small><i class="fas fa-fingerprint"></i> ${getAuthTypeDescription(status)}</small>
                         </div>
-                        <div id="status-${provider.name}" class="status-indicator">
+                        <div id="status-${provider_name}" class="status-indicator">
                             ${getStatusIcon(status)}
                             ${getStatusText(status)}
                         </div>
                         ${formatTokenExpiration(status)}
-                        ` : ''}
+                        ` : `
+                        <div class="status-indicator status-warning">
+                            <i class="fas fa-power-off"></i> Provider Disabled
+                        </div>
+                        `}
                     </div>
                     ${toggleSwitch}
                 </div>
@@ -440,7 +465,7 @@ async function renderCredentialsForms() {
             </div>
             `;
         } catch (error) {
-            console.error(`Error loading credentials for ${provider.name}:`, error);
+            console.error(`Error loading credentials for ${provider_name}:`, error);
             return ''; // Return empty string on error
         }
     });
