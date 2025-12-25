@@ -33,7 +33,7 @@ from .constants import (
 )
 
 
-class MagentaProvider(StreamingProvider):
+class MagentaEUProvider(StreamingProvider):
     # Provider constants with country-specific logos
     PROVIDER_LOGO_AT: ClassVar[str] = MAGENTA_TV_AT_LOGO
     PROVIDER_LOGO_PL: ClassVar[str] = MAGENTA_TV_PL_LOGO

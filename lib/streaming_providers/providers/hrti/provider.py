@@ -22,9 +22,8 @@ class HRTiProvider(StreamingProvider):
     # STATIC METADATA (NEW)
     # ============================================================================
     PROVIDER_LABEL: ClassVar[str] = "HRTi"
-    SUPPORTED_AUTH_TYPES: ClassVar[List[str]] = ['user_credentials']
+    SUPPORTED_AUTH_TYPES: ClassVar[List[str]] = ['client_credentials', 'user_credentials']
     PROVIDER_LOGO: ClassVar[str] = HRTiDefaults.PROVIDER_LOGO
-    SUPPORTED_COUNTRIES: ClassVar[List[str]] = ['HR']  # Croatia only
 
     def __init__(self, country: str = 'HR', config: Optional[Dict] = None, proxy_config: Optional[ProxyConfig] = None):
         super().__init__(country)

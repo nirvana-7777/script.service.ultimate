@@ -16,6 +16,7 @@ class RTLPlusProvider(StreamingProvider):
     # Provider constants
     PROVIDER_LABEL: ClassVar[str] = "RTL+"
     PROVIDER_LOGO: ClassVar[str] = RTLPlusDefaults.RTLPLUS_LOGO
+    SUPPORTED_AUTH_TYPES: ClassVar[List[str]] = ['client_credentials', 'user_credentials']
 
     def __init__(self, country: str = 'DE', config: Optional[Dict] = None,
                  proxy_config: Optional[ProxyConfig] = None):
