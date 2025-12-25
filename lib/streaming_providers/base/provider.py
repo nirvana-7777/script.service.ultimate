@@ -931,7 +931,7 @@ class StreamingProvider(ABC):
         Returns:
             True if provider supports country-specific instances
         """
-        return len(cls.SUPPORTED_COUNTRIES) > 0
+        return len(cls.SUPPORTED_COUNTRIES) > 1
 
     @classmethod
     def validate_country(cls, country: str) -> bool:

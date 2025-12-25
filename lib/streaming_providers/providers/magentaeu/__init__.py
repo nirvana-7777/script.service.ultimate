@@ -1,5 +1,5 @@
 # streaming_providers/providers/magenta_eu/__init__.py
-from .provider import MagentaProvider
+from .provider import MagentaEUProvider
 from .auth import MagentaAuthenticator, MagentaAuthToken
 from .constants import (
     SUPPORTED_COUNTRIES,
@@ -9,7 +9,7 @@ from .constants import (
 )
 
 __all__ = [
-    'MagentaProvider',
+    'MagentaEUProvider',
     'MagentaAuthenticator',
     'MagentaAuthToken',
     'SUPPORTED_COUNTRIES',
