@@ -245,17 +245,21 @@ async function handleProviderToggle(providerName, checkbox) {
     const success = await window.providerEnableManager.toggleProvider(providerName, newState);
 
     if (success) {
-        // Update card appearance
+        // If enabling a provider, reload providers data to get full auth details
         if (newState) {
-            card.classList.remove('disabled');
-            showAlert('success', `${providerName} enabled`);
+            showAlert('success', `${providerName} enabled - reloading provider details...`);
+
+            // Reload providers to get complete auth information
+            if (typeof loadProviders === 'function') {
+                await loadProviders();
+            }
         } else {
             card.classList.add('disabled');
             showAlert('success', `${providerName} disabled`);
-        }
 
-        // Update filter info
-        window.providerEnableManager.applyFilter();
+            // Just update filter info for disabled
+            window.providerEnableManager.applyFilter();
+        }
     } else {
         // Revert checkbox on failure
         checkbox.checked = !newState;

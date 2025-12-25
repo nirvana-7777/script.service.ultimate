@@ -984,3 +984,4 @@ async function clearAllConfigurations() {
 window.saveCredentials = saveCredentials;
 window.deleteCredentials = deleteCredentials;
 window.testAuth = testAuth;
+window.loadProviders = loadProviders; // Export for provider toggle reload

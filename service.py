@@ -2036,43 +2036,6 @@ class UltimateService:
                 response.status = 500
                 return {'error': f'Internal server error: {str(api_err)}'}
 
-        @self.app.route('/api/providers/enabled', method='GET')
-        def get_all_enabled_status():
-            """Get enabled status for all providers"""
-            try:
-                manager = self.manager  # ProviderManager
-                enable_manager = ProviderEnableManager()  # Our new class
-
-                all_providers = manager.list_providers()
-                result = {}
-
-                for provider in all_providers:
-                    # Get current status (following precedence)
-                    status = enable_manager.is_provider_enabled(provider)
-
-                    # Get source information
-                    source = enable_manager.get_enabled_source(provider)
-
-                    # FIX: Convert enum to string value for JSON serialization
-                    source_value = source.value if hasattr(source, 'value') else str(source)
-
-                    result[provider] = {
-                        'enabled': status,
-                        'source': source_value,  # Now a string, not an enum
-                        'can_modify': source != 'kodi'  # Can't modify if set in Kodi
-                    }
-
-                return {
-                    'success': True,
-                    'providers': result,
-                    'count': len(result)
-                }
-
-            except Exception as e:
-                logger.error(f"Error getting enabled status: {e}")
-                response.status = 500
-                return {'error': str(e)}
-
         @self.app.route('/api/providers/<provider>/enabled', method='GET')
         def get_provider_enabled(provider):
             """Get enabled status for specific provider"""
