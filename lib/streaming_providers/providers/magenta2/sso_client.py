@@ -1,13 +1,9 @@
 # streaming_providers/providers/magenta2/sso_client.py
-from typing import Dict, Optional, Any
+from typing import Any, Dict, Optional
 
 from ...base.network import HTTPManager
 from ...base.utils.logger import logger
-from .constants import (
-    SSO_URL,
-    SSO_USER_AGENT,
-    DEFAULT_REQUEST_TIMEOUT
-)
+from .constants import DEFAULT_REQUEST_TIMEOUT, SSO_URL, SSO_USER_AGENT
 
 
 class SsoClient:
@@ -33,15 +29,15 @@ class SsoClient:
 
             response = self.http_manager.get(
                 url,
-                operation='sso_login',
+                operation="sso_login",
                 headers=headers,
-                timeout=DEFAULT_REQUEST_TIMEOUT
+                timeout=DEFAULT_REQUEST_TIMEOUT,
             )
             response.raise_for_status()
 
             data = response.json()
 
-            login_redirect_url = data.get('loginRedirectUrl')
+            login_redirect_url = data.get("loginRedirectUrl")
             if not login_redirect_url:
                 raise Exception("No loginRedirectUrl in SSO response")
 
@@ -71,50 +67,45 @@ class SsoClient:
                 # Authentication with authorization code
                 body = {
                     "checkRefreshToken": True,
-                    "returnCode": {
-                        "code": code,
-                        "state": state
-                    }
+                    "returnCode": {"code": code, "state": state},
                 }
                 logger.debug(f"SSO auth with code: {code[:8]}..., state: {state}")
             else:
                 # Authentication with refresh token only
-                body = {
-                    "checkRefreshToken": True
-                }
+                body = {"checkRefreshToken": True}
                 logger.debug("SSO auth with refresh token only")
 
             response = self.http_manager.post(
                 url,
-                operation='sso_authenticate',
+                operation="sso_authenticate",
                 headers=headers,
                 json_data=body,
-                timeout=DEFAULT_REQUEST_TIMEOUT
+                timeout=DEFAULT_REQUEST_TIMEOUT,
             )
             response.raise_for_status()
 
             data = response.json()
 
             # Check for userInfo in response
-            if 'userInfo' not in data:
+            if "userInfo" not in data:
                 raise Exception("No userInfo in SSO authentication response")
 
-            user_info = data['userInfo']
+            user_info = data["userInfo"]
 
             # Extract required fields with fallbacks
             result = {
-                'userId': user_info.get('userId', ''),
-                'accountId': user_info.get('accountId', ''),
-                'displayName': user_info.get('displayName', ''),
-                'personaToken': user_info.get('personaToken', ''),
-                'raw_response': data
+                "userId": user_info.get("userId", ""),
+                "accountId": user_info.get("accountId", ""),
+                "displayName": user_info.get("displayName", ""),
+                "personaToken": user_info.get("personaToken", ""),
+                "raw_response": data,
             }
 
             # Validate required fields
-            if not result['userId'] or not result['accountId']:
+            if not result["userId"] or not result["accountId"]:
                 logger.warning("SSO authentication missing required user identifiers")
 
-            if not result['personaToken']:
+            if not result["personaToken"]:
                 logger.warning("SSO authentication did not return personaToken")
 
             logger.info(
@@ -151,15 +142,16 @@ class SsoClient:
 
             # Could add more sophisticated validation here
             # For now, just check if it looks like a JWT or base64 token
-            parts = persona_token.split('.')
+            parts = persona_token.split(".")
             if len(parts) == 3:
                 # Looks like a JWT
                 return True
             else:
                 # Might be base64 encoded
                 import base64
+
                 try:
-                    decoded = base64.b64decode(persona_token + '==')
+                    decoded = base64.b64decode(persona_token + "==")
                     return len(decoded) > 0
                 except:
                     return False
@@ -179,9 +171,9 @@ class SsoClient:
 
             response = self.http_manager.get(
                 url,
-                operation='sso_profile',
+                operation="sso_profile",
                 headers=headers,
-                timeout=DEFAULT_REQUEST_TIMEOUT
+                timeout=DEFAULT_REQUEST_TIMEOUT,
             )
             response.raise_for_status()
 
@@ -194,26 +186,26 @@ class SsoClient:
     def _get_sso_headers(self) -> Dict[str, str]:
         """Get headers for SSO requests matching C++ implementation"""
         headers = {
-            'User-Agent': SSO_USER_AGENT,
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-            'origin': 'https://web2.magentatv.de',
-            'referer': 'https://web2.magentatv.de/'
+            "User-Agent": SSO_USER_AGENT,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "origin": "https://web2.magentatv.de",
+            "referer": "https://web2.magentatv.de/",
         }
 
         # Add session and device headers if available
         if self.session_id:
-            headers['session-id'] = self.session_id
+            headers["session-id"] = self.session_id
         if self.device_id:
-            headers['device-id'] = self.device_id
+            headers["device-id"] = self.device_id
 
         return headers
 
     def debug_sso_state(self) -> Dict[str, Any]:
         """Debug method to check SSO client state"""
         return {
-            'session_id': self.session_id,
-            'device_id': self.device_id,
-            'sso_url': SSO_URL,
-            'headers_configured': bool(self.session_id and self.device_id)
+            "session_id": self.session_id,
+            "device_id": self.device_id,
+            "sso_url": SSO_URL,
+            "headers_configured": bool(self.session_id and self.device_id),
         }

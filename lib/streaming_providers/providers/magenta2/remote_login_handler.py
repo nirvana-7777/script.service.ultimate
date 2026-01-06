@@ -5,25 +5,24 @@ Implements QR code-based authentication flow as fallback when line auth fails
 
 This handler contains provider-specific logic for MagentaTV.
 """
+
 import time
-from typing import Dict, Optional, Any
 from dataclasses import dataclass
-from urllib.parse import urlparse, parse_qs, unquote
+from typing import Any, Dict, Optional
+from urllib.parse import parse_qs, unquote, urlparse
 
 from ...base.network import HTTPManager
+from ...base.ui import (NotificationFactory, NotificationInterface,
+                        NotificationResult)
 from ...base.utils.logger import logger
-from ...base.ui import NotificationFactory, NotificationInterface, NotificationResult
-from .constants import (
-    MAGENTA2_PLATFORMS,
-    DEFAULT_PLATFORM,
-    DEFAULT_REQUEST_TIMEOUT,
-    GRANT_TYPES,
-)
+from .constants import (DEFAULT_PLATFORM, DEFAULT_REQUEST_TIMEOUT, GRANT_TYPES,
+                        MAGENTA2_PLATFORMS)
 
 
 @dataclass
 class RemoteLoginSession:
     """Remote login session data"""
+
     initial_login_code: str
     auth_req_id: str
     auth_req_sec: str
@@ -45,10 +44,15 @@ class RemoteLoginHandler:
     - Coordinate with notification system (generic)
     """
 
-    def __init__(self, http_manager: HTTPManager, sam3_client_id: str,
-                 backchannel_start_url: str, token_endpoint: str,
-                 qr_code_url_template: str,
-                 notifier: Optional[NotificationInterface] = None):
+    def __init__(
+        self,
+        http_manager: HTTPManager,
+        sam3_client_id: str,
+        backchannel_start_url: str,
+        token_endpoint: str,
+        qr_code_url_template: str,
+        notifier: Optional[NotificationInterface] = None,
+    ):
         """
         Initialize remote login handler
 
@@ -68,7 +72,7 @@ class RemoteLoginHandler:
 
         # FIX: Get platform config correctly
         self.platform_config = MAGENTA2_PLATFORMS[DEFAULT_PLATFORM]
-        self.user_agent = self.platform_config['user_agent']
+        self.user_agent = self.platform_config["user_agent"]
 
         # Get or create notifier with http_manager
         if notifier:
@@ -78,14 +82,18 @@ class RemoteLoginHandler:
 
         self._current_session: Optional[RemoteLoginSession] = None
 
-        logger.debug(f"RemoteLoginHandler initialized with {self._notifier.__class__.__name__}")
+        logger.debug(
+            f"RemoteLoginHandler initialized with {self._notifier.__class__.__name__}"
+        )
 
     def set_notifier(self, notifier: NotificationInterface) -> None:
         """Set custom notification interface"""
         self._notifier = notifier
         logger.debug(f"Notifier set to: {notifier.__class__.__name__}")
 
-    def start_remote_login(self, scope: str = "tvhubs offline_access") -> RemoteLoginSession:
+    def start_remote_login(
+        self, scope: str = "tvhubs offline_access"
+    ) -> RemoteLoginSession:
         """
         Start backchannel authentication flow
 
@@ -101,14 +109,11 @@ class RemoteLoginHandler:
         try:
             logger.info("Starting remote login (backchannel auth)")
 
-            payload = {
-                'client_id': self.sam3_client_id,
-                'scope': scope
-            }
+            payload = {"client_id": self.sam3_client_id, "scope": scope}
 
             headers = {
-                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                'User-Agent': self.user_agent
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "User-Agent": self.user_agent,
             }
 
             logger.debug(f"Backchannel auth request:")
@@ -117,21 +122,21 @@ class RemoteLoginHandler:
 
             response = self.http_manager.post(
                 self.backchannel_start_url,
-                operation='backchannel_start',
+                operation="backchannel_start",
                 headers=headers,
                 data=payload,
-                timeout=DEFAULT_REQUEST_TIMEOUT
+                timeout=DEFAULT_REQUEST_TIMEOUT,
             )
             response.raise_for_status()
 
             data = response.json()
 
             # Extract session data
-            initial_login_code = data.get('initial_login_code')
-            auth_req_id = data.get('auth_req_id')
-            auth_req_sec = data.get('auth_req_sec')
-            interval = int(data.get('interval', 10))
-            expires_in = int(data.get('expires_in', 300))
+            initial_login_code = data.get("initial_login_code")
+            auth_req_id = data.get("auth_req_id")
+            auth_req_sec = data.get("auth_req_sec")
+            interval = int(data.get("interval", 10))
+            expires_in = int(data.get("expires_in", 300))
 
             if not all([initial_login_code, auth_req_id, auth_req_sec]):
                 raise Exception("Incomplete backchannel auth response")
@@ -151,7 +156,7 @@ class RemoteLoginHandler:
                 expires_in=expires_in,
                 qr_code_url=qr_code_url,
                 qr_target_url=qr_target_url,
-                started_at=time.time()
+                started_at=time.time(),
             )
 
             self._current_session = session
@@ -192,14 +197,14 @@ class RemoteLoginHandler:
             # Make GET request without following redirects
             response = self.http_manager.get(
                 qr_code_url,
-                operation='qr_redirect',
+                operation="qr_redirect",
                 allow_redirects=False,  # Don't follow redirects automatically
-                timeout=5
+                timeout=5,
             )
 
             # Check for redirect
             if response.status_code in (301, 302, 303, 307, 308):
-                redirect_url = response.headers.get('Location')
+                redirect_url = response.headers.get("Location")
 
                 if redirect_url:
                     logger.debug(f"Got redirect to: {redirect_url}")
@@ -209,14 +214,14 @@ class RemoteLoginHandler:
                     query_params = parse_qs(parsed.query)
 
                     # Extract 'target' parameter
-                    if 'target' in query_params:
-                        target_url = query_params['target'][0]
+                    if "target" in query_params:
+                        target_url = query_params["target"][0]
                         # URL decode it
                         decoded_url = unquote(target_url)
 
                         # Truncate at the last dot in the URL
-                        if '.' in decoded_url:
-                            shortened_url = decoded_url.rsplit('.', 1)[0]
+                        if "." in decoded_url:
+                            shortened_url = decoded_url.rsplit(".", 1)[0]
                             logger.info(f"Extracted QR target URL: {shortened_url}")
                             return shortened_url
 
@@ -256,15 +261,15 @@ class RemoteLoginHandler:
             last_countdown_update = start_time
 
             headers = {
-                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                'User-Agent': self.user_agent
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "User-Agent": self.user_agent,
             }
 
             payload = {
-                'client_id': self.sam3_client_id,
-                'grant_type': GRANT_TYPES['REMOTE_LOGIN'],
-                'auth_req_id': session.auth_req_id,
-                'auth_req_sec': session.auth_req_sec
+                "client_id": self.sam3_client_id,
+                "grant_type": GRANT_TYPES["REMOTE_LOGIN"],
+                "auth_req_id": session.auth_req_id,
+                "auth_req_sec": session.auth_req_sec,
             }
 
             poll_count = 0
@@ -301,15 +306,17 @@ class RemoteLoginHandler:
 
                 # Perform poll
                 poll_count += 1
-                logger.debug(f"Poll {poll_count}/{max_polls} (remaining: {remaining:.0f}s)")
+                logger.debug(
+                    f"Poll {poll_count}/{max_polls} (remaining: {remaining:.0f}s)"
+                )
 
                 try:
                     response = self.http_manager.post(
                         self.token_endpoint,
-                        operation='remote_login_poll',
+                        operation="remote_login_poll",
                         headers=headers,
                         data=payload,
-                        timeout=DEFAULT_REQUEST_TIMEOUT
+                        timeout=DEFAULT_REQUEST_TIMEOUT,
                     )
 
                     # 202 = Not yet completed
@@ -321,7 +328,9 @@ class RemoteLoginHandler:
                     # 200 = Success
                     if response.status_code == 200:
                         token_data = response.json()
-                        logger.info(f"✓ Authentication successful after {elapsed:.1f}s ({poll_count} polls)")
+                        logger.info(
+                            f"✓ Authentication successful after {elapsed:.1f}s ({poll_count} polls)"
+                        )
                         return token_data
 
                     # Other = error
@@ -339,7 +348,9 @@ class RemoteLoginHandler:
             logger.error(f"Polling failed: {e}")
             return None
 
-    def perform_complete_flow(self, scope: str = "tvhubs offline_access") -> Optional[Dict[str, Any]]:
+    def perform_complete_flow(
+        self, scope: str = "tvhubs offline_access"
+    ) -> Optional[Dict[str, Any]]:
         """
         Perform complete remote login flow with integrated polling
 
@@ -360,7 +371,7 @@ class RemoteLoginHandler:
             session = self.start_remote_login(scope)
 
             # Step 2: Check if notifier supports integrated polling (Kodi adapter)
-            if hasattr(self._notifier, 'show_remote_login_with_polling'):
+            if hasattr(self._notifier, "show_remote_login_with_polling"):
                 # Kodi adapter with threading support
                 logger.info("Using integrated polling (threaded)")
 
@@ -375,12 +386,12 @@ class RemoteLoginHandler:
                     qr_target_url=session.qr_target_url,
                     expires_in=session.expires_in,
                     interval=session.interval,
-                    poll_callback=poll_callback
+                    poll_callback=poll_callback,
                 )
 
                 if result == NotificationResult.CONTINUE:
                     # Get token data from adapter (if supported)
-                    if hasattr(self._notifier, 'get_token_data'):
+                    if hasattr(self._notifier, "get_token_data"):
                         token_data = self._notifier.get_token_data()
                         if token_data:
                             logger.info("✓ Remote login completed successfully")
@@ -405,7 +416,7 @@ class RemoteLoginHandler:
                     login_code=session.initial_login_code,
                     qr_target_url=session.qr_target_url,
                     expires_in=session.expires_in,
-                    interval=session.interval
+                    interval=session.interval,
                 )
 
                 if result != NotificationResult.CONTINUE:
@@ -448,12 +459,12 @@ class RemoteLoginHandler:
         remaining = max(0, int(session.expires_in - elapsed))
 
         return {
-            'login_code': session.initial_login_code,
-            'qr_code_url': session.qr_code_url,
-            'qr_target_url': session.qr_target_url,
-            'elapsed_seconds': elapsed,
-            'remaining_seconds': remaining,
-            'is_expired': remaining <= 0,
-            'interval': session.interval,
-            'is_cancelled': self._notifier.is_cancelled()
+            "login_code": session.initial_login_code,
+            "qr_code_url": session.qr_code_url,
+            "qr_target_url": session.qr_target_url,
+            "elapsed_seconds": elapsed,
+            "remaining_seconds": remaining,
+            "is_expired": remaining <= 0,
+            "interval": session.interval,
+            "is_cancelled": self._notifier.is_cancelled(),
         }

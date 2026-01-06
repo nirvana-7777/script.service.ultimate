@@ -36,13 +36,14 @@ when only the broadcast_id is passed from Kodi.
 """
 
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
+
+from ..models.epg_models import EPGEntry
+from ..utils.environment import get_environment_manager, is_kodi_environment
+from ..utils.logger import logger
 from .epg_cache import EPGCache
 from .epg_mapping import EPGMapping
 from .epg_parser import EPGParser
-from ..models.epg_models import EPGEntry
-from ..utils.logger import logger
-from ..utils.environment import get_environment_manager, is_kodi_environment
 
 
 class EPGManager:
@@ -90,7 +91,7 @@ class EPGManager:
 
             bridge = KodiSettingsBridge()
             if bridge.is_kodi_environment():
-                url = bridge.addon.getSetting('epg_xml_url')
+                url = bridge.addon.getSetting("epg_xml_url")
 
                 if url and url.strip():
                     logger.info(f"EPGManager: Using EPG URL from settings: {url}")
@@ -117,11 +118,11 @@ class EPGManager:
         return start, end
 
     def get_epg(
-            self,
-            provider_name: str,
-            channel_id: str,
-            start_time: Optional[datetime] = None,
-            end_time: Optional[datetime] = None
+        self,
+        provider_name: str,
+        channel_id: str,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
     ) -> List[Dict]:
         """
         Get EPG data for a specific channel within a time range.
@@ -176,7 +177,7 @@ class EPGManager:
                 epg_channel_id,
                 start_ts,
                 end_ts,
-                provider_name  # Enable provider encoding
+                provider_name,  # Enable provider encoding
             )
 
             logger.info(
@@ -192,11 +193,11 @@ class EPGManager:
             return []
 
     def get_epg_entries(
-            self,
-            provider_name: str,
-            channel_id: str,
-            start_time: Optional[datetime] = None,
-            end_time: Optional[datetime] = None
+        self,
+        provider_name: str,
+        channel_id: str,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
     ) -> List[EPGEntry]:
         """
         Get EPG data as EPGEntry objects (for internal use).
@@ -240,7 +241,7 @@ class EPGManager:
                 epg_channel_id,
                 start_ts,
                 end_ts,
-                provider_name  # Enable provider encoding
+                provider_name,  # Enable provider encoding
             )
 
         except Exception as e:
@@ -248,10 +249,10 @@ class EPGManager:
             return []
 
     def get_epg_for_provider(
-            self,
-            provider_name: str,
-            start_time: Optional[datetime] = None,
-            end_time: Optional[datetime] = None
+        self,
+        provider_name: str,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
     ) -> Dict[str, List[Dict]]:
         """
         Get EPG data for all channels of a provider.
@@ -266,7 +267,9 @@ class EPGManager:
         Returns:
             Dictionary mapping channel IDs to their EPG entries (as dicts)
         """
-        logger.info(f"EPGManager: Getting EPG for all channels of provider '{provider_name}'")
+        logger.info(
+            f"EPGManager: Getting EPG for all channels of provider '{provider_name}'"
+        )
 
         result = {}
 
@@ -274,7 +277,9 @@ class EPGManager:
         provider_mapping = self.mapping.get_provider_mapping(provider_name)
 
         if not provider_mapping:
-            logger.warning(f"EPGManager: No channels mapped for provider '{provider_name}'")
+            logger.warning(
+                f"EPGManager: No channels mapped for provider '{provider_name}'"
+            )
             return result
 
         # Get EPG for each channel
@@ -387,10 +392,17 @@ class EPGManager:
         try:
             if is_kodi_environment():
                 import xbmcaddon
+
                 addon = xbmcaddon.Addon()
-                kodi_url = addon.getSetting('epg_xml_url')
-                if kodi_url and kodi_url.strip() and kodi_url != "https://example.com/epg.xml.gz":
-                    logger.info(f"EPGManager: Using EPG URL from Kodi settings: {kodi_url}")
+                kodi_url = addon.getSetting("epg_xml_url")
+                if (
+                    kodi_url
+                    and kodi_url.strip()
+                    and kodi_url != "https://example.com/epg.xml.gz"
+                ):
+                    logger.info(
+                        f"EPGManager: Using EPG URL from Kodi settings: {kodi_url}"
+                    )
                     return kodi_url.strip()
         except Exception as e:
             logger.debug(f"EPGManager: Could not get EPG URL from Kodi settings: {e}")
@@ -398,35 +410,53 @@ class EPGManager:
         # 3. config.json via environment manager
         try:
             env_manager = get_environment_manager()
-            config_url = env_manager.get_config('epg_url')
-            if config_url and config_url.strip() and config_url != "https://example.com/epg.xml.gz":
+            config_url = env_manager.get_config("epg_url")
+            if (
+                config_url
+                and config_url.strip()
+                and config_url != "https://example.com/epg.xml.gz"
+            ):
                 logger.info(f"EPGManager: Using EPG URL from config.json: {config_url}")
                 return config_url.strip()
         except Exception as e:
-            logger.debug(f"EPGManager: Could not get EPG URL from environment manager: {e}")
+            logger.debug(
+                f"EPGManager: Could not get EPG URL from environment manager: {e}"
+            )
 
         # 4. Environment variable
-        env_url = os.environ.get('ULTIMATE_EPG_URL')
+        env_url = os.environ.get("ULTIMATE_EPG_URL")
         if env_url and env_url.strip() and env_url != "https://example.com/epg.xml.gz":
-            logger.info(f"EPGManager: Using EPG URL from environment variable: {env_url}")
+            logger.info(
+                f"EPGManager: Using EPG URL from environment variable: {env_url}"
+            )
             return env_url.strip()
 
         # 5. Try to get the last known URL from cache metadata
         try:
             # Check if we have cache metadata with a valid URL
-            metadata = self.cache._get_metadata() if hasattr(self, 'cache') else None
-            if metadata and 'url' in metadata:
-                cached_url = metadata.get('url')
-                if cached_url and cached_url.strip() and cached_url != "https://example.com/epg.xml.gz":
-                    logger.info(f"EPGManager: Using last known URL from cache metadata: {cached_url}")
+            metadata = self.cache._get_metadata() if hasattr(self, "cache") else None
+            if metadata and "url" in metadata:
+                cached_url = metadata.get("url")
+                if (
+                    cached_url
+                    and cached_url.strip()
+                    and cached_url != "https://example.com/epg.xml.gz"
+                ):
+                    logger.info(
+                        f"EPGManager: Using last known URL from cache metadata: {cached_url}"
+                    )
                     return cached_url.strip()
         except Exception as e:
             logger.debug(f"EPGManager: Could not get URL from cache metadata: {e}")
 
         # 6. Default fallback (LAST RESORT - should rarely be used)
         default_url = "https://example.com/epg.xml.gz"
-        logger.warning(f"EPGManager: No valid EPG URL found, using default: {default_url}")
-        logger.warning("Please set ULTIMATE_EPG_URL environment variable or configure in settings!")
+        logger.warning(
+            f"EPGManager: No valid EPG URL found, using default: {default_url}"
+        )
+        logger.warning(
+            "Please set ULTIMATE_EPG_URL environment variable or configure in settings!"
+        )
         return default_url
 
     @staticmethod
@@ -442,4 +472,3 @@ class EPGManager:
             True if broadcast_id was generated for this provider
         """
         return EPGEntry.verify_provider(broadcast_id, provider_name)
-

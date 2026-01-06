@@ -1,9 +1,10 @@
 """
 Subscription models for provider packages and user entitlements.
 """
-from typing import Dict, List, Optional, Set
+
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Dict, List, Optional, Set
 
 
 @dataclass
@@ -98,28 +99,28 @@ class UserSubscription:
     def to_dict(self) -> Dict:
         """Convert to dictionary for JSON serialization"""
         return {
-            'provider': self.provider,
-            'country': self.country,
-            'active': self.active,
-            'has_packages': self.has_packages,
-            'package_count': self.package_count,
-            'package_names': self.package_names,
-            'accessible_channel_count': self.accessible_channel_count,
-            'valid_from': self.valid_from.isoformat() if self.valid_from else None,
-            'valid_until': self.valid_until.isoformat() if self.valid_until else None,
-            'status_message': self.status_message,
-            'billing_status': self.billing_status,
-            'packages': [
+            "provider": self.provider,
+            "country": self.country,
+            "active": self.active,
+            "has_packages": self.has_packages,
+            "package_count": self.package_count,
+            "package_names": self.package_names,
+            "accessible_channel_count": self.accessible_channel_count,
+            "valid_from": self.valid_from.isoformat() if self.valid_from else None,
+            "valid_until": self.valid_until.isoformat() if self.valid_until else None,
+            "status_message": self.status_message,
+            "billing_status": self.billing_status,
+            "packages": [
                 {
-                    'package_id': pkg.package_id,
-                    'name': pkg.name,
-                    'description': pkg.description,
-                    'price_info': pkg.price_info,
-                    'channel_count': pkg.channel_count,
-                    'metadata': pkg.metadata
+                    "package_id": pkg.package_id,
+                    "name": pkg.name,
+                    "description": pkg.description,
+                    "price_info": pkg.price_info,
+                    "channel_count": pkg.channel_count,
+                    "metadata": pkg.metadata,
                 }
                 for pkg in self.packages
-            ]
+            ],
         }
 
     def add_package(self, package: SubscriptionPackage):

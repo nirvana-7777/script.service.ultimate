@@ -3,7 +3,9 @@
 """
 Catchup/timeshift operations.
 """
-from typing import Optional, List, Dict
+
+from typing import Dict, List, Optional
+
 from .utils.logger import logger
 
 
@@ -15,10 +17,15 @@ class CatchupOperations:
         self.drm_operations = drm_operations
         logger.debug("CatchupOperations: Initialized")
 
-    def get_catchup_manifest(self, provider_name: str, channel_id: str,
-                             start_time: int, end_time: int,
-                             epg_id: Optional[str] = None,
-                             country: Optional[str] = None) -> Optional[str]:
+    def get_catchup_manifest(
+        self,
+        provider_name: str,
+        channel_id: str,
+        start_time: int,
+        end_time: int,
+        epg_id: Optional[str] = None,
+        country: Optional[str] = None,
+    ) -> Optional[str]:
         """Get catchup manifest URL."""
         provider = self.registry.get_provider(provider_name)
         if not provider:
@@ -39,16 +46,21 @@ class CatchupOperations:
                 start_time=start_time,
                 end_time=end_time,
                 epg_id=epg_id,
-                country=country
+                country=country,
             )
         except NotImplementedError:
             logger.error(f"Provider '{provider_name}' hasn't implemented catchup")
             return None
 
-    def get_catchup_drm_configs(self, provider_name: str, channel_id: str,
-                                start_time: int, end_time: int,
-                                epg_id: Optional[str] = None,
-                                country: Optional[str] = None) -> List:
+    def get_catchup_drm_configs(
+        self,
+        provider_name: str,
+        channel_id: str,
+        start_time: int,
+        end_time: int,
+        epg_id: Optional[str] = None,
+        country: Optional[str] = None,
+    ) -> List:
         """Get DRM configs for catchup content."""
         provider = self.registry.get_provider(provider_name)
         if not provider:
@@ -65,15 +77,16 @@ class CatchupOperations:
                 start_time=start_time,
                 end_time=end_time,
                 epg_id=epg_id,
-                country=country
+                country=country,
             )
         except NotImplementedError:
             return self.drm_operations.get_channel_drm_configs(
                 provider_name, channel_id, country=country
             )
 
-    def get_catchup_window(self, provider_name: str,
-                           channel_id: Optional[str] = None) -> int:
+    def get_catchup_window(
+        self, provider_name: str, channel_id: Optional[str] = None
+    ) -> int:
         """Get catchup window in hours."""
         provider = self.registry.get_provider(provider_name)
         if not provider:
@@ -101,16 +114,16 @@ class CatchupOperations:
             try:
                 provider = self.registry.get_provider(name)
                 capabilities[name] = {
-                    'supports_catchup': provider.supports_catchup,
-                    'catchup_window': provider.catchup_window,
-                    'catchup_enabled': provider.supports_catchup and
-                                       provider.catchup_window > 0
+                    "supports_catchup": provider.supports_catchup,
+                    "catchup_window": provider.catchup_window,
+                    "catchup_enabled": provider.supports_catchup
+                    and provider.catchup_window > 0,
                 }
             except Exception as e:
                 logger.warning(f"Error getting catchup for '{name}': {e}")
                 capabilities[name] = {
-                    'supports_catchup': False,
-                    'catchup_window': 0,
-                    'catchup_enabled': False
+                    "supports_catchup": False,
+                    "catchup_window": 0,
+                    "catchup_enabled": False,
                 }
         return capabilities

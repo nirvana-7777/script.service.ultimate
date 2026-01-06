@@ -1,21 +1,23 @@
 # streaming_providers/providers/magenta2/models.py
+import json
 from dataclasses import dataclass, field
 from typing import Dict, Optional
-import json
 
 from ...base.models import StreamingChannel
-
 
 # streaming_providers/providers/magenta2/models.py
 # Add this exception if not already present
 
+
 class DeviceLimitExceededException(Exception):
     """Exception raised when device limit is exceeded"""
+
     pass
 
 
 class Magenta2PlaybackRestrictedException(Exception):
     """Exception raised when playback is restricted for content"""
+
     pass
 
 
@@ -24,6 +26,7 @@ class Magenta2Channel:
     """
     Represents a Magenta2 channel with all necessary streaming data
     """
+
     # Core identification
     name: str
     channel_id: str
@@ -41,19 +44,19 @@ class Magenta2Channel:
     cdm_type: Optional[str] = None
     use_cdm: bool = True
     cdm: Optional[str] = None  # Usually "pid={pid}"
-    cdm_mode: str = 'external'
+    cdm_mode: str = "external"
 
     # Video settings
-    video: str = 'best'
+    video: str = "best"
     on_demand: bool = True
     speed_up: bool = True
 
     # Additional metadata
-    content_type: str = 'LIVE'  # 'LIVE' or 'VOD'
+    content_type: str = "LIVE"  # 'LIVE' or 'VOD'
     description: Optional[str] = None
     genre: Optional[str] = None
-    language: str = 'de'
-    country: str = 'DE'
+    language: str = "de"
+    country: str = "DE"
 
     # Streaming data
     license_url: Optional[str] = None
@@ -64,7 +67,7 @@ class Magenta2Channel:
     raw_data: Dict = field(default_factory=dict)
 
     @classmethod
-    def from_api_data(cls, api_data: Dict, **kwargs) -> 'Magenta2Channel':
+    def from_api_data(cls, api_data: Dict, **kwargs) -> "Magenta2Channel":
         """
         Create Magenta2Channel from API response data
 
@@ -76,10 +79,10 @@ class Magenta2Channel:
             Magenta2Channel instance
         """
         channel = cls(
-            name=api_data.get('title', api_data.get('name', 'Unknown Channel')),
-            channel_id=api_data.get('id', ''),
-            content_type=api_data.get('type', 'LIVE'),
-            raw_data=api_data.copy()
+            name=api_data.get("title", api_data.get("name", "Unknown Channel")),
+            channel_id=api_data.get("id", ""),
+            content_type=api_data.get("type", "LIVE"),
+            raw_data=api_data.copy(),
         )
 
         # Apply any additional parameters
@@ -89,9 +92,15 @@ class Magenta2Channel:
 
         return channel
 
-    def set_streaming_data(self, manifest: str, cdm_type: str = None,
-                          pid: str = None, license_url: str = None,
-                          certificate_url: str = None, streaming_format: str = None) -> None:
+    def set_streaming_data(
+        self,
+        manifest: str,
+        cdm_type: str = None,
+        pid: str = None,
+        license_url: str = None,
+        certificate_url: str = None,
+        streaming_format: str = None,
+    ) -> None:
         """
         Configure streaming-specific data
 
@@ -133,13 +142,13 @@ class Magenta2Channel:
 
     def is_live(self) -> bool:
         """Check if channel is live TV"""
-        return self.content_type == 'LIVE' and self.mode == 'live'
+        return self.content_type == "LIVE" and self.mode == "live"
 
     def is_vod(self) -> bool:
         """Check if channel is video on demand"""
-        return self.content_type == 'VOD' or self.mode == 'vod'
+        return self.content_type == "VOD" or self.mode == "vod"
 
-    def to_streaming_channel(self, provider_name: str = 'magenta2') -> StreamingChannel:
+    def to_streaming_channel(self, provider_name: str = "magenta2") -> StreamingChannel:
         """
         Convert to generic StreamingChannel object
 
@@ -172,7 +181,7 @@ class Magenta2Channel:
             country=self.country,
             license_url=self.license_url,
             certificate_url=self.certificate_url,
-            streaming_format=self.streaming_format
+            streaming_format=self.streaming_format,
         )
 
     def to_dict(self) -> Dict:
@@ -183,19 +192,19 @@ class Magenta2Channel:
             Dictionary in the format expected by your application
         """
         return {
-            'Name': self.name,
-            'LogoUrl': self.logo_url,
-            'Mode': self.mode,
-            'SessionManifest': self.session_manifest,
-            'Manifest': self.manifest,
-            'ManifestScript': self.manifest_script,
-            'CdmType': self.cdm_type,
-            'UseCdm': self.use_cdm,
-            'Cdm': self.cdm,
-            'CdmMode': self.cdm_mode,
-            'Video': self.video,
-            'OnDemand': self.on_demand,
-            'SpeedUp': self.speed_up
+            "Name": self.name,
+            "LogoUrl": self.logo_url,
+            "Mode": self.mode,
+            "SessionManifest": self.session_manifest,
+            "Manifest": self.manifest,
+            "ManifestScript": self.manifest_script,
+            "CdmType": self.cdm_type,
+            "UseCdm": self.use_cdm,
+            "Cdm": self.cdm,
+            "CdmMode": self.cdm_mode,
+            "Video": self.video,
+            "OnDemand": self.on_demand,
+            "SpeedUp": self.speed_up,
         }
 
     def to_json(self, indent: int = 2) -> str:

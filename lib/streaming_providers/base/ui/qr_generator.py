@@ -6,6 +6,7 @@ Generates PNG QR codes directly from URLs
 This is a GENERIC module - no provider-specific logic!
 Size: qrcode library is ~50KB, pure Python
 """
+
 import io
 from typing import Optional
 
@@ -40,11 +41,13 @@ def generate_qr_code_png(data: str, size: int = 512) -> Optional[bytes]:
         qr.make(fit=True)
 
         # Generate image using pure Python PNG backend
-        img = qr.make_image(image_factory=PyPNGImage, fill_color="black", back_color="white")
+        img = qr.make_image(
+            image_factory=PyPNGImage, fill_color="black", back_color="white"
+        )
 
         # Convert to PNG bytes
         buffer = io.BytesIO()
-        img.save(buffer, format='PNG')
+        img.save(buffer, format="PNG")
         png_data = buffer.getvalue()
 
         return png_data
@@ -67,7 +70,7 @@ def generate_qr_code_png(data: str, size: int = 512) -> Optional[bytes]:
             img = qr.make_image(fill_color="black", back_color="white")
 
             buffer = io.BytesIO()
-            img.save(buffer, format='PNG')
+            img.save(buffer, format="PNG")
             png_data = buffer.getvalue()
 
             return png_data
@@ -82,7 +85,7 @@ def generate_qr_code_png(data: str, size: int = 512) -> Optional[bytes]:
 
 
 # Test function
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Test QR generation
     test_url = "https://example.com/login?code=ABC123"
 
@@ -91,7 +94,7 @@ if __name__ == '__main__':
         print(f"Generated QR code PNG: {len(png_data)} bytes")
 
         # Save to file for testing
-        with open('test_qr.png', 'wb') as f:
+        with open("test_qr.png", "wb") as f:
             f.write(png_data)
         print("Saved to test_qr.png")
     else:

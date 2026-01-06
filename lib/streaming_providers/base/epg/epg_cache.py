@@ -6,7 +6,8 @@ Handles downloading, caching, and TTL management for EPG XML files
 """
 
 import time
-from typing import Optional, Dict
+from typing import Dict, Optional
+
 from ..utils.logger import logger
 from ..utils.vfs import VFS
 
@@ -60,10 +61,10 @@ class EPGCache:
             True if saved successfully
         """
         metadata = {
-            'downloaded_at': int(time.time()),
-            'url': url,
-            'file_size': file_size,
-            'is_gzipped': is_gzipped
+            "downloaded_at": int(time.time()),
+            "url": url,
+            "file_size": file_size,
+            "is_gzipped": is_gzipped,
         }
 
         success = self.vfs.write_json(self.METADATA_FILE, metadata)
@@ -86,17 +87,19 @@ class EPGCache:
             return False
 
         # Check if EPG file exists
-        filename = self.EPG_GZ_FILE if metadata.get('is_gzipped') else self.EPG_FILE
+        filename = self.EPG_GZ_FILE if metadata.get("is_gzipped") else self.EPG_FILE
         if not self.vfs.exists(filename):
             logger.debug(f"EPGCache: EPG file '{filename}' not found, cache invalid")
             return False
 
         # Check TTL
-        downloaded_at = metadata.get('downloaded_at', 0)
+        downloaded_at = metadata.get("downloaded_at", 0)
         age = int(time.time()) - downloaded_at
 
         if age > self.CACHE_TTL_SECONDS:
-            logger.info(f"EPGCache: Cache expired (age: {age}s, TTL: {self.CACHE_TTL_SECONDS}s)")
+            logger.info(
+                f"EPGCache: Cache expired (age: {age}s, TTL: {self.CACHE_TTL_SECONDS}s)"
+            )
             return False
 
         logger.debug(f"EPGCache: Cache valid (age: {age}s)")
@@ -116,7 +119,7 @@ class EPGCache:
         if not metadata:
             return None
 
-        filename = self.EPG_GZ_FILE if metadata.get('is_gzipped') else self.EPG_FILE
+        filename = self.EPG_GZ_FILE if metadata.get("is_gzipped") else self.EPG_FILE
         file_path = self.vfs.join_path(filename)
 
         logger.debug(f"EPGCache: Returning cached file path: {file_path}")
@@ -143,12 +146,12 @@ class EPGCache:
             response.raise_for_status()
 
             # Determine if content is gzipped
-            content_type = response.headers.get('Content-Type', '').lower()
-            content_encoding = response.headers.get('Content-Encoding', '').lower()
+            content_type = response.headers.get("Content-Type", "").lower()
+            content_encoding = response.headers.get("Content-Encoding", "").lower()
             is_gzipped = (
-                    'gzip' in content_encoding or
-                    url.endswith('.gz') or
-                    'gzip' in content_type
+                "gzip" in content_encoding
+                or url.endswith(".gz")
+                or "gzip" in content_type
             )
 
             filename = self.EPG_GZ_FILE if is_gzipped else self.EPG_FILE
@@ -163,7 +166,7 @@ class EPGCache:
             chunk_size = 8192
             total_size = 0
 
-            with open(file_path, 'wb') as f:
+            with open(file_path, "wb") as f:
                 for chunk in response.iter_content(chunk_size=chunk_size):
                     if chunk:
                         f.write(chunk)
@@ -234,19 +237,19 @@ class EPGCache:
         if not metadata:
             return None
 
-        filename = self.EPG_GZ_FILE if metadata.get('is_gzipped') else self.EPG_FILE
+        filename = self.EPG_GZ_FILE if metadata.get("is_gzipped") else self.EPG_FILE
         file_exists = self.vfs.exists(filename)
 
-        age = int(time.time()) - metadata.get('downloaded_at', 0)
+        age = int(time.time()) - metadata.get("downloaded_at", 0)
         is_valid = self.is_cache_valid()
 
         return {
-            'url': metadata.get('url'),
-            'downloaded_at': metadata.get('downloaded_at'),
-            'age_seconds': age,
-            'file_size': metadata.get('file_size'),
-            'is_gzipped': metadata.get('is_gzipped'),
-            'file_exists': file_exists,
-            'is_valid': is_valid,
-            'ttl_seconds': self.CACHE_TTL_SECONDS
+            "url": metadata.get("url"),
+            "downloaded_at": metadata.get("downloaded_at"),
+            "age_seconds": age,
+            "file_size": metadata.get("file_size"),
+            "is_gzipped": metadata.get("is_gzipped"),
+            "file_exists": file_exists,
+            "is_valid": is_valid,
+            "ttl_seconds": self.CACHE_TTL_SECONDS,
         }

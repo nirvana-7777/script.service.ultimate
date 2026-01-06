@@ -6,17 +6,20 @@ Architecture:
 3. Dialog monitors thread status and auto-closes on success
 4. User can cancel by closing dialog
 """
-import time
+
 import os
 import tempfile
 import threading
-from typing import Optional, Callable
-from .notification_interface import NotificationInterface, NotificationResult
+import time
+from typing import Callable, Optional
+
 from ..utils.logger import logger
+from .notification_interface import NotificationInterface, NotificationResult
 
 # Import QR generator
 try:
     from .qr_generator import generate_qr_code_png
+
     QR_GENERATOR_AVAILABLE = True
 except ImportError:
     logger.warning("qr_generator not available")
@@ -84,8 +87,15 @@ class QRCodeDialog:
     WindowDialog for displaying QR code with status monitoring
     """
 
-    def __init__(self, xbmcgui, xbmc, qr_image_path: str, login_code: str,
-                 expires_in: int, polling_thread: Optional[PollingThread] = None):
+    def __init__(
+        self,
+        xbmcgui,
+        xbmc,
+        qr_image_path: str,
+        login_code: str,
+        expires_in: int,
+        polling_thread: Optional[PollingThread] = None,
+    ):
         """
         Initialize QR code dialog
 
@@ -130,12 +140,11 @@ class QRCodeDialog:
 
             # Background - Use a solid color label instead of ControlImage
             bg = self.xbmcgui.ControlLabel(
-                dialog_x, dialog_y, dialog_width, dialog_height,
-                label=''
+                dialog_x, dialog_y, dialog_width, dialog_height, label=""
             )
             # Set semi-transparent black background
             try:
-                bg.setColorDiffuse('0xE0000000')
+                bg.setColorDiffuse("0xE0000000")
             except:
                 pass  # Ignore if method not available
             self.dialog.addControl(bg)
@@ -143,12 +152,14 @@ class QRCodeDialog:
             # Title
             title_y = dialog_y + 30
             title = self.xbmcgui.ControlLabel(
-                x=dialog_x + 50, y=title_y,
-                width=dialog_width - 100, height=50,
-                label='[B]MagentaTV Remote Login[/B]',
-                font='font30',
-                textColor='0xFFFFFFFF',
-                alignment=0x00000002  # Center
+                x=dialog_x + 50,
+                y=title_y,
+                width=dialog_width - 100,
+                height=50,
+                label="[B]MagentaTV Remote Login[/B]",
+                font="font30",
+                textColor="0xFFFFFFFF",
+                alignment=0x00000002,  # Center
             )
             self.dialog.addControl(title)
 
@@ -159,8 +170,7 @@ class QRCodeDialog:
 
             if os.path.exists(self.qr_image_path):
                 qr_image = self.xbmcgui.ControlImage(
-                    qr_x, qr_y, qr_size, qr_size,
-                    self.qr_image_path
+                    qr_x, qr_y, qr_size, qr_size, self.qr_image_path
                 )
                 self.dialog.addControl(qr_image)
             else:
@@ -170,59 +180,69 @@ class QRCodeDialog:
             instructions_y = qr_y + qr_size + 40
 
             inst1 = self.xbmcgui.ControlLabel(
-                x=dialog_x + 50, y=instructions_y,
-                width=dialog_width - 100, height=30,
-                label='[B]Scan QR code with your MagentaTV app[/B]',
-                font='font13',
-                textColor='0xFFFFFFFF',
-                alignment=0x00000002
+                x=dialog_x + 50,
+                y=instructions_y,
+                width=dialog_width - 100,
+                height=30,
+                label="[B]Scan QR code with your MagentaTV app[/B]",
+                font="font13",
+                textColor="0xFFFFFFFF",
+                alignment=0x00000002,
             )
             self.dialog.addControl(inst1)
 
             inst2_y = instructions_y + 35
             inst2 = self.xbmcgui.ControlLabel(
-                x=dialog_x + 50, y=inst2_y,
-                width=dialog_width - 100, height=30,
-                label=f'Or enter code: [COLOR yellow]{self.login_code}[/COLOR]',
-                font='font13',
-                textColor='0xFFCCCCCC',
-                alignment=0x00000002
+                x=dialog_x + 50,
+                y=inst2_y,
+                width=dialog_width - 100,
+                height=30,
+                label=f"Or enter code: [COLOR yellow]{self.login_code}[/COLOR]",
+                font="font13",
+                textColor="0xFFCCCCCC",
+                alignment=0x00000002,
             )
             self.dialog.addControl(inst2)
 
             # Time remaining label
             time_y = inst2_y + 45
             self.time_label = self.xbmcgui.ControlLabel(
-                x=dialog_x + 50, y=time_y,
-                width=dialog_width - 100, height=30,
-                label=f'Time remaining: {self._format_time(self.expires_in)}',
-                font='font12',
-                textColor='0xFFFF8800',
-                alignment=0x00000002
+                x=dialog_x + 50,
+                y=time_y,
+                width=dialog_width - 100,
+                height=30,
+                label=f"Time remaining: {self._format_time(self.expires_in)}",
+                font="font12",
+                textColor="0xFFFF8800",
+                alignment=0x00000002,
             )
             self.dialog.addControl(self.time_label)
 
             # Status label
             status_y = time_y + 35
             self.status_label = self.xbmcgui.ControlLabel(
-                x=dialog_x + 50, y=status_y,
-                width=dialog_width - 100, height=30,
-                label='Waiting for authentication...',
-                font='font12',
-                textColor='0xFFAAAAAA',
-                alignment=0x00000002
+                x=dialog_x + 50,
+                y=status_y,
+                width=dialog_width - 100,
+                height=30,
+                label="Waiting for authentication...",
+                font="font12",
+                textColor="0xFFAAAAAA",
+                alignment=0x00000002,
             )
             self.dialog.addControl(self.status_label)
 
             # Cancel hint
             cancel_y = status_y + 35
             cancel = self.xbmcgui.ControlLabel(
-                x=dialog_x + 50, y=cancel_y,
-                width=dialog_width - 100, height=25,
-                label='(Press any key to cancel)',
-                font='font10',
-                textColor='0xFF888888',
-                alignment=0x00000002
+                x=dialog_x + 50,
+                y=cancel_y,
+                width=dialog_width - 100,
+                height=25,
+                label="(Press any key to cancel)",
+                font="font10",
+                textColor="0xFF888888",
+                alignment=0x00000002,
             )
             self.dialog.addControl(cancel)
 
@@ -266,22 +286,30 @@ class QRCodeDialog:
                 if self.polling_thread:
                     remaining = self.polling_thread.get_remaining_time()
                     if self.time_label:
-                        self.time_label.setLabel(f'Time remaining: {self._format_time(remaining)}')
+                        self.time_label.setLabel(
+                            f"Time remaining: {self._format_time(remaining)}"
+                        )
 
                     # Check if auth completed
                     if self.polling_thread.auth_completed:
                         logger.info("Monitor: Authentication completed, closing dialog")
                         if self.status_label:
-                            self.status_label.setLabel('[COLOR green]Authentication successful![/COLOR]')
+                            self.status_label.setLabel(
+                                "[COLOR green]Authentication successful![/COLOR]"
+                            )
                         time.sleep(1)  # Show success message briefly
                         self.close_dialog()
                         break
 
                     # Check for errors
                     if self.polling_thread.error:
-                        logger.error(f"Monitor: Polling error: {self.polling_thread.error}")
+                        logger.error(
+                            f"Monitor: Polling error: {self.polling_thread.error}"
+                        )
                         if self.status_label:
-                            self.status_label.setLabel('[COLOR red]Authentication failed[/COLOR]')
+                            self.status_label.setLabel(
+                                "[COLOR red]Authentication failed[/COLOR]"
+                            )
                         time.sleep(2)
                         self.close_dialog()
                         break
@@ -341,9 +369,10 @@ class KodiNotificationAdapter(NotificationInterface):
 
         # Import Kodi modules
         try:
-            import xbmcgui
             import xbmc
+            import xbmcgui
             import xbmcvfs
+
             self.xbmcgui = xbmcgui
             self.xbmc = xbmc
             self.xbmcvfs = xbmcvfs
@@ -374,12 +403,12 @@ class KodiNotificationAdapter(NotificationInterface):
         return True  # From caller's perspective, it blocks
 
     def show_remote_login_with_polling(
-            self,
-            login_code: str,
-            qr_target_url: str,
-            expires_in: int,
-            interval: int,
-            poll_callback: Callable
+        self,
+        login_code: str,
+        qr_target_url: str,
+        expires_in: int,
+        interval: int,
+        poll_callback: Callable,
     ) -> NotificationResult:
         """
         Show remote login with integrated polling
@@ -428,7 +457,7 @@ class KodiNotificationAdapter(NotificationInterface):
                 qr_image_path,
                 login_code,
                 expires_in,
-                self._polling_thread
+                self._polling_thread,
             )
 
             self._qr_dialog.show()
@@ -453,11 +482,7 @@ class KodiNotificationAdapter(NotificationInterface):
             self._cleanup_qr_image()
 
     def show_remote_login(
-            self,
-            login_code: str,
-            qr_target_url: str,
-            expires_in: int,
-            interval: int = 10
+        self, login_code: str, qr_target_url: str, expires_in: int, interval: int = 10
     ) -> NotificationResult:
         """
         Simplified version without polling (for backward compatibility)
@@ -489,7 +514,7 @@ class KodiNotificationAdapter(NotificationInterface):
                 qr_image_path,
                 login_code,
                 expires_in,
-                None  # No polling thread
+                None,  # No polling thread
             )
 
             self._qr_dialog.show()
@@ -532,14 +557,14 @@ class KodiNotificationAdapter(NotificationInterface):
                     "MagentaTV",
                     "Remote login successful!",
                     self.xbmcgui.NOTIFICATION_INFO,
-                    3000
+                    3000,
                 )
             elif message and not self._is_cancelled:
                 self.xbmcgui.Dialog().notification(
                     "MagentaTV",
                     f"Remote login failed: {message}",
                     self.xbmcgui.NOTIFICATION_ERROR,
-                    5000
+                    5000,
                 )
 
             self._cleanup_qr_image()
@@ -594,7 +619,7 @@ class KodiNotificationAdapter(NotificationInterface):
             png_filename = f"magentatv_qr_{int(time.time())}.png"
             png_path = os.path.join(temp_dir, png_filename)
 
-            with open(png_path, 'wb') as f:
+            with open(png_path, "wb") as f:
                 f.write(png_data)
 
             logger.info(f"QR code saved to: {png_path}")

@@ -6,9 +6,9 @@ Based on Kodi PVR EPG Tag specification (ETSI EN 300 468 DVB-SI standard)
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, List
 from datetime import datetime
 from enum import IntEnum
+from typing import List, Optional
 
 # EPG Constants from Kodi PVR specification
 EPG_TAG_INVALID_UID = 0
@@ -29,6 +29,7 @@ class EPGEventState(IntEnum):
     EPG event states for event lifecycle callbacks.
     Used with EpgEventStateChange() callback in C++ PVR client.
     """
+
     CREATED = 0  # Event created
     UPDATED = 1  # Event updated
     DELETED = 2  # Event deleted
@@ -189,20 +190,35 @@ class EPGEntry:
             Dictionary with EPG data
         """
         result = {
-            'broadcast_id': self.broadcast_id,
-            'title': self.title,
-            'start': self.start,
-            'end': self.end,
+            "broadcast_id": self.broadcast_id,
+            "title": self.title,
+            "start": self.start,
+            "end": self.end,
         }
 
         # Add optional fields only if they have values
         optional_fields = [
-            'description', 'plot_outline', 'episode_name', 'original_title',
-            'year', 'icon', 'cast', 'directors', 'writers', 'genre',
-            'genre_description', 'season_number', 'episode_number',
-            'episode_part_number', 'star_rating', 'parental_rating',
-            'parental_rating_code', 'first_aired', 'imdb_number',
-            'series_link', 'flags'
+            "description",
+            "plot_outline",
+            "episode_name",
+            "original_title",
+            "year",
+            "icon",
+            "cast",
+            "directors",
+            "writers",
+            "genre",
+            "genre_description",
+            "season_number",
+            "episode_number",
+            "episode_part_number",
+            "star_rating",
+            "parental_rating",
+            "parental_rating_code",
+            "first_aired",
+            "imdb_number",
+            "series_link",
+            "flags",
         ]
 
         for field_name in optional_fields:
@@ -213,7 +229,7 @@ class EPGEntry:
         return result
 
     @classmethod
-    def from_dict(cls, data: dict) -> 'EPGEntry':
+    def from_dict(cls, data: dict) -> "EPGEntry":
         """
         Create EPGEntry from dictionary (e.g., from epg_parser output).
 
@@ -228,10 +244,7 @@ class EPGEntry:
         # Extract only fields that exist in EPGEntry
         valid_fields = {f.name for f in fields(cls)}
 
-        filtered_data = {
-            k: v for k, v in data.items()
-            if k in valid_fields
-        }
+        filtered_data = {k: v for k, v in data.items() if k in valid_fields}
 
         return cls(**filtered_data)
 
@@ -387,13 +400,15 @@ class EPGEntry:
         """
         if not text:
             return []
-        return [item.strip() for item in text.split(EPG_STRING_TOKEN_SEPARATOR) if item.strip()]
+        return [
+            item.strip()
+            for item in text.split(EPG_STRING_TOKEN_SEPARATOR)
+            if item.strip()
+        ]
 
     @staticmethod
     def encode_broadcast_id(
-            provider_name: str,
-            channel_id: str,
-            start_time: int
+        provider_name: str, channel_id: str, start_time: int
     ) -> int:
         """
         Generate deterministic broadcast ID with encoded provider information.
@@ -422,11 +437,11 @@ class EPGEntry:
         import hashlib
 
         # Generate provider hash (16 bits)
-        provider_hash_obj = hashlib.sha256(provider_name.encode('utf-8'))
+        provider_hash_obj = hashlib.sha256(provider_name.encode("utf-8"))
         provider_hash = int(provider_hash_obj.hexdigest()[:4], 16)  # 16 bits
 
         # Generate event hash from channel + start time (16 bits)
-        event_input = f"{channel_id}_{start_time}".encode('utf-8')
+        event_input = f"{channel_id}_{start_time}".encode("utf-8")
         event_hash_obj = hashlib.sha256(event_input)
         event_hash = int(event_hash_obj.hexdigest()[:4], 16)  # 16 bits
 
@@ -489,7 +504,7 @@ class EPGEntry:
         stored_hash = EPGEntry.get_provider_hash(broadcast_id)
 
         # Calculate hash for given provider name
-        provider_hash_obj = hashlib.sha256(provider_name.encode('utf-8'))
+        provider_hash_obj = hashlib.sha256(provider_name.encode("utf-8"))
         calculated_hash = int(provider_hash_obj.hexdigest()[:4], 16)
 
         return stored_hash == calculated_hash
@@ -511,17 +526,26 @@ class EPGEntry:
             raise ValueError("end time must be after start time")
 
         # Validate episode numbers if set
-        if self.season_number is not None and self.season_number < EPG_TAG_INVALID_SERIES_EPISODE:
+        if (
+            self.season_number is not None
+            and self.season_number < EPG_TAG_INVALID_SERIES_EPISODE
+        ):
             raise ValueError(
                 f"season_number must be >= EPG_TAG_INVALID_SERIES_EPISODE ({EPG_TAG_INVALID_SERIES_EPISODE})"
             )
 
-        if self.episode_number is not None and self.episode_number < EPG_TAG_INVALID_SERIES_EPISODE:
+        if (
+            self.episode_number is not None
+            and self.episode_number < EPG_TAG_INVALID_SERIES_EPISODE
+        ):
             raise ValueError(
                 f"episode_number must be >= EPG_TAG_INVALID_SERIES_EPISODE ({EPG_TAG_INVALID_SERIES_EPISODE})"
             )
 
-        if self.episode_part_number is not None and self.episode_part_number < EPG_TAG_INVALID_SERIES_EPISODE:
+        if (
+            self.episode_part_number is not None
+            and self.episode_part_number < EPG_TAG_INVALID_SERIES_EPISODE
+        ):
             raise ValueError(
                 f"episode_part_number must be >= EPG_TAG_INVALID_SERIES_EPISODE ({EPG_TAG_INVALID_SERIES_EPISODE})"
             )
@@ -542,6 +566,7 @@ class EPGFlags:
             flags=EPGFlags.IS_SERIES | EPGFlags.IS_PREMIERE
         )
     """
+
     UNDEFINED = 0x00  # 0000 0000 : Nothing special to say about this entry
     IS_SERIES = 0x01  # 0000 0001 : This EPG entry is part of a series
     IS_NEW = 0x02  # 0000 0010 : This EPG entry will be flagged as new
@@ -629,6 +654,7 @@ class EPGGenre:
     EPG genre type codes based on DVB-SI standard (ETSI EN 300 468).
     These are the main content masks - use with genre_type field.
     """
+
     # Main genre types (content masks)
     UNDEFINED = 0x00
     MOVIEDRAMA = 0x10
@@ -786,18 +812,16 @@ PVREPGTag = EPGEntry
 # Export all public symbols
 __all__ = [
     # Main classes
-    'EPGEntry',
-    'PVREPGTag',  # Legacy alias
-
+    "EPGEntry",
+    "PVREPGTag",  # Legacy alias
     # Constants
-    'EPG_TAG_INVALID_UID',
-    'EPG_TAG_INVALID_SERIES_EPISODE',
-    'EPG_TIMEFRAME_UNLIMITED',
-    'EPG_STRING_TOKEN_SEPARATOR',
-
+    "EPG_TAG_INVALID_UID",
+    "EPG_TAG_INVALID_SERIES_EPISODE",
+    "EPG_TIMEFRAME_UNLIMITED",
+    "EPG_STRING_TOKEN_SEPARATOR",
     # Enums and flags
-    'EPGEventState',
-    'EPGFlags',
-    'EPGGenre',
-    'EPGGenreSubtype',
+    "EPGEventState",
+    "EPGFlags",
+    "EPGGenre",
+    "EPGGenreSubtype",
 ]

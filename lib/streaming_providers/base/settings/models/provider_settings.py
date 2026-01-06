@@ -1,17 +1,17 @@
 # streaming_providers/base/settings/models/provider_settings.py
-from typing import Dict, List, Optional, Any, Set
 from dataclasses import dataclass, field
-from .settings_models import (
-    SettingValue,
-    string_setting, password_setting, integer_setting, boolean_setting,
-    select_setting, port_setting
-)
+from typing import Any, Dict, List, Optional, Set
+
 from ...utils.logger import logger
+from .settings_models import (SettingValue, boolean_setting, integer_setting,
+                              password_setting, port_setting, select_setting,
+                              string_setting)
 
 
 @dataclass
 class ProviderSettingsSchema:
     """Schema definition for a provider's settings"""
+
     provider_name: str
     _settings: Dict[str, SettingValue] = field(default_factory=dict)
     _categories: Dict[str, Set[str]] = field(default_factory=dict)
@@ -39,11 +39,11 @@ class ProviderSettingsSchema:
 
         # Build category mappings
         self._categories = {
-            'credentials': set(credential_settings.keys()),
-            'proxy': set(proxy_settings.keys()),
-            'video': set(video_settings.keys()),
-            'drm': set(drm_settings.keys()),
-            'network': set(network_settings.keys())
+            "credentials": set(credential_settings.keys()),
+            "proxy": set(proxy_settings.keys()),
+            "video": set(video_settings.keys()),
+            "drm": set(drm_settings.keys()),
+            "network": set(network_settings.keys()),
         }
 
         # Build Kodi mapping
@@ -60,7 +60,7 @@ class ProviderSettingsSchema:
         settings = {}
 
         # Common credential settings - can be overridden in subclasses
-        settings['username'] = (
+        settings["username"] = (
             string_setting()
             .required()
             .min_length(1)
@@ -70,7 +70,7 @@ class ProviderSettingsSchema:
             .build()
         )
 
-        settings['password'] = (
+        settings["password"] = (
             password_setting()
             .display_name("Password")
             .description("Account password")
@@ -79,7 +79,7 @@ class ProviderSettingsSchema:
         )
 
         # Optional client ID for OAuth providers
-        settings['client_id'] = (
+        settings["client_id"] = (
             string_setting()
             .display_name("Client ID")
             .description("OAuth client identifier (if required)")
@@ -88,7 +88,7 @@ class ProviderSettingsSchema:
         )
 
         # Optional client secret for OAuth providers
-        settings['client_secret'] = (
+        settings["client_secret"] = (
             password_setting(required=False)
             .display_name("Client Secret")
             .description("OAuth client secret (if required)")
@@ -103,7 +103,7 @@ class ProviderSettingsSchema:
         settings = {}
 
         # Enable proxy for this provider
-        settings['proxy_enabled'] = (
+        settings["proxy_enabled"] = (
             boolean_setting(False)
             .display_name("Enable Proxy")
             .description("Use proxy for this provider")
@@ -112,7 +112,7 @@ class ProviderSettingsSchema:
         )
 
         # Proxy host
-        settings['proxy_host'] = (
+        settings["proxy_host"] = (
             string_setting()
             .display_name("Proxy Host")
             .description("Proxy server hostname or IP address")
@@ -121,7 +121,7 @@ class ProviderSettingsSchema:
         )
 
         # Proxy port
-        settings['proxy_port'] = (
+        settings["proxy_port"] = (
             port_setting(8080)
             .display_name("Proxy Port")
             .description("Proxy server port")
@@ -130,8 +130,8 @@ class ProviderSettingsSchema:
         )
 
         # Proxy type
-        settings['proxy_type'] = (
-            select_setting(['http', 'https', 'socks4', 'socks5'], 'http')
+        settings["proxy_type"] = (
+            select_setting(["http", "https", "socks4", "socks5"], "http")
             .display_name("Proxy Type")
             .description("Type of proxy server")
             .kodi_setting(f"{self.provider_name}_proxy_type")
@@ -139,7 +139,7 @@ class ProviderSettingsSchema:
         )
 
         # Proxy authentication
-        settings['proxy_auth_enabled'] = (
+        settings["proxy_auth_enabled"] = (
             boolean_setting(False)
             .display_name("Proxy Authentication")
             .description("Proxy server requires authentication")
@@ -148,7 +148,7 @@ class ProviderSettingsSchema:
         )
 
         # Proxy username
-        settings['proxy_username'] = (
+        settings["proxy_username"] = (
             string_setting()
             .display_name("Proxy Username")
             .description("Username for proxy authentication")
@@ -157,7 +157,7 @@ class ProviderSettingsSchema:
         )
 
         # Proxy password
-        settings['proxy_password'] = (
+        settings["proxy_password"] = (
             password_setting(required=False)
             .display_name("Proxy Password")
             .description("Password for proxy authentication")
@@ -166,7 +166,7 @@ class ProviderSettingsSchema:
         )
 
         # Proxy scope settings
-        settings['proxy_scope_api'] = (
+        settings["proxy_scope_api"] = (
             boolean_setting(True)
             .display_name("Proxy API Calls")
             .description("Use proxy for API requests")
@@ -174,7 +174,7 @@ class ProviderSettingsSchema:
             .build()
         )
 
-        settings['proxy_scope_auth'] = (
+        settings["proxy_scope_auth"] = (
             boolean_setting(True)
             .display_name("Proxy Authentication")
             .description("Use proxy for authentication requests")
@@ -182,7 +182,7 @@ class ProviderSettingsSchema:
             .build()
         )
 
-        settings['proxy_scope_manifest'] = (
+        settings["proxy_scope_manifest"] = (
             boolean_setting(True)
             .display_name("Proxy Manifests")
             .description("Use proxy for manifest downloads")
@@ -190,7 +190,7 @@ class ProviderSettingsSchema:
             .build()
         )
 
-        settings['proxy_scope_license'] = (
+        settings["proxy_scope_license"] = (
             boolean_setting(True)
             .display_name("Proxy DRM Licenses")
             .description("Use proxy for DRM license requests")
@@ -205,8 +205,8 @@ class ProviderSettingsSchema:
         settings = {}
 
         # Video quality preference
-        settings['video_quality'] = (
-            select_setting(['best', 'worst', '720p', '1080p', '4k'], 'best')
+        settings["video_quality"] = (
+            select_setting(["best", "worst", "720p", "1080p", "4k"], "best")
             .display_name("Video Quality")
             .description("Preferred video quality")
             .kodi_setting(f"{self.provider_name}_video_quality")
@@ -214,8 +214,8 @@ class ProviderSettingsSchema:
         )
 
         # Audio language preference
-        settings['audio_language'] = (
-            select_setting(['de', 'en', 'original'], 'de')
+        settings["audio_language"] = (
+            select_setting(["de", "en", "original"], "de")
             .display_name("Audio Language")
             .description("Preferred audio language")
             .kodi_setting(f"{self.provider_name}_audio_language")
@@ -223,8 +223,8 @@ class ProviderSettingsSchema:
         )
 
         # Subtitle language preference
-        settings['subtitle_language'] = (
-            select_setting(['none', 'de', 'en', 'auto'], 'none')
+        settings["subtitle_language"] = (
+            select_setting(["none", "de", "en", "auto"], "none")
             .display_name("Subtitle Language")
             .description("Preferred subtitle language")
             .kodi_setting(f"{self.provider_name}_subtitle_language")
@@ -232,7 +232,7 @@ class ProviderSettingsSchema:
         )
 
         # Speed up streams
-        settings['speed_up'] = (
+        settings["speed_up"] = (
             boolean_setting(True)
             .display_name("Speed Up Playback")
             .description("Enable faster stream startup")
@@ -247,7 +247,7 @@ class ProviderSettingsSchema:
         settings = {}
 
         # CDM usage
-        settings['use_cdm'] = (
+        settings["use_cdm"] = (
             boolean_setting(True)
             .display_name("Use CDM")
             .description("Enable Content Decryption Module for DRM")
@@ -256,8 +256,8 @@ class ProviderSettingsSchema:
         )
 
         # CDM type
-        settings['cdm_type'] = (
-            select_setting(['widevine', 'playready', 'clearkey'], 'widevine')
+        settings["cdm_type"] = (
+            select_setting(["widevine", "playready", "clearkey"], "widevine")
             .display_name("CDM Type")
             .description("Type of Content Decryption Module")
             .kodi_setting(f"{self.provider_name}_cdm_type")
@@ -265,8 +265,8 @@ class ProviderSettingsSchema:
         )
 
         # CDM mode
-        settings['cdm_mode'] = (
-            select_setting(['external', 'internal', 'auto'], 'external')
+        settings["cdm_mode"] = (
+            select_setting(["external", "internal", "auto"], "external")
             .display_name("CDM Mode")
             .description("How to handle CDM operations")
             .kodi_setting(f"{self.provider_name}_cdm_mode")
@@ -280,7 +280,7 @@ class ProviderSettingsSchema:
         settings = {}
 
         # Request timeout
-        settings['request_timeout'] = (
+        settings["request_timeout"] = (
             integer_setting(30, 5, 120)
             .display_name("Request Timeout")
             .description("Timeout for network requests in seconds")
@@ -289,7 +289,7 @@ class ProviderSettingsSchema:
         )
 
         # Max retries
-        settings['max_retries'] = (
+        settings["max_retries"] = (
             integer_setting(3, 0, 10)
             .display_name("Max Retries")
             .description("Maximum number of retry attempts")
@@ -298,7 +298,7 @@ class ProviderSettingsSchema:
         )
 
         # Retry delay
-        settings['retry_delay'] = (
+        settings["retry_delay"] = (
             integer_setting(1, 0, 10)
             .display_name("Retry Delay")
             .description("Delay between retry attempts in seconds")
@@ -307,7 +307,7 @@ class ProviderSettingsSchema:
         )
 
         # Verify SSL
-        settings['verify_ssl'] = (
+        settings["verify_ssl"] = (
             boolean_setting(True)
             .display_name("Verify SSL")
             .description("Verify SSL certificates for HTTPS requests")
@@ -361,7 +361,9 @@ class ProviderSettingsSchema:
         required = []
         for setting_name, setting in self._settings.items():
             # Check if setting has a "not_empty" validation rule
-            has_required_rule = any(rule.name == "not_empty" for rule in setting.validation_rules)
+            has_required_rule = any(
+                rule.name == "not_empty" for rule in setting.validation_rules
+            )
             if has_required_rule:
                 required.append(setting_name)
         return required
@@ -390,34 +392,50 @@ class ProviderSettingsSchema:
         completeness_by_category = {}
         for category in self.get_categories():
             category_settings = self.get_settings_by_category(category)
-            category_required = [name for name in category_settings.keys() if name in required_settings]
-            category_incomplete = [name for name in category_settings.keys() if name in incomplete_settings]
+            category_required = [
+                name for name in category_settings.keys() if name in required_settings
+            ]
+            category_incomplete = [
+                name for name in category_settings.keys() if name in incomplete_settings
+            ]
 
             completeness_by_category[category] = {
-                'total_settings': len(category_settings),
-                'required_settings': len(category_required),
-                'incomplete_settings': len(category_incomplete),
-                'is_complete': len(category_incomplete) == 0,
-                'completion_percentage': (
-                    100.0 if len(category_required) == 0
-                    else ((len(category_required) - len(category_incomplete)) / len(category_required) * 100)
-                )
+                "total_settings": len(category_settings),
+                "required_settings": len(category_required),
+                "incomplete_settings": len(category_incomplete),
+                "is_complete": len(category_incomplete) == 0,
+                "completion_percentage": (
+                    100.0
+                    if len(category_required) == 0
+                    else (
+                        (len(category_required) - len(category_incomplete))
+                        / len(category_required)
+                        * 100
+                    )
+                ),
             }
 
         return {
-            'is_complete': self.is_configuration_complete(),
-            'total_settings': len(self._settings),
-            'required_settings': len(required_settings),
-            'incomplete_settings': len(incomplete_settings),
-            'completion_percentage': (
-                100.0 if len(required_settings) == 0
-                else ((len(required_settings) - len(incomplete_settings)) / len(required_settings) * 100)
+            "is_complete": self.is_configuration_complete(),
+            "total_settings": len(self._settings),
+            "required_settings": len(required_settings),
+            "incomplete_settings": len(incomplete_settings),
+            "completion_percentage": (
+                100.0
+                if len(required_settings) == 0
+                else (
+                    (len(required_settings) - len(incomplete_settings))
+                    / len(required_settings)
+                    * 100
+                )
             ),
-            'categories': completeness_by_category,
-            'incomplete_setting_names': incomplete_settings
+            "categories": completeness_by_category,
+            "incomplete_setting_names": incomplete_settings,
         }
 
-    def add_custom_setting(self, setting_name: str, setting: SettingValue, category: str = 'custom') -> None:
+    def add_custom_setting(
+        self, setting_name: str, setting: SettingValue, category: str = "custom"
+    ) -> None:
         """Add a custom setting to the schema"""
         self._settings[setting_name] = setting
 
@@ -449,17 +467,16 @@ class ProviderSettingsSchema:
     def to_dict(self) -> Dict[str, Any]:
         """Convert schema to dictionary representation"""
         return {
-            'provider_name': self.provider_name,
-            'settings': {
-                name: setting.to_dict()
-                for name, setting in self._settings.items()
+            "provider_name": self.provider_name,
+            "settings": {
+                name: setting.to_dict() for name, setting in self._settings.items()
             },
-            'categories': {
+            "categories": {
                 category: list(settings)
                 for category, settings in self._categories.items()
             },
-            'kodi_mapping': self._kodi_mapping.copy(),
-            'configuration_status': self.get_configuration_completeness()
+            "kodi_mapping": self._kodi_mapping.copy(),
+            "configuration_status": self.get_configuration_completeness(),
         }
 
 
@@ -471,102 +488,108 @@ class StandardProviderSettings:
     @classmethod
     def get_rtlplus_schema(cls) -> ProviderSettingsSchema:
         """Get RTL Plus settings schema"""
-        if 'rtlplus' not in cls._registered_schemas:
-            schema = ProviderSettingsSchema('rtlplus')
+        if "rtlplus" not in cls._registered_schemas:
+            schema = ProviderSettingsSchema("rtlplus")
 
             # RTL Plus specific customizations
             # Override default credential settings for RTL Plus specifics
-            schema._settings['username'].description = "RTL Plus account email address"
+            schema._settings["username"].description = "RTL Plus account email address"
 
             # Add RTL Plus specific settings
             schema.add_custom_setting(
-                'device_id',
+                "device_id",
                 string_setting()
                 .display_name("Device ID")
                 .description("Unique device identifier for RTL Plus")
                 .kodi_setting("rtlplus_device_id")
                 .build(),
-                'credentials'
+                "credentials",
             )
 
-            cls._registered_schemas['rtlplus'] = schema
+            cls._registered_schemas["rtlplus"] = schema
 
-        return cls._registered_schemas['rtlplus']
+        return cls._registered_schemas["rtlplus"]
 
     @classmethod
     def get_joyn_schema(cls) -> ProviderSettingsSchema:
         """Get Joyn settings schema"""
-        if 'joyn' not in cls._registered_schemas:
-            schema = ProviderSettingsSchema('joyn')
+        if "joyn" not in cls._registered_schemas:
+            schema = ProviderSettingsSchema("joyn")
 
             # Joyn doesn't require authentication for basic content
-            schema._settings['username'].validation_rules = [
-                rule for rule in schema._settings['username'].validation_rules
+            schema._settings["username"].validation_rules = [
+                rule
+                for rule in schema._settings["username"].validation_rules
                 if rule.name != "not_empty"
             ]
-            schema._settings['password'].validation_rules = [
-                rule for rule in schema._settings['password'].validation_rules
+            schema._settings["password"].validation_rules = [
+                rule
+                for rule in schema._settings["password"].validation_rules
                 if rule.name != "not_empty"
             ]
 
-            cls._registered_schemas['joyn'] = schema
+            cls._registered_schemas["joyn"] = schema
 
-        return cls._registered_schemas['joyn']
+        return cls._registered_schemas["joyn"]
 
     @classmethod
     def get_zdf_schema(cls) -> ProviderSettingsSchema:
         """Get ZDF settings schema"""
-        if 'zdf' not in cls._registered_schemas:
-            schema = ProviderSettingsSchema('zdf')
+        if "zdf" not in cls._registered_schemas:
+            schema = ProviderSettingsSchema("zdf")
 
             # ZDF is free, no authentication required
-            schema.remove_setting('username')
-            schema.remove_setting('password')
-            schema.remove_setting('client_id')
-            schema.remove_setting('client_secret')
+            schema.remove_setting("username")
+            schema.remove_setting("password")
+            schema.remove_setting("client_id")
+            schema.remove_setting("client_secret")
 
             # Add ZDF specific settings
             schema.add_custom_setting(
-                'geo_location',
-                select_setting(['DE', 'AT', 'CH'], 'DE')
+                "geo_location",
+                select_setting(["DE", "AT", "CH"], "DE")
                 .display_name("Geographic Location")
                 .description("Your geographic location for content filtering")
                 .kodi_setting("zdf_geo_location")
                 .build(),
-                'network'
+                "network",
             )
 
-            cls._registered_schemas['zdf'] = schema
+            cls._registered_schemas["zdf"] = schema
 
-        return cls._registered_schemas['zdf']
+        return cls._registered_schemas["zdf"]
 
     @classmethod
     def get_ard_schema(cls) -> ProviderSettingsSchema:
         """Get ARD settings schema"""
-        if 'ard' not in cls._registered_schemas:
-            schema = ProviderSettingsSchema('ard')
+        if "ard" not in cls._registered_schemas:
+            schema = ProviderSettingsSchema("ard")
 
             # ARD is free, no authentication required
-            schema.remove_setting('username')
-            schema.remove_setting('password')
-            schema.remove_setting('client_id')
-            schema.remove_setting('client_secret')
+            schema.remove_setting("username")
+            schema.remove_setting("password")
+            schema.remove_setting("client_id")
+            schema.remove_setting("client_secret")
 
-            cls._registered_schemas['ard'] = schema
+            cls._registered_schemas["ard"] = schema
 
-        return cls._registered_schemas['ard']
+        return cls._registered_schemas["ard"]
 
     @classmethod
-    def register_provider_schema(cls, provider_name: str, schema: ProviderSettingsSchema) -> None:
+    def register_provider_schema(
+        cls, provider_name: str, schema: ProviderSettingsSchema
+    ) -> None:
         """Register a custom provider schema"""
         cls._registered_schemas[provider_name] = schema
         logger.info(f"Registered custom settings schema for provider: {provider_name}")
 
     @classmethod
-    def get_provider_schema(cls, provider_name: str) -> Optional[ProviderSettingsSchema]:
+    def get_provider_schema(
+        cls, provider_name: str
+    ) -> Optional[ProviderSettingsSchema]:
         """Get schema for a provider, creating default if not found"""
         # Check if we have a specific schema method
-        method_name = f'get_{provider_name}_schema'
+        method_name = f"get_{provider_name}_schema"
         if hasattr(cls, method_name):
             return getattr(cls, method_name)()
 
@@ -586,11 +609,17 @@ class StandardProviderSettings:
         # Include both registered schemas and built-in methods
         builtin_providers = []
         for attr_name in dir(cls):
-            if attr_name.startswith('get_') and attr_name.endswith('_schema') and attr_name != 'get_provider_schema':
+            if (
+                attr_name.startswith("get_")
+                and attr_name.endswith("_schema")
+                and attr_name != "get_provider_schema"
+            ):
                 provider_name = attr_name[4:-7]  # Remove 'get_' and '_schema'
                 builtin_providers.append(provider_name)
 
-        all_providers = list(set(builtin_providers + list(cls._registered_schemas.keys())))
+        all_providers = list(
+            set(builtin_providers + list(cls._registered_schemas.keys()))
+        )
         return sorted(all_providers)
 
     @classmethod

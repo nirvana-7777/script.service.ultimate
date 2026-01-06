@@ -9,15 +9,16 @@ Works in both Kodi and standalone environments.
 """
 
 import time
-from typing import Dict, Optional, Tuple, Any
 from enum import Enum
+from typing import Any, Dict, Optional, Tuple
 
+from ..utils.environment import get_vfs_instance, is_kodi_environment
 from ..utils.logger import logger
-from ..utils.environment import is_kodi_environment, get_vfs_instance
 
 
 class EnableSource(Enum):
     """Source of the enable setting"""
+
     KODI = "kodi"
     FILE = "file"
     DEFAULT = "default"
@@ -50,13 +51,16 @@ class ProviderEnableManager:
             try:
                 # Fixed import path - kodi_settings_bridge is in the same directory
                 from .kodi_settings_bridge import KodiSettingsBridge
+
                 self._kodi_bridge = KodiSettingsBridge(config_dir=config_dir)
                 logger.debug("ProviderEnableManager: Kodi bridge initialized")
             except ImportError as e:
                 logger.debug(f"ProviderEnableManager: Kodi bridge not available: {e}")
                 self._kodi_bridge = None
             except Exception as e:
-                logger.error(f"ProviderEnableManager: Error initializing Kodi bridge: {e}")
+                logger.error(
+                    f"ProviderEnableManager: Error initializing Kodi bridge: {e}"
+                )
                 self._kodi_bridge = None
 
     def _load_file(self, force_reload: bool = False) -> Dict[str, Any]:
@@ -72,20 +76,23 @@ class ProviderEnableManager:
         current_time = time.time()
 
         # Check cache first
-        if not force_reload and self._cache and (current_time - self._cache_time) < self.CACHE_TTL:
+        if (
+            not force_reload
+            and self._cache
+            and (current_time - self._cache_time) < self.CACHE_TTL
+        ):
             return self._cache
 
         # Initialize default structure
-        default_data = {
-            "version": self.DEFAULT_VERSION,
-            "providers": {}
-        }
+        default_data = {"version": self.DEFAULT_VERSION, "providers": {}}
 
         # Check if file exists
         if not self.vfs.exists(self.DEFAULT_FILENAME):
             self._cache = default_data
             self._cache_time = current_time
-            logger.debug(f"ProviderEnableManager: File {self.DEFAULT_FILENAME} not found, using defaults")
+            logger.debug(
+                f"ProviderEnableManager: File {self.DEFAULT_FILENAME} not found, using defaults"
+            )
             return default_data
 
         try:
@@ -93,7 +100,9 @@ class ProviderEnableManager:
             data = self.vfs.read_json(self.DEFAULT_FILENAME)
 
             if not isinstance(data, dict):
-                logger.warning(f"ProviderEnableManager: Invalid file format, using defaults")
+                logger.warning(
+                    f"ProviderEnableManager: Invalid file format, using defaults"
+                )
                 self._cache = default_data
                 self._cache_time = current_time
                 return default_data
@@ -111,7 +120,9 @@ class ProviderEnableManager:
                     try:
                         data["providers"][provider] = bool(value)
                     except (ValueError, TypeError):
-                        logger.warning(f"ProviderEnableManager: Invalid value for {provider}, removing")
+                        logger.warning(
+                            f"ProviderEnableManager: Invalid value for {provider}, removing"
+                        )
                         del data["providers"][provider]
 
             # Add last_updated if missing
@@ -122,11 +133,15 @@ class ProviderEnableManager:
             self._cache = data
             self._cache_time = current_time
 
-            logger.debug(f"ProviderEnableManager: Loaded {len(data['providers'])} providers from file")
+            logger.debug(
+                f"ProviderEnableManager: Loaded {len(data['providers'])} providers from file"
+            )
             return data
 
         except Exception as e:
-            logger.error(f"ProviderEnableManager: Error loading {self.DEFAULT_FILENAME}: {e}")
+            logger.error(
+                f"ProviderEnableManager: Error loading {self.DEFAULT_FILENAME}: {e}"
+            )
             self._cache = default_data
             self._cache_time = current_time
             return default_data
@@ -154,14 +169,20 @@ class ProviderEnableManager:
                 # Update cache
                 self._cache = data
                 self._cache_time = time.time()
-                logger.debug(f"ProviderEnableManager: Saved {len(data.get('providers', {}))} providers to file")
+                logger.debug(
+                    f"ProviderEnableManager: Saved {len(data.get('providers', {}))} providers to file"
+                )
             else:
-                logger.error(f"ProviderEnableManager: Failed to write to {self.DEFAULT_FILENAME}")
+                logger.error(
+                    f"ProviderEnableManager: Failed to write to {self.DEFAULT_FILENAME}"
+                )
 
             return success
 
         except Exception as e:
-            logger.error(f"ProviderEnableManager: Error saving {self.DEFAULT_FILENAME}: {e}")
+            logger.error(
+                f"ProviderEnableManager: Error saving {self.DEFAULT_FILENAME}: {e}"
+            )
             return False
 
     def _get_kodi_enabled_status(self, provider_name: str) -> Optional[bool]:
@@ -179,7 +200,7 @@ class ProviderEnableManager:
 
         try:
             # Parse provider_name for potential country suffix
-            parts = provider_name.rsplit('_', 1)
+            parts = provider_name.rsplit("_", 1)
 
             # Check country-specific setting first (e.g., "enable_joyn_de")
             if len(parts) == 2 and len(parts[1]) in (2, 3):  # Country code length
@@ -189,8 +210,10 @@ class ProviderEnableManager:
                 # Try country-specific setting
                 country_value = self._kodi_bridge.get_setting(country_setting)
                 if country_value:
-                    enabled = country_value.lower() in ['true', '1', 'yes']
-                    logger.debug(f"ProviderEnableManager: Found Kodi setting {country_setting}={enabled}")
+                    enabled = country_value.lower() in ["true", "1", "yes"]
+                    logger.debug(
+                        f"ProviderEnableManager: Found Kodi setting {country_setting}={enabled}"
+                    )
                     return enabled
 
             # Try general provider setting (e.g., "enable_joyn")
@@ -198,16 +221,22 @@ class ProviderEnableManager:
             general_value = self._kodi_bridge.get_setting(general_setting)
 
             if general_value:
-                enabled = general_value.lower() in ['true', '1', 'yes']
-                logger.debug(f"ProviderEnableManager: Found Kodi setting {general_setting}={enabled}")
+                enabled = general_value.lower() in ["true", "1", "yes"]
+                logger.debug(
+                    f"ProviderEnableManager: Found Kodi setting {general_setting}={enabled}"
+                )
                 return enabled
 
             # No Kodi setting found
-            logger.debug(f"ProviderEnableManager: No Kodi setting found for {provider_name}")
+            logger.debug(
+                f"ProviderEnableManager: No Kodi setting found for {provider_name}"
+            )
             return None
 
         except Exception as e:
-            logger.warning(f"ProviderEnableManager: Error reading Kodi setting for {provider_name}: {e}")
+            logger.warning(
+                f"ProviderEnableManager: Error reading Kodi setting for {provider_name}: {e}"
+            )
             return None
 
     def is_provider_enabled(self, provider_name: str) -> bool:
@@ -264,7 +293,9 @@ class ProviderEnableManager:
 
         return EnableSource.DEFAULT
 
-    def set_provider_enabled(self, provider_name: str, enabled: bool) -> Tuple[bool, str]:
+    def set_provider_enabled(
+        self, provider_name: str, enabled: bool
+    ) -> Tuple[bool, str]:
         """
         Set enabled status for a provider (writes to file only).
 
@@ -282,8 +313,10 @@ class ProviderEnableManager:
         source = self.get_enabled_source(provider_name)
 
         if source == EnableSource.KODI:
-            message = f"Provider '{provider_name}' is controlled by Kodi settings. " \
-                      f"Change the setting in Kodi addon settings."
+            message = (
+                f"Provider '{provider_name}' is controlled by Kodi settings. "
+                f"Change the setting in Kodi addon settings."
+            )
             logger.warning(f"ProviderEnableManager: {message}")
             return False, message
 
@@ -322,7 +355,7 @@ class ProviderEnableManager:
             result[provider_name] = {
                 "enabled": enabled,
                 "source": source.value,  # Convert enum to string
-                "can_modify": source != EnableSource.KODI
+                "can_modify": source != EnableSource.KODI,
             }
 
         return result
@@ -350,7 +383,7 @@ class ProviderEnableManager:
             "enabled": enabled,
             "source": source.value,  # Convert enum to string
             "can_modify": source != EnableSource.KODI,
-            "in_file": True
+            "in_file": True,
         }
 
     def delete_provider_setting(self, provider_name: str) -> Tuple[bool, str]:
@@ -367,7 +400,9 @@ class ProviderEnableManager:
         source = self.get_enabled_source(provider_name)
 
         if source == EnableSource.KODI:
-            message = f"Cannot delete setting for '{provider_name}' - controlled by Kodi"
+            message = (
+                f"Cannot delete setting for '{provider_name}' - controlled by Kodi"
+            )
             logger.warning(f"ProviderEnableManager: {message}")
             return False, message
 
@@ -407,7 +442,7 @@ class ProviderEnableManager:
             default_data = {
                 "version": self.DEFAULT_VERSION,
                 "last_updated": time.time(),
-                "providers": {}
+                "providers": {},
             }
 
             # Save empty file
@@ -442,7 +477,11 @@ class ProviderEnableManager:
             "last_updated": data.get("last_updated"),
             "provider_count": len(data.get("providers", {})),
             "file_exists": self.vfs.exists(self.DEFAULT_FILENAME),
-            "file_path": self.vfs.get_file_path(self.DEFAULT_FILENAME) if hasattr(self.vfs, 'get_file_path') else "vfs"
+            "file_path": (
+                self.vfs.get_file_path(self.DEFAULT_FILENAME)
+                if hasattr(self.vfs, "get_file_path")
+                else "vfs"
+            ),
         }
 
     def migrate_from_kodi(self) -> Tuple[bool, str, int]:
@@ -476,13 +515,17 @@ class ProviderEnableManager:
                     # Kodi has explicit setting, migrate to file
                     data["providers"][provider_name] = kodi_enabled
                     migrated_count += 1
-                    logger.debug(f"ProviderEnableManager: Migrated {provider_name}={kodi_enabled}")
+                    logger.debug(
+                        f"ProviderEnableManager: Migrated {provider_name}={kodi_enabled}"
+                    )
 
             if migrated_count > 0:
                 # Save migrated data
                 success = self._save_file(data)
                 if success:
-                    message = f"Migrated {migrated_count} provider settings from Kodi to file"
+                    message = (
+                        f"Migrated {migrated_count} provider settings from Kodi to file"
+                    )
                     logger.info(f"ProviderEnableManager: {message}")
                     return True, message, migrated_count
                 else:

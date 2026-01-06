@@ -5,9 +5,11 @@
 Factory for creating appropriate notification adapters
 Auto-detects environment (Kodi vs standalone) and creates correct adapter
 """
+
 from typing import Optional
-from .notification_interface import NotificationInterface
+
 from ..utils.logger import logger
+from .notification_interface import NotificationInterface
 
 
 class NotificationFactory:
@@ -24,8 +26,9 @@ class NotificationFactory:
     _environment_detected: Optional[str] = None
 
     @classmethod
-    def create(cls, force_environment: Optional[str] = None,
-               http_manager=None) -> NotificationInterface:
+    def create(
+        cls, force_environment: Optional[str] = None, http_manager=None
+    ) -> NotificationInterface:
         """
         Create appropriate notification adapter
 
@@ -38,8 +41,14 @@ class NotificationFactory:
             NotificationInterface: Appropriate adapter for current environment
         """
         # Return cached adapter if available and no http_manager change
-        if cls._cached_adapter is not None and force_environment is None and http_manager is None:
-            logger.debug(f"Using cached notification adapter: {cls._environment_detected}")
+        if (
+            cls._cached_adapter is not None
+            and force_environment is None
+            and http_manager is None
+        ):
+            logger.debug(
+                f"Using cached notification adapter: {cls._environment_detected}"
+            )
             return cls._cached_adapter
 
         # Detect environment
@@ -51,7 +60,7 @@ class NotificationFactory:
             logger.info(f"Detected notification environment: {environment}")
 
         # Create appropriate adapter
-        if environment == 'kodi':
+        if environment == "kodi":
             adapter = cls._create_kodi_adapter(http_manager=http_manager)
         else:
             adapter = cls._create_console_adapter()
@@ -76,12 +85,14 @@ class NotificationFactory:
 
             # If import succeeds, we're in Kodi
             logger.debug("Kodi modules available - using Kodi notification adapter")
-            return 'kodi'
+            return "kodi"
 
         except ImportError:
             # If import fails, we're standalone
-            logger.debug("Kodi modules not available - using console notification adapter")
-            return 'console'
+            logger.debug(
+                "Kodi modules not available - using console notification adapter"
+            )
+            return "console"
 
     @classmethod
     def _create_kodi_adapter(cls, http_manager=None) -> NotificationInterface:
@@ -96,6 +107,7 @@ class NotificationFactory:
         """
         try:
             from .kodi_notification_adapter import KodiNotificationAdapter
+
             adapter = KodiNotificationAdapter(http_manager=http_manager)
             logger.info("✓ Kodi notification adapter created")
             return adapter
@@ -114,6 +126,7 @@ class NotificationFactory:
             ConsoleNotificationAdapter
         """
         from .console_notification_adapter import ConsoleNotificationAdapter
+
         adapter = ConsoleNotificationAdapter()
         logger.info("✓ Console notification adapter created")
         return adapter
@@ -145,6 +158,7 @@ class NotificationFactory:
         """
         try:
             import xbmcgui
+
             return True
         except ImportError:
             return False

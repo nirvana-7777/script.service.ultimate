@@ -1,23 +1,29 @@
 # [file name]: auth.py
 # [file content begin]
 # streaming_providers/providers/hrti/auth.py
-import json
 import base64
+import json
 import time
 import uuid
-from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
+from typing import Any, Dict, Optional
 
-from ...base.auth.base_auth import BaseAuthenticator, BaseAuthToken, TokenAuthLevel
-from ...base.utils.logger import logger
-from .models import HRTiCredentials, HRTiAuthToken
-from .constants import HRTiConfig
+from ...base.auth.base_auth import (BaseAuthenticator, BaseAuthToken,
+                                    TokenAuthLevel)
 from ...base.models.proxy_models import ProxyConfig
+from ...base.utils.logger import logger
+from .constants import HRTiConfig
+from .models import HRTiAuthToken, HRTiCredentials
 
 
 class HRTiAuthenticator(BaseAuthenticator):
-    def __init__(self, credentials=None, config_dir=None,
-                 proxy_config: Optional[ProxyConfig] = None, http_manager=None):
+    def __init__(
+        self,
+        credentials=None,
+        config_dir=None,
+        proxy_config: Optional[ProxyConfig] = None,
+        http_manager=None,
+    ):
 
         # Initialize configuration FIRST
         self._config = HRTiConfig()
@@ -25,8 +31,9 @@ class HRTiAuthenticator(BaseAuthenticator):
         # Get proxy_config if not provided
         if proxy_config is None:
             from ...base.network import ProxyConfigManager
+
             proxy_mgr = ProxyConfigManager(config_dir)
-            proxy_config = proxy_mgr.get_proxy_config('hrti')
+            proxy_config = proxy_mgr.get_proxy_config("hrti")
 
         # Store HTTP manager and proxy config locally (like MagentaEU)
         self._http_manager = http_manager
@@ -43,10 +50,10 @@ class HRTiAuthenticator(BaseAuthenticator):
 
         # Call parent init WITHOUT proxy_config and http_manager (like MagentaEU)
         super().__init__(
-            provider_name='hrti',
+            provider_name="hrti",
             credentials=credentials,
             country=None,  # Changed from 'HR' to None for flat credential structure
-            config_dir=config_dir
+            config_dir=config_dir,
             # NO proxy_config or http_manager passed to parent
         )
 
@@ -63,7 +70,9 @@ class HRTiAuthenticator(BaseAuthenticator):
         """Safe access to http_manager - required by provider"""
         if self._http_manager is None:
             # This should never happen since we validate in __init__
-            raise ValueError("HTTP manager not available - this should have been set during initialization")
+            raise ValueError(
+                "HTTP manager not available - this should have been set during initialization"
+            )
         return self._http_manager
 
     @http_manager.setter
@@ -74,7 +83,7 @@ class HRTiAuthenticator(BaseAuthenticator):
     @property
     def auth_endpoint(self) -> str:
         """HRTi authentication endpoint"""
-        return self.config.api_endpoints['grant_access']
+        return self.config.api_endpoints["grant_access"]
 
     def _get_auth_headers(self) -> Dict[str, str]:
         """Get headers specifically for authentication endpoint"""
@@ -85,21 +94,23 @@ class HRTiAuthenticator(BaseAuthenticator):
 
         # Special headers for authentication endpoint with /signin referer
         headers = {
-            'User-Agent': self.config.user_agent,
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-            'deviceid': device_id,
-            'devicetypeid': self.config.device_reference_id,
+            "User-Agent": self.config.user_agent,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "deviceid": device_id,
+            "devicetypeid": self.config.device_reference_id,
             # REMOVED: 'host': 'hrti.hrt.hr',  # Let HTTP library set this automatically
-            'ipaddress': self._ip_address,
-            'operatorreferenceid': self.config.operator_reference_id,
-            'origin': self.config.base_website,
-            'referer': f'{self.config.base_website}/signin'
+            "ipaddress": self._ip_address,
+            "operatorreferenceid": self.config.operator_reference_id,
+            "origin": self.config.base_website,
+            "referer": f"{self.config.base_website}/signin",
         }
 
         return headers
 
-    def _get_api_headers(self, bearer_token: str = None, referer: str = None) -> Dict[str, str]:
+    def _get_api_headers(
+        self, bearer_token: str = None, referer: str = None
+    ) -> Dict[str, str]:
         """Get headers for regular API endpoints with proper session support"""
         if not self._ip_address:
             self._get_ip_address()
@@ -107,91 +118,100 @@ class HRTiAuthenticator(BaseAuthenticator):
         device_id = self.get_device_id()
 
         if referer is None:
-            referer = f'{self.config.base_website}/login'
+            referer = f"{self.config.base_website}/login"
 
         headers = {
-            'connection': 'keep-alive',
-            'User-Agent': self.config.user_agent,
-            'Accept': 'application/json, text/plain, */*',
-            'Content-Type': 'application/json',
-            'deviceid': device_id,
-            'devicetypeid': self.config.device_reference_id,
+            "connection": "keep-alive",
+            "User-Agent": self.config.user_agent,
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json",
+            "deviceid": device_id,
+            "devicetypeid": self.config.device_reference_id,
             # REMOVED: 'host': 'hrti.hrt.hr',  # Let HTTP library set this automatically
-            'ipaddress': self._ip_address,
-            'operatorreferenceid': self.config.operator_reference_id,
-            'origin': self.config.base_website,
-            'referer': referer,
-            'accept-encoding': 'gzip, deflate, br',
-            'accept-language': 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7',
+            "ipaddress": self._ip_address,
+            "operatorreferenceid": self.config.operator_reference_id,
+            "origin": self.config.base_website,
+            "referer": referer,
+            "accept-encoding": "gzip, deflate, br",
+            "accept-language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
         }
 
         # Add authorization header with Client prefix
         if bearer_token:
-            headers['authorization'] = f'Client {bearer_token}'
-            logger.debug(f"Added authorization header with token: {bearer_token[:20]}...")
+            headers["authorization"] = f"Client {bearer_token}"
+            logger.debug(
+                f"Added authorization header with token: {bearer_token[:20]}..."
+            )
 
         return headers
 
     def _build_auth_payload(self) -> Dict[str, Any]:
         """Build HRTi-specific authentication payload"""
         # HRTi uses specific format: {"Username":"...","Password":"...","OperatorReferenceId":"hrt"}
-        if hasattr(self.credentials, 'username') and hasattr(self.credentials, 'password'):
+        if hasattr(self.credentials, "username") and hasattr(
+            self.credentials, "password"
+        ):
             return {
                 "Username": self.credentials.username,
                 "Password": self.credentials.password,
-                "OperatorReferenceId": self.config.operator_reference_id
+                "OperatorReferenceId": self.config.operator_reference_id,
             }
         else:
             # Fallback for any other credential type
             return {
-                "Username": getattr(self.credentials, 'username', ''),
-                "Password": getattr(self.credentials, 'password', ''),
-                "OperatorReferenceId": self.config.operator_reference_id
+                "Username": getattr(self.credentials, "username", ""),
+                "Password": getattr(self.credentials, "password", ""),
+                "OperatorReferenceId": self.config.operator_reference_id,
             }
 
-    def _create_token_from_response(self, response_data: Dict[str, Any]) -> HRTiAuthToken:
+    def _create_token_from_response(
+        self, response_data: Dict[str, Any]
+    ) -> HRTiAuthToken:
         """Create HRTi-specific token from API response"""
-        result = response_data.get('Result', {})
+        result = response_data.get("Result", {})
 
         # Debug the response structure
         logger.debug(f"GrantAccess response Result keys: {list(result.keys())}")
 
         # Extract token
-        access_token = result.get('Token', '')
-        logger.debug(f"Extracted access_token: {'present' if access_token else 'MISSING'}")
+        access_token = result.get("Token", "")
+        logger.debug(
+            f"Extracted access_token: {'present' if access_token else 'MISSING'}"
+        )
         if access_token:
-            logger.debug(f"Token length: {len(access_token)}, starts with: {access_token[:20]}...")
+            logger.debug(
+                f"Token length: {len(access_token)}, starts with: {access_token[:20]}..."
+            )
 
         # Store user ID if available
-        if 'Customer' in result:
-            self._user_id = result['Customer'].get('CustomerId', '')
+        if "Customer" in result:
+            self._user_id = result["Customer"].get("CustomerId", "")
             logger.debug(f"Extracted user_id: {self._user_id}")
         else:
             logger.warning("No Customer data in response")
 
         token = HRTiAuthToken(
             access_token=access_token,
-            token_type='Client',
+            token_type="Client",
             expires_in=86400,  # 24 hours default
             issued_at=time.time(),
-            user_id=self._user_id or '',  # Ensure user_id is never None
-            valid_from=result.get('ValidFrom', ''),
-            valid_to=result.get('ValidTo', '')
+            user_id=self._user_id or "",  # Ensure user_id is never None
+            valid_from=result.get("ValidFrom", ""),
+            valid_to=result.get("ValidTo", ""),
         )
 
         # Classify the token immediately after creation
         token.auth_level = self._classify_token(token)
 
-        logger.debug(f"Created HRTiAuthToken - access_token: {bool(token.access_token)}, user_id: {token.user_id}")
+        logger.debug(
+            f"Created HRTiAuthToken - access_token: {bool(token.access_token)}, user_id: {token.user_id}"
+        )
 
         return token
 
     def get_fallback_credentials(self):
         """Get fallback credentials (anonymous access)"""
-        return HRTiCredentials(
-            username='anonymoushrt',
-            password='an0nPasshrt'
-        )
+        return HRTiCredentials(username="anonymoushrt", password="an0nPasshrt")
 
     def _perform_authentication(self) -> HRTiAuthToken:
         """Perform HRTi custom authentication flow"""
@@ -211,7 +231,9 @@ class HRTiAuthenticator(BaseAuthenticator):
         self._current_token = token  # THIS IS THE CRITICAL MISSING LINE
 
         # Debug: Verify token is available
-        logger.debug(f"Token created - access_token present: {bool(token.access_token)}")
+        logger.debug(
+            f"Token created - access_token present: {bool(token.access_token)}"
+        )
         if token.access_token:
             logger.debug(f"Token value: {token.access_token[:20]}...")
         else:
@@ -223,7 +245,9 @@ class HRTiAuthenticator(BaseAuthenticator):
         # Step 6: Get content rating and profiles
         self._get_initial_data()
 
-        logger.info(f"HRTi authentication successful - user_id: {token.user_id}, auth_level: {token.auth_level.value}")
+        logger.info(
+            f"HRTi authentication successful - user_id: {token.user_id}, auth_level: {token.auth_level.value}"
+        )
 
         # Save the session after successful authentication
         self._save_session()
@@ -240,7 +264,9 @@ class HRTiAuthenticator(BaseAuthenticator):
             configured_ip = self._get_configured_ip_from_settings()
             if configured_ip:
                 self._ip_address = configured_ip
-                logger.info(f"Using configured IP address from Kodi settings: {self._ip_address}")
+                logger.info(
+                    f"Using configured IP address from Kodi settings: {self._ip_address}"
+                )
                 return self._ip_address
         except Exception as e:
             logger.debug(f"Could not read configured IP from settings: {e}")
@@ -249,11 +275,12 @@ class HRTiAuthenticator(BaseAuthenticator):
         try:
             logger.debug("No configured IP found, fetching from API...")
             response = self.http_manager.get(
-                self.config.api_endpoints['get_ip'],
-                operation='api'
+                self.config.api_endpoints["get_ip"], operation="api"
             )
             response.raise_for_status()
-            self._ip_address = response.text.strip().strip('"')  # Remove quotes if present
+            self._ip_address = response.text.strip().strip(
+                '"'
+            )  # Remove quotes if present
             logger.info(f"Retrieved IP address from API: {self._ip_address}")
             return self._ip_address
         except Exception as e:
@@ -269,7 +296,7 @@ class HRTiAuthenticator(BaseAuthenticator):
             Configured IP address or None if not available
         """
         # Access settings_manager through parent class
-        if not hasattr(self, 'settings_manager') or not self.settings_manager:
+        if not hasattr(self, "settings_manager") or not self.settings_manager:
             logger.debug("Settings manager not available for IP configuration")
             return None
 
@@ -280,7 +307,7 @@ class HRTiAuthenticator(BaseAuthenticator):
 
         # Try to read IP from Kodi settings
         # HRTi doesn't use country in this implementation, pass None
-        configured_ip = kodi_bridge.read_ip_address_from_kodi('hrti', None)
+        configured_ip = kodi_bridge.read_ip_address_from_kodi("hrti", None)
 
         if configured_ip:
             logger.debug(f"Found configured IP in Kodi settings: {configured_ip}")
@@ -293,16 +320,14 @@ class HRTiAuthenticator(BaseAuthenticator):
         try:
             # Get env config
             env_response = self.http_manager.get(
-                self.config.env_endpoint,
-                operation='api'
+                self.config.env_endpoint, operation="api"
             )
             env_response.raise_for_status()
             env_data = env_response.json()
 
             # Get main config
             config_response = self.http_manager.get(
-                self.config.config_endpoint,
-                operation='api'
+                self.config.config_endpoint, operation="api"
             )
             config_response.raise_for_status()
             config_data = config_response.json()
@@ -323,7 +348,9 @@ class HRTiAuthenticator(BaseAuthenticator):
 
             device_id = self.get_device_id()
 
-            logger.debug(f"Performing grant access with username: {self.credentials.username}")
+            logger.debug(
+                f"Performing grant access with username: {self.credentials.username}"
+            )
             logger.debug(f"Using device ID: {device_id}")
             logger.debug(f"Using IP address: {self._ip_address}")
 
@@ -333,37 +360,46 @@ class HRTiAuthenticator(BaseAuthenticator):
 
             # Log the request details (safely)
             safe_headers = headers.copy()
-            if 'deviceid' in safe_headers:
-                safe_headers['deviceid'] = f"{safe_headers['deviceid'][:8]}..."
+            if "deviceid" in safe_headers:
+                safe_headers["deviceid"] = f"{safe_headers['deviceid'][:8]}..."
             logger.debug(f"HRTi Auth Headers: {safe_headers}")
 
             safe_payload = payload.copy()
-            if 'Password' in safe_payload:
-                safe_payload['Password'] = '***' if safe_payload['Password'] else '<empty>'
+            if "Password" in safe_payload:
+                safe_payload["Password"] = (
+                    "***" if safe_payload["Password"] else "<empty>"
+                )
             logger.debug(f"HRTi Auth Payload: {safe_payload}")
 
             response = self.http_manager.post(
                 self.auth_endpoint,
-                operation='auth',
+                operation="auth",
                 headers=headers,
-                data=json.dumps(payload)
+                data=json.dumps(payload),
             )
 
             logger.debug(f"HRTi Auth Response - Status: {response.status_code}")
             response.raise_for_status()
 
             result = response.json()
-            if 'Result' not in result:
+            if "Result" not in result:
                 raise Exception("No result in grant access response")
 
-            customer_id = result.get('Result', {}).get('Customer', {}).get('CustomerId', 'unknown')
+            customer_id = (
+                result.get("Result", {})
+                .get("Customer", {})
+                .get("CustomerId", "unknown")
+            )
             logger.debug(f"Grant access successful - user: {customer_id}")
             return result
 
         except Exception as e:
             logger.error(f"HRTi grant access failed: {e}")
             # Only fallback to anonymous if we're not already using it
-            if not isinstance(self.credentials, HRTiCredentials) or self.credentials.username != 'anonymoushrt':
+            if (
+                not isinstance(self.credentials, HRTiCredentials)
+                or self.credentials.username != "anonymoushrt"
+            ):
                 logger.info("Falling back to anonymous credentials")
                 self.credentials = self.get_fallback_credentials()
                 return self._perform_grant_access()
@@ -373,7 +409,9 @@ class HRTiAuthenticator(BaseAuthenticator):
     def _register_device(self):
         """Register device with HRTi using API headers with proper authorization"""
         try:
-            bearer_token = self._current_token.access_token if self._current_token else ''
+            bearer_token = (
+                self._current_token.access_token if self._current_token else ""
+            )
             if not bearer_token:
                 logger.warning("No bearer token available for device registration")
                 return
@@ -382,11 +420,11 @@ class HRTiAuthenticator(BaseAuthenticator):
             headers = self._get_api_headers(bearer_token)
 
             # Update the referer to root path for device registration
-            headers['referer'] = f'{self.config.base_website}/'
+            headers["referer"] = f"{self.config.base_website}/"
 
             # Add cache-control and pragma headers to match working example
-            headers['cache-control'] = 'no-cache'
-            headers['pragma'] = 'no-cache'
+            headers["cache-control"] = "no-cache"
+            headers["pragma"] = "no-cache"
 
             payload = {
                 "DeviceSerial": self._device_id,
@@ -396,16 +434,16 @@ class HRTiAuthenticator(BaseAuthenticator):
                 "ApplicationVersion": self.config.application_version,
                 "DrmId": self._device_id,
                 "OsVersion": self.config.os_version,
-                "ClientType": self.config.client_type
+                "ClientType": self.config.client_type,
             }
 
             logger.debug(f"HRTi Device Registration Payload: {payload}")
 
             response = self.http_manager.post(
-                self.config.api_endpoints['register_device'],
-                operation='api',
+                self.config.api_endpoints["register_device"],
+                operation="api",
                 headers=headers,
-                data=json.dumps(payload)
+                data=json.dumps(payload),
             )
 
             logger.debug(f"Device registration response status: {response.status_code}")
@@ -420,27 +458,29 @@ class HRTiAuthenticator(BaseAuthenticator):
     def _get_initial_data(self):
         """Get initial content rating and profiles using API headers with proper authorization"""
         try:
-            bearer_token = self._current_token.access_token if self._current_token else ''
+            bearer_token = (
+                self._current_token.access_token if self._current_token else ""
+            )
             headers = self._get_api_headers(bearer_token)
 
             # Update the referer to root path for these API calls
-            headers['referer'] = f'{self.config.base_website}/'
+            headers["referer"] = f"{self.config.base_website}/"
 
             # Get content ratings
             content_response = self.http_manager.post(
-                self.config.api_endpoints['content_ratings'],
-                operation='api',
+                self.config.api_endpoints["content_ratings"],
+                operation="api",
                 headers=headers,
-                data=json.dumps({})
+                data=json.dumps({}),
             )
             content_response.raise_for_status()
 
             # Get profiles
             profiles_response = self.http_manager.post(
-                self.config.api_endpoints['profiles'],
-                operation='api',
+                self.config.api_endpoints["profiles"],
+                operation="api",
                 headers=headers,
-                data=json.dumps({})
+                data=json.dumps({}),
             )
             profiles_response.raise_for_status()
 
@@ -452,14 +492,18 @@ class HRTiAuthenticator(BaseAuthenticator):
     def _initialize_device(self):
         """Initialize or load device ID - ensure it's a proper UUID"""
         try:
-            self._device_id = self.settings_manager.get_device_id(self.provider_name, self.country)
+            self._device_id = self.settings_manager.get_device_id(
+                self.provider_name, self.country
+            )
             if not self._device_id:
                 self._device_id = str(uuid.uuid4())
                 logger.debug(f"Generated new device ID: {self._device_id}")
 
             # Ensure it's a valid UUID format
             if not self._validate_uuid(self._device_id):
-                logger.warning(f"Invalid device ID format, generating new one: {self._device_id}")
+                logger.warning(
+                    f"Invalid device ID format, generating new one: {self._device_id}"
+                )
                 self._device_id = str(uuid.uuid4())
 
         except Exception as e:
@@ -499,29 +543,37 @@ class HRTiAuthenticator(BaseAuthenticator):
         except Exception as e:
             logger.error(f"Error in HRTi session loading: {e}")
             # Ensure _user_id is at least an empty string
-            self._user_id = self._user_id or ''
+            self._user_id = self._user_id or ""
 
-    def authorize_session(self, content_type: str, content_ref_id: str,
-                          content_drm_id: str = None,
-                          video_store_ids: list = None,
-                          channel_id: str = None,
-                          start_time: str = None,
-                          end_time: str = None) -> Optional[Dict[str, Any]]:
+    def authorize_session(
+        self,
+        content_type: str,
+        content_ref_id: str,
+        content_drm_id: str = None,
+        video_store_ids: list = None,
+        channel_id: str = None,
+        start_time: str = None,
+        end_time: str = None,
+    ) -> Optional[Dict[str, Any]]:
         """Authorize a playback session"""
         try:
-            bearer_token = self._current_token.access_token if self._current_token else ''
+            bearer_token = (
+                self._current_token.access_token if self._current_token else ""
+            )
             headers = self._get_api_headers(bearer_token)
 
             # Set referer based on content type
             if channel_id is None:
-                headers['referer'] = f'{self.config.base_website}/videostore'
+                headers["referer"] = f"{self.config.base_website}/videostore"
             else:
                 if content_type == "tlive":
-                    headers['referer'] = f'{self.config.base_website}/live/tv?channel={channel_id}'
+                    headers["referer"] = (
+                        f"{self.config.base_website}/live/tv?channel={channel_id}"
+                    )
                 elif content_type == "rlive":
-                    headers['referer'] = f'{self.config.base_website}/live/radio'
+                    headers["referer"] = f"{self.config.base_website}/live/radio"
                 else:
-                    headers['referer'] = f'{self.config.base_website}/live/'
+                    headers["referer"] = f"{self.config.base_website}/live/"
 
             payload = {
                 "ContentType": content_type,
@@ -530,25 +582,31 @@ class HRTiAuthenticator(BaseAuthenticator):
                 "VideostoreReferenceIds": video_store_ids,
                 "ChannelReferenceId": channel_id,
                 "StartTime": start_time,
-                "EndTime": end_time
+                "EndTime": end_time,
             }
 
-            logger.debug(f"Authorizing session - type: {content_type}, ref: {content_ref_id}, drm: {content_drm_id}")
+            logger.debug(
+                f"Authorizing session - type: {content_type}, ref: {content_ref_id}, drm: {content_drm_id}"
+            )
 
             response = self.http_manager.post(
-                self.config.api_endpoints['authorize_session'],
-                operation='api',
+                self.config.api_endpoints["authorize_session"],
+                operation="api",
                 headers=headers,
-                data=json.dumps(payload)
+                data=json.dumps(payload),
             )
             response.raise_for_status()
 
             result = response.json()
-            if 'Result' in result:
-                authorized = result['Result'].get('Authorized', False)
-                session_id = result['Result'].get('SessionId') or result['Result'].get('DrmId')
-                logger.debug(f"Session authorization result - authorized: {authorized}, session_id: {session_id}")
-                return result['Result']
+            if "Result" in result:
+                authorized = result["Result"].get("Authorized", False)
+                session_id = result["Result"].get("SessionId") or result["Result"].get(
+                    "DrmId"
+                )
+                logger.debug(
+                    f"Session authorization result - authorized: {authorized}, session_id: {session_id}"
+                )
+                return result["Result"]
             else:
                 logger.warning("No result in session authorization response")
                 return None
@@ -560,25 +618,26 @@ class HRTiAuthenticator(BaseAuthenticator):
     def report_session_event(self, session_id: str, channel_id: str = None) -> bool:
         """Report session event (like play start)"""
         try:
-            bearer_token = self._current_token.access_token if self._current_token else ''
+            bearer_token = (
+                self._current_token.access_token if self._current_token else ""
+            )
             headers = self._get_api_headers(bearer_token)
 
             # Set referer based on channel
             if channel_id is None:
-                headers['referer'] = f'{self.config.base_website}/videostore'
+                headers["referer"] = f"{self.config.base_website}/videostore"
             else:
-                headers['referer'] = f'{self.config.base_website}/live/tv?channel={channel_id}'
+                headers["referer"] = (
+                    f"{self.config.base_website}/live/tv?channel={channel_id}"
+                )
 
-            payload = {
-                "SessionEventId": 1,  # 1 = play start
-                "SessionId": session_id
-            }
+            payload = {"SessionEventId": 1, "SessionId": session_id}  # 1 = play start
 
             response = self.http_manager.post(
-                self.config.api_endpoints['report_session'],
-                operation='api',
+                self.config.api_endpoints["report_session"],
+                operation="api",
                 headers=headers,
-                data=json.dumps(payload)
+                data=json.dumps(payload),
             )
             response.raise_for_status()
 
@@ -593,19 +652,22 @@ class HRTiAuthenticator(BaseAuthenticator):
         """Generate license data for DRM - returns base64 encoded string"""
         try:
             drm_license = {
-                'userId': self._user_id or '',
-                'sessionId': session_id,
-                'merchant': self.config.merchant
+                "userId": self._user_id or "",
+                "sessionId": session_id,
+                "merchant": self.config.merchant,
             }
 
             logger.debug(
-                f"Creating license data - userId: {self._user_id}, sessionId: {session_id}, merchant: {self.config.merchant}")
+                f"Creating license data - userId: {self._user_id}, sessionId: {session_id}, merchant: {self.config.merchant}"
+            )
 
             # Encode to JSON then to base64
-            license_bytes = json.dumps(drm_license).encode('utf-8')
-            license_b64 = base64.b64encode(license_bytes).decode('utf-8')
+            license_bytes = json.dumps(drm_license).encode("utf-8")
+            license_b64 = base64.b64encode(license_bytes).decode("utf-8")
 
-            logger.debug(f"License data (base64, first 30 chars): {license_b64[:30]}...")
+            logger.debug(
+                f"License data (base64, first 30 chars): {license_b64[:30]}..."
+            )
             return license_b64
 
         except Exception as e:
@@ -626,7 +688,7 @@ class HRTiAuthenticator(BaseAuthenticator):
         # Check if it's an HRTiAuthToken and has user_id attribute
         if isinstance(token, HRTiAuthToken):
             # Check if it's an anonymous token by user_id
-            if token.user_id == 'anonymoushrt':
+            if token.user_id == "anonymoushrt":
                 return TokenAuthLevel.ANONYMOUS
 
             # Check if we have user credentials available
@@ -634,29 +696,43 @@ class HRTiAuthenticator(BaseAuthenticator):
 
             # Check stored credentials first
             try:
-                stored_creds = self.settings_manager.get_provider_credentials(self.provider_name, self.country)
+                stored_creds = self.settings_manager.get_provider_credentials(
+                    self.provider_name, self.country
+                )
             except TypeError:
-                stored_creds = self.settings_manager.get_provider_credentials(self.provider_name)
+                stored_creds = self.settings_manager.get_provider_credentials(
+                    self.provider_name
+                )
 
-            has_user_creds = isinstance(stored_creds, UserPasswordCredentials) and stored_creds.validate()
+            has_user_creds = (
+                isinstance(stored_creds, UserPasswordCredentials)
+                and stored_creds.validate()
+            )
 
             # Check current credentials
             if not has_user_creds:
-                has_user_creds = isinstance(self.credentials, UserPasswordCredentials) and self.credentials.validate()
+                has_user_creds = (
+                    isinstance(self.credentials, UserPasswordCredentials)
+                    and self.credentials.validate()
+                )
 
             # If we have user credentials and token has a real user_id, it's user authenticated
-            if has_user_creds and token.user_id and token.user_id != 'anonymoushrt':
+            if has_user_creds and token.user_id and token.user_id != "anonymoushrt":
                 return TokenAuthLevel.USER_AUTHENTICATED
 
         # Check if using anonymous credentials
-        if (hasattr(self.credentials, 'username') and
-                self.credentials.username == 'anonymoushrt'):
+        if (
+            hasattr(self.credentials, "username")
+            and self.credentials.username == "anonymoushrt"
+        ):
             return TokenAuthLevel.ANONYMOUS
 
         # If we have user credentials, consider it user authenticated
-        if (hasattr(self.credentials, 'username') and
-                self.credentials.username and
-                self.credentials.username != 'anonymoushrt'):
+        if (
+            hasattr(self.credentials, "username")
+            and self.credentials.username
+            and self.credentials.username != "anonymoushrt"
+        ):
             return TokenAuthLevel.USER_AUTHENTICATED
 
         return TokenAuthLevel.CLIENT_CREDENTIALS
@@ -678,26 +754,39 @@ class HRTiAuthenticator(BaseAuthenticator):
 
             # Check if we have stored user credentials
             try:
-                stored_creds = self.settings_manager.get_provider_credentials(self.provider_name, self.country)
+                stored_creds = self.settings_manager.get_provider_credentials(
+                    self.provider_name, self.country
+                )
             except TypeError:
-                stored_creds = self.settings_manager.get_provider_credentials(self.provider_name)
+                stored_creds = self.settings_manager.get_provider_credentials(
+                    self.provider_name
+                )
 
-            has_stored_user_creds = isinstance(stored_creds, UserPasswordCredentials) and stored_creds.validate()
+            has_stored_user_creds = (
+                isinstance(stored_creds, UserPasswordCredentials)
+                and stored_creds.validate()
+            )
 
             # Check current credentials
-            has_current_user_creds = isinstance(self.credentials,
-                                                UserPasswordCredentials) and self.credentials.validate()
+            has_current_user_creds = (
+                isinstance(self.credentials, UserPasswordCredentials)
+                and self.credentials.validate()
+            )
 
             # Upgrade if we have any user credentials
             return has_stored_user_creds or has_current_user_creds
 
         return False
 
-    def get_bearer_token(self, force_refresh: bool = False, force_upgrade: bool = False) -> str:
+    def get_bearer_token(
+        self, force_refresh: bool = False, force_upgrade: bool = False
+    ) -> str:
         """
         Get bearer token with automatic upgrade from anonymous to user credentials
         """
-        logger.debug(f"HRTi get_bearer_token: force_refresh={force_refresh}, force_upgrade={force_upgrade}")
+        logger.debug(
+            f"HRTi get_bearer_token: force_refresh={force_refresh}, force_upgrade={force_upgrade}"
+        )
 
         # Get current token (authenticate if needed)
         current_token = self.authenticate(force_refresh=force_refresh)
@@ -707,7 +796,8 @@ class HRTiAuthenticator(BaseAuthenticator):
 
         if should_upgrade:
             logger.info(
-                f"HRTi token upgrade triggered (force={force_upgrade}, should_upgrade={self.should_upgrade_token(current_token)})")
+                f"HRTi token upgrade triggered (force={force_upgrade}, should_upgrade={self.should_upgrade_token(current_token)})"
+            )
 
             # Store original credentials at the beginning
             original_credentials = self.credentials
@@ -715,9 +805,13 @@ class HRTiAuthenticator(BaseAuthenticator):
             try:
                 # Get user credentials from settings manager
                 try:
-                    user_creds = self.settings_manager.get_provider_credentials(self.provider_name, self.country)
+                    user_creds = self.settings_manager.get_provider_credentials(
+                        self.provider_name, self.country
+                    )
                 except TypeError:
-                    user_creds = self.settings_manager.get_provider_credentials(self.provider_name)
+                    user_creds = self.settings_manager.get_provider_credentials(
+                        self.provider_name
+                    )
 
                 if not user_creds or not user_creds.validate():
                     logger.debug("No valid user credentials available for upgrade")
@@ -727,7 +821,9 @@ class HRTiAuthenticator(BaseAuthenticator):
                 self.credentials = user_creds
 
                 # Perform authentication with user credentials
-                logger.info("Performing authentication with user credentials for upgrade")
+                logger.info(
+                    "Performing authentication with user credentials for upgrade"
+                )
                 user_token = self._perform_authentication()
 
                 if user_token and not user_token.is_expired:
@@ -740,7 +836,9 @@ class HRTiAuthenticator(BaseAuthenticator):
                         self._save_session()
                         return user_token.bearer_token
                     else:
-                        logger.warning("Authentication succeeded but token is still anonymous level")
+                        logger.warning(
+                            "Authentication succeeded but token is still anonymous level"
+                        )
                         self.credentials = original_credentials
                         return current_token.bearer_token
                 else:
@@ -764,4 +862,6 @@ class HRTiAuthenticator(BaseAuthenticator):
         except Exception as e:
             logger.error(f"HRTi token refresh failed: {e}")
             return None
+
+
 # [file content end]

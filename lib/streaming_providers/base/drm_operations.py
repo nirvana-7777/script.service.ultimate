@@ -3,7 +3,9 @@
 """
 DRM-related operations.
 """
-from typing import List, Dict
+
+from typing import Dict, List
+
 from .drm import DRMPluginManager
 from .models import DRMSystem
 from .utils.logger import logger
@@ -17,8 +19,9 @@ class DRMOperations:
         self.drm_plugin_manager = DRMPluginManager()
         logger.debug("DRMOperations: Initialized")
 
-    def get_channel_drm_configs(self, provider_name: str, channel_id: str,
-                                **kwargs) -> List:
+    def get_channel_drm_configs(
+        self, provider_name: str, channel_id: str, **kwargs
+    ) -> List:
         """Get DRM configurations for a channel."""
         provider = self.registry.get_provider(provider_name)
         if not provider:
@@ -48,13 +51,13 @@ class DRMOperations:
         plugin_systems = set(self.drm_plugin_manager.plugins.keys())
 
         return bool(
-            config_systems & plugin_systems or
-            DRMSystem.GENERIC in plugin_systems
+            config_systems & plugin_systems or DRMSystem.GENERIC in plugin_systems
         )
 
     def _extract_pssh_from_manifest(self, manifest_url: str) -> List:
         """Extract PSSH data from manifest."""
         import requests
+
         from .utils.manifest_parser import ManifestParser
 
         try:
@@ -74,4 +77,3 @@ class DRMOperations:
     def clear_drm_plugins(self):
         """Clear all DRM plugins."""
         self.drm_plugin_manager.clear_plugins()
-

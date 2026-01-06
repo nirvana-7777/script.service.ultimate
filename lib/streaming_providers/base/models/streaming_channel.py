@@ -1,8 +1,9 @@
 # streaming_providers/base/models.py
+import logging
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, Optional, List
-import logging
+from typing import Dict, List, Optional
+
 from .drm_models import DRMConfig
 
 # Setup logging for validation warnings
@@ -11,12 +12,14 @@ logger = logging.getLogger(__name__)
 
 class StreamingMode(Enum):
     """Enum for streaming modes"""
+
     LIVE = "live"
     VOD = "vod"
 
 
 class ContentType(Enum):
     """Enum for content types"""
+
     LIVE = "LIVE"
     VOD = "VOD"
     SERIES = "SERIES"
@@ -26,6 +29,7 @@ class ContentType(Enum):
 
 class Quality(Enum):
     """Enum for stream quality"""
+
     SD = "SD"
     HD = "HD"
     UHD = "UHD"
@@ -43,6 +47,7 @@ class StreamingChannel:
     - New fields have default values
     - All existing methods remain functional
     """
+
     # Core identification
     name: str
     channel_id: str
@@ -65,22 +70,22 @@ class StreamingChannel:
     cdm_type: Optional[str] = None
     use_cdm: bool = True
     cdm: Optional[str] = None
-    cdm_mode: str = 'external'
+    cdm_mode: str = "external"
 
     # DRM Configuration
     drm_config: Optional[DRMConfig] = None
 
     # Video settings
-    video: str = 'best'
+    video: str = "best"
     on_demand: bool = True
     speed_up: bool = True
 
     # Additional metadata
-    content_type: str = 'LIVE'
+    content_type: str = "LIVE"
     description: Optional[str] = None
     genre: Optional[str] = None
-    language: str = 'de'
-    country: str = 'DE'
+    language: str = "de"
+    country: str = "DE"
 
     # Streaming URLs
     license_url: Optional[str] = None
@@ -99,9 +104,9 @@ class StreamingChannel:
         self._validate_fields()
 
         # Auto-update content_type for radio
-        if self.is_radio and self.content_type == 'LIVE':
-            self.content_type = 'RADIO'
-            self.quality = 'AUDIO'
+        if self.is_radio and self.content_type == "LIVE":
+            self.content_type = "RADIO"
+            self.quality = "AUDIO"
 
     def _validate_fields(self):
         """
@@ -109,7 +114,7 @@ class StreamingChannel:
         for backward compatibility
         """
         # Validate content_type consistency
-        if self.mode == 'vod' and self.content_type == 'LIVE':
+        if self.mode == "vod" and self.content_type == "LIVE":
             logger.warning(
                 f"Channel {self.name} ({self.channel_id}): "
                 f"VOD mode with LIVE content_type - consider changing to VOD"
@@ -125,34 +130,34 @@ class StreamingChannel:
     def to_dict(self) -> Dict:
         """Convert to dictionary format - backward compatible with new fields added"""
         result = {
-            'Name': self.name,
-            'Id': self.channel_id,
-            'Provider': self.provider,
-            'LogoUrl': self.logo_url,
-            'ChannelNumber': self.channel_number,
-            'Quality': self.quality,
-            'Mode': self.mode,
-            'SessionManifest': self.session_manifest,
-            'Manifest': self.manifest,
-            'ManifestScript': self.manifest_script,
-            'CdmType': self.cdm_type,
-            'UseCdm': self.use_cdm,
-            'Cdm': self.cdm,
-            'CdmMode': self.cdm_mode,
-            'Video': self.video,
-            'OnDemand': self.on_demand,
-            'SpeedUp': self.speed_up,
-            'ContentType': self.content_type,
-            'Country': self.country,
-            'Language': self.language,
-            'StreamingFormat': self.streaming_format,
+            "Name": self.name,
+            "Id": self.channel_id,
+            "Provider": self.provider,
+            "LogoUrl": self.logo_url,
+            "ChannelNumber": self.channel_number,
+            "Quality": self.quality,
+            "Mode": self.mode,
+            "SessionManifest": self.session_manifest,
+            "Manifest": self.manifest,
+            "ManifestScript": self.manifest_script,
+            "CdmType": self.cdm_type,
+            "UseCdm": self.use_cdm,
+            "Cdm": self.cdm,
+            "CdmMode": self.cdm_mode,
+            "Video": self.video,
+            "OnDemand": self.on_demand,
+            "SpeedUp": self.speed_up,
+            "ContentType": self.content_type,
+            "Country": self.country,
+            "Language": self.language,
+            "StreamingFormat": self.streaming_format,
             # NEW: Radio fields (backward compatible addition)
-            'IsRadio': self.is_radio,
+            "IsRadio": self.is_radio,
         }
 
         # Add DRM config if present
         if self.drm_config:
-            result['DrmConfig'] = self.drm_config.to_dict()
+            result["DrmConfig"] = self.drm_config.to_dict()
 
         return result
 
@@ -178,7 +183,9 @@ class StreamingChannel:
     # NEW: Backward compatible enhancements
 
     @classmethod
-    def create_live_channel(cls, name: str, channel_id: str, provider: str, **kwargs) -> 'StreamingChannel':
+    def create_live_channel(
+        cls, name: str, channel_id: str, provider: str, **kwargs
+    ) -> "StreamingChannel":
         """
         Factory method for live channels with proper defaults
         Backward compatible: Existing code can continue using direct instantiation
@@ -189,11 +196,13 @@ class StreamingChannel:
             provider=provider,
             mode="live",
             content_type="LIVE",
-            **kwargs
+            **kwargs,
         )
 
     @classmethod
-    def create_vod_channel(cls, name: str, content_id: str, provider: str, **kwargs) -> 'StreamingChannel':
+    def create_vod_channel(
+        cls, name: str, content_id: str, provider: str, **kwargs
+    ) -> "StreamingChannel":
         """
         Factory method for VOD content
         Backward compatible: Existing code can continue using direct instantiation
@@ -204,11 +213,13 @@ class StreamingChannel:
             provider=provider,
             mode="vod",
             content_type="VOD",
-            **kwargs
+            **kwargs,
         )
 
     @classmethod
-    def create_radio_channel(cls, name: str, channel_id: str, provider: str, **kwargs) -> 'StreamingChannel':
+    def create_radio_channel(
+        cls, name: str, channel_id: str, provider: str, **kwargs
+    ) -> "StreamingChannel":
         """
         Factory method for radio channels
         Backward compatible: Existing code can continue using direct instantiation
@@ -220,7 +231,7 @@ class StreamingChannel:
             is_radio=True,
             content_type="RADIO",
             quality="AUDIO",
-            **kwargs
+            **kwargs,
         )
 
     def get_streaming_urls(self) -> List[str]:
@@ -260,23 +271,25 @@ class StreamingChannel:
             return
 
         radio_indicators = [
-            self.name.lower().startswith('radio'),
-            'radio' in self.name.lower(),
-            self.quality in ['audio', 'aac', 'mp3', 'AUDIO'],
-            self.description and 'radio' in self.description.lower(),
-            self.genre and 'radio' in self.genre.lower(),
+            self.name.lower().startswith("radio"),
+            "radio" in self.name.lower(),
+            self.quality in ["audio", "aac", "mp3", "AUDIO"],
+            self.description and "radio" in self.description.lower(),
+            self.genre and "radio" in self.genre.lower(),
         ]
 
         if any(radio_indicators):
             self.is_radio = True
 
             # Update quality if not set
-            if not self.quality or self.quality.upper() not in [q.value for q in Quality]:
-                self.quality = 'AUDIO'
+            if not self.quality or self.quality.upper() not in [
+                q.value for q in Quality
+            ]:
+                self.quality = "AUDIO"
 
             # Update content_type if it's still LIVE
-            if self.content_type == 'LIVE':
-                self.content_type = 'RADIO'
+            if self.content_type == "LIVE":
+                self.content_type = "RADIO"
 
     # Compatibility properties (optional - for clearer naming)
     @property
@@ -310,11 +323,11 @@ class StreamingChannel:
             warnings.append("License URL provided but no DRM configuration")
 
         # Check content type consistency
-        if self.mode == 'vod' and self.content_type == 'LIVE':
+        if self.mode == "vod" and self.content_type == "LIVE":
             warnings.append("VOD mode should not have LIVE content_type")
 
         # Check radio consistency
-        if self.is_radio and self.quality not in ['AUDIO', 'audio', None]:
+        if self.is_radio and self.quality not in ["AUDIO", "audio", None]:
             warnings.append(f"Radio channel has video quality setting: {self.quality}")
 
         return warnings

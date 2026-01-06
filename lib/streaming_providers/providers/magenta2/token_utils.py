@@ -8,8 +8,8 @@ Consolidates all JWT parsing and persona token composition logic
 import base64
 import json
 import time
-from typing import Dict, Any, Optional
 from dataclasses import dataclass
+from typing import Any, Dict, Optional
 
 from ...base.utils.logger import logger
 
@@ -17,6 +17,7 @@ from ...base.utils.logger import logger
 @dataclass
 class JWTClaims:
     """Structured JWT claims for Magenta2 tokens"""
+
     # Raw claims
     raw_claims: Dict[str, Any]
 
@@ -46,10 +47,7 @@ class JWTClaims:
     def is_user_token(self) -> bool:
         """Check if this is a user-authenticated token"""
         return bool(
-            self.persona_id or
-            self.account_id or
-            self.consumer_id or
-            self.tv_account_id
+            self.persona_id or self.account_id or self.consumer_id or self.tv_account_id
         )
 
 
@@ -58,42 +56,42 @@ class JWTParser:
 
     # Comprehensive claim mappings for all Magenta2 token types
     CLAIM_MAPPINGS = {
-        'dc_cts_persona_token': [
-            'dc_cts_persona_token',
-            'dc_cts_personaToken',
-            'personaToken',
-            'urn:telekom:ott:dc_cts_persona_token'
+        "dc_cts_persona_token": [
+            "dc_cts_persona_token",
+            "dc_cts_personaToken",
+            "personaToken",
+            "urn:telekom:ott:dc_cts_persona_token",
         ],
-        'account_uri': [
-            'dc_cts_account_uri',
-            'accountUri',
-            'urn:telekom:ott:dc_cts_account_uri',
-            'mpxAccountUri'
+        "account_uri": [
+            "dc_cts_account_uri",
+            "accountUri",
+            "urn:telekom:ott:dc_cts_account_uri",
+            "mpxAccountUri",
         ],
-        'persona_id': [
-            'dc_cts_personaId',
-            'personaId',
-            'urn:telekom:ott:dc_cts_personaId'
+        "persona_id": [
+            "dc_cts_personaId",
+            "personaId",
+            "urn:telekom:ott:dc_cts_personaId",
         ],
-        'account_id': [
-            'dc_cts_accountId',
-            'accountId',
-            'urn:telekom:ott:dc_cts_accountId'
+        "account_id": [
+            "dc_cts_accountId",
+            "accountId",
+            "urn:telekom:ott:dc_cts_accountId",
         ],
-        'consumer_id': [
-            'dc_cts_consumerId',
-            'consumerId',
-            'urn:telekom:ott:dc_cts_consumerId'
+        "consumer_id": [
+            "dc_cts_consumerId",
+            "consumerId",
+            "urn:telekom:ott:dc_cts_consumerId",
         ],
-        'tv_account_id': [
-            'dc_tvAccountId',
-            'tvAccountId',
-            'urn:telekom:ott:dc_tvAccountId'
+        "tv_account_id": [
+            "dc_tvAccountId",
+            "tvAccountId",
+            "urn:telekom:ott:dc_tvAccountId",
         ],
-        'account_token': [
-            'dc_cts_account_token',
-            'accountToken',
-            'urn:telekom:ott:dc_cts_account_token'
+        "account_token": [
+            "dc_cts_account_token",
+            "accountToken",
+            "urn:telekom:ott:dc_cts_account_token",
         ],
     }
 
@@ -110,7 +108,7 @@ class JWTParser:
         """
         try:
             # Decode JWT
-            parts = jwt_token.split('.')
+            parts = jwt_token.split(".")
             if len(parts) != 3:
                 logger.warning("Invalid JWT format - expected 3 parts")
                 return None
@@ -119,9 +117,9 @@ class JWTParser:
             payload_b64 = parts[1]
             padding = len(payload_b64) % 4
             if padding:
-                payload_b64 += '=' * (4 - padding)
+                payload_b64 += "=" * (4 - padding)
 
-            payload_json = base64.b64decode(payload_b64).decode('utf-8')
+            payload_json = base64.b64decode(payload_b64).decode("utf-8")
             raw_claims = json.loads(payload_json)
 
             logger.debug(f"JWT parsed successfully - claims: {list(raw_claims.keys())}")
@@ -138,8 +136,8 @@ class JWTParser:
                         break
 
             # Extract standard JWT fields
-            claims.token_exp = raw_claims.get('exp')
-            claims.client_id = raw_claims.get('client_id', raw_claims.get('clientId'))
+            claims.token_exp = raw_claims.get("exp")
+            claims.client_id = raw_claims.get("client_id", raw_claims.get("clientId"))
 
             # Log critical missing fields
             if not claims.dc_cts_persona_token:
@@ -166,21 +164,22 @@ class JWTParser:
             Dictionary of raw claims or None
         """
         try:
-            parts = jwt_token.split('.')
+            parts = jwt_token.split(".")
             if len(parts) != 3:
                 return None
 
             payload_b64 = parts[1]
             padding = len(payload_b64) % 4
             if padding:
-                payload_b64 += '=' * (4 - padding)
+                payload_b64 += "=" * (4 - padding)
 
-            payload_json = base64.b64decode(payload_b64).decode('utf-8')
+            payload_json = base64.b64decode(payload_b64).decode("utf-8")
             return json.loads(payload_json)
 
         except Exception as e:
             logger.debug(f"Failed to extract raw JWT claims: {e}")
             return None
+
 
 @dataclass
 class PersonaCompositionResult:
@@ -195,13 +194,18 @@ class PersonaCompositionResult:
         self.expires_at = expires_at
         self.composed_at = time.time()
 
+
 class PersonaTokenComposer:
     @staticmethod
-    def compose_from_jwt(jwt_token: str, fallback_account_uri: str = None) -> Optional[PersonaCompositionResult]:
+    def compose_from_jwt(
+        jwt_token: str, fallback_account_uri: str = None
+    ) -> Optional[PersonaCompositionResult]:
         """Compose persona token and return with expiry information"""
         logger.debug(f"🟢 PersonaTokenComposer.compose_from_jwt START")
         try:
-            logger.debug(f"🟢 Input JWT token length: {len(jwt_token) if jwt_token else 0}")
+            logger.debug(
+                f"🟢 Input JWT token length: {len(jwt_token) if jwt_token else 0}"
+            )
 
             claims = JWTParser.parse(jwt_token)
             if not claims:
@@ -221,7 +225,9 @@ class PersonaTokenComposer:
                 return None
 
             # Compose the persona token
-            composed_token = PersonaTokenComposer._compose_token(account_uri, persona_jwt)
+            composed_token = PersonaTokenComposer._compose_token(
+                account_uri, persona_jwt
+            )
             if not composed_token:
                 logger.error("🔴 _compose_token returned None")
                 return None
@@ -236,12 +242,13 @@ class PersonaTokenComposer:
             return PersonaCompositionResult(
                 persona_token=composed_token,
                 persona_jwt=persona_jwt,
-                expires_at=persona_expiry
+                expires_at=persona_expiry,
             )
 
         except Exception as e:
             logger.error(f"🔴 Error in PersonaTokenComposer.compose_from_jwt: {e}")
             import traceback
+
             logger.error(f"🔴 FULL TRACEBACK: {traceback.format_exc()}")
             return None
 
@@ -250,8 +257,8 @@ class PersonaTokenComposer:
         """Extract expiry from any JWT token using existing JWTParser"""
         try:
             claims = JWTParser.parse(jwt_token)
-            if claims and claims.raw_claims and 'exp' in claims.raw_claims:
-                return float(claims.raw_claims['exp'])
+            if claims and claims.raw_claims and "exp" in claims.raw_claims:
+                return float(claims.raw_claims["exp"])
         except Exception as e:
             logger.debug(f"Failed to extract expiry from JWT: {e}")
         return None
@@ -261,22 +268,27 @@ class PersonaTokenComposer:
         """Compose the actual persona token (base64 encoded)"""
         try:
             import base64
+
             # Format: account_uri:persona_jwt
             token_string = f"{account_uri}:{persona_jwt}"
             # Base64 encode
-            encoded = base64.b64encode(token_string.encode('utf-8')).decode('utf-8')
+            encoded = base64.b64encode(token_string.encode("utf-8")).decode("utf-8")
             return encoded
         except Exception as e:
             logger.error(f"Error composing token: {e}")
             return None
 
     @staticmethod
-    def compose_from_components(account_uri: str, dc_cts_persona_token: str) -> Optional[str]:
+    def compose_from_components(
+        account_uri: str, dc_cts_persona_token: str
+    ) -> Optional[str]:
         """Original method - for backward compatibility"""
         return PersonaTokenComposer._compose_token(account_uri, dc_cts_persona_token)
 
     @staticmethod
-    def extract_components_from_persona_token(persona_token: str) -> Optional[Dict[str, str]]:
+    def extract_components_from_persona_token(
+        persona_token: str,
+    ) -> Optional[Dict[str, str]]:
         """
         Extract components from an existing persona token
         Useful for debugging or token analysis
@@ -289,26 +301,25 @@ class PersonaTokenComposer:
         """
         try:
             # Decode base64
-            decoded = base64.b64decode(persona_token).decode('utf-8')
+            decoded = base64.b64decode(persona_token).decode("utf-8")
 
             # Find the last colon (after the account URI which may contain colons)
-            last_colon_index = decoded.rfind(':')
+            last_colon_index = decoded.rfind(":")
 
             if last_colon_index == -1:
                 logger.error("No colon found in decoded persona token")
                 return None
 
             account_uri = decoded[:last_colon_index]
-            persona_jwt = decoded[last_colon_index + 1:]
+            persona_jwt = decoded[last_colon_index + 1 :]
 
             # Verify persona_jwt looks like a JWT
-            if not persona_jwt.startswith('eyJ'):
-                logger.warning(f"Extracted token doesn't look like a JWT: {persona_jwt[:20]}...")
+            if not persona_jwt.startswith("eyJ"):
+                logger.warning(
+                    f"Extracted token doesn't look like a JWT: {persona_jwt[:20]}..."
+                )
 
-            return {
-                'account_uri': account_uri,
-                'persona_jwt': persona_jwt
-            }
+            return {"account_uri": account_uri, "persona_jwt": persona_jwt}
 
         except Exception as e:
             logger.error(f"Failed to extract components from persona token: {e}")
@@ -322,8 +333,8 @@ class TokenValidator:
     def is_jwt_token(token: str) -> bool:
         """Check if string is a valid JWT token format"""
         try:
-            parts = token.split('.')
-            return len(parts) == 3 and parts[0].startswith('eyJ')
+            parts = token.split(".")
+            return len(parts) == 3 and parts[0].startswith("eyJ")
         except:
             return False
 
@@ -332,12 +343,12 @@ class TokenValidator:
         """Check if string is a valid persona token format"""
         try:
             # Should be base64 encoded
-            decoded = base64.b64decode(token).decode('utf-8')
+            decoded = base64.b64decode(token).decode("utf-8")
             # Should contain a colon and the part after should look like a JWT
-            last_colon = decoded.rfind(':')
+            last_colon = decoded.rfind(":")
             if last_colon == -1:
                 return False
-            persona_jwt = decoded[last_colon + 1:]
-            return persona_jwt.startswith('eyJ')
+            persona_jwt = decoded[last_colon + 1 :]
+            return persona_jwt.startswith("eyJ")
         except:
             return False

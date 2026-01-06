@@ -3,14 +3,16 @@
 Main ProviderManager as a facade coordinating all operations.
 Maintains backward compatibility while delegating to specialized classes.
 """
-from typing import Dict, List, Optional, Any
-from .provider_registry import ProviderRegistry
-from .channel_operations import ChannelOperations
-from .epg_operations import EPGOperations
-from .drm_operations import DRMOperations
+
+from typing import Any, Dict, List, Optional
+
 from .catchup_operations import CatchupOperations
-from .subscription_operations import SubscriptionOperations
+from .channel_operations import ChannelOperations
+from .drm_operations import DRMOperations
+from .epg_operations import EPGOperations
 from .models import StreamingChannel
+from .provider_registry import ProviderRegistry
+from .subscription_operations import SubscriptionOperations
 from .utils.logger import logger
 
 
@@ -45,11 +47,12 @@ class ProviderManager:
     # REGISTRY OPERATIONS (delegate to ProviderRegistry)
     # ==========================================================================
 
-    def discover_all_providers(self, default_country: str = 'DE') -> List[str]:
+    def discover_all_providers(self, default_country: str = "DE") -> List[str]:
         return self.registry.discover_all_providers(default_country)
 
-    def discover_providers(self, country: str = 'DE',
-                           detected_providers: Dict = None) -> List[str]:
+    def discover_providers(
+        self, country: str = "DE", detected_providers: Dict = None
+    ) -> List[str]:
         """Legacy method for backward compatibility."""
         if not self.registry.provider_metadata:
             self.registry.discover_all_providers(country)
@@ -68,8 +71,9 @@ class ProviderManager:
         return self.registry.reinitialize_provider(provider_name)
 
     def reinitialize_providers(self, provider_names: List[str]) -> Dict[str, bool]:
-        return {name: self.registry.reinitialize_provider(name)
-                for name in provider_names}
+        return {
+            name: self.registry.reinitialize_provider(name) for name in provider_names
+        }
 
     def reinitialize_all_providers(self) -> Dict[str, bool]:
         enabled = self.registry.get_enabled_providers()
@@ -91,8 +95,8 @@ class ProviderManager:
 
         # Remove country suffix if present
         base_name = provider_name
-        if '_' in provider_name:
-            name_parts = provider_name.rsplit('_', 1)
+        if "_" in provider_name:
+            name_parts = provider_name.rsplit("_", 1)
             if len(name_parts[1]) in (2, 3) and name_parts[1].isalpha():
                 base_name = name_parts[0]
 
@@ -102,24 +106,30 @@ class ProviderManager:
     # CHANNEL OPERATIONS (delegate to ChannelOperations)
     # ==========================================================================
 
-    def get_channels(self, provider_name: str, fetch_manifests: bool = False,
-                     **kwargs) -> List[StreamingChannel]:
+    def get_channels(
+        self, provider_name: str, fetch_manifests: bool = False, **kwargs
+    ) -> List[StreamingChannel]:
         return self.channel_ops.get_channels(provider_name, fetch_manifests, **kwargs)
 
-    def get_channel_manifest(self, provider_name: str, channel_id: str,
-                             **kwargs) -> Optional[str]:
-        return self.channel_ops.get_channel_manifest(provider_name, channel_id, **kwargs)
+    def get_channel_manifest(
+        self, provider_name: str, channel_id: str, **kwargs
+    ) -> Optional[str]:
+        return self.channel_ops.get_channel_manifest(
+            provider_name, channel_id, **kwargs
+        )
 
-    def get_all_channels(self, fetch_manifests: bool = True,
-                         **kwargs) -> Dict[str, List[StreamingChannel]]:
+    def get_all_channels(
+        self, fetch_manifests: bool = True, **kwargs
+    ) -> Dict[str, List[StreamingChannel]]:
         return self.channel_ops.get_all_channels(fetch_manifests, **kwargs)
 
     # ==========================================================================
     # EPG OPERATIONS (delegate to EPGOperations)
     # ==========================================================================
 
-    def get_channel_epg(self, provider_name: str, channel_id: str,
-                        **kwargs) -> List[Dict]:
+    def get_channel_epg(
+        self, provider_name: str, channel_id: str, **kwargs
+    ) -> List[Dict]:
         return self.epg_ops.get_channel_epg(provider_name, channel_id, **kwargs)
 
     def get_provider_epg_xmltv(self, provider_name: str, **kwargs) -> Optional[str]:
@@ -144,8 +154,9 @@ class ProviderManager:
     # DRM OPERATIONS (delegate to DRMOperations)
     # ==========================================================================
 
-    def get_channel_drm_configs(self, provider_name: str, channel_id: str,
-                                **kwargs) -> List:
+    def get_channel_drm_configs(
+        self, provider_name: str, channel_id: str, **kwargs
+    ) -> List:
         return self.drm_ops.get_channel_drm_configs(provider_name, channel_id, **kwargs)
 
     def list_drm_plugins(self) -> Dict:
@@ -158,24 +169,35 @@ class ProviderManager:
     # CATCHUP OPERATIONS (delegate to CatchupOperations)
     # ==========================================================================
 
-    def get_catchup_manifest(self, provider_name: str, channel_id: str,
-                             start_time: int, end_time: int,
-                             epg_id: Optional[str] = None,
-                             country: Optional[str] = None) -> Optional[str]:
+    def get_catchup_manifest(
+        self,
+        provider_name: str,
+        channel_id: str,
+        start_time: int,
+        end_time: int,
+        epg_id: Optional[str] = None,
+        country: Optional[str] = None,
+    ) -> Optional[str]:
         return self.catchup_ops.get_catchup_manifest(
             provider_name, channel_id, start_time, end_time, epg_id, country
         )
 
-    def get_catchup_drm_configs(self, provider_name: str, channel_id: str,
-                                start_time: int, end_time: int,
-                                epg_id: Optional[str] = None,
-                                country: Optional[str] = None) -> List:
+    def get_catchup_drm_configs(
+        self,
+        provider_name: str,
+        channel_id: str,
+        start_time: int,
+        end_time: int,
+        epg_id: Optional[str] = None,
+        country: Optional[str] = None,
+    ) -> List:
         return self.catchup_ops.get_catchup_drm_configs(
             provider_name, channel_id, start_time, end_time, epg_id, country
         )
 
-    def get_catchup_window(self, provider_name: str,
-                           channel_id: Optional[str] = None) -> int:
+    def get_catchup_window(
+        self, provider_name: str, channel_id: Optional[str] = None
+    ) -> int:
         return self.catchup_ops.get_catchup_window(provider_name, channel_id)
 
     def supports_catchup(self, provider_name: str) -> bool:
@@ -215,7 +237,9 @@ class ProviderManager:
 
         http_manager = provider.http_manager
         if not http_manager:
-            logger.warning(f"ProviderManager: Provider '{provider_name}' has no HTTP manager")
+            logger.warning(
+                f"ProviderManager: Provider '{provider_name}' has no HTTP manager"
+            )
             return None
 
         logger.debug(f"ProviderManager: Retrieved HTTP manager for '{provider_name}'")
@@ -229,7 +253,8 @@ class ProviderManager:
 
         has_proxy = http_manager.config.proxy_config is not None
         logger.debug(
-            f"ProviderManager: Provider '{provider_name}' {'requires' if has_proxy else 'does not require'} proxy")
+            f"ProviderManager: Provider '{provider_name}' {'requires' if has_proxy else 'does not require'} proxy"
+        )
         return has_proxy
 
     def get_provider_choices(self) -> Dict[int, str]:
@@ -239,7 +264,7 @@ class ProviderManager:
         """
         enabled_providers = self.registry.get_enabled_providers()
         choices = {i + 1: name for i, name in enumerate(enabled_providers)}
-        choices[len(choices) + 1] = 'all'
+        choices[len(choices) + 1] = "all"
         return choices
 
     def get_selected_providers(self, choices_input: str) -> List[str]:
@@ -255,11 +280,13 @@ class ProviderManager:
         available = self.registry.get_enabled_providers()
 
         if not available:
-            logger.warning("ProviderManager: No enabled providers available for selection")
+            logger.warning(
+                "ProviderManager: No enabled providers available for selection"
+            )
             return []
 
         selected = []
-        for choice in choices_input.split(','):
+        for choice in choices_input.split(","):
             choice = choice.strip()
             if choice.isdigit():
                 idx = int(choice) - 1
@@ -270,7 +297,9 @@ class ProviderManager:
                     break
 
         result = selected if selected else available
-        logger.debug(f"ProviderManager: Selected {len(result)} providers from input '{choices_input}'")
+        logger.debug(
+            f"ProviderManager: Selected {len(result)} providers from input '{choices_input}'"
+        )
         return result
 
     # ==========================================================================

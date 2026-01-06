@@ -1,25 +1,33 @@
 # lib/streaming_providers/providers/rtlplus/provider.py
 import json
-from typing import Dict, List, Optional, ClassVar
+from typing import ClassVar, Dict, List, Optional
 
 import requests
-from ...base.provider import StreamingProvider
-from ...base.models.streaming_channel import StreamingChannel
-from ...base.models import DRMConfig, LicenseConfig, DRMSystem
-from .auth import RTLPlusAuthenticator
-from .constants import RTLPlusDefaults, RTLPlusConfig
-from ...base.utils import logger
+
+from ...base.models import DRMConfig, DRMSystem, LicenseConfig
 from ...base.models.proxy_models import ProxyConfig
+from ...base.models.streaming_channel import StreamingChannel
+from ...base.provider import StreamingProvider
+from ...base.utils import logger
+from .auth import RTLPlusAuthenticator
+from .constants import RTLPlusConfig, RTLPlusDefaults
 
 
 class RTLPlusProvider(StreamingProvider):
     # Provider constants
     PROVIDER_LABEL: ClassVar[str] = "RTL+"
     PROVIDER_LOGO: ClassVar[str] = RTLPlusDefaults.RTLPLUS_LOGO
-    SUPPORTED_AUTH_TYPES: ClassVar[List[str]] = ['client_credentials', 'user_credentials']
+    SUPPORTED_AUTH_TYPES: ClassVar[List[str]] = [
+        "client_credentials",
+        "user_credentials",
+    ]
 
-    def __init__(self, country: str = 'DE', config: Optional[Dict] = None,
-                 proxy_config: Optional[ProxyConfig] = None):
+    def __init__(
+        self,
+        country: str = "DE",
+        config: Optional[Dict] = None,
+        proxy_config: Optional[ProxyConfig] = None,
+    ):
         super().__init__(country)
 
         # Initialize configuration
@@ -28,10 +36,10 @@ class RTLPlusProvider(StreamingProvider):
 
         # ✅ Using HTTP manager abstraction
         self.http_manager = self._setup_http_manager(
-            provider_name='rtlplus',
+            provider_name="rtlplus",
             proxy_config=proxy_config,
             user_agent=self.rtl_config.user_agent,
-            timeout=self.rtl_config.timeout
+            timeout=self.rtl_config.timeout,
         )
 
         # Initialize authenticator
@@ -39,11 +47,13 @@ class RTLPlusProvider(StreamingProvider):
             client_version=self.rtl_config.client_version,
             device_id=self.rtl_config.device_id,
             proxy_config=proxy_config,
-            http_manager=self.http_manager
+            http_manager=self.http_manager,
         )
 
         # ✅ Share HTTP manager with authenticator
-        self.http_manager = self._share_http_manager_with_authenticator(self.authenticator)
+        self.http_manager = self._share_http_manager_with_authenticator(
+            self.authenticator
+        )
 
         # Try authentication
         try:
@@ -59,7 +69,7 @@ class RTLPlusProvider(StreamingProvider):
 
     @property
     def provider_label(self) -> str:
-        return 'RTL+'
+        return "RTL+"
 
     @property
     def provider_logo(self) -> str:
@@ -76,7 +86,7 @@ class RTLPlusProvider(StreamingProvider):
 
     @property
     def supported_auth_types(self) -> List[str]:
-        return ['user_credentials']
+        return ["user_credentials"]
 
     # ============================================================================
     # OPTION 1: Provider-specific method (RECOMMENDED - No signature conflict)
@@ -100,16 +110,16 @@ class RTLPlusProvider(StreamingProvider):
 
             response = self.http_manager.get(
                 self.rtl_config.graphql_endpoint,
-                operation='api',
+                operation="api",
                 params=self.channels_query_params,
-                headers=headers
+                headers=headers,
             )
             response.raise_for_status()
             data = response.json()
 
             channels = []
-            if 'data' in data and 'liveTvStations' in data['data']:
-                for station in data['data']['liveTvStations']:
+            if "data" in data and "liveTvStations" in data["data"]:
+                for station in data["data"]["liveTvStations"]:
                     channel = self._parse_station_to_channel(station)
                     if channel:
                         channels.append(channel)
@@ -127,16 +137,16 @@ class RTLPlusProvider(StreamingProvider):
 
                 response = self.http_manager.get(
                     self.rtl_config.graphql_endpoint,
-                    operation='api',
+                    operation="api",
                     params=self.channels_query_params,
-                    headers=headers
+                    headers=headers,
                 )
                 response.raise_for_status()
                 data = response.json()
 
                 channels = []
-                if 'data' in data and 'liveTvStations' in data['data']:
-                    for station in data['data']['liveTvStations']:
+                if "data" in data and "liveTvStations" in data["data"]:
+                    for station in data["data"]["liveTvStations"]:
                         channel = self._parse_station_to_channel(station)
                         if channel:
                             channels.append(channel)
@@ -156,24 +166,24 @@ class RTLPlusProvider(StreamingProvider):
         """
         try:
             # Extract basic info
-            name = station.get('name', '')
-            channel_id = station.get('id', '')
+            name = station.get("name", "")
+            channel_id = station.get("id", "")
 
             if not name or not channel_id:
                 return None
 
             # Extract logo URL
             logo_url = None
-            if 'images' in station and 'alternativeLandscapeUri' in station['images']:
-                logo_url = station['images']['alternativeLandscapeUri']
+            if "images" in station and "alternativeLandscapeUri" in station["images"]:
+                logo_url = station["images"]["alternativeLandscapeUri"]
 
             # Determine if premium channel
-            is_premium = station.get('isPremium', False)
+            is_premium = station.get("isPremium", False)
 
             # Extract watch path for potential manifest fetching
             watch_path = None
-            if 'urlData' in station and 'watchPath' in station['urlData']:
-                watch_path = station['urlData']['watchPath']
+            if "urlData" in station and "watchPath" in station["urlData"]:
+                watch_path = station["urlData"]["watchPath"]
 
             # Create channel object
             channel = StreamingChannel(
@@ -187,7 +197,7 @@ class RTLPlusProvider(StreamingProvider):
                 manifest_script=watch_path,  # Store watch path for manifest fetching
                 content_type="LIVE",
                 country=self.country,
-                language="de"
+                language="de",
             )
 
             # Set CDM settings for premium channels
@@ -201,7 +211,9 @@ class RTLPlusProvider(StreamingProvider):
             logger.warning(f"Error parsing station {station}: {e}")
             return None
 
-    def enrich_channel_data(self, channel: StreamingChannel, **kwargs) -> Optional[StreamingChannel]:
+    def enrich_channel_data(
+        self, channel: StreamingChannel, **kwargs
+    ) -> Optional[StreamingChannel]:
         """
         Enrich channel with manifest URL and additional data
         """
@@ -231,7 +243,9 @@ class RTLPlusProvider(StreamingProvider):
 
                 return channel
             else:
-                logger.warning(f"Could not fetch manifest for channel {channel.name} ({channel.channel_id})")
+                logger.warning(
+                    f"Could not fetch manifest for channel {channel.name} ({channel.channel_id})"
+                )
                 return channel
 
         except Exception as e:
@@ -246,9 +260,7 @@ class RTLPlusProvider(StreamingProvider):
 
             headers = self.rtl_config.get_base_headers()
             response = self.http_manager.get(
-                manifest_url,
-                operation='manifest',
-                headers=headers
+                manifest_url, operation="manifest", headers=headers
             )
 
             logger.debug(f"RTL+ Manifest Response: Status={response.status_code}")
@@ -257,27 +269,31 @@ class RTLPlusProvider(StreamingProvider):
             response.raise_for_status()
             manifest_data = response.json()
 
-            logger.debug(f"RTL+ Manifest Data: {self._sanitize_manifest_log(manifest_data)}")
+            logger.debug(
+                f"RTL+ Manifest Data: {self._sanitize_manifest_log(manifest_data)}"
+            )
 
             # Process manifest data
-            quality_preference = ['dashhd', 'dashsd']
+            quality_preference = ["dashhd", "dashsd"]
 
             for quality in quality_preference:
                 for stream in manifest_data:
-                    if stream.get('name') == quality:
-                        sources = stream.get('sources', [])
-                        non_yospace_sources = [s for s in sources if not s.get('isYospace', False)]
+                    if stream.get("name") == quality:
+                        sources = stream.get("sources", [])
+                        non_yospace_sources = [
+                            s for s in sources if not s.get("isYospace", False)
+                        ]
 
                         if non_yospace_sources:
-                            selected_url = non_yospace_sources[0].get('url')
+                            selected_url = non_yospace_sources[0].get("url")
                             logger.info(f"RTL+ Selected Manifest URL: {selected_url}")
                             return selected_url
 
             # Fallback logic
             for stream in manifest_data:
-                sources = stream.get('sources', [])
+                sources = stream.get("sources", [])
                 if sources:
-                    fallback_url = sources[0].get('url')
+                    fallback_url = sources[0].get("url")
                     logger.info(f"RTL+ Using Fallback Manifest URL: {fallback_url}")
                     return fallback_url
 
@@ -307,13 +323,13 @@ class RTLPlusProvider(StreamingProvider):
             if isinstance(sanitized, list):
                 for stream in sanitized:
                     if isinstance(stream, dict):
-                        if 'sources' in stream:
-                            for source in stream['sources']:
-                                if 'url' in source:
+                        if "sources" in stream:
+                            for source in stream["sources"]:
+                                if "url" in source:
                                     # Truncate long URLs for logging
-                                    url = source['url']
+                                    url = source["url"]
                                     if len(url) > 100:
-                                        source['url'] = url[:100] + '...'
+                                        source["url"] = url[:100] + "..."
             return sanitized
         except Exception:
             return manifest_data
@@ -326,10 +342,7 @@ class RTLPlusProvider(StreamingProvider):
             # Fetch manifest data to get license information
             manifest_url = self.rtl_config.get_manifest_url(channel_id)
 
-            response = self.http_manager.get(
-                manifest_url,
-                operation='manifest'
-            )
+            response = self.http_manager.get(manifest_url, operation="manifest")
             response.raise_for_status()
             manifest_data = response.json()
 
@@ -340,15 +353,17 @@ class RTLPlusProvider(StreamingProvider):
 
             # Look for dashhd streams (preferred quality) and extract DRM info
             for stream in manifest_data:
-                if stream.get('name') == 'dashhd' and 'licenses' in stream:
-                    licenses = stream.get('licenses', [])
+                if stream.get("name") == "dashhd" and "licenses" in stream:
+                    licenses = stream.get("licenses", [])
 
                     for license_info in licenses:
-                        license_url = license_info.get('uri', {}).get('href')
+                        license_url = license_info.get("uri", {}).get("href")
                         if not license_url:
                             continue
 
-                        def create_drm_config(drm_system, priority, server_url, headers):
+                        def create_drm_config(
+                            drm_system, priority, server_url, headers
+                        ):
                             return DRMConfig(
                                 system=drm_system,
                                 priority=priority,
@@ -356,34 +371,50 @@ class RTLPlusProvider(StreamingProvider):
                                     server_url=server_url,
                                     req_headers=json.dumps(headers),
                                     req_data="{CHA-RAW}",
-                                    use_http_get_request=False
-                                )
+                                    use_http_get_request=False,
+                                ),
                             )
 
-                        if license_info.get('type') == 'WIDEVINE':
-                            drm_configs.append(create_drm_config(
-                                DRMSystem.WIDEVINE, 1, license_url,
-                                self.rtl_config.get_drm_headers(access_token)
-                            ))
-                        elif license_info.get('type') == 'PLAYREADY':
-                            drm_configs.append(create_drm_config(
-                                DRMSystem.PLAYREADY, 2, license_url,
-                                self.rtl_config.get_drm_headers(access_token)
-                            ))
-                        elif license_info.get('type') == 'FAIRPLAY':
-                            drm_configs.append(create_drm_config(
-                                DRMSystem.FAIRPLAY, 3, license_url,
-                                self.rtl_config.get_drm_headers(access_token)
-                            ))
+                        if license_info.get("type") == "WIDEVINE":
+                            drm_configs.append(
+                                create_drm_config(
+                                    DRMSystem.WIDEVINE,
+                                    1,
+                                    license_url,
+                                    self.rtl_config.get_drm_headers(access_token),
+                                )
+                            )
+                        elif license_info.get("type") == "PLAYREADY":
+                            drm_configs.append(
+                                create_drm_config(
+                                    DRMSystem.PLAYREADY,
+                                    2,
+                                    license_url,
+                                    self.rtl_config.get_drm_headers(access_token),
+                                )
+                            )
+                        elif license_info.get("type") == "FAIRPLAY":
+                            drm_configs.append(
+                                create_drm_config(
+                                    DRMSystem.FAIRPLAY,
+                                    3,
+                                    license_url,
+                                    self.rtl_config.get_drm_headers(access_token),
+                                )
+                            )
                     break
 
             return drm_configs
 
         except requests.RequestException as e:
-            logger.error(f"Error fetching DRM configs for RTL+ channel {channel_id}: {e}")
+            logger.error(
+                f"Error fetching DRM configs for RTL+ channel {channel_id}: {e}"
+            )
             return []
         except Exception as e:
-            logger.error(f"Error parsing DRM configs for RTL+ channel {channel_id}: {e}")
+            logger.error(
+                f"Error parsing DRM configs for RTL+ channel {channel_id}: {e}"
+            )
             return []
 
     @staticmethod

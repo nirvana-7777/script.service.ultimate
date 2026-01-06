@@ -4,8 +4,8 @@ Centralized logging module for Ultimate Backend.
 Provides environment-aware logging for both Kodi and standalone modes.
 """
 
-import sys
 import logging
+import sys
 
 # Import environment manager
 from .environment import get_environment_manager
@@ -50,7 +50,9 @@ class BaseLogger:
             log_message += f" - {details}"
         self.info(log_message)
 
-    def log_credential_event(self, provider: str, event: str, details: str = "") -> None:
+    def log_credential_event(
+        self, provider: str, event: str, details: str = ""
+    ) -> None:
         """Log credential event"""
         log_message = f"CRED [{provider}] {event}"
         if details:
@@ -69,8 +71,8 @@ def create_logger() -> BaseLogger:
     """Create appropriate logger instance based on environment"""
 
     # Get configuration
-    app_name = _env_manager_instance.get_config('addon_name', 'Ultimate Backend')
-    app_version = _env_manager_instance.get_config('addon_version', '1.0.0')
+    app_name = _env_manager_instance.get_config("addon_name", "Ultimate Backend")
+    app_version = _env_manager_instance.get_config("addon_version", "1.0.0")
 
     if _env_manager_instance.is_kodi():
         # Try to create Kodi logger
@@ -116,24 +118,28 @@ def create_logger() -> BaseLogger:
                 # Console handler
                 console_handler = logging.StreamHandler(sys.stdout)
                 formatter = logging.Formatter(
-                    f'%(asctime)s {self.prefix} %(levelname)s: %(message)s',
-                    datefmt='%Y-%m-%d %H:%M:%S'
+                    f"%(asctime)s {self.prefix} %(levelname)s: %(message)s",
+                    datefmt="%Y-%m-%d %H:%M:%S",
                 )
                 console_handler.setFormatter(formatter)
                 self._logger.addHandler(console_handler)
 
                 # File handler (optional)
-                log_dir = _env_manager_instance.get_config('profile_path')
+                log_dir = _env_manager_instance.get_config("profile_path")
                 if log_dir:
                     import os
-                    log_file = os.path.join(str(log_dir), 'ultimate-backend.log')
+
+                    log_file = os.path.join(str(log_dir), "ultimate-backend.log")
                     try:
-                        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+                        file_handler = logging.FileHandler(log_file, encoding="utf-8")
                         file_handler.setFormatter(formatter)
                         self._logger.addHandler(file_handler)
                     except (OSError, PermissionError) as file_handler_error:
                         # Log to console only if file logging fails
-                        print(f"Failed to create file handler: {file_handler_error}", file=sys.stderr)
+                        print(
+                            f"Failed to create file handler: {file_handler_error}",
+                            file=sys.stderr,
+                        )
 
                 self._logger.setLevel(logging.DEBUG)
 
@@ -162,4 +168,4 @@ def create_logger() -> BaseLogger:
 logger: BaseLogger = create_logger()
 
 # Export the BaseLogger type for type hints
-__all__ = ['BaseLogger', 'logger']
+__all__ = ["BaseLogger", "logger"]

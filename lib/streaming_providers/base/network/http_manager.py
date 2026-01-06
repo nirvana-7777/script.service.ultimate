@@ -1,12 +1,13 @@
 # streaming_providers/base/network/http_manager.py
-import requests
-import time
 import json
-from typing import Dict, Any, Optional
+import time
+from typing import Any, Dict, Optional
+
+import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from ..models.proxy_models import RequestConfig, ProxyConfig
+from ..models.proxy_models import ProxyConfig, RequestConfig
 from ..utils.logger import logger
 
 
@@ -42,7 +43,7 @@ class HTTPManager:
             total=self.config.max_retries,
             backoff_factor=self.config.retry_delay,
             status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["HEAD", "GET", "OPTIONS", "POST", "PUT", "DELETE"]
+            allowed_methods=["HEAD", "GET", "OPTIONS", "POST", "PUT", "DELETE"],
         )
 
         adapter = HTTPAdapter(max_retries=retry_strategy)
@@ -85,8 +86,14 @@ class HTTPManager:
         """
         return self._make_request("GET", url, operation, **kwargs)
 
-    def post(self, url: str, operation: str = "api", data: Any = None,
-             json_data: Any = None, **kwargs) -> requests.Response:
+    def post(
+        self,
+        url: str,
+        operation: str = "api",
+        data: Any = None,
+        json_data: Any = None,
+        **kwargs,
+    ) -> requests.Response:
         """
         Perform POST request with proxy support
 
@@ -101,9 +108,9 @@ class HTTPManager:
             requests.Response object
         """
         if json_data is not None:
-            kwargs['json'] = json_data
+            kwargs["json"] = json_data
         elif data is not None:
-            kwargs['data'] = data
+            kwargs["data"] = data
 
         return self._make_request("POST", url, operation, **kwargs)
 
@@ -115,7 +122,9 @@ class HTTPManager:
         """Perform DELETE request with proxy support"""
         return self._make_request("DELETE", url, operation, **kwargs)
 
-    def _make_request(self, method: str, url: str, operation: str, **kwargs) -> requests.Response:
+    def _make_request(
+        self, method: str, url: str, operation: str, **kwargs
+    ) -> requests.Response:
         """
         Make HTTP request with full configuration support
         """
@@ -161,7 +170,7 @@ class HTTPManager:
 
         except requests.exceptions.HTTPError as e:
             # Additional context for HTTP errors
-            status = e.response.status_code if e.response else 'unknown'
+            status = e.response.status_code if e.response else "unknown"
             logger.error(
                 f"{self.config.provider}: HTTP {status} error for {operation} request to {url}: {e}"
             )
@@ -173,7 +182,9 @@ class HTTPManager:
             )
             raise
 
-    def _log_request(self, method: str, url: str, operation: str, kwargs: Dict[str, Any]) -> None:
+    def _log_request(
+        self, method: str, url: str, operation: str, kwargs: Dict[str, Any]
+    ) -> None:
         """Log request details with comprehensive proxy information"""
 
         # Build proxy information string
@@ -181,9 +192,13 @@ class HTTPManager:
         if self.config.proxy_config:
             if self.config.proxy_config.scope.should_use_proxy_for(operation):
                 # Proxy is configured and will be used
-                proxy_host = f"{self.config.proxy_config.host}:{self.config.proxy_config.port}"
+                proxy_host = (
+                    f"{self.config.proxy_config.host}:{self.config.proxy_config.port}"
+                )
                 proxy_type = self.config.proxy_config.proxy_type.value
-                has_auth = "authenticated" if self.config.proxy_config.auth else "no-auth"
+                has_auth = (
+                    "authenticated" if self.config.proxy_config.auth else "no-auth"
+                )
                 proxy_info = f" [proxy: {proxy_type}://{proxy_host} ({has_auth})]"
             else:
                 # Proxy is configured but not used for this operation
@@ -193,7 +208,7 @@ class HTTPManager:
             proxy_info = " [proxy: none]"
 
         # Get timeout info
-        timeout = kwargs.get('timeout', self.config.timeout)
+        timeout = kwargs.get("timeout", self.config.timeout)
 
         # Truncate URL for readability if very long
         display_url = url if len(url) <= 100 else f"{url[:80]}...{url[-17:]}"
@@ -208,12 +223,12 @@ class HTTPManager:
 
         # Get response time if available
         elapsed = ""
-        if hasattr(response, 'elapsed'):
+        if hasattr(response, "elapsed"):
             elapsed_ms = int(response.elapsed.total_seconds() * 1000)
             elapsed = f" [{elapsed_ms}ms]"
 
         # Content type for context
-        content_type = response.headers.get('Content-Type', 'unknown')
+        content_type = response.headers.get("Content-Type", "unknown")
 
         # Size info
         size = len(response.content)
@@ -228,8 +243,9 @@ class HTTPManager:
             f"({size_display}, {content_type}){elapsed}"
         )
 
-    def test_connection(self, test_url: str = "https://httpbin.org/ip",
-                        operation: str = "api") -> Dict[str, Any]:
+    def test_connection(
+        self, test_url: str = "https://httpbin.org/ip", operation: str = "api"
+    ) -> Dict[str, Any]:
         """
         Test network connection and proxy configuration
 
@@ -241,11 +257,11 @@ class HTTPManager:
             Dictionary with test results
         """
         result = {
-            'success': False,
-            'proxy_used': False,
-            'response_time': 0.0,
-            'error': None,
-            'ip_info': None
+            "success": False,
+            "proxy_used": False,
+            "response_time": 0.0,
+            "error": None,
+            "ip_info": None,
         }
 
         try:
@@ -253,21 +269,21 @@ class HTTPManager:
             response = self.get(test_url, operation=operation)
             end_time = time.time()
 
-            result['success'] = True
-            result['response_time'] = end_time - start_time
-            result['proxy_used'] = bool(
-                self.config.proxy_config and
-                self.config.proxy_config.scope.should_use_proxy_for(operation)
+            result["success"] = True
+            result["response_time"] = end_time - start_time
+            result["proxy_used"] = bool(
+                self.config.proxy_config
+                and self.config.proxy_config.scope.should_use_proxy_for(operation)
             )
 
             # Try to parse IP info if using httpbin
             try:
-                result['ip_info'] = response.json()
+                result["ip_info"] = response.json()
             except (json.JSONDecodeError, AttributeError):
-                result['ip_info'] = {'response': response.text[:100]}
+                result["ip_info"] = {"response": response.text[:100]}
 
         except Exception as e:
-            result['error'] = str(e)
+            result["error"] = str(e)
             logger.error(f"Connection test failed: {e}")
 
         return result
@@ -292,9 +308,9 @@ class HTTPManagerFactory:
     """
 
     @staticmethod
-    def create_for_provider(provider_name: str,
-                            proxy_config: Optional[ProxyConfig] = None,
-                            **config_kwargs) -> HTTPManager:
+    def create_for_provider(
+        provider_name: str, proxy_config: Optional[ProxyConfig] = None, **config_kwargs
+    ) -> HTTPManager:
         """
         Create HTTP manager configured for specific provider
 
@@ -308,15 +324,15 @@ class HTTPManagerFactory:
         """
         # Provider-specific defaults
         provider_defaults = {
-            'joyn': {
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-                'timeout': 30,
-                'max_retries': 3
+            "joyn": {
+                "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                "timeout": 30,
+                "max_retries": 3,
             },
-            'zdf': {
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'timeout': 25,
-                'max_retries': 2
+            "zdf": {
+                "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "timeout": 25,
+                "max_retries": 2,
             },
             # Add more providers as needed
         }
@@ -324,18 +340,17 @@ class HTTPManagerFactory:
         # Get provider-specific defaults
         defaults = provider_defaults.get(provider_name, {})
         defaults.update(config_kwargs)
-        defaults['provider'] = provider_name
+        defaults["provider"] = provider_name
 
         # Create request config
-        config = RequestConfig(
-            proxy_config=proxy_config,
-            **defaults
-        )
+        config = RequestConfig(proxy_config=proxy_config, **defaults)
 
         return HTTPManager(config)
 
     @staticmethod
-    def create_with_proxy_url(provider_name: str, proxy_url: str, **kwargs) -> HTTPManager:
+    def create_with_proxy_url(
+        provider_name: str, proxy_url: str, **kwargs
+    ) -> HTTPManager:
         """
         Create HTTP manager with proxy from URL string
 

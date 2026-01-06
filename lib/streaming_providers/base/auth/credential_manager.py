@@ -1,12 +1,11 @@
 # streaming_providers/base/auth/credential_manager.py
-from typing import Optional
-from .credentials import BaseCredentials, UserPasswordCredentials, ClientCredentials
-
 import time
-from typing import Dict, Any, List
+from typing import Any, Dict, List, Optional
 
 # Import centralized logger and VFS
 from ..utils.logger import logger
+from .credentials import (BaseCredentials, ClientCredentials,
+                          UserPasswordCredentials)
 
 
 class CredentialManager:
@@ -18,14 +17,17 @@ class CredentialManager:
     def __init__(self, config_dir: Optional[str] = None):
         # Initialize VFS with config directory support
         from ..utils.vfs import VFS
+
         self.vfs = VFS(config_dir=config_dir)
 
         # Credentials file is always in the root of the VFS base path
-        self.credentials_file = 'credentials.json'
+        self.credentials_file = "credentials.json"
 
         # Ensure base directory exists
-        self.vfs.mkdirs('')
-        logger.debug(f"CredentialManager initialized with VFS base: {self.vfs.base_path}")
+        self.vfs.mkdirs("")
+        logger.debug(
+            f"CredentialManager initialized with VFS base: {self.vfs.base_path}"
+        )
 
     @staticmethod
     def _get_credential_path(provider: str, country: Optional[str] = None) -> tuple:
@@ -44,7 +46,9 @@ class CredentialManager:
         else:
             return [provider], False
 
-    def load_credentials(self, provider: str, country: Optional[str] = None) -> Optional[BaseCredentials]:
+    def load_credentials(
+        self, provider: str, country: Optional[str] = None
+    ) -> Optional[BaseCredentials]:
         """
         Load credentials for a specific provider and optional country.
 
@@ -61,21 +65,31 @@ class CredentialManager:
         country_str = f" (country: {country})" if country else ""
 
         try:
-            logger.debug(f"CredentialManager: Loading credentials for '{provider}{country_str}'")
+            logger.debug(
+                f"CredentialManager: Loading credentials for '{provider}{country_str}'"
+            )
 
             # Check if credentials file exists
             if not self.vfs.exists(self.credentials_file):
-                logger.debug(f"CredentialManager: Credentials file does not exist: {self.credentials_file}")
+                logger.debug(
+                    f"CredentialManager: Credentials file does not exist: {self.credentials_file}"
+                )
                 return None
 
-            logger.debug(f"CredentialManager: Reading credentials file: {self.credentials_file}")
+            logger.debug(
+                f"CredentialManager: Reading credentials file: {self.credentials_file}"
+            )
             data = self.vfs.read_json(self.credentials_file)
 
             if not data:
-                logger.debug(f"CredentialManager: Credentials file is empty or invalid JSON")
+                logger.debug(
+                    f"CredentialManager: Credentials file is empty or invalid JSON"
+                )
                 return None
 
-            logger.debug(f"CredentialManager: Available providers in file: {list(data.keys())}")
+            logger.debug(
+                f"CredentialManager: Available providers in file: {list(data.keys())}"
+            )
 
             # Try with country first (new format: {"provider": {"country": {...}}})
             if country:
@@ -91,23 +105,34 @@ class CredentialManager:
 
                 if found and provider_data:
                     logger.debug(
-                        f"CredentialManager: Found credentials with country nesting for '{provider}{country_str}'")
-                    return self._create_credential_from_data(provider, country, provider_data)
+                        f"CredentialManager: Found credentials with country nesting for '{provider}{country_str}'"
+                    )
+                    return self._create_credential_from_data(
+                        provider, country, provider_data
+                    )
 
                 # Fallback: try without country (legacy format: {"provider": {...}})
-                logger.debug(f"CredentialManager: No country-nested credentials found, trying legacy format")
+                logger.debug(
+                    f"CredentialManager: No country-nested credentials found, trying legacy format"
+                )
                 keys_path, _ = self._get_credential_path(provider, None)
                 provider_data = data
 
                 for key in keys_path:
                     if not isinstance(provider_data, dict) or key not in provider_data:
-                        logger.debug(f"CredentialManager: No credentials found at path: {' -> '.join(keys_path)}")
+                        logger.debug(
+                            f"CredentialManager: No credentials found at path: {' -> '.join(keys_path)}"
+                        )
                         return None
                     provider_data = provider_data[key]
 
                 if provider_data:
-                    logger.debug(f"CredentialManager: Found credentials in legacy format for '{provider}{country_str}'")
-                    return self._create_credential_from_data(provider, country, provider_data)
+                    logger.debug(
+                        f"CredentialManager: Found credentials in legacy format for '{provider}{country_str}'"
+                    )
+                    return self._create_credential_from_data(
+                        provider, country, provider_data
+                    )
 
                 return None
 
@@ -117,22 +142,29 @@ class CredentialManager:
 
             for key in keys_path:
                 if not isinstance(provider_data, dict) or key not in provider_data:
-                    logger.debug(f"CredentialManager: No data found at path: {' -> '.join(keys_path)}")
+                    logger.debug(
+                        f"CredentialManager: No data found at path: {' -> '.join(keys_path)}"
+                    )
                     return None
                 provider_data = provider_data[key]
 
             if not provider_data:
-                logger.debug(f"CredentialManager: No data found for provider '{provider}'")
+                logger.debug(
+                    f"CredentialManager: No data found for provider '{provider}'"
+                )
                 return None
 
             return self._create_credential_from_data(provider, None, provider_data)
 
         except Exception as e:
-            logger.error(f"CredentialManager: Error loading credentials for '{provider}{country_str}': {e}")
+            logger.error(
+                f"CredentialManager: Error loading credentials for '{provider}{country_str}': {e}"
+            )
             return None
 
-    def _create_credential_from_data(self, provider: str, country: Optional[str],
-                                     provider_data: dict) -> Optional[BaseCredentials]:
+    def _create_credential_from_data(
+        self, provider: str, country: Optional[str], provider_data: dict
+    ) -> Optional[BaseCredentials]:
         """
         Helper method to create credential object from loaded data.
 
@@ -146,55 +178,72 @@ class CredentialManager:
         """
         country_str = f" (country: {country})" if country else ""
 
-        logger.debug(f"CredentialManager: Found data for '{provider}{country_str}': {list(provider_data.keys())}")
+        logger.debug(
+            f"CredentialManager: Found data for '{provider}{country_str}': {list(provider_data.keys())}"
+        )
 
-        credential_type = provider_data.get('type')
-        logger.debug(f"CredentialManager: Credential type for '{provider}{country_str}': {credential_type}")
+        credential_type = provider_data.get("type")
+        logger.debug(
+            f"CredentialManager: Credential type for '{provider}{country_str}': {credential_type}"
+        )
 
-        if credential_type == 'user_password':
-            username = provider_data.get('username', '')
-            password_present = 'password' in provider_data
-            client_id = provider_data.get('client_id')
+        if credential_type == "user_password":
+            username = provider_data.get("username", "")
+            password_present = "password" in provider_data
+            client_id = provider_data.get("client_id")
 
-            logger.debug(f"CredentialManager: Creating UserPasswordCredentials for '{provider}{country_str}'")
             logger.debug(
-                f"CredentialManager: Username: '{username}', Password present: {password_present}, Client ID: {client_id}")
+                f"CredentialManager: Creating UserPasswordCredentials for '{provider}{country_str}'"
+            )
+            logger.debug(
+                f"CredentialManager: Username: '{username}', Password present: {password_present}, Client ID: {client_id}"
+            )
 
             creds = UserPasswordCredentials(
                 username=username,
-                password=self._decode_password(provider_data.get('password', '')),
+                password=self._decode_password(provider_data.get("password", "")),
                 client_id=client_id,
-                grant_type=provider_data.get('grant_type', 'password')
+                grant_type=provider_data.get("grant_type", "password"),
             )
 
             logger.debug(
-                f"CredentialManager: Successfully created UserPasswordCredentials for '{provider}{country_str}'")
+                f"CredentialManager: Successfully created UserPasswordCredentials for '{provider}{country_str}'"
+            )
             return creds
 
-        elif credential_type == 'client_credentials':
-            client_id = provider_data.get('client_id', '')
-            client_secret_present = 'client_secret' in provider_data
+        elif credential_type == "client_credentials":
+            client_id = provider_data.get("client_id", "")
+            client_secret_present = "client_secret" in provider_data
 
-            logger.debug(f"CredentialManager: Creating ClientCredentials for '{provider}{country_str}'")
             logger.debug(
-                f"CredentialManager: Client ID: '{client_id}', Client secret present: {client_secret_present}")
+                f"CredentialManager: Creating ClientCredentials for '{provider}{country_str}'"
+            )
+            logger.debug(
+                f"CredentialManager: Client ID: '{client_id}', Client secret present: {client_secret_present}"
+            )
 
             creds = ClientCredentials(
                 client_id=client_id,
-                client_secret=self._decode_password(provider_data.get('client_secret', '')),
-                grant_type=provider_data.get('grant_type', 'client_credentials')
+                client_secret=self._decode_password(
+                    provider_data.get("client_secret", "")
+                ),
+                grant_type=provider_data.get("grant_type", "client_credentials"),
             )
 
-            logger.debug(f"CredentialManager: Successfully created ClientCredentials for '{provider}{country_str}'")
+            logger.debug(
+                f"CredentialManager: Successfully created ClientCredentials for '{provider}{country_str}'"
+            )
             return creds
 
         else:
             logger.error(
-                f"CredentialManager: Unknown credential type for '{provider}{country_str}': {credential_type}")
+                f"CredentialManager: Unknown credential type for '{provider}{country_str}': {credential_type}"
+            )
             return None
 
-    def save_credentials(self, provider: str, credentials: BaseCredentials,
-                         country: Optional[str] = None) -> bool:
+    def save_credentials(
+        self, provider: str, credentials: BaseCredentials, country: Optional[str] = None
+    ) -> bool:
         """
         Save credentials for a specific provider and optional country
 
@@ -208,7 +257,9 @@ class CredentialManager:
         """
         country_str = f" (country: {country})" if country else ""
         try:
-            logger.debug(f"Saving {credentials.credential_type} credentials for {provider}{country_str}")
+            logger.debug(
+                f"Saving {credentials.credential_type} credentials for {provider}{country_str}"
+            )
 
             # Load existing data
             data = {}
@@ -218,20 +269,20 @@ class CredentialManager:
             # Prepare provider data based on credential type
             if isinstance(credentials, UserPasswordCredentials):
                 provider_data = {
-                    'type': 'user_password',
-                    'username': credentials.username,
-                    'password': self._encode_password(credentials.password),
-                    'grant_type': credentials.grant_type
+                    "type": "user_password",
+                    "username": credentials.username,
+                    "password": self._encode_password(credentials.password),
+                    "grant_type": credentials.grant_type,
                 }
                 if credentials.client_id:
-                    provider_data['client_id'] = credentials.client_id
+                    provider_data["client_id"] = credentials.client_id
 
             elif isinstance(credentials, ClientCredentials):
                 provider_data = {
-                    'type': 'client_credentials',
-                    'client_id': credentials.client_id,
-                    'client_secret': self._encode_password(credentials.client_secret),
-                    'grant_type': credentials.grant_type
+                    "type": "client_credentials",
+                    "client_id": credentials.client_id,
+                    "client_secret": self._encode_password(credentials.client_secret),
+                    "grant_type": credentials.grant_type,
                 }
             else:
                 logger.error(f"Unsupported credential type: {type(credentials)}")
@@ -257,7 +308,9 @@ class CredentialManager:
             success = self.vfs.write_json(self.credentials_file, data)
 
             if success:
-                logger.info(f"Successfully saved credentials for {provider}{country_str}")
+                logger.info(
+                    f"Successfully saved credentials for {provider}{country_str}"
+                )
 
                 # Verify by reading back
                 verify_data = self.vfs.read_json(self.credentials_file)
@@ -265,15 +318,22 @@ class CredentialManager:
                     verify_current = verify_data
                     found = True
                     for key in keys_path:
-                        if not isinstance(verify_current, dict) or key not in verify_current:
+                        if (
+                            not isinstance(verify_current, dict)
+                            or key not in verify_current
+                        ):
                             found = False
                             break
                         verify_current = verify_current[key]
 
                     if found:
-                        logger.debug(f"Verification successful: {provider}{country_str} data found in saved file")
+                        logger.debug(
+                            f"Verification successful: {provider}{country_str} data found in saved file"
+                        )
                     else:
-                        logger.error(f"Verification failed: {provider}{country_str} data NOT found in saved file")
+                        logger.error(
+                            f"Verification failed: {provider}{country_str} data NOT found in saved file"
+                        )
                         return False
 
                 return True
@@ -301,28 +361,42 @@ class CredentialManager:
         try:
 
             if not self.vfs.exists(self.credentials_file):
-                logger.debug(f"No credentials file exists, nothing to delete for {provider}{country_str}")
+                logger.debug(
+                    f"No credentials file exists, nothing to delete for {provider}{country_str}"
+                )
                 return True
 
             data = self.vfs.read_json(self.credentials_file)
             if not data:
-                logger.debug(f"Credentials file is empty, nothing to delete for {provider}{country_str}")
+                logger.debug(
+                    f"Credentials file is empty, nothing to delete for {provider}{country_str}"
+                )
                 return True
 
             if country:
                 # Delete specific country data
-                if provider in data and isinstance(data[provider], dict) and country in data[provider]:
+                if (
+                    provider in data
+                    and isinstance(data[provider], dict)
+                    and country in data[provider]
+                ):
                     del data[provider][country]
-                    logger.info(f"Deleted stored credentials for {provider}{country_str}")
+                    logger.info(
+                        f"Deleted stored credentials for {provider}{country_str}"
+                    )
 
                     # If provider dict is now empty, remove it entirely
                     if not data[provider]:
                         del data[provider]
-                        logger.debug(f"Provider {provider} had no more countries, removed entirely")
+                        logger.debug(
+                            f"Provider {provider} had no more countries, removed entirely"
+                        )
 
                     return self.vfs.write_json(self.credentials_file, data)
                 else:
-                    logger.debug(f"No stored credentials found to delete for {provider}{country_str}")
+                    logger.debug(
+                        f"No stored credentials found to delete for {provider}{country_str}"
+                    )
             else:
                 # Delete entire provider data (all countries)
                 if provider in data:
@@ -330,7 +404,9 @@ class CredentialManager:
                     logger.info(f"Deleted all stored credentials for {provider}")
                     return self.vfs.write_json(self.credentials_file, data)
                 else:
-                    logger.debug(f"No stored credentials found to delete for {provider}")
+                    logger.debug(
+                        f"No stored credentials found to delete for {provider}"
+                    )
 
             return True
 
@@ -348,7 +424,9 @@ class CredentialManager:
         """
         try:
             if not self.vfs.exists(self.credentials_file):
-                logger.debug("No credentials file exists, returning empty provider list")
+                logger.debug(
+                    "No credentials file exists, returning empty provider list"
+                )
                 return []
 
             data = self.vfs.read_json(self.credentials_file)
@@ -390,7 +468,7 @@ class CredentialManager:
                 # and their values are dicts (credential data)
                 countries = []
                 for key, value in provider_data.items():
-                    if isinstance(value, dict) and len(key) <= 3 and 'type' in value:
+                    if isinstance(value, dict) and len(key) <= 3 and "type" in value:
                         countries.append(key)
                 return countries
 
@@ -417,7 +495,9 @@ class CredentialManager:
     @staticmethod
     def _encode_password(password: str) -> str:
         """No encoding - store as plaintext (TEMPORARY INSECURE SOLUTION)."""
-        logger.warning("Storing password in plaintext - this is insecure and should be replaced with proper encryption")
+        logger.warning(
+            "Storing password in plaintext - this is insecure and should be replaced with proper encryption"
+        )
         return password
 
     @staticmethod
@@ -425,8 +505,9 @@ class CredentialManager:
         """No decoding needed - passwords are stored in plaintext."""
         return encoded_password
 
-    def export_config(self, provider: Optional[str] = None,
-                      country: Optional[str] = None) -> Dict[str, Any]:
+    def export_config(
+        self, provider: Optional[str] = None, country: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Export credentials to a portable format
 
@@ -438,9 +519,9 @@ class CredentialManager:
             Dictionary with credentials data
         """
         export_data = {
-            'version': '1.1',  # Bumped for country support
-            'exported_at': time.time(),
-            'credentials': {}
+            "version": "1.1",  # Bumped for country support
+            "exported_at": time.time(),
+            "credentials": {},
         }
 
         if provider:
@@ -449,7 +530,7 @@ class CredentialManager:
                 # Export specific country
                 credentials = self.load_credentials(provider, country)
                 if credentials:
-                    export_data['credentials'][provider] = {
+                    export_data["credentials"][provider] = {
                         country: self._credential_to_dict(credentials)
                     }
             else:
@@ -463,12 +544,14 @@ class CredentialManager:
                         if credentials:
                             provider_data[ctry] = self._credential_to_dict(credentials)
                     if provider_data:
-                        export_data['credentials'][provider] = provider_data
+                        export_data["credentials"][provider] = provider_data
                 else:
                     # Non-country provider
                     credentials = self.load_credentials(provider)
                     if credentials:
-                        export_data['credentials'][provider] = self._credential_to_dict(credentials)
+                        export_data["credentials"][provider] = self._credential_to_dict(
+                            credentials
+                        )
         else:
             # Export all providers
             for prov in self.list_providers():
@@ -481,12 +564,14 @@ class CredentialManager:
                         if credentials:
                             provider_data[ctry] = self._credential_to_dict(credentials)
                     if provider_data:
-                        export_data['credentials'][prov] = provider_data
+                        export_data["credentials"][prov] = provider_data
                 else:
                     # Non-country provider
                     credentials = self.load_credentials(prov)
                     if credentials:
-                        export_data['credentials'][prov] = self._credential_to_dict(credentials)
+                        export_data["credentials"][prov] = self._credential_to_dict(
+                            credentials
+                        )
 
         return export_data
 
@@ -495,16 +580,16 @@ class CredentialManager:
         """Convert credentials object to dictionary for export"""
         if isinstance(credentials, UserPasswordCredentials):
             return {
-                'type': 'user_password',
-                'username': credentials.username,
-                'password': credentials.password,
-                'client_id': credentials.client_id
+                "type": "user_password",
+                "username": credentials.username,
+                "password": credentials.password,
+                "client_id": credentials.client_id,
             }
         elif isinstance(credentials, ClientCredentials):
             return {
-                'type': 'client_credentials',
-                'client_id': credentials.client_id,
-                'client_secret': credentials.client_secret
+                "type": "client_credentials",
+                "client_id": credentials.client_id,
+                "client_secret": credentials.client_secret,
             }
         else:
             return {}
@@ -522,16 +607,16 @@ class CredentialManager:
         results = {}
 
         # Validate config data
-        if not isinstance(config_data, dict) or 'credentials' not in config_data:
+        if not isinstance(config_data, dict) or "credentials" not in config_data:
             logger.error("Invalid credential config data format")
             return results
 
-        credentials_data = config_data.get('credentials', {})
+        credentials_data = config_data.get("credentials", {})
 
         for provider, provider_data in credentials_data.items():
             try:
                 # Check if this is country-aware structure
-                if isinstance(provider_data, dict) and not provider_data.get('type'):
+                if isinstance(provider_data, dict) and not provider_data.get("type"):
                     # Nested structure with countries
                     for country, cred_data in provider_data.items():
                         if not isinstance(cred_data, dict):
@@ -539,13 +624,19 @@ class CredentialManager:
 
                         credentials = self._dict_to_credential(cred_data)
                         if credentials:
-                            success = self.save_credentials(provider, credentials, country)
+                            success = self.save_credentials(
+                                provider, credentials, country
+                            )
                             results[f"{provider}_{country}"] = success
 
                             if success:
-                                logger.info(f"Successfully imported credentials for {provider} ({country})")
+                                logger.info(
+                                    f"Successfully imported credentials for {provider} ({country})"
+                                )
                             else:
-                                logger.error(f"Failed to import credentials for {provider} ({country})")
+                                logger.error(
+                                    f"Failed to import credentials for {provider} ({country})"
+                                )
                 else:
                     # Flat structure (no country)
                     credentials = self._dict_to_credential(provider_data)
@@ -554,7 +645,9 @@ class CredentialManager:
                         results[provider] = success
 
                         if success:
-                            logger.info(f"Successfully imported credentials for {provider}")
+                            logger.info(
+                                f"Successfully imported credentials for {provider}"
+                            )
                         else:
                             logger.error(f"Failed to import credentials for {provider}")
 
@@ -568,16 +661,16 @@ class CredentialManager:
     def _dict_to_credential(cred_data: Dict[str, Any]) -> Optional[BaseCredentials]:
         """Convert dictionary to credentials object"""
         try:
-            if cred_data.get('type') == 'user_password':
+            if cred_data.get("type") == "user_password":
                 return UserPasswordCredentials(
-                    username=cred_data.get('username', ''),
-                    password=cred_data.get('password', ''),
-                    client_id=cred_data.get('client_id')
+                    username=cred_data.get("username", ""),
+                    password=cred_data.get("password", ""),
+                    client_id=cred_data.get("client_id"),
                 )
-            elif cred_data.get('type') == 'client_credentials':
+            elif cred_data.get("type") == "client_credentials":
                 return ClientCredentials(
-                    client_id=cred_data.get('client_id', ''),
-                    client_secret=cred_data.get('client_secret', '')
+                    client_id=cred_data.get("client_id", ""),
+                    client_secret=cred_data.get("client_secret", ""),
                 )
             else:
                 logger.error(f"Unknown credential type: {cred_data.get('type')}")
@@ -593,7 +686,9 @@ class CredentialManager:
 
             credentials_file_path = self.vfs.join_path(self.credentials_file)
             logger.info(f"Credentials file path: {credentials_file_path}")
-            logger.info(f"Credentials file exists: {self.vfs.exists(self.credentials_file)}")
+            logger.info(
+                f"Credentials file exists: {self.vfs.exists(self.credentials_file)}"
+            )
 
             if self.vfs.exists(self.credentials_file):
                 file_size = self.vfs.get_size(self.credentials_file)
@@ -602,30 +697,41 @@ class CredentialManager:
                 if file_size and file_size > 0:
                     data = self.vfs.read_json(self.credentials_file)
                     if data:
-                        logger.info(f"Credentials file contains {len(data)} providers: {list(data.keys())}")
+                        logger.info(
+                            f"Credentials file contains {len(data)} providers: {list(data.keys())}"
+                        )
 
                         for provider, provider_data in data.items():
                             if isinstance(provider_data, dict):
                                 # Check if nested (has countries)
                                 has_countries = any(
-                                    isinstance(v, dict) and len(k) <= 3 and 'type' in v
+                                    isinstance(v, dict) and len(k) <= 3 and "type" in v
                                     for k, v in provider_data.items()
                                 )
 
                                 if has_countries:
                                     logger.info(f"  {provider} (country-aware):")
                                     for country, cred_data in provider_data.items():
-                                        if isinstance(cred_data, dict) and 'type' in cred_data:
-                                            cred_type = cred_data.get('type')
-                                            username = cred_data.get('username', 'N/A')
-                                            logger.info(f"    {country}: type={cred_type}, username={username}")
+                                        if (
+                                            isinstance(cred_data, dict)
+                                            and "type" in cred_data
+                                        ):
+                                            cred_type = cred_data.get("type")
+                                            username = cred_data.get("username", "N/A")
+                                            logger.info(
+                                                f"    {country}: type={cred_type}, username={username}"
+                                            )
                                 else:
                                     # Flat structure (no country)
-                                    cred_type = provider_data.get('type', 'unknown')
-                                    username = provider_data.get('username', 'N/A')
-                                    logger.info(f"  {provider} (no country): type={cred_type}, username={username}")
+                                    cred_type = provider_data.get("type", "unknown")
+                                    username = provider_data.get("username", "N/A")
+                                    logger.info(
+                                        f"  {provider} (no country): type={cred_type}, username={username}"
+                                    )
                     else:
-                        logger.error("Credentials file contains invalid JSON or is empty")
+                        logger.error(
+                            "Credentials file contains invalid JSON or is empty"
+                        )
                 else:
                     logger.info("Credentials file is empty")
             else:

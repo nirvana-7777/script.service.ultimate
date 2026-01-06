@@ -6,26 +6,27 @@ UI notification system for streaming providers
 Provides adapters for different UI environments (Kodi, console, web, etc.)
 """
 
-from .notification_interface import NotificationInterface, NotificationResult
 from .notification_factory import NotificationFactory
+from .notification_interface import NotificationInterface, NotificationResult
 
 # Conditional imports - only import if environment supports them
 try:
     from .kodi_notification_adapter import KodiNotificationAdapter
+
     __all__ = [
-        'NotificationInterface',
-        'NotificationResult',
-        'NotificationFactory',
-        'KodiNotificationAdapter',
-        'ConsoleNotificationAdapter'
+        "NotificationInterface",
+        "NotificationResult",
+        "NotificationFactory",
+        "KodiNotificationAdapter",
+        "ConsoleNotificationAdapter",
     ]
 except ImportError:
     # Kodi not available
     __all__ = [
-        'NotificationInterface',
-        'NotificationResult',
-        'NotificationFactory',
-        'ConsoleNotificationAdapter'
+        "NotificationInterface",
+        "NotificationResult",
+        "NotificationFactory",
+        "ConsoleNotificationAdapter",
     ]
 
 from .console_notification_adapter import ConsoleNotificationAdapter

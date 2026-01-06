@@ -1,13 +1,14 @@
 # streaming_providers/base/drm/drm_plugin.py
 from abc import ABC, abstractmethod
 from typing import Optional
+
 from ..models.drm_models import DRMConfig, DRMSystem, PSSHData
 
 
 class DRMPlugin(ABC):
     """
     Abstract base class for DRM configuration plugins.
-    
+
     Plugins can register to process DRM configs for specific DRM systems
     and transform them before they are returned to the caller.
     """
@@ -25,10 +26,9 @@ class DRMPlugin(ABC):
         pass
 
     @abstractmethod
-    def process_drm_config(self, 
-                          drm_config: DRMConfig, 
-                          pssh_data: Optional[PSSHData],
-                          **kwargs) -> Optional[DRMConfig]:
+    def process_drm_config(
+        self, drm_config: DRMConfig, pssh_data: Optional[PSSHData], **kwargs
+    ) -> Optional[DRMConfig]:
         """
         Process and transform a DRM configuration.
 
@@ -39,7 +39,7 @@ class DRMPlugin(ABC):
 
         Returns:
             Transformed DRMConfig, or None if the config should be filtered out
-            
+
         Raises:
             Exception: Any exception will be caught and logged, plugin will be skipped
         """

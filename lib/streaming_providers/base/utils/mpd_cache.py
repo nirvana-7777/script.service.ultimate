@@ -1,8 +1,9 @@
 # streaming_providers/base/utils/mpd_cache.py
 import time
 from typing import Optional
-from .vfs import VFS
+
 from .logger import logger
+from .vfs import VFS
 
 
 class MPDCacheManager:
@@ -53,11 +54,13 @@ class MPDCacheManager:
                 return None
 
             # Check expiry
-            expiry = meta.get('expiry', 0)
+            expiry = meta.get("expiry", 0)
             now = int(time.time())
 
             if now >= expiry:
-                logger.debug(f"Cache expired for {cache_key} (expired {now - expiry}s ago)")
+                logger.debug(
+                    f"Cache expired for {cache_key} (expired {now - expiry}s ago)"
+                )
                 # Clean up expired cache
                 self.vfs.delete(manifest_file)
                 self.vfs.delete(meta_file)
@@ -69,7 +72,9 @@ class MPDCacheManager:
                 logger.info(f"Cache hit for {cache_key} (expires in {expiry - now}s)")
                 return manifest_content
             else:
-                logger.warning(f"Cache metadata exists but manifest file missing for {cache_key}")
+                logger.warning(
+                    f"Cache metadata exists but manifest file missing for {cache_key}"
+                )
                 self.vfs.delete(meta_file)
                 return None
 
@@ -77,8 +82,14 @@ class MPDCacheManager:
             logger.error(f"Error reading cache for {cache_key}: {e}")
             return None
 
-    def set(self, provider: str, channel_id: str, mpd_content: str,
-            ttl: int, original_url: Optional[str] = None) -> bool:
+    def set(
+        self,
+        provider: str,
+        channel_id: str,
+        mpd_content: str,
+        ttl: int,
+        original_url: Optional[str] = None,
+    ) -> bool:
         """
         Store MPD manifest in cache with TTL
 
@@ -102,15 +113,15 @@ class MPDCacheManager:
 
             # Create metadata
             meta = {
-                'expiry': expiry,
-                'ttl': ttl,
-                'cached_at': int(time.time()),
-                'provider': provider,
-                'channel_id': channel_id
+                "expiry": expiry,
+                "ttl": ttl,
+                "cached_at": int(time.time()),
+                "provider": provider,
+                "channel_id": channel_id,
             }
 
             if original_url:
-                meta['original_url'] = original_url
+                meta["original_url"] = original_url
 
             # Write manifest
             if not self.vfs.write_text(manifest_file, mpd_content):
@@ -124,7 +135,9 @@ class MPDCacheManager:
                 self.vfs.delete(manifest_file)
                 return False
 
-            logger.info(f"Cached MPD for {cache_key} with TTL={ttl}s (expires at {expiry})")
+            logger.info(
+                f"Cached MPD for {cache_key} with TTL={ttl}s (expires at {expiry})"
+            )
             return True
 
         except Exception as e:
@@ -167,7 +180,7 @@ class MPDCacheManager:
             deleted = 0
 
             for file in files:
-                if file.endswith('.xml') or file.endswith('.meta'):
+                if file.endswith(".xml") or file.endswith(".meta"):
                     if self.vfs.delete(file):
                         deleted += 1
 
@@ -191,14 +204,14 @@ class MPDCacheManager:
             cleared = 0
 
             # Find all meta files
-            meta_files = [f for f in files if f.endswith('.meta')]
+            meta_files = [f for f in files if f.endswith(".meta")]
 
             for meta_file in meta_files:
                 try:
                     meta = self.vfs.read_json(meta_file)
-                    if meta and meta.get('expiry', 0) < now:
+                    if meta and meta.get("expiry", 0) < now:
                         # Expired, delete both meta and manifest
-                        cache_key = meta_file.replace('.meta', '')
+                        cache_key = meta_file.replace(".meta", "")
                         self.vfs.delete(f"{cache_key}.xml")
                         self.vfs.delete(meta_file)
                         cleared += 1
@@ -233,8 +246,8 @@ class MPDCacheManager:
             meta = self.vfs.read_json(meta_file)
             if meta:
                 now = int(time.time())
-                meta['expired'] = now >= meta.get('expiry', 0)
-                meta['remaining_ttl'] = max(0, meta.get('expiry', 0) - now)
+                meta["expired"] = now >= meta.get("expiry", 0)
+                meta["remaining_ttl"] = max(0, meta.get("expiry", 0) - now)
             return meta
         except Exception as e:
             logger.debug(f"Error getting cache info for {cache_key}: {e}")

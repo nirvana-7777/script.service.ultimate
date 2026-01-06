@@ -2,22 +2,18 @@
 import base64
 import json
 import time
-from typing import Dict, Optional, Any
 from dataclasses import dataclass
+from typing import Any, Dict, Optional
 
 from ...base.network import HTTPManager
 from ...base.utils.logger import logger
-from .constants import (
-    IDM,
-    APPVERSION2,
-    MAGENTA2_PLATFORMS,
-    DEFAULT_PLATFORM
-)
+from .constants import APPVERSION2, DEFAULT_PLATFORM, IDM, MAGENTA2_PLATFORMS
 
 
 @dataclass
 class YoDigitalTokens:
     """Result of yo_digital token operations"""
+
     access_token: str
     access_token_expires_in: int
     refresh_token: str
@@ -29,6 +25,7 @@ class YoDigitalTokens:
 @dataclass
 class TaaAuthResult:
     """Result of TAA authentication (legacy - kept for compatibility)"""
+
     access_token: str
     refresh_token: Optional[str] = None
     dc_cts_persona_token: Optional[str] = None
@@ -52,12 +49,18 @@ class TaaClient:
     def __init__(self, http_manager: HTTPManager, platform: str = DEFAULT_PLATFORM):
         self.http_manager = http_manager
         self.platform = platform
-        self.platform_config = MAGENTA2_PLATFORMS.get(platform, MAGENTA2_PLATFORMS[DEFAULT_PLATFORM])
+        self.platform_config = MAGENTA2_PLATFORMS.get(
+            platform, MAGENTA2_PLATFORMS[DEFAULT_PLATFORM]
+        )
 
-    def get_yo_digital_tokens(self, taa_access_token: str, device_id: str,
-                              client_model: Optional[str] = None,
-                              device_model: Optional[str] = None,
-                              yo_digital_endpoint: Optional[str] = None) -> Optional[YoDigitalTokens]:
+    def get_yo_digital_tokens(
+        self,
+        taa_access_token: str,
+        device_id: str,
+        client_model: Optional[str] = None,
+        device_model: Optional[str] = None,
+        yo_digital_endpoint: Optional[str] = None,
+    ) -> Optional[YoDigitalTokens]:
         """
         Get yo_digital tokens from TAA endpoint (renamed from authenticate)
 
@@ -79,24 +82,29 @@ class TaaClient:
                 sam3_token=taa_access_token,
                 device_id=device_id,
                 client_model=client_model,
-                device_model=device_model
+                device_model=device_model,
             )
 
             # Build headers
             headers = self._get_taa_headers()
 
             # Use provided endpoint or fallback
-            endpoint = yo_digital_endpoint or "https://gateway-de-proxy.tv.yo-digital.com/de-idm/P/onboarding/login"
+            endpoint = (
+                yo_digital_endpoint
+                or "https://gateway-de-proxy.tv.yo-digital.com/de-idm/P/onboarding/login"
+            )
 
             logger.debug(f"yo_digital request to: {endpoint}")
-            logger.debug(f"TAA payload keyValue: {taa_payload.get('keyValue', 'MISSING')}")
+            logger.debug(
+                f"TAA payload keyValue: {taa_payload.get('keyValue', 'MISSING')}"
+            )
 
             # Perform yo_digital request
             response = self.http_manager.post(
                 endpoint,
-                operation='yo_digital_auth',
+                operation="yo_digital_auth",
                 headers=headers,
-                json_data=taa_payload
+                json_data=taa_payload,
             )
 
             # Log response details
@@ -106,26 +114,38 @@ class TaaClient:
             if response.status_code == 400:
                 try:
                     error_data = response.json()
-                    logger.error(f"yo_digital 400 error response: {json.dumps(error_data, indent=2)}")
+                    logger.error(
+                        f"yo_digital 400 error response: {json.dumps(error_data, indent=2)}"
+                    )
 
                     # Check for deviceLimitExceed (note: might be "Exceed" not "Exceeded")
-                    if error_data.get('deviceLimitExceed') or error_data.get('deviceLimitExceeded'):
-                        logger.error("Device limit exceeded in yo_digital authentication")
+                    if error_data.get("deviceLimitExceed") or error_data.get(
+                        "deviceLimitExceeded"
+                    ):
+                        logger.error(
+                            "Device limit exceeded in yo_digital authentication"
+                        )
                         return YoDigitalTokens(
                             access_token="",
                             access_token_expires_in=0,
                             refresh_token="",
                             refresh_token_expires_in=0,
-                            device_limit_exceeded=True
+                            device_limit_exceeded=True,
                         )
 
                     # Log any other error details
-                    if 'error' in error_data:
-                        logger.error(f"yo_digital error type: {error_data.get('error')}")
-                    if 'error_description' in error_data:
-                        logger.error(f"yo_digital error description: {error_data.get('error_description')}")
-                    if 'message' in error_data:
-                        logger.error(f"yo_digital error message: {error_data.get('message')}")
+                    if "error" in error_data:
+                        logger.error(
+                            f"yo_digital error type: {error_data.get('error')}"
+                        )
+                    if "error_description" in error_data:
+                        logger.error(
+                            f"yo_digital error description: {error_data.get('error_description')}"
+                        )
+                    if "message" in error_data:
+                        logger.error(
+                            f"yo_digital error message: {error_data.get('message')}"
+                        )
 
                 except (ValueError, KeyError) as e:
                     logger.error(f"Could not parse 400 error response: {e}")
@@ -144,13 +164,15 @@ class TaaClient:
             logger.error(f"yo_digital token acquisition failed: {e}")
 
             # Try to extract error details if available
-            if hasattr(e, 'response') and hasattr(e.response, 'text'):
+            if hasattr(e, "response") and hasattr(e.response, "text"):
                 try:
                     error_body = e.response.text
                     logger.error(f"yo_digital error response body: {error_body}")
                     try:
                         error_json = e.response.json()
-                        logger.error(f"yo_digital error response JSON: {json.dumps(error_json, indent=2)}")
+                        logger.error(
+                            f"yo_digital error response JSON: {json.dumps(error_json, indent=2)}"
+                        )
                     except:
                         pass
                 except:
@@ -158,8 +180,9 @@ class TaaClient:
 
             return None
 
-    def refresh_yo_digital_tokens(self, refresh_token: str,
-                                  yo_digital_endpoint: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    def refresh_yo_digital_tokens(
+        self, refresh_token: str, yo_digital_endpoint: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
         """
         Refresh yo_digital tokens using refresh_token (STUB)
 
@@ -188,7 +211,9 @@ class TaaClient:
             logger.error(f"yo_digital token refresh failed: {e}")
             return None
 
-    def _parse_yo_digital_response(self, yo_digital_data: Dict[str, Any]) -> Optional[YoDigitalTokens]:
+    def _parse_yo_digital_response(
+        self, yo_digital_data: Dict[str, Any]
+    ) -> Optional[YoDigitalTokens]:
         """
         Parse yo_digital response with proper field names
 
@@ -204,20 +229,21 @@ class TaaClient:
         """
         try:
             # Extract tokens using yo_digital field names
-            access_token = yo_digital_data.get('accessToken')
-            refresh_token = yo_digital_data.get('refreshToken')
+            access_token = yo_digital_data.get("accessToken")
+            refresh_token = yo_digital_data.get("refreshToken")
 
             if not access_token or not refresh_token:
                 logger.error("Missing access or refresh token in yo_digital response")
                 return None
 
             # Extract expiry times
-            access_expires_in = yo_digital_data.get('accessExpiresIn', 86400)
-            refresh_expires_in = yo_digital_data.get('refreshExpiresIn', 86400)
+            access_expires_in = yo_digital_data.get("accessExpiresIn", 86400)
+            refresh_expires_in = yo_digital_data.get("refreshExpiresIn", 86400)
 
             # Check device limit
-            device_limit_exceeded = yo_digital_data.get('deviceLimitExceed', False) or \
-                                    yo_digital_data.get('deviceLimitExceeded', False)
+            device_limit_exceeded = yo_digital_data.get(
+                "deviceLimitExceed", False
+            ) or yo_digital_data.get("deviceLimitExceeded", False)
 
             result = YoDigitalTokens(
                 access_token=access_token,
@@ -225,12 +251,14 @@ class TaaClient:
                 refresh_token=refresh_token,
                 refresh_token_expires_in=refresh_expires_in,
                 device_limit_exceeded=device_limit_exceeded,
-                raw_response=yo_digital_data
+                raw_response=yo_digital_data,
             )
 
-            logger.debug(f"✓ Parsed yo_digital tokens: "
-                         f"access_expires_in={access_expires_in}s, "
-                         f"refresh_expires_in={refresh_expires_in}s")
+            logger.debug(
+                f"✓ Parsed yo_digital tokens: "
+                f"access_expires_in={access_expires_in}s, "
+                f"refresh_expires_in={refresh_expires_in}s"
+            )
 
             return result
 
@@ -242,8 +270,14 @@ class TaaClient:
     # Legacy TAA Authentication (kept for backward compatibility)
     # ========================================================================
 
-    def authenticate(self, sam3_token: str, device_id: str, client_model: Optional[str] = None,
-                     device_model: Optional[str] = None, taa_endpoint: Optional[str] = None) -> TaaAuthResult:
+    def authenticate(
+        self,
+        sam3_token: str,
+        device_id: str,
+        client_model: Optional[str] = None,
+        device_model: Optional[str] = None,
+        taa_endpoint: Optional[str] = None,
+    ) -> TaaAuthResult:
         """
         Legacy method - performs TAA authentication and parses JWT
 
@@ -258,7 +292,7 @@ class TaaClient:
                 sam3_token=sam3_token,
                 device_id=device_id,
                 client_model=client_model,
-                device_model=device_model
+                device_model=device_model,
             )
 
             # Build headers
@@ -271,21 +305,17 @@ class TaaClient:
 
             # Perform TAA request
             response = self.http_manager.post(
-                endpoint,
-                operation='taa_auth',
-                headers=headers,
-                json_data=taa_payload
+                endpoint, operation="taa_auth", headers=headers, json_data=taa_payload
             )
 
             # Check for device limit exceeded
             if response.status_code == 400:
                 try:
                     error_data = response.json()
-                    if error_data.get('deviceLimitExceeded'):
+                    if error_data.get("deviceLimitExceeded"):
                         logger.error("Device limit exceeded in TAA authentication")
                         return TaaAuthResult(
-                            access_token="",
-                            device_limit_exceeded=True
+                            access_token="", device_limit_exceeded=True
                         )
                 except:
                     pass
@@ -309,8 +339,8 @@ class TaaClient:
         (Legacy method for backward compatibility)
         """
         # Handle different response key formats
-        access_token = taa_data.get('access_token', taa_data.get('accessToken'))
-        refresh_token = taa_data.get('refresh_token', taa_data.get('refreshToken'))
+        access_token = taa_data.get("access_token", taa_data.get("accessToken"))
+        refresh_token = taa_data.get("refresh_token", taa_data.get("refreshToken"))
 
         if not access_token:
             raise ValueError("No access token in TAA response")
@@ -322,15 +352,15 @@ class TaaClient:
         result = TaaAuthResult(
             access_token=access_token,
             refresh_token=refresh_token,
-            dc_cts_persona_token=jwt_claims.get('dc_cts_persona_token'),
-            persona_id=jwt_claims.get('persona_id'),
-            account_id=jwt_claims.get('account_id'),
-            consumer_id=jwt_claims.get('consumer_id'),
-            tv_account_id=jwt_claims.get('tv_account_id'),
-            account_token=jwt_claims.get('account_token'),
-            account_uri=jwt_claims.get('account_uri'),
-            token_exp=jwt_claims.get('token_exp'),
-            raw_response=taa_data
+            dc_cts_persona_token=jwt_claims.get("dc_cts_persona_token"),
+            persona_id=jwt_claims.get("persona_id"),
+            account_id=jwt_claims.get("account_id"),
+            consumer_id=jwt_claims.get("consumer_id"),
+            tv_account_id=jwt_claims.get("tv_account_id"),
+            account_token=jwt_claims.get("account_token"),
+            account_uri=jwt_claims.get("account_uri"),
+            token_exp=jwt_claims.get("token_exp"),
+            raw_response=taa_data,
         )
 
         return result
@@ -339,9 +369,13 @@ class TaaClient:
     # Common Methods (used by both yo_digital and legacy TAA)
     # ========================================================================
 
-    def _build_complete_taa_payload(self, sam3_token: str, device_id: str,
-                                    client_model: Optional[str] = None,
-                                    device_model: Optional[str] = None) -> Dict[str, Any]:
+    def _build_complete_taa_payload(
+        self,
+        sam3_token: str,
+        device_id: str,
+        client_model: Optional[str] = None,
+        device_model: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Build complete TAA payload matching the correct format exactly
 
@@ -358,11 +392,16 @@ class TaaClient:
         }
         """
         # Use provided device model or fallback to TAA-specific device model
-        resolved_device_model = device_model or self.platform_config.get('taa_device_model') or \
-                                self.platform_config['device_name']
+        resolved_device_model = (
+            device_model
+            or self.platform_config.get("taa_device_model")
+            or self.platform_config["device_name"]
+        )
 
         # Get TAA-specific OS format
-        resolved_os = self.platform_config.get('taa_os') or self.platform_config['firmware']
+        resolved_os = (
+            self.platform_config.get("taa_os") or self.platform_config["firmware"]
+        )
 
         resolved_client_model = client_model or f"ftv-{self.platform}"
 
@@ -373,7 +412,7 @@ class TaaClient:
             "TokenChannelParams(id=Tv)",
             f"TokenDeviceParams(id={device_id}, model={resolved_device_model}, os={resolved_os})",
             "DE",
-            "telekom"
+            "telekom",
         ]
 
         key_value = "/".join(key_value_parts)
@@ -384,16 +423,14 @@ class TaaClient:
             "accessToken": sam3_token,
             "accessTokenSource": IDM,
             "appVersion": APPVERSION2,
-            "channel": {
-                "id": "Tv"
-            },
+            "channel": {"id": "Tv"},
             "device": {
                 "id": device_id,
                 "model": resolved_device_model,
-                "os": resolved_os
+                "os": resolved_os,
             },
             "natco": "DE",
-            "type": "telekom"
+            "type": "telekom",
         }
 
         # Add client model if available
@@ -409,7 +446,7 @@ class TaaClient:
         (Used by legacy authenticate method)
         """
         try:
-            parts = jwt_token.split('.')
+            parts = jwt_token.split(".")
             if len(parts) != 3:
                 logger.warning("Invalid JWT format in TAA token")
                 return {}
@@ -418,51 +455,51 @@ class TaaClient:
             payload_b64 = parts[1]
             padding = len(payload_b64) % 4
             if padding:
-                payload_b64 += '=' * (4 - padding)
+                payload_b64 += "=" * (4 - padding)
 
-            payload_json = base64.b64decode(payload_b64).decode('utf-8')
+            payload_json = base64.b64decode(payload_b64).decode("utf-8")
             claims = json.loads(payload_json)
 
             result = {}
 
             # Enhanced claim mappings
             claim_mappings = {
-                'dc_cts_persona_token': [
-                    'dc_cts_personaToken',
-                    'dc_cts_persona_token',
-                    'personaToken',
-                    'urn:telekom:ott:dc_cts_persona_token'
+                "dc_cts_persona_token": [
+                    "dc_cts_personaToken",
+                    "dc_cts_persona_token",
+                    "personaToken",
+                    "urn:telekom:ott:dc_cts_persona_token",
                 ],
-                'account_uri': [
-                    'dc_cts_account_uri',
-                    'accountUri',
-                    'urn:telekom:ott:dc_cts_account_uri',
-                    'mpxAccountUri'
+                "account_uri": [
+                    "dc_cts_account_uri",
+                    "accountUri",
+                    "urn:telekom:ott:dc_cts_account_uri",
+                    "mpxAccountUri",
                 ],
-                'persona_id': [
-                    'dc_cts_personaId',
-                    'personaId',
-                    'urn:telekom:ott:dc_cts_personaId'
+                "persona_id": [
+                    "dc_cts_personaId",
+                    "personaId",
+                    "urn:telekom:ott:dc_cts_personaId",
                 ],
-                'account_id': [
-                    'dc_cts_accountId',
-                    'accountId',
-                    'urn:telekom:ott:dc_cts_accountId'
+                "account_id": [
+                    "dc_cts_accountId",
+                    "accountId",
+                    "urn:telekom:ott:dc_cts_accountId",
                 ],
-                'consumer_id': [
-                    'dc_cts_consumerId',
-                    'consumerId',
-                    'urn:telekom:ott:dc_cts_consumerId'
+                "consumer_id": [
+                    "dc_cts_consumerId",
+                    "consumerId",
+                    "urn:telekom:ott:dc_cts_consumerId",
                 ],
-                'tv_account_id': [
-                    'dc_tvAccountId',
-                    'tvAccountId',
-                    'urn:telekom:ott:dc_tvAccountId'
+                "tv_account_id": [
+                    "dc_tvAccountId",
+                    "tvAccountId",
+                    "urn:telekom:ott:dc_tvAccountId",
                 ],
-                'account_token': [
-                    'dc_cts_account_token',
-                    'accountToken',
-                    'urn:telekom:ott:dc_cts_account_token'
+                "account_token": [
+                    "dc_cts_account_token",
+                    "accountToken",
+                    "urn:telekom:ott:dc_cts_account_token",
                 ],
             }
 
@@ -474,8 +511,8 @@ class TaaClient:
                         break
 
             # Extract token expiration
-            if 'exp' in claims:
-                result['token_exp'] = claims['exp']
+            if "exp" in claims:
+                result["token_exp"] = claims["exp"]
 
             return result
 
@@ -489,13 +526,13 @@ class TaaClient:
         """
         import uuid
 
-        user_agent = self.platform_config.get('user_agent')
+        user_agent = self.platform_config.get("user_agent")
 
         headers = {
-            'requestId': str(uuid.uuid4()),
-            'User-Agent': user_agent,
-            'Accept': 'application/json',
-            'Content-Type': 'application/json; charset=UTF-8'
+            "requestId": str(uuid.uuid4()),
+            "User-Agent": user_agent,
+            "Accept": "application/json",
+            "Content-Type": "application/json; charset=UTF-8",
         }
 
         return headers
@@ -513,13 +550,13 @@ class TaaClient:
                 return False
 
             claims = self._parse_taa_jwt_complete(taa_token)
-            token_exp = claims.get('token_exp')
+            token_exp = claims.get("token_exp")
 
             if token_exp and token_exp < time.time():
                 logger.debug("TAA token is expired")
                 return False
 
-            if claims.get('dc_cts_persona_token') and claims.get('account_uri'):
+            if claims.get("dc_cts_persona_token") and claims.get("account_uri"):
                 return True
 
             return False
@@ -535,17 +572,25 @@ class TaaClient:
         claims = self._parse_taa_jwt_complete(taa_token)
 
         return {
-            'token_structure': 'VALID' if len(taa_token.split('.')) == 3 else 'INVALID',
-            'claims_available': list(claims.keys()),
-            'essential_claims': {
-                'dc_cts_persona_token': bool(claims.get('dc_cts_persona_token')),
-                'account_uri': bool(claims.get('account_uri')),
-                'persona_id': bool(claims.get('persona_id')),
-                'account_id': bool(claims.get('account_id'))
+            "token_structure": "VALID" if len(taa_token.split(".")) == 3 else "INVALID",
+            "claims_available": list(claims.keys()),
+            "essential_claims": {
+                "dc_cts_persona_token": bool(claims.get("dc_cts_persona_token")),
+                "account_uri": bool(claims.get("account_uri")),
+                "persona_id": bool(claims.get("persona_id")),
+                "account_id": bool(claims.get("account_id")),
             },
-            'token_expiration': {
-                'exp': claims.get('token_exp'),
-                'is_expired': claims.get('token_exp', 0) < time.time() if claims.get('token_exp') else None,
-                'current_time': time.time()
-            } if claims.get('token_exp') else None
+            "token_expiration": (
+                {
+                    "exp": claims.get("token_exp"),
+                    "is_expired": (
+                        claims.get("token_exp", 0) < time.time()
+                        if claims.get("token_exp")
+                        else None
+                    ),
+                    "current_time": time.time(),
+                }
+                if claims.get("token_exp")
+                else None
+            ),
         }

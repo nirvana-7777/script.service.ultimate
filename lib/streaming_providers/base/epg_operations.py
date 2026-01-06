@@ -3,7 +3,9 @@
 """
 EPG-related operations.
 """
-from typing import List, Dict, Optional
+
+from typing import Dict, List, Optional
+
 from .epg import EPGManager
 from .utils.logger import logger
 
@@ -16,8 +18,9 @@ class EPGOperations:
         self.epg_manager = EPGManager()
         logger.debug("EPGOperations: Initialized")
 
-    def get_channel_epg(self, provider_name: str, channel_id: str,
-                        **kwargs) -> List[Dict]:
+    def get_channel_epg(
+        self, provider_name: str, channel_id: str, **kwargs
+    ) -> List[Dict]:
         """Get EPG data for a specific channel."""
         provider = self.registry.get_provider(provider_name)
         if not provider:
@@ -31,8 +34,8 @@ class EPGOperations:
             epg_data = self.epg_manager.get_epg(
                 provider_name=provider_name,
                 channel_id=channel_id,
-                start_time=kwargs.get('start_time'),
-                end_time=kwargs.get('end_time')
+                start_time=kwargs.get("start_time"),
+                end_time=kwargs.get("end_time"),
             )
 
         logger.debug(f"Retrieved {len(epg_data)} EPG entries for '{channel_id}'")
@@ -69,4 +72,3 @@ class EPGOperations:
     def has_epg_mapping(self, provider_name: str, channel_id: str) -> bool:
         """Check if EPG mapping exists."""
         return self.epg_manager.has_mapping_for_channel(provider_name, channel_id)
-

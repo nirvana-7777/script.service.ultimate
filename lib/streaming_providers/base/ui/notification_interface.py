@@ -5,13 +5,15 @@
 Abstract notification interface for displaying authentication prompts
 Supports multiple UI backends (Kodi, console, web, etc.)
 """
+
 from abc import ABC, abstractmethod
-from typing import Optional
 from enum import Enum
+from typing import Optional
 
 
 class NotificationResult(Enum):
     """Result of notification display"""
+
     CONTINUE = "continue"  # User wants to continue
     CANCELLED = "cancelled"  # User cancelled
     TIMEOUT = "timeout"  # Notification timed out
@@ -36,11 +38,7 @@ class NotificationInterface(ABC):
 
     @abstractmethod
     def show_remote_login(
-            self,
-            login_code: str,
-            qr_target_url: str,
-            expires_in: int,
-            interval: int = 10
+        self, login_code: str, qr_target_url: str, expires_in: int, interval: int = 10
     ) -> NotificationResult:
         """
         Show remote login notification to user
@@ -144,9 +142,9 @@ class NotificationInterface(ABC):
             dict: Capability information
         """
         return {
-            'type': self.__class__.__name__,
-            'supports_qr_display': self.supports_qr_display,
-            'supports_countdown': self.supports_countdown,
-            'is_blocking': self.is_blocking,
-            'is_active': self.is_active
+            "type": self.__class__.__name__,
+            "supports_qr_display": self.supports_qr_display,
+            "supports_countdown": self.supports_countdown,
+            "is_blocking": self.is_blocking,
+            "is_active": self.is_active,
         }

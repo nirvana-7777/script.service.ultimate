@@ -1,19 +1,15 @@
 # streaming_providers/providers/magenta2/discovery.py
 import time
-from typing import Dict, Optional, Any
+from typing import Any, Dict, Optional
 
-from ...base.network import HTTPManager
 from ...base.models.proxy_models import ProxyConfig
+from ...base.network import HTTPManager
 from ...base.utils.logger import logger
-from .config_models import BootstrapConfig, ManifestConfig, OpenIDConfig, ProviderConfig
-from .constants import (
-    MAGENTA2_BOOTSTRAP_URL,
-    MAGENTA2_MANIFEST_URL,
-    SUBSCRIBER_TYPES,
-    DEFAULT_REQUEST_TIMEOUT,
-    BOOTSTRAP_CACHE_DURATION,
-    OPENID_CONFIG_CACHE_DURATION
-)
+from .config_models import (BootstrapConfig, ManifestConfig, OpenIDConfig,
+                            ProviderConfig)
+from .constants import (BOOTSTRAP_CACHE_DURATION, DEFAULT_REQUEST_TIMEOUT,
+                        MAGENTA2_BOOTSTRAP_URL, MAGENTA2_MANIFEST_URL,
+                        OPENID_CONFIG_CACHE_DURATION, SUBSCRIBER_TYPES)
 
 
 class DiscoveryService:
@@ -21,15 +17,22 @@ class DiscoveryService:
     Service for dynamic discovery of Magenta2 endpoints and configuration
     """
 
-    def __init__(self, platform: str, terminal_type: str, device_id: str, session_id: str,
-                 http_manager: HTTPManager, proxy_config: Optional[ProxyConfig] = None):
+    def __init__(
+        self,
+        platform: str,
+        terminal_type: str,
+        device_id: str,
+        session_id: str,
+        http_manager: HTTPManager,
+        proxy_config: Optional[ProxyConfig] = None,
+    ):
         self.platform = platform
         self.terminal_type = terminal_type
         self.device_id = device_id
         self.session_id = session_id
         self.http_manager = http_manager
         self.proxy_config = proxy_config
-        self.subscriber_type = SUBSCRIBER_TYPES.get(platform, 'FTV_OTT_DT')
+        self.subscriber_type = SUBSCRIBER_TYPES.get(platform, "FTV_OTT_DT")
 
         # Cache storage
         self._bootstrap_config: Optional[BootstrapConfig] = None
@@ -79,7 +82,7 @@ class DiscoveryService:
             provider_config = ProviderConfig(
                 bootstrap=bootstrap_config,
                 manifest=manifest_config,
-                openid=openid_config
+                openid=openid_config,
             )
 
             # Log MPX account info for persona token composition
@@ -94,7 +97,9 @@ class DiscoveryService:
             self._create_fallback_configuration()
             raise
 
-    def discover_bootstrap(self, force_refresh: bool = False) -> Optional[BootstrapConfig]:
+    def discover_bootstrap(
+        self, force_refresh: bool = False
+    ) -> Optional[BootstrapConfig]:
         """
         Discover bootstrap configuration
 
@@ -111,28 +116,30 @@ class DiscoveryService:
         try:
             logger.info("Discovering bootstrap configuration")
 
-            terminal_type = self.terminal_type.lower().replace('_', '-')
+            terminal_type = self.terminal_type.lower().replace("_", "-")
             url = MAGENTA2_BOOTSTRAP_URL.format(terminal_type=terminal_type)
 
             params = {
-                'deviceid': self.device_id,
-                'sid': self.session_id,
-                '$redirect': 'false'
+                "deviceid": self.device_id,
+                "sid": self.session_id,
+                "$redirect": "false",
             }
 
             headers = self._get_dcm_headers()
 
             response = self.http_manager.get(
                 url,
-                operation='bootstrap',
+                operation="bootstrap",
                 headers=headers,
                 params=params,
-                timeout=DEFAULT_REQUEST_TIMEOUT
+                timeout=DEFAULT_REQUEST_TIMEOUT,
             )
             response.raise_for_status()
 
             bootstrap_data = response.json()
-            self._bootstrap_config = BootstrapConfig.from_api_response(bootstrap_data, self.platform)
+            self._bootstrap_config = BootstrapConfig.from_api_response(
+                bootstrap_data, self.platform
+            )
             self._last_bootstrap = time.time()
 
             logger.info(
@@ -145,7 +152,9 @@ class DiscoveryService:
             if self._bootstrap_config.taa_url:
                 logger.debug(f"TAA URL: {self._bootstrap_config.taa_url}")
             if self._bootstrap_config.device_tokens_url:
-                logger.debug(f"Device tokens URL: {self._bootstrap_config.device_tokens_url}")
+                logger.debug(
+                    f"Device tokens URL: {self._bootstrap_config.device_tokens_url}"
+                )
 
             return self._bootstrap_config
 
@@ -156,7 +165,9 @@ class DiscoveryService:
             self._last_bootstrap = None
             return None
 
-    def discover_manifest(self, force_refresh: bool = False) -> Optional[ManifestConfig]:
+    def discover_manifest(
+        self, force_refresh: bool = False
+    ) -> Optional[ManifestConfig]:
         """
         ENHANCED: Discover manifest configuration including device token
         Uses correct manifest endpoint parameters
@@ -177,29 +188,30 @@ class DiscoveryService:
             # Determine manifest URL - prefer device_tokens_url from bootstrap
             if self._bootstrap_config and self._bootstrap_config.device_tokens_url:
                 manifest_url = self._bootstrap_config.device_tokens_url
-                logger.debug(f"Using bootstrap device_tokens_url for manifest: {manifest_url}")
+                logger.debug(
+                    f"Using bootstrap device_tokens_url for manifest: {manifest_url}"
+                )
             else:
-                terminal_type = self.terminal_type.lower().replace('_', '-')
+                terminal_type = self.terminal_type.lower().replace("_", "-")
                 manifest_url = MAGENTA2_MANIFEST_URL.format(terminal_type=terminal_type)
                 logger.debug(f"Using fallback manifest URL: {manifest_url}")
 
             # Build correct manifest parameters
-            from .constants import (
-                MAGENTA2_APP_NAME,
-                MAGENTA2_APP_VERSION,
-                MAGENTA2_RUNTIME_VERSION,
-                MANIFEST_MODEL_MAPPINGS,
-                MANIFEST_FIRMWARE_MAPPINGS
-            )
+            from .constants import (MAGENTA2_APP_NAME, MAGENTA2_APP_VERSION,
+                                    MAGENTA2_RUNTIME_VERSION,
+                                    MANIFEST_FIRMWARE_MAPPINGS,
+                                    MANIFEST_MODEL_MAPPINGS)
 
             params = {
-                'model': MANIFEST_MODEL_MAPPINGS.get(self.platform, 'DT:ATV-AndroidTV'),
-                'deviceId': self.device_id,
-                'appname': MAGENTA2_APP_NAME,
-                'appVersion': MAGENTA2_APP_VERSION,
-                'firmware': MANIFEST_FIRMWARE_MAPPINGS.get(self.platform, 'API level 30'),
-                'runtimeVersion': MAGENTA2_RUNTIME_VERSION,
-                'duid': self.device_id  # Same as deviceId
+                "model": MANIFEST_MODEL_MAPPINGS.get(self.platform, "DT:ATV-AndroidTV"),
+                "deviceId": self.device_id,
+                "appname": MAGENTA2_APP_NAME,
+                "appVersion": MAGENTA2_APP_VERSION,
+                "firmware": MANIFEST_FIRMWARE_MAPPINGS.get(
+                    self.platform, "API level 30"
+                ),
+                "runtimeVersion": MAGENTA2_RUNTIME_VERSION,
+                "duid": self.device_id,  # Same as deviceId
             }
 
             logger.debug(f"Manifest request params: {params}")
@@ -208,10 +220,10 @@ class DiscoveryService:
 
             response = self.http_manager.get(
                 manifest_url,
-                operation='manifest_discovery',
+                operation="manifest_discovery",
                 headers=headers,
                 params=params,
-                timeout=DEFAULT_REQUEST_TIMEOUT
+                timeout=DEFAULT_REQUEST_TIMEOUT,
             )
             response.raise_for_status()
 
@@ -225,7 +237,9 @@ class DiscoveryService:
 
             if device_token:
                 logger.info("✓ Device token found in manifest")
-                logger.debug(f"Device token preview: {device_token[:20]}...{device_token[-10:]}")
+                logger.debug(
+                    f"Device token preview: {device_token[:20]}...{device_token[-10:]}"
+                )
             else:
                 logger.warning("⚠️ Device token NOT found in manifest response")
 
@@ -254,7 +268,9 @@ class DiscoveryService:
             self._last_manifest = None
             return None
 
-    def discover_openid_config(self, force_refresh: bool = False) -> Optional[OpenIDConfig]:
+    def discover_openid_config(
+        self, force_refresh: bool = False
+    ) -> Optional[OpenIDConfig]:
         """
         Discover OpenID Connect configuration
 
@@ -269,7 +285,10 @@ class DiscoveryService:
                 return self._openid_config
 
         try:
-            if not self._bootstrap_config or not self._bootstrap_config.openid_config_url:
+            if (
+                not self._bootstrap_config
+                or not self._bootstrap_config.openid_config_url
+            ):
                 logger.warning("No OpenID config URL available from bootstrap")
                 return None
 
@@ -279,9 +298,9 @@ class DiscoveryService:
 
             response = self.http_manager.get(
                 openid_url,
-                operation='openid_discovery',
-                headers={'Accept': 'application/json'},
-                timeout=DEFAULT_REQUEST_TIMEOUT
+                operation="openid_discovery",
+                headers={"Accept": "application/json"},
+                timeout=DEFAULT_REQUEST_TIMEOUT,
             )
             response.raise_for_status()
 
@@ -289,7 +308,9 @@ class DiscoveryService:
             self._openid_config = OpenIDConfig.from_api_response(openid_data)
             self._last_openid = time.time()
 
-            logger.info(f"OpenID discovery successful: token_endpoint={self._openid_config.token_endpoint}")
+            logger.info(
+                f"OpenID discovery successful: token_endpoint={self._openid_config.token_endpoint}"
+            )
             return self._openid_config
 
         except Exception as e:
@@ -301,69 +322,80 @@ class DiscoveryService:
 
     def _get_dcm_headers(self) -> Dict[str, str]:
         """Get headers for DCM requests"""
-        from .constants import MAGENTA2_PLATFORMS, DEFAULT_PLATFORM
+        from .constants import DEFAULT_PLATFORM, MAGENTA2_PLATFORMS
 
-        platform_config = MAGENTA2_PLATFORMS.get(self.platform, MAGENTA2_PLATFORMS[DEFAULT_PLATFORM])
+        platform_config = MAGENTA2_PLATFORMS.get(
+            self.platform, MAGENTA2_PLATFORMS[DEFAULT_PLATFORM]
+        )
 
         return {
-            'User-Agent': platform_config['user_agent'],
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-            'x-dt-session-id': self.session_id,
-            'x-dt-call-id': self._generate_call_id()
+            "User-Agent": platform_config["user_agent"],
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "x-dt-session-id": self.session_id,
+            "x-dt-call-id": self._generate_call_id(),
         }
 
     @staticmethod
     def _generate_call_id() -> str:
         """Generate call ID for requests"""
         import uuid
+
         return str(uuid.uuid4())
 
     def get_discovery_status(self) -> Dict[str, Any]:
         """Get discovery service status"""
         status = {
-            'bootstrap_available': self._bootstrap_config is not None,
-            'manifest_available': self._manifest_config is not None,
-            'openid_available': self._openid_config is not None,
+            "bootstrap_available": self._bootstrap_config is not None,
+            "manifest_available": self._manifest_config is not None,
+            "openid_available": self._openid_config is not None,
         }
 
         if self._bootstrap_config:
-            status['bootstrap'] = {
-                'client_model': self._bootstrap_config.client_model,
-                'device_model': self._bootstrap_config.device_model,
-                'has_device_tokens_url': bool(self._bootstrap_config.device_tokens_url),
-                'has_openid_config_url': bool(self._bootstrap_config.openid_config_url),
-                'has_taa_url': bool(self._bootstrap_config.taa_url),
+            status["bootstrap"] = {
+                "client_model": self._bootstrap_config.client_model,
+                "device_model": self._bootstrap_config.device_model,
+                "has_device_tokens_url": bool(self._bootstrap_config.device_tokens_url),
+                "has_openid_config_url": bool(self._bootstrap_config.openid_config_url),
+                "has_taa_url": bool(self._bootstrap_config.taa_url),
             }
 
         if self._manifest_config:
             device_token = self._manifest_config.get_device_token()
-            status['manifest'] = {
-                'mpx_account_pid': self._manifest_config.mpx.account_pid,
-                'mpx_account_uri': self._manifest_config.mpx.get_account_uri(),
-                'feed_count': len(self._manifest_config.mpx.feeds),
-                'has_device_token': bool(device_token),
-                'device_token_preview': device_token[:20] + '...' if device_token else None,
-                'drm_endpoints': {
-                    'widevine': bool(self._manifest_config.drm.widevine_license_url),
-                    'vod_widevine': bool(self._manifest_config.drm.vod_widevine_license_url),
-                    'fairplay': bool(self._manifest_config.drm.fairplay_license_url),
+            status["manifest"] = {
+                "mpx_account_pid": self._manifest_config.mpx.account_pid,
+                "mpx_account_uri": self._manifest_config.mpx.get_account_uri(),
+                "feed_count": len(self._manifest_config.mpx.feeds),
+                "has_device_token": bool(device_token),
+                "device_token_preview": (
+                    device_token[:20] + "..." if device_token else None
+                ),
+                "drm_endpoints": {
+                    "widevine": bool(self._manifest_config.drm.widevine_license_url),
+                    "vod_widevine": bool(
+                        self._manifest_config.drm.vod_widevine_license_url
+                    ),
+                    "fairplay": bool(self._manifest_config.drm.fairplay_license_url),
                 },
-                'tvhub_count': len(self._manifest_config.tv_hubs.base_urls),
+                "tvhub_count": len(self._manifest_config.tv_hubs.base_urls),
             }
 
         if self._openid_config:
-            status['openid'] = {
-                'has_token_endpoint': bool(self._openid_config.token_endpoint),
-                'has_authorization_endpoint': bool(self._openid_config.authorization_endpoint),
+            status["openid"] = {
+                "has_token_endpoint": bool(self._openid_config.token_endpoint),
+                "has_authorization_endpoint": bool(
+                    self._openid_config.authorization_endpoint
+                ),
             }
 
         # Cache status
         now = time.time()
-        status['cache'] = {
-            'bootstrap_age': now - self._last_bootstrap if self._last_bootstrap else None,
-            'manifest_age': now - self._last_manifest if self._last_manifest else None,
-            'openid_age': now - self._last_openid if self._last_openid else None,
+        status["cache"] = {
+            "bootstrap_age": (
+                now - self._last_bootstrap if self._last_bootstrap else None
+            ),
+            "manifest_age": now - self._last_manifest if self._last_manifest else None,
+            "openid_age": now - self._last_openid if self._last_openid else None,
         }
 
         return status

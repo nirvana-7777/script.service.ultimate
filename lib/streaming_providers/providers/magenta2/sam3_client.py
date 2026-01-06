@@ -1,21 +1,18 @@
 # streaming_providers/providers/magenta2/sam3_client.py
 import re
-from typing import Dict, Optional, Any, List
 from dataclasses import dataclass
-from urllib.parse import urlparse, parse_qs
+from typing import Any, Dict, List, Optional
+from urllib.parse import parse_qs, urlparse
 
 from ...base.network import HTTPManager
 from ...base.utils.logger import logger
-from .constants import (
-    SSO_USER_AGENT,
-    DEFAULT_REQUEST_TIMEOUT,
-    GRANT_TYPES,
-)
+from .constants import DEFAULT_REQUEST_TIMEOUT, GRANT_TYPES, SSO_USER_AGENT
 
 
 @dataclass
 class Sam3AuthMethod:
     """SAM3 authentication method"""
+
     name: str
     enabled: bool = False
 
@@ -23,6 +20,7 @@ class Sam3AuthMethod:
 @dataclass
 class Sam3AuthMethods:
     """Available SAM3 authentication methods"""
+
     password: bool = False
     code: bool = False
     line: bool = False
@@ -31,6 +29,7 @@ class Sam3AuthMethods:
 @dataclass
 class Sam3FormField:
     """HTML form field extracted from SAM3 login pages"""
+
     name: str
     value: str
     type: str = "hidden"
@@ -41,10 +40,18 @@ class Sam3Client:
     SAM3 authentication client implementing the complete login flow from C++ code
     """
 
-    def __init__(self, http_manager: HTTPManager, session_id: str, device_id: str,
-                 sam3_client_id: str, issuer_url: str = None,
-                 oauth_token_endpoint: str = None, line_auth_endpoint: str = None,
-                 backchannel_start_url: str = None, qr_code_url_template: str = None):
+    def __init__(
+        self,
+        http_manager: HTTPManager,
+        session_id: str,
+        device_id: str,
+        sam3_client_id: str,
+        issuer_url: str = None,
+        oauth_token_endpoint: str = None,
+        line_auth_endpoint: str = None,
+        backchannel_start_url: str = None,
+        qr_code_url_template: str = None,
+    ):
         """
         Initialize SAM3 client with all required endpoints
         """
@@ -76,7 +83,7 @@ class Sam3Client:
         self.__last_line_auth_response: Optional[Dict[str, Any]] = None
 
         # Remote login handler (lazy initialized)
-        self._remote_login_handler: Optional['RemoteLoginHandler'] = None
+        self._remote_login_handler: Optional["RemoteLoginHandler"] = None
 
         logger.debug(
             f"SAM3 client initialized - "
@@ -92,7 +99,9 @@ class Sam3Client:
 
     def _get_token_endpoint(self) -> str:
         """Get the appropriate token endpoint with fallback logic"""
-        return self.oauth_token_endpoint or self.token_endpoint or self.line_auth_endpoint
+        return (
+            self.oauth_token_endpoint or self.token_endpoint or self.line_auth_endpoint
+        )
 
     def _get_line_auth_endpoint(self) -> str:
         """Get line auth endpoint with fallback"""
@@ -102,8 +111,9 @@ class Sam3Client:
     # Common Token Request Method
     # ========================================================================
 
-    def _make_token_request(self, operation: str, payload: Dict[str, Any],
-                            endpoint_override: str = None) -> Dict[str, Any]:
+    def _make_token_request(
+        self, operation: str, payload: Dict[str, Any], endpoint_override: str = None
+    ) -> Dict[str, Any]:
         """
         Common method for all token requests
 
@@ -120,8 +130,8 @@ class Sam3Client:
             raise Exception("No token endpoint available")
 
         headers = {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'User-Agent': SSO_USER_AGENT
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": SSO_USER_AGENT,
         }
 
         response = self.http_manager.post(
@@ -129,14 +139,14 @@ class Sam3Client:
             operation=operation,
             headers=headers,
             data=payload,
-            timeout=DEFAULT_REQUEST_TIMEOUT
+            timeout=DEFAULT_REQUEST_TIMEOUT,
         )
         response.raise_for_status()
         data = response.json()
 
         # Store refresh token if provided
-        if 'refresh_token' in data:
-            self.refresh_token = data['refresh_token']
+        if "refresh_token" in data:
+            self.refresh_token = data["refresh_token"]
             logger.debug(f"Refresh token stored/updated from {operation}")
 
         return data
@@ -153,30 +163,27 @@ class Sam3Client:
         try:
             logger.debug("Discovering SAM3 authentication methods")
 
-            headers = {
-                'User-Agent': SSO_USER_AGENT,
-                'Accept': 'application/json'
-            }
+            headers = {"User-Agent": SSO_USER_AGENT, "Accept": "application/json"}
 
             response = self.http_manager.get(
                 line_auth_url,
-                operation='auth_methods',
+                operation="auth_methods",
                 headers=headers,
-                timeout=DEFAULT_REQUEST_TIMEOUT
+                timeout=DEFAULT_REQUEST_TIMEOUT,
             )
             response.raise_for_status()
 
             data = response.json()
-            content = data.get('content', {})
+            content = data.get("content", {})
 
-            if 'supportedAuthenticationKinds' in content:
-                auth_kinds = content['supportedAuthenticationKinds']
+            if "supportedAuthenticationKinds" in content:
+                auth_kinds = content["supportedAuthenticationKinds"]
                 for method in auth_kinds:
-                    if method == GRANT_TYPES['PASSWORD']:
+                    if method == GRANT_TYPES["PASSWORD"]:
                         self.auth_methods.password = True
-                    elif method == GRANT_TYPES['AUTH_CODE']:
+                    elif method == GRANT_TYPES["AUTH_CODE"]:
                         self.auth_methods.code = True
-                    elif method == GRANT_TYPES['LINE_AUTH']:
+                    elif method == GRANT_TYPES["LINE_AUTH"]:
                         self.auth_methods.line = True
 
             logger.info(
@@ -206,10 +213,10 @@ class Sam3Client:
 
             initial_response = self.http_manager.get(
                 auth_url,
-                operation='sam3_auth',
+                operation="sam3_auth",
                 headers=self._get_sso_headers(),
                 timeout=DEFAULT_REQUEST_TIMEOUT,
-                allow_redirects=False
+                allow_redirects=False,
             )
 
             # Step 2: Parse HTML and extract form fields
@@ -217,17 +224,21 @@ class Sam3Client:
             logger.debug(f"Step 2: Extracted {len(self.form_fields)} form fields")
 
             # Step 3: Submit username to factorx endpoint
-            factorx_url = f"{self.issuer_url}/factorx" if self.issuer_url else "https://login.telekom-dienste.de/factorx"
+            factorx_url = (
+                f"{self.issuer_url}/factorx"
+                if self.issuer_url
+                else "https://login.telekom-dienste.de/factorx"
+            )
             username_data = self._build_username_payload(username)
 
             logger.debug(f"Step 3: Submitting username to {factorx_url}")
             username_response = self.http_manager.post(
                 factorx_url,
-                operation='sam3_username',
+                operation="sam3_username",
                 headers=self._get_sso_headers(),
                 data=username_data,
                 timeout=DEFAULT_REQUEST_TIMEOUT,
-                allow_redirects=False
+                allow_redirects=False,
             )
 
             # Step 4: Parse response and extract updated form fields
@@ -240,25 +251,25 @@ class Sam3Client:
             logger.debug(f"Step 5: Submitting password to {factorx_url}")
             password_response = self.http_manager.post(
                 factorx_url,
-                operation='sam3_password',
+                operation="sam3_password",
                 headers=self._get_sso_headers(),
                 data=password_data,
                 timeout=DEFAULT_REQUEST_TIMEOUT,
-                allow_redirects=False
+                allow_redirects=False,
             )
 
             # Step 6: Extract authorization code from redirect
-            redirect_url = password_response.headers.get('Location', '')
+            redirect_url = password_response.headers.get("Location", "")
             logger.debug(f"Step 6: Redirect URL: {redirect_url}")
 
             if not redirect_url:
                 # Follow redirects manually if needed
                 final_response = self.http_manager.get(
                     factorx_url,
-                    operation='sam3_final',
+                    operation="sam3_final",
                     headers=self._get_sso_headers(),
                     timeout=DEFAULT_REQUEST_TIMEOUT,
-                    allow_redirects=True
+                    allow_redirects=True,
                 )
                 redirect_url = final_response.url
 
@@ -266,14 +277,12 @@ class Sam3Client:
             code, state = self._extract_code_and_state(redirect_url)
 
             if not code or not state:
-                raise Exception("Could not extract authorization code and state from redirect")
+                raise Exception(
+                    "Could not extract authorization code and state from redirect"
+                )
 
             logger.info("SAM3 login completed successfully")
-            return {
-                'code': code,
-                'state': state,
-                'redirect_url': redirect_url
-            }
+            return {"code": code, "state": state, "redirect_url": redirect_url}
 
         except Exception as e:
             logger.error(f"SAM3 login failed: {e}")
@@ -299,23 +308,25 @@ class Sam3Client:
             logger.debug("Performing line authentication with device token")
 
             payload = {
-                'grant_type': GRANT_TYPES['LINE_AUTH'],
-                'client_id': self.sam3_client_id,
-                'token': device_token,
-                'scope': 'tvhubs offline_access'
+                "grant_type": GRANT_TYPES["LINE_AUTH"],
+                "client_id": self.sam3_client_id,
+                "token": device_token,
+                "scope": "tvhubs offline_access",
             }
 
             # Use common token request method
-            data = self._make_token_request('line_auth', payload, endpoint)
+            data = self._make_token_request("line_auth", payload, endpoint)
 
             # Store the actual response data
             self.__last_line_auth_response = data
 
-            if 'refresh_token' in data:
+            if "refresh_token" in data:
                 logger.info("Line authentication successful, refresh token obtained")
                 return True
 
-            logger.warning("Line authentication succeeded but no refresh token received")
+            logger.warning(
+                "Line authentication succeeded but no refresh token received"
+            )
             return False
 
         except Exception as e:
@@ -334,12 +345,13 @@ class Sam3Client:
         # Invalidate the existing remote login handler so it gets recreated with new client ID
         if self._remote_login_handler:
             logger.debug(
-                f"Invalidating remote login handler due to client ID change: {old_client_id} -> {new_client_id}")
+                f"Invalidating remote login handler due to client ID change: {old_client_id} -> {new_client_id}"
+            )
             self._remote_login_handler = None
 
         logger.info(f"✓ Updated SAM3 client ID to: {new_client_id}")
 
-    def _get_remote_login_handler(self) -> Optional['RemoteLoginHandler']:
+    def _get_remote_login_handler(self) -> Optional["RemoteLoginHandler"]:
         """
         Get or create remote login handler
         """
@@ -355,9 +367,15 @@ class Sam3Client:
         if not all([has_backchannel, has_token_endpoint, has_qr_template]):
             # Detailed debug logging
             logger.debug("🚫 Remote login not available - missing endpoints:")
-            logger.debug(f"  • backchannel_start_url: {has_backchannel} -> {self.backchannel_start_url}")
-            logger.debug(f"  • token_endpoint: {has_token_endpoint} -> {self._get_token_endpoint()}")
-            logger.debug(f"  • qr_code_url_template: {has_qr_template} -> {self.qr_code_url_template}")
+            logger.debug(
+                f"  • backchannel_start_url: {has_backchannel} -> {self.backchannel_start_url}"
+            )
+            logger.debug(
+                f"  • token_endpoint: {has_token_endpoint} -> {self._get_token_endpoint()}"
+            )
+            logger.debug(
+                f"  • qr_code_url_template: {has_qr_template} -> {self.qr_code_url_template}"
+            )
             return None
 
         # LAZY IMPORT to avoid circular dependency
@@ -373,17 +391,21 @@ class Sam3Client:
             sam3_client_id=self.sam3_client_id,  # Use current value
             backchannel_start_url=self.backchannel_start_url,
             token_endpoint=self._get_token_endpoint(),
-            qr_code_url_template=self.qr_code_url_template
+            qr_code_url_template=self.qr_code_url_template,
         )
 
-        logger.info(f"✓ Remote login handler initialized with client_id: {self.sam3_client_id[:8]}...")
+        logger.info(
+            f"✓ Remote login handler initialized with client_id: {self.sam3_client_id[:8]}..."
+        )
         return self._remote_login_handler
 
     def can_use_remote_login(self) -> bool:
         """Check if remote login is available"""
         return self._get_remote_login_handler() is not None
 
-    def remote_login(self, scope: str = "tvhubs offline_access") -> Optional[Dict[str, Any]]:
+    def remote_login(
+        self, scope: str = "tvhubs offline_access"
+    ) -> Optional[Dict[str, Any]]:
         """
         Perform complete remote login (backchannel auth) flow
 
@@ -402,8 +424,8 @@ class Sam3Client:
         token_data = handler.perform_complete_flow(scope)
 
         # Store refresh token if we got one
-        if token_data and 'refresh_token' in token_data:
-            self.refresh_token = token_data['refresh_token']
+        if token_data and "refresh_token" in token_data:
+            self.refresh_token = token_data["refresh_token"]
             logger.info("✓ Remote login successful, refresh token obtained")
 
         return token_data
@@ -419,31 +441,29 @@ class Sam3Client:
     # Generic Token Operations
     # ========================================================================
 
-    def get_token(self, grant_type: str, scope: str, credential1: str = "",
-                  credential2: str = "") -> str:
+    def get_token(
+        self, grant_type: str, scope: str, credential1: str = "", credential2: str = ""
+    ) -> str:
         """
         Generic token acquisition
         """
         try:
             logger.debug(f"Getting token with grant_type: {grant_type}, scope: {scope}")
 
-            payload = {
-                'grant_type': grant_type,
-                'client_id': self.sam3_client_id
-            }
+            payload = {"grant_type": grant_type, "client_id": self.sam3_client_id}
 
             # Add credentials based on grant type
-            if grant_type == GRANT_TYPES['REFRESH_TOKEN']:
-                payload['refresh_token'] = credential1
-                payload['scope'] = f"{scope} offline_access"
-            elif grant_type == GRANT_TYPES['REMOTE_LOGIN']:
-                payload['auth_req_id'] = credential1
-                payload['auth_req_sec'] = credential2
+            if grant_type == GRANT_TYPES["REFRESH_TOKEN"]:
+                payload["refresh_token"] = credential1
+                payload["scope"] = f"{scope} offline_access"
+            elif grant_type == GRANT_TYPES["REMOTE_LOGIN"]:
+                payload["auth_req_id"] = credential1
+                payload["auth_req_sec"] = credential2
 
             # Use common token request method
-            data = self._make_token_request('get_token', payload)
+            data = self._make_token_request("get_token", payload)
 
-            access_token = data.get('access_token')
+            access_token = data.get("access_token")
             if not access_token:
                 raise Exception("No access token in token response")
 
@@ -465,7 +485,7 @@ class Sam3Client:
         if not self.refresh_token:
             raise Exception("No refresh token available")
 
-        return self.get_token(GRANT_TYPES['REFRESH_TOKEN'], scope, self.refresh_token)
+        return self.get_token(GRANT_TYPES["REFRESH_TOKEN"], scope, self.refresh_token)
 
     def get_access_token(self, scope: str) -> str:
         """
@@ -485,7 +505,9 @@ class Sam3Client:
                 logger.warning(f"Token refresh failed for scope {scope}: {e}")
 
         # If no refresh token available, we can't get an access token
-        logger.warning(f"No access token available for scope {scope} - line auth may be needed")
+        logger.warning(
+            f"No access token available for scope {scope} - line auth may be needed"
+        )
         return ""
 
     def get_token_endpoint(self) -> str:
@@ -497,13 +519,13 @@ class Sam3Client:
         Public method to get SAM3 client status for debugging
         """
         return {
-            'initialized': True,
-            'has_backchannel_url': bool(self.backchannel_start_url),
-            'has_token_endpoint': bool(self._get_token_endpoint()),
-            'has_qr_code_url': bool(self.qr_code_url_template),
-            'backchannel_url': self.backchannel_start_url,
-            'token_endpoint': self._get_token_endpoint(),
-            'qr_code_url': self.qr_code_url_template
+            "initialized": True,
+            "has_backchannel_url": bool(self.backchannel_start_url),
+            "has_token_endpoint": bool(self._get_token_endpoint()),
+            "has_qr_code_url": bool(self.qr_code_url_template),
+            "backchannel_url": self.backchannel_start_url,
+            "token_endpoint": self._get_token_endpoint(),
+            "qr_code_url": self.qr_code_url_template,
         }
 
     def set_qr_code_url(self, qr_code_url: str) -> None:
@@ -522,13 +544,13 @@ class Sam3Client:
             return "https://login.telekom-dienste.de/oauth2/auth"
 
         params = {
-            'client_id': self.sam3_client_id,
-            'redirect_uri': 'https://web2.magentatv.de/authn/idm',
-            'response_type': 'code',
-            'scope': 'openid offline_access'
+            "client_id": self.sam3_client_id,
+            "redirect_uri": "https://web2.magentatv.de/authn/idm",
+            "response_type": "code",
+            "scope": "openid offline_access",
         }
 
-        param_string = '&'.join([f"{k}={v}" for k, v in params.items()])
+        param_string = "&".join([f"{k}={v}" for k, v in params.items()])
         return f"{self.authorization_endpoint}?{param_string}"
 
     def _parse_html_form_fields(self, html_content: str) -> None:
@@ -540,12 +562,12 @@ class Sam3Client:
         # Look for form with id="login" or similar
         form_start = html_content.find('form id="login"')
         if form_start == -1:
-            form_start = html_content.find('<form')
+            form_start = html_content.find("<form")
             if form_start == -1:
                 logger.warning("No form found in HTML content")
                 return
 
-        form_end = html_content.find('</form>', form_start)
+        form_end = html_content.find("</form>", form_start)
         if form_end == -1:
             logger.warning("No form end tag found")
             return
@@ -553,7 +575,9 @@ class Sam3Client:
         form_html = html_content[form_start:form_end]
 
         # Find all hidden input fields
-        pattern = r'<input[^>]*type="hidden"[^>]*name="([^"]*)"[^>]*value="([^"]*)"[^>]*>'
+        pattern = (
+            r'<input[^>]*type="hidden"[^>]*name="([^"]*)"[^>]*value="([^"]*)"[^>]*>'
+        )
         matches = re.findall(pattern, form_html, re.IGNORECASE)
 
         for name, value in matches:
@@ -607,19 +631,19 @@ class Sam3Client:
             parsed = urlparse(redirect_url)
             query_params = parse_qs(parsed.query)
 
-            code = query_params.get('code', [None])[0]
-            state = query_params.get('state', [None])[0]
+            code = query_params.get("code", [None])[0]
+            state = query_params.get("state", [None])[0]
 
             if code and state:
                 logger.debug(f"Extracted code: {code[:8]}..., state: {state}")
                 return code, state
 
             # Also check fragment (#) for SPA redirects
-            if '#' in redirect_url:
-                fragment = redirect_url.split('#')[1]
+            if "#" in redirect_url:
+                fragment = redirect_url.split("#")[1]
                 fragment_params = parse_qs(fragment)
-                code = fragment_params.get('code', [None])[0]
-                state = fragment_params.get('state', [None])[0]
+                code = fragment_params.get("code", [None])[0]
+                state = fragment_params.get("state", [None])[0]
 
             return code, state
 
@@ -631,19 +655,20 @@ class Sam3Client:
     def _get_sso_headers() -> Dict[str, str]:
         """Get headers for SSO requests"""
         return {
-            'User-Agent': SSO_USER_AGENT,
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Origin': 'https://web2.magentatv.de',
-            'Referer': 'https://web2.magentatv.de/'
+            "User-Agent": SSO_USER_AGENT,
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Origin": "https://web2.magentatv.de",
+            "Referer": "https://web2.magentatv.de/",
         }
 
     @staticmethod
     def _url_encode(value: str) -> str:
         """URL encode a string"""
         from urllib.parse import quote
+
         return quote(value)
 
     # ========================================================================
@@ -653,25 +678,29 @@ class Sam3Client:
     def update_endpoints(self, openid_config: Dict[str, Any]) -> None:
         """Update endpoints from OpenID configuration"""
         # Update issuer URL from OpenID config
-        if 'issuer' in openid_config:
-            self.issuer_url = openid_config['issuer']
+        if "issuer" in openid_config:
+            self.issuer_url = openid_config["issuer"]
 
         # Update other endpoints for user authentication flows
-        self.authorization_endpoint = openid_config.get('authorization_endpoint')
-        self.userinfo_endpoint = openid_config.get('userinfo_endpoint')
+        self.authorization_endpoint = openid_config.get("authorization_endpoint")
+        self.userinfo_endpoint = openid_config.get("userinfo_endpoint")
 
         # Get backchannel auth start endpoint
-        if 'backchannel_auth_start' in openid_config:
-            self.backchannel_start_url = openid_config['backchannel_auth_start']
-            logger.debug(f"Backchannel auth endpoint from OpenID: {self.backchannel_start_url}")
+        if "backchannel_auth_start" in openid_config:
+            self.backchannel_start_url = openid_config["backchannel_auth_start"]
+            logger.debug(
+                f"Backchannel auth endpoint from OpenID: {self.backchannel_start_url}"
+            )
 
         # OAuth token endpoint might be different from line auth endpoint
-        if 'token_endpoint' in openid_config:
-            self.oauth_token_endpoint = openid_config['token_endpoint']
+        if "token_endpoint" in openid_config:
+            self.oauth_token_endpoint = openid_config["token_endpoint"]
 
-        logger.debug(f"Updated SAM3 endpoints: "
-                     f"issuer={self.issuer_url}, "
-                     f"auth={bool(self.authorization_endpoint)}, "
-                     f"oauth_token={bool(self.oauth_token_endpoint)}, "
-                     f"line_auth={bool(self.line_auth_endpoint)}, "
-                     f"backchannel={bool(self.backchannel_start_url)}")
+        logger.debug(
+            f"Updated SAM3 endpoints: "
+            f"issuer={self.issuer_url}, "
+            f"auth={bool(self.authorization_endpoint)}, "
+            f"oauth_token={bool(self.oauth_token_endpoint)}, "
+            f"line_auth={bool(self.line_auth_endpoint)}, "
+            f"backchannel={bool(self.backchannel_start_url)}"
+        )

@@ -4,17 +4,17 @@ Central environment detection and service management.
 Provides unified access to VFS, logger, settings bridge, and other services.
 """
 
+import json
 import os
 import sys
-import json
-from typing import Dict, Any, Optional, TYPE_CHECKING, Union
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
 # Type hints to avoid circular imports
 if TYPE_CHECKING:
-    from .vfs import VFS
-    from .logger import BaseLogger  # Changed from 'logger' to 'BaseLogger'
     from ..settings.kodi_settings_bridge import KodiSettingsBridge
+    from .logger import BaseLogger  # Changed from 'logger' to 'BaseLogger'
+    from .vfs import VFS
 
 
 class EnvironmentManager:
@@ -22,9 +22,9 @@ class EnvironmentManager:
     Central manager for environment detection and service coordination.
     """
 
-    _instance: Optional['EnvironmentManager'] = None
+    _instance: Optional["EnvironmentManager"] = None
 
-    def __new__(cls) -> 'EnvironmentManager':
+    def __new__(cls) -> "EnvironmentManager":
         if cls._instance is None:
             cls._instance = super(EnvironmentManager, cls).__new__(cls)
             cls._instance._initialized = False
@@ -40,6 +40,7 @@ class EnvironmentManager:
         try:
             import xbmcaddon
             import xbmcvfs
+
             self._is_kodi = True
             self._kodi_import_error: Optional[Exception] = None
         except ImportError as import_err:
@@ -68,30 +69,36 @@ class EnvironmentManager:
             # Create addon instance
             self._addon = kodi_xbmcaddon.Addon()
 
-            self._config['environment'] = 'kodi'
-            self._config['addon_id'] = self._addon.getAddonInfo('id')
-            self._config['addon_name'] = self._addon.getAddonInfo('name')
-            self._config['addon_version'] = self._addon.getAddonInfo('version')
-            self._config['addon_path'] = self._addon.getAddonInfo('path')
+            self._config["environment"] = "kodi"
+            self._config["addon_id"] = self._addon.getAddonInfo("id")
+            self._config["addon_name"] = self._addon.getAddonInfo("name")
+            self._config["addon_version"] = self._addon.getAddonInfo("version")
+            self._config["addon_path"] = self._addon.getAddonInfo("path")
 
             # Get profile path
-            profile_info = self._addon.getAddonInfo('profile')
+            profile_info = self._addon.getAddonInfo("profile")
             profile_path = kodi_xbmcvfs.translatePath(profile_info)
 
-            self._config['profile_path'] = str(profile_path)
+            self._config["profile_path"] = str(profile_path)
 
             # Get settings
-            default_country = self._addon.getSetting('default_country')
-            self._config['default_country'] = str(default_country) if default_country else 'DE'
+            default_country = self._addon.getSetting("default_country")
+            self._config["default_country"] = (
+                str(default_country) if default_country else "DE"
+            )
 
-            server_port = self._addon.getSetting('server_port')
+            server_port = self._addon.getSetting("server_port")
             try:
-                self._config['server_port'] = int(str(server_port)) if server_port else 7777
+                self._config["server_port"] = (
+                    int(str(server_port)) if server_port else 7777
+                )
             except ValueError:
-                self._config['server_port'] = 7777
+                self._config["server_port"] = 7777
 
         except Exception as init_error:  # noqa: B902
-            print(f"DEBUG: Exception type: {type(init_error).__name__}", file=sys.stderr)
+            print(
+                f"DEBUG: Exception type: {type(init_error).__name__}", file=sys.stderr
+            )
             print(f"DEBUG: Exception message: {str(init_error)}", file=sys.stderr)
             # Log the error and fallback to standalone
             self._log_init_error("Kodi initialization failed", init_error)
@@ -106,42 +113,45 @@ class EnvironmentManager:
 
     def _init_standalone(self) -> None:
         """Initialize standalone mode components"""
-        self._config['environment'] = 'standalone'
-        self._config['addon_id'] = 'ultimate-backend-standalone'
-        self._config['addon_name'] = 'Ultimate Backend'
-        self._config['addon_version'] = '1.0.0'
-        self._config['addon_path'] = os.path.dirname(os.path.abspath(__file__))
+        self._config["environment"] = "standalone"
+        self._config["addon_id"] = "ultimate-backend-standalone"
+        self._config["addon_name"] = "Ultimate Backend"
+        self._config["addon_version"] = "1.0.0"
+        self._config["addon_path"] = os.path.dirname(os.path.abspath(__file__))
 
         # Default configuration paths
-        config_home = os.environ.get('XDG_CONFIG_HOME') or os.path.join(str(Path.home()), '.config')
-        self._config['config_dir'] = os.path.join(config_home, 'ultimate-backend')
-        self._config['profile_path'] = self._config['config_dir']
+        config_home = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+            str(Path.home()), ".config"
+        )
+        self._config["config_dir"] = os.path.join(config_home, "ultimate-backend")
+        self._config["profile_path"] = self._config["config_dir"]
 
         # Load environment variables with defaults
-        self._config['default_country'] = os.environ.get('DEFAULT_COUNTRY', 'DE')
+        self._config["default_country"] = os.environ.get("DEFAULT_COUNTRY", "DE")
 
         try:
-            self._config['server_port'] = int(os.environ.get('SERVER_PORT', '7777'))
+            self._config["server_port"] = int(os.environ.get("SERVER_PORT", "7777"))
         except ValueError as port_error:
             print(f"Invalid server port, using default: {port_error}", file=sys.stderr)
-            self._config['server_port'] = 7777
+            self._config["server_port"] = 7777
 
         # Ensure config directory exists
         try:
-            os.makedirs(self._config['config_dir'], exist_ok=True)
+            os.makedirs(self._config["config_dir"], exist_ok=True)
         except OSError as dir_error:
             print(f"Failed to create config directory: {dir_error}", file=sys.stderr)
             # Use temp directory as fallback
             import tempfile
-            self._config['config_dir'] = tempfile.mkdtemp(prefix='ultimate-backend-')
-            self._config['profile_path'] = self._config['config_dir']
+
+            self._config["config_dir"] = tempfile.mkdtemp(prefix="ultimate-backend-")
+            self._config["profile_path"] = self._config["config_dir"]
 
     def _load_config(self) -> None:
         """Load additional configuration from files"""
-        config_file = os.path.join(self._config['profile_path'], 'config.json')
+        config_file = os.path.join(self._config["profile_path"], "config.json")
         if os.path.exists(config_file):
             try:
-                with open(config_file, 'r', encoding='utf-8') as f:
+                with open(config_file, "r", encoding="utf-8") as f:
                     file_config = json.load(f)
                     # Update config with file contents
                     for key, value in file_config.items():
@@ -158,7 +168,7 @@ class EnvironmentManager:
 
     def get_environment(self) -> str:
         """Get current environment name"""
-        return str(self._config.get('environment', 'unknown'))
+        return str(self._config.get("environment", "unknown"))
 
     def get_config(self, key: str, default: Any = None) -> Any:
         """Get configuration value"""
@@ -170,51 +180,56 @@ class EnvironmentManager:
 
         # Auto-save to config file in standalone mode
         if not self._is_kodi:
-            config_file = os.path.join(self._config['profile_path'], 'config.json')
+            config_file = os.path.join(self._config["profile_path"], "config.json")
             try:
                 # Read existing config
                 existing_config = {}
                 if os.path.exists(config_file):
-                    with open(config_file, 'r', encoding='utf-8') as f:
+                    with open(config_file, "r", encoding="utf-8") as f:
                         existing_config = json.load(f)
 
                 # Update with new value
                 existing_config[key] = value
 
                 # Write back
-                with open(config_file, 'w', encoding='utf-8') as f:
+                with open(config_file, "w", encoding="utf-8") as f:
                     json.dump(existing_config, f, indent=2, ensure_ascii=False)
             except OSError as save_error:
                 print(f"Failed to save config: {save_error}", file=sys.stderr)
             except (TypeError, ValueError) as type_error:
-                print(f"Config contains non-serializable data: {type_error}", file=sys.stderr)
+                print(
+                    f"Config contains non-serializable data: {type_error}",
+                    file=sys.stderr,
+                )
 
-    def get_vfs(self, subdir: str = "", config_dir: Optional[str] = None) -> 'VFS':
+    def get_vfs(self, subdir: str = "", config_dir: Optional[str] = None) -> "VFS":
         """Get VFS instance with appropriate configuration"""
         # Import here to avoid circular imports
         from .vfs import VFS
 
         # Use provided config_dir, or environment default
         if config_dir is None:
-            config_dir = self._config.get('profile_path', '')
+            config_dir = self._config.get("profile_path", "")
 
         return VFS(config_dir=config_dir, addon_subdir=subdir)
 
     @staticmethod
-    def get_logger() -> 'BaseLogger':
+    def get_logger() -> "BaseLogger":
         """Get logger instance for current environment (static method)"""
         # Import here to avoid circular imports
         from .logger import logger as logger_instance
+
         return logger_instance
 
-    def get_settings_bridge(self, addon_id: Optional[str] = None,
-                            config_dir: Optional[str] = None) -> 'KodiSettingsBridge':
+    def get_settings_bridge(
+        self, addon_id: Optional[str] = None, config_dir: Optional[str] = None
+    ) -> "KodiSettingsBridge":
         """Get settings bridge instance"""
         # Import here to avoid circular imports
         from ..settings.kodi_settings_bridge import KodiSettingsBridge
 
         if config_dir is None:
-            config_dir = self._config.get('profile_path', '')
+            config_dir = self._config.get("profile_path", "")
 
         return KodiSettingsBridge(addon_id=addon_id, config_dir=config_dir)
 
@@ -223,16 +238,19 @@ class EnvironmentManager:
         try:
             # Lazy import to avoid circular dependencies
             import importlib
+
             # Adjust this import path based on your actual module structure
-            module = importlib.import_module('streaming_providers')
-            if hasattr(module, 'get_configured_manager'):
+            module = importlib.import_module("streaming_providers")
+            if hasattr(module, "get_configured_manager"):
                 manager_func = module.get_configured_manager
                 if callable(manager_func):
                     return manager_func()
                 else:
                     raise ImportError("get_configured_manager is not callable")
             else:
-                raise ImportError("get_configured_manager not found in streaming_providers module")
+                raise ImportError(
+                    "get_configured_manager not found in streaming_providers module"
+                )
         except ImportError as manager_error:
             # Log error using the logger once we have it
             logger_instance = self.get_logger()
@@ -242,41 +260,45 @@ class EnvironmentManager:
     def get_service_config(self) -> Dict[str, Any]:
         """Get configuration for running the service"""
         return {
-            'is_kodi': self._is_kodi,
-            'port': self._config.get('server_port', 7777),
-            'default_country': self._config.get('default_country', 'DE'),
-            'profile_path': self._config.get('profile_path', ''),
-            'addon_path': self._config.get('addon_path', '')
+            "is_kodi": self._is_kodi,
+            "port": self._config.get("server_port", 7777),
+            "default_country": self._config.get("default_country", "DE"),
+            "profile_path": self._config.get("profile_path", ""),
+            "addon_path": self._config.get("addon_path", ""),
         }
 
     def debug_info(self) -> Dict[str, Any]:
         """Get debug information about the environment"""
         info: Dict[str, Any] = {
-            'environment': self.get_environment(),
-            'is_kodi': self._is_kodi,
-            'python_version': sys.version,
-            'platform': sys.platform,
+            "environment": self.get_environment(),
+            "is_kodi": self._is_kodi,
+            "python_version": sys.version,
+            "platform": sys.platform,
         }
 
         # Add Kodi-specific info if available
         if self._is_kodi and self._addon:
-            info['kodi_addon_id'] = self._addon.getAddonInfo('id')
-            info['kodi_addon_version'] = self._addon.getAddonInfo('version')
+            info["kodi_addon_id"] = self._addon.getAddonInfo("id")
+            info["kodi_addon_version"] = self._addon.getAddonInfo("version")
 
         # Add import error info if present
-        if hasattr(self, '_kodi_import_error') and self._kodi_import_error:
-            info['kodi_import_error'] = str(self._kodi_import_error)
+        if hasattr(self, "_kodi_import_error") and self._kodi_import_error:
+            info["kodi_import_error"] = str(self._kodi_import_error)
 
         # Create a safe config summary without sensitive paths
         safe_config: Dict[str, Any] = {}
         for key, value in self._config.items():
-            if not key.endswith('_path') and key != 'config_dir' and key not in ['profile_path', 'addon_path']:
+            if (
+                not key.endswith("_path")
+                and key != "config_dir"
+                and key not in ["profile_path", "addon_path"]
+            ):
                 if isinstance(value, (str, int, float, bool, type(None))):
                     safe_config[key] = value
                 else:
                     safe_config[key] = str(type(value))
 
-        info['config_summary'] = safe_config
+        info["config_summary"] = safe_config
 
         return info
 
@@ -299,11 +321,11 @@ def is_kodi_environment() -> bool:
     return get_environment_manager().is_kodi()
 
 
-def get_logger_instance() -> 'BaseLogger':
+def get_logger_instance() -> "BaseLogger":
     """Get logger instance (convenience function)"""
     return EnvironmentManager.get_logger()
 
 
-def get_vfs_instance(subdir: str = "", config_dir: Optional[str] = None) -> 'VFS':
+def get_vfs_instance(subdir: str = "", config_dir: Optional[str] = None) -> "VFS":
     """Get VFS instance (convenience function)"""
     return get_environment_manager().get_vfs(subdir, config_dir)

@@ -1,8 +1,8 @@
 # lib/streaming_providers/__init__.py
 import importlib
-from typing import Dict, Type
 import os
 import sys
+from typing import Dict, Type
 
 # Import the centralized logger
 from .base.utils.logger import logger
@@ -18,7 +18,7 @@ def _discover_providers():
 
         # Get the current package path
         current_dir = os.path.dirname(__file__)
-        providers_dir = os.path.join(current_dir, 'providers')
+        providers_dir = os.path.join(current_dir, "providers")
 
         logger.info(f"Looking for providers in: {providers_dir}")
 
@@ -38,11 +38,11 @@ def _discover_providers():
             provider_path = os.path.join(providers_dir, item)
 
             # Skip if not a directory or if it starts with __
-            if not os.path.isdir(provider_path) or item.startswith('__'):
+            if not os.path.isdir(provider_path) or item.startswith("__"):
                 continue
 
             # Check if __init__.py exists in the provider directory
-            init_file = os.path.join(provider_path, '__init__.py')
+            init_file = os.path.join(provider_path, "__init__.py")
             if not os.path.exists(init_file):
                 logger.debug(f"No __init__.py found in {item}, skipping")
                 continue
@@ -51,16 +51,18 @@ def _discover_providers():
                 logger.debug(f"Attempting to import provider: {item}")
 
                 # Import the provider module using absolute import
-                module_name = f'streaming_providers.providers.{item}'
+                module_name = f"streaming_providers.providers.{item}"
                 module = importlib.import_module(module_name)
 
                 # Find provider classes in the module
                 provider_found = False
                 for attr_name in dir(module):
                     attr = getattr(module, attr_name)
-                    if (isinstance(attr, type) and
-                            issubclass(attr, StreamingProvider) and
-                            attr != StreamingProvider):
+                    if (
+                        isinstance(attr, type)
+                        and issubclass(attr, StreamingProvider)
+                        and attr != StreamingProvider
+                    ):
                         AVAILABLE_PROVIDERS[item] = attr
                         logger.info(f"Discovered provider: {item} -> {attr_name}")
                         provider_found = True
@@ -81,7 +83,7 @@ def _discover_providers():
         logger.debug(f"Python path: {sys.path}")
 
 
-def get_configured_manager(country: str = 'de') -> 'ProviderManager':
+def get_configured_manager(country: str = "de") -> "ProviderManager":
     """
     Get manager with settings-aware providers
 
@@ -101,20 +103,29 @@ def get_configured_manager(country: str = 'de') -> 'ProviderManager':
     settings_manager = SettingsManager(enable_kodi_integration=True)
 
     # Detect providers from Kodi (if available) or auto-detect from AVAILABLE_PROVIDERS
-    if settings_manager.kodi_bridge and settings_manager.kodi_bridge.is_kodi_environment():
-        detected_providers = settings_manager.kodi_bridge.detect_all_providers_from_kodi()
+    if (
+        settings_manager.kodi_bridge
+        and settings_manager.kodi_bridge.is_kodi_environment()
+    ):
+        detected_providers = (
+            settings_manager.kodi_bridge.detect_all_providers_from_kodi()
+        )
         logger.info(f"Detected providers from Kodi: {detected_providers}")
     else:
         # Auto-generate detected_providers from AVAILABLE_PROVIDERS
-        logger.info(f"Not in Kodi environment, auto-detecting providers from AVAILABLE_PROVIDERS")
+        logger.info(
+            f"Not in Kodi environment, auto-detecting providers from AVAILABLE_PROVIDERS"
+        )
         detected_providers = {}
 
         for provider_name, provider_class in AVAILABLE_PROVIDERS.items():
             # Check if provider supports multiple countries
-            if hasattr(provider_class, 'SUPPORTED_COUNTRIES'):
-                supported_countries = getattr(provider_class, 'SUPPORTED_COUNTRIES', [])
+            if hasattr(provider_class, "SUPPORTED_COUNTRIES"):
+                supported_countries = getattr(provider_class, "SUPPORTED_COUNTRIES", [])
                 detected_providers[provider_name] = supported_countries
-                logger.debug(f"Provider '{provider_name}' supports countries: {supported_countries}")
+                logger.debug(
+                    f"Provider '{provider_name}' supports countries: {supported_countries}"
+                )
             else:
                 # Single-country provider (empty list means no multi-country support)
                 detected_providers[provider_name] = []
@@ -122,15 +133,15 @@ def get_configured_manager(country: str = 'de') -> 'ProviderManager':
 
     # Use the new discover_providers method with detected providers
     registered = manager.discover_providers(
-        country=country,
-        detected_providers=detected_providers
+        country=country, detected_providers=detected_providers
     )
 
     logger.info(f"Registered {len(registered)} providers: {registered}")
 
     return manager
 
+
 # Initial discovery
 _discover_providers()
 
-__all__ = ['AVAILABLE_PROVIDERS', 'get_configured_manager']
+__all__ = ["AVAILABLE_PROVIDERS", "get_configured_manager"]

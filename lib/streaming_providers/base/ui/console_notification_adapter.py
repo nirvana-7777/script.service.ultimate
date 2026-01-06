@@ -5,10 +5,12 @@
 Console notification adapter for non-Kodi environments
 Displays remote login information as simple text output
 """
+
 import time
 from typing import Optional
-from .notification_interface import NotificationInterface, NotificationResult
+
 from ..utils.logger import logger
+from .notification_interface import NotificationInterface, NotificationResult
 
 
 class ConsoleNotificationAdapter(NotificationInterface):
@@ -46,11 +48,7 @@ class ConsoleNotificationAdapter(NotificationInterface):
         return False
 
     def show_remote_login(
-            self,
-            login_code: str,
-            qr_target_url: str,
-            expires_in: int,
-            interval: int = 10
+        self, login_code: str, qr_target_url: str, expires_in: int, interval: int = 10
     ) -> NotificationResult:
         """
         Show remote login information in console
@@ -90,7 +88,9 @@ class ConsoleNotificationAdapter(NotificationInterface):
         print("=" * 70)
         print()
 
-        logger.info(f"Remote login started: code={login_code}, expires_in={expires_in}s")
+        logger.info(
+            f"Remote login started: code={login_code}, expires_in={expires_in}s"
+        )
         logger.info(f"QR target URL: {qr_target_url}")
 
         return NotificationResult.CONTINUE

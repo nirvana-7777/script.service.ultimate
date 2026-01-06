@@ -24,7 +24,7 @@ class TimestampConverter:
     ISO_WITH_TIMEZONE = "%Y-%m-%dT%H:%M:%S%z"
 
     # UTC timezone constant (Python 3.11+ compatibility)
-    if hasattr(datetime, 'UTC'):
+    if hasattr(datetime, "UTC"):
         UTC = datetime.UTC
     else:
         UTC = datetime.timezone.utc
@@ -34,7 +34,7 @@ class TimestampConverter:
         epoch_seconds: Union[int, float],
         format_type: str = "extended",
         timezone: Optional[datetime.tzinfo] = None,
-        as_utc: bool = True
+        as_utc: bool = True,
     ) -> str:
         """
         Convert Unix epoch seconds to ISO 8601 timestamp.
@@ -56,7 +56,9 @@ class TimestampConverter:
         # Create timezone-aware datetime from epoch
         if as_utc and timezone is None:
             # Use UTC timezone
-            dt = datetime.datetime.fromtimestamp(epoch_seconds, tz=TimestampConverter.UTC)
+            dt = datetime.datetime.fromtimestamp(
+                epoch_seconds, tz=TimestampConverter.UTC
+            )
         elif timezone is not None:
             # Use specified timezone
             dt = datetime.datetime.fromtimestamp(epoch_seconds, tz=timezone)
@@ -85,7 +87,7 @@ class TimestampConverter:
     def iso_to_epoch(
         iso_string: str,
         format_type: Optional[str] = None,
-        timezone: Optional[datetime.tzinfo] = None
+        timezone: Optional[datetime.tzinfo] = None,
     ) -> float:
         """
         Convert ISO 8601 timestamp to Unix epoch seconds.
@@ -105,7 +107,7 @@ class TimestampConverter:
         # First try datetime.fromisoformat() which handles many ISO formats
         try:
             # Clean up the string for fromisoformat
-            cleaned = iso_string.replace('Z', '+00:00')
+            cleaned = iso_string.replace("Z", "+00:00")
             dt = datetime.datetime.fromisoformat(cleaned)
             # If we got here, fromisoformat worked
         except ValueError:
@@ -127,8 +129,7 @@ class TimestampConverter:
 
     @staticmethod
     def _parse_custom_iso(
-        iso_string: str,
-        format_type: Optional[str] = None
+        iso_string: str, format_type: Optional[str] = None
     ) -> datetime.datetime:
         """
         Parse custom ISO formats not handled by fromisoformat.
@@ -158,7 +159,7 @@ class TimestampConverter:
             "extended": TimestampConverter.ISO_EXTENDED,
             "basic": TimestampConverter.ISO_BASIC,
             "microseconds": TimestampConverter.ISO_WITH_MICROSECONDS,
-            "with_timezone": TimestampConverter.ISO_WITH_TIMEZONE
+            "with_timezone": TimestampConverter.ISO_WITH_TIMEZONE,
         }
 
         if format_type not in format_map:
@@ -171,7 +172,9 @@ class TimestampConverter:
         except ValueError:
             # Try without microseconds if microseconds format fails
             if format_type == "microseconds":
-                dt = datetime.datetime.strptime(iso_string, TimestampConverter.ISO_EXTENDED)
+                dt = datetime.datetime.strptime(
+                    iso_string, TimestampConverter.ISO_EXTENDED
+                )
             else:
                 raise
 
@@ -179,8 +182,7 @@ class TimestampConverter:
 
     @staticmethod
     def now_iso(
-        format_type: str = "extended",
-        timezone: Optional[datetime.tzinfo] = None
+        format_type: str = "extended", timezone: Optional[datetime.tzinfo] = None
     ) -> str:
         """
         Get current time as ISO 8601 string.
@@ -243,7 +245,7 @@ class TimestampConverter:
     def duration_between(
         start: Union[int, float, str],
         end: Union[int, float, str],
-        unit: str = "seconds"
+        unit: str = "seconds",
     ) -> float:
         """
         Calculate duration between two timestamps.
@@ -271,9 +273,9 @@ class TimestampConverter:
         # Convert to requested unit
         unit_conversion = {
             "seconds": 1,
-            "minutes": 1/60,
-            "hours": 1/3600,
-            "days": 1/86400
+            "minutes": 1 / 60,
+            "hours": 1 / 3600,
+            "days": 1 / 86400,
         }
 
         if unit not in unit_conversion:
@@ -319,6 +321,7 @@ class TimestampConverter:
         # Try zoneinfo (Python 3.9+)
         try:
             from zoneinfo import ZoneInfo
+
             return ZoneInfo(name)
         except ImportError:
             pass
@@ -326,6 +329,7 @@ class TimestampConverter:
         # Try pytz
         try:
             import pytz
+
             return pytz.timezone(name)
         except ImportError:
             raise ImportError(

@@ -6,5 +6,6 @@ HRTi streaming provider module
 """
 
 from .provider import HRTiProvider
+
 __all__ = ["HRTiProvider"]
 # [file content end]

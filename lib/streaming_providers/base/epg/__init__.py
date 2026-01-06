@@ -4,14 +4,9 @@
 EPG Module for XMLTV EPG handling
 """
 
-from .epg_manager import EPGManager
 from .epg_cache import EPGCache
+from .epg_manager import EPGManager
 from .epg_mapping import EPGMapping
 from .epg_parser import EPGParser
 
-__all__ = [
-    'EPGManager',
-    'EPGCache',
-    'EPGMapping',
-    'EPGParser'
-]
+__all__ = ["EPGManager", "EPGCache", "EPGMapping", "EPGParser"]

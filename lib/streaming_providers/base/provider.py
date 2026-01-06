@@ -8,23 +8,24 @@ New Features:
 - Backward compatible with existing @property methods
 """
 
-from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Callable, Any, ClassVar
-from enum import Enum
 import json
+from abc import ABC, abstractmethod
 from datetime import datetime
+from enum import Enum
+from typing import Any, Callable, ClassVar, Dict, List, Optional
 
-from .models.streaming_channel import StreamingChannel
+from ..providers.auth import AuthContext, AuthStatus
 from .models.drm_models import DRMConfig
 from .models.proxy_models import ProxyConfig
-from .models.subscription import UserSubscription, SubscriptionPackage
-from .network import HTTPManagerFactory, HTTPManager
+from .models.streaming_channel import StreamingChannel
+from .models.subscription import SubscriptionPackage, UserSubscription
+from .network import HTTPManager, HTTPManagerFactory
 from .utils.logger import logger
-from ..providers.auth import AuthContext, AuthStatus
 
 
 class AuthType(Enum):
     """Authentication token types"""
+
     BEARER = "bearer"
     BASIC = "basic"
     CLIENT = "client"
@@ -54,11 +55,11 @@ class StreamingProvider(ABC):
     SUPPORTED_COUNTRIES: ClassVar[List[str]] = []
     """List of ISO country codes this provider supports (empty = single country)"""
 
-    def __init__(self, country: str = 'DE'):
+    def __init__(self, country: str = "DE"):
         self.country = country
         self.channels: List[StreamingChannel] = []
         self._http_manager = None
-        self._default_user_agent = 'StreamingProvider/1.0'
+        self._default_user_agent = "StreamingProvider/1.0"
         self.authenticator = None  # Optional: set by concrete providers
 
     # ============================================================================
@@ -76,18 +77,18 @@ class StreamingProvider(ABC):
         Returns:
             Provider label string
         """
-        base_label = cls.PROVIDER_LABEL or cls.__name__.replace('Provider', '')
+        base_label = cls.PROVIDER_LABEL or cls.__name__.replace("Provider", "")
 
         if country:
             # Format country code
             country_upper = country.upper()
 
             # Special handling for common cases
-            if country_upper == 'DE':
+            if country_upper == "DE":
                 return f"{base_label} Germany"
-            elif country_upper == 'AT':
+            elif country_upper == "AT":
                 return f"{base_label} Austria"
-            elif country_upper == 'CH':
+            elif country_upper == "CH":
                 return f"{base_label} Switzerland"
             else:
                 return f"{base_label} ({country_upper})"
@@ -139,20 +140,24 @@ class StreamingProvider(ABC):
 
         if cls.supports_multiple_countries():
             for country in cls.SUPPORTED_COUNTRIES:
-                instances.append({
-                    'plugin': cls.__name__.lower().replace('provider', ''),
-                    'country': country.upper(),
-                    'label': cls.get_static_label(country),
-                    'requires_country_suffix': True
-                })
+                instances.append(
+                    {
+                        "plugin": cls.__name__.lower().replace("provider", ""),
+                        "country": country.upper(),
+                        "label": cls.get_static_label(country),
+                        "requires_country_suffix": True,
+                    }
+                )
         else:
             # Single-country provider
-            instances.append({
-                'plugin': cls.__name__.lower().replace('provider', ''),
-                'country': 'DE',  # Default country for single-country providers
-                'label': cls.get_static_label(),
-                'requires_country_suffix': False
-            })
+            instances.append(
+                {
+                    "plugin": cls.__name__.lower().replace("provider", ""),
+                    "country": "DE",  # Default country for single-country providers
+                    "label": cls.get_static_label(),
+                    "requires_country_suffix": False,
+                }
+            )
 
         return instances
 
@@ -232,10 +237,13 @@ class StreamingProvider(ABC):
         """
         return self.catchup_window > 0
 
-    def get_epg(self, channel_id: str,
-                start_time: Optional[datetime] = None,
-                end_time: Optional[datetime] = None,
-                **kwargs) -> List[Dict]:
+    def get_epg(
+        self,
+        channel_id: str,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        **kwargs,
+    ) -> List[Dict]:
         """Get EPG data for a channel"""
         return []
 
@@ -245,7 +253,9 @@ class StreamingProvider(ABC):
         return None
 
     @abstractmethod
-    def enrich_channel_data(self, channel: StreamingChannel, **kwargs) -> Optional[StreamingChannel]:
+    def enrich_channel_data(
+        self, channel: StreamingChannel, **kwargs
+    ) -> Optional[StreamingChannel]:
         """Enrich channel with additional data including manifest URL"""
         return None
 
@@ -254,7 +264,9 @@ class StreamingProvider(ABC):
         """Get manifest URL for a specific channel by ID"""
         return None
 
-    def get_dynamic_manifest_params(self, channel: StreamingChannel, **kwargs) -> Optional[str]:
+    def get_dynamic_manifest_params(
+        self, channel: StreamingChannel, **kwargs
+    ) -> Optional[str]:
         """Optional: Get dynamic manifest parameters for a channel"""
         return None
 
@@ -264,14 +276,16 @@ class StreamingProvider(ABC):
             channels = self.channels
 
         return {
-            'Provider': self.provider_name,
-            'Country': self.country,
-            'Channels': [channel.to_dict() for channel in channels]
+            "Provider": self.provider_name,
+            "Country": self.country,
+            "Channels": [channel.to_dict() for channel in channels],
         }
 
     def to_json(self, channels: List[StreamingChannel] = None, indent: int = 2) -> str:
         """Convert to JSON string"""
-        return json.dumps(self.to_output_format(channels), indent=indent, ensure_ascii=False)
+        return json.dumps(
+            self.to_output_format(channels), indent=indent, ensure_ascii=False
+        )
 
     # ============================================================================
     # HTTP MANAGER SETUP (Already Implemented)
@@ -287,16 +301,18 @@ class StreamingProvider(ABC):
         """Set the provider's HTTP manager instance"""
         self._http_manager = value
 
-    def _setup_http_manager(self,
-                            provider_name: str,
-                            proxy_config: Optional[ProxyConfig] = None,
-                            proxy_url: Optional[str] = None,
-                            config_dir: Optional[str] = None,
-                            country: Optional[str] = None,
-                            user_agent: Optional[str] = None,
-                            timeout: Optional[int] = None,
-                            max_retries: Optional[int] = None,
-                            **kwargs) -> HTTPManager:
+    def _setup_http_manager(
+        self,
+        provider_name: str,
+        proxy_config: Optional[ProxyConfig] = None,
+        proxy_url: Optional[str] = None,
+        config_dir: Optional[str] = None,
+        country: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        timeout: Optional[int] = None,
+        max_retries: Optional[int] = None,
+        **kwargs,
+    ) -> HTTPManager:
         """Standard HTTP manager setup for providers with intelligent proxy resolution"""
         if country is None:
             country = self.country
@@ -306,36 +322,38 @@ class StreamingProvider(ABC):
             proxy_url=proxy_url,
             config_dir=config_dir,
             provider_name=provider_name,
-            country=country
+            country=country,
         )
 
         manager_kwargs = {}
         if user_agent:
-            manager_kwargs['user_agent'] = user_agent
+            manager_kwargs["user_agent"] = user_agent
         if timeout:
-            manager_kwargs['timeout'] = timeout
+            manager_kwargs["timeout"] = timeout
         if max_retries:
-            manager_kwargs['max_retries'] = max_retries
+            manager_kwargs["max_retries"] = max_retries
         manager_kwargs.update(kwargs)
 
         http_manager = HTTPManagerFactory.create_for_provider(
-            provider_name=provider_name,
-            proxy_config=resolved_proxy,
-            **manager_kwargs
+            provider_name=provider_name, proxy_config=resolved_proxy, **manager_kwargs
         )
 
         self._log_http_manager_setup(provider_name, resolved_proxy, manager_kwargs)
         return http_manager
 
     @staticmethod
-    def _resolve_proxy_config(proxy_config: Optional[ProxyConfig],
-                              proxy_url: Optional[str],
-                              config_dir: Optional[str],
-                              provider_name: str,
-                              country: str) -> Optional[ProxyConfig]:
+    def _resolve_proxy_config(
+        proxy_config: Optional[ProxyConfig],
+        proxy_url: Optional[str],
+        config_dir: Optional[str],
+        provider_name: str,
+        country: str,
+    ) -> Optional[ProxyConfig]:
         """Resolve proxy configuration from multiple sources with priority"""
         if proxy_config is not None:
-            logger.debug(f"{provider_name}: Using directly provided proxy configuration")
+            logger.debug(
+                f"{provider_name}: Using directly provided proxy configuration"
+            )
             return proxy_config
 
         if proxy_url:
@@ -343,10 +361,13 @@ class StreamingProvider(ABC):
                 logger.debug(f"{provider_name}: Creating proxy config from URL")
                 return ProxyConfig.from_url(proxy_url)
             except Exception as e:
-                logger.warning(f"{provider_name}: Failed to parse proxy URL '{proxy_url}': {e}")
+                logger.warning(
+                    f"{provider_name}: Failed to parse proxy URL '{proxy_url}': {e}"
+                )
 
         try:
             from .network import ProxyConfigManager
+
             proxy_mgr = ProxyConfigManager(config_dir)
             managed_proxy = proxy_mgr.get_proxy_config(provider_name, country)
 
@@ -354,55 +375,68 @@ class StreamingProvider(ABC):
                 logger.debug(f"{provider_name}: Using proxy from ProxyConfigManager")
                 return managed_proxy
             else:
-                logger.debug(f"{provider_name}: No proxy configuration found in ProxyConfigManager")
+                logger.debug(
+                    f"{provider_name}: No proxy configuration found in ProxyConfigManager"
+                )
 
         except Exception as e:
-            logger.warning(f"{provider_name}: Could not load proxy from ProxyConfigManager: {e}")
+            logger.warning(
+                f"{provider_name}: Could not load proxy from ProxyConfigManager: {e}"
+            )
 
         logger.debug(f"{provider_name}: No proxy configuration available")
         return None
 
     @staticmethod
-    def _log_http_manager_setup(provider_name: str,
-                                proxy_config: Optional[ProxyConfig],
-                                manager_kwargs: Dict) -> None:
+    def _log_http_manager_setup(
+        provider_name: str, proxy_config: Optional[ProxyConfig], manager_kwargs: Dict
+    ) -> None:
         """Log HTTP manager setup information"""
         info_parts = [f"HTTP manager initialized for '{provider_name}'"]
 
         if proxy_config:
-            proxy_type = proxy_config.proxy_type.value if proxy_config.proxy_type else 'http'
+            proxy_type = (
+                proxy_config.proxy_type.value if proxy_config.proxy_type else "http"
+            )
             proxy_host = f"{proxy_config.host}:{proxy_config.port}"
             has_auth = "authenticated" if proxy_config.auth else "no-auth"
             info_parts.append(f"proxy: {proxy_type}://{proxy_host} ({has_auth})")
         else:
             info_parts.append("proxy: none")
 
-        if 'user_agent' in manager_kwargs:
-            ua_preview = manager_kwargs['user_agent'][:50] + '...' if len(manager_kwargs['user_agent']) > 50 else \
-                manager_kwargs['user_agent']
+        if "user_agent" in manager_kwargs:
+            ua_preview = (
+                manager_kwargs["user_agent"][:50] + "..."
+                if len(manager_kwargs["user_agent"]) > 50
+                else manager_kwargs["user_agent"]
+            )
             info_parts.append(f"user-agent: {ua_preview}")
 
-        if 'timeout' in manager_kwargs:
+        if "timeout" in manager_kwargs:
             info_parts.append(f"timeout: {manager_kwargs['timeout']}s")
 
-        if 'max_retries' in manager_kwargs:
+        if "max_retries" in manager_kwargs:
             info_parts.append(f"retries: {manager_kwargs['max_retries']}")
 
         logger.info(f"{provider_name}: {', '.join(info_parts)}")
 
-    def _share_http_manager_with_authenticator(self,
-                                               authenticator,
-                                               http_manager: Optional[HTTPManager] = None) -> HTTPManager:
+    def _share_http_manager_with_authenticator(
+        self, authenticator, http_manager: Optional[HTTPManager] = None
+    ) -> HTTPManager:
         """Share HTTP manager with authenticator for consistency"""
         if http_manager is None:
             http_manager = self.http_manager
 
-        if http_manager and hasattr(authenticator, 'http_manager'):
+        if http_manager and hasattr(authenticator, "http_manager"):
             if authenticator.http_manager is None:
-                logger.debug(f"{self.provider_name}: Sharing HTTP manager with authenticator")
+                logger.debug(
+                    f"{self.provider_name}: Sharing HTTP manager with authenticator"
+                )
                 authenticator.http_manager = http_manager
             else:
-                logger.debug(f"{self.provider_name}: Using authenticator's existing HTTP manager")
+                logger.debug(
+                    f"{self.provider_name}: Using authenticator's existing HTTP manager"
+                )
                 http_manager = authenticator.http_manager
 
         return http_manager
@@ -411,11 +445,13 @@ class StreamingProvider(ABC):
     # AUTHENTICATION HEADER ABSTRACTIONS
     # ============================================================================
 
-    def _get_base_headers(self,
-                          user_agent: Optional[str] = None,
-                          accept: str = 'application/json',
-                          content_type: str = 'application/json',
-                          additional_headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    def _get_base_headers(
+        self,
+        user_agent: Optional[str] = None,
+        accept: str = "application/json",
+        content_type: str = "application/json",
+        additional_headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, str]:
         """
         Get base headers for API requests
 
@@ -429,9 +465,9 @@ class StreamingProvider(ABC):
             Dictionary of HTTP headers
         """
         headers = {
-            'User-Agent': user_agent or self._default_user_agent,
-            'Accept': accept,
-            'Content-Type': content_type
+            "User-Agent": user_agent or self._default_user_agent,
+            "Accept": accept,
+            "Content-Type": content_type,
         }
 
         if additional_headers:
@@ -439,13 +475,15 @@ class StreamingProvider(ABC):
 
         return headers
 
-    def _get_authenticated_headers(self,
-                                   auth_type: AuthType = AuthType.BEARER,
-                                   token_getter: Optional[Callable[[], str]] = None,
-                                   token_key: str = 'Authorization',
-                                   base_headers: Optional[Dict[str, str]] = None,
-                                   additional_headers: Optional[Dict[str, str]] = None,
-                                   **kwargs) -> Dict[str, str]:
+    def _get_authenticated_headers(
+        self,
+        auth_type: AuthType = AuthType.BEARER,
+        token_getter: Optional[Callable[[], str]] = None,
+        token_key: str = "Authorization",
+        base_headers: Optional[Dict[str, str]] = None,
+        additional_headers: Optional[Dict[str, str]] = None,
+        **kwargs,
+    ) -> Dict[str, str]:
         """
         Get headers with authentication token
 
@@ -474,17 +512,19 @@ class StreamingProvider(ABC):
             elif self.authenticator is not None:
                 token = self.authenticator.get_bearer_token(**kwargs)
             else:
-                logger.warning(f"{self.provider_name}: No token getter or authenticator available")
+                logger.warning(
+                    f"{self.provider_name}: No token getter or authenticator available"
+                )
                 token = None
 
             # Add auth header based on type
             if token:
                 if auth_type == AuthType.BEARER:
-                    headers[token_key] = f'Bearer {token}'
+                    headers[token_key] = f"Bearer {token}"
                 elif auth_type == AuthType.BASIC:
-                    headers[token_key] = f'Basic {token}'
+                    headers[token_key] = f"Basic {token}"
                 elif auth_type == AuthType.CLIENT:
-                    headers[token_key] = f'Client {token}'
+                    headers[token_key] = f"Client {token}"
                 elif auth_type == AuthType.CUSTOM:
                     # Custom type - just use token as-is
                     headers[token_key] = token
@@ -495,11 +535,13 @@ class StreamingProvider(ABC):
 
         return headers
 
-    def _build_provider_headers(self,
-                                base_headers: Optional[Dict[str, str]] = None,
-                                auth_type: AuthType = AuthType.NONE,
-                                provider_headers: Optional[Dict[str, str]] = None,
-                                **auth_kwargs) -> Dict[str, str]:
+    def _build_provider_headers(
+        self,
+        base_headers: Optional[Dict[str, str]] = None,
+        auth_type: AuthType = AuthType.NONE,
+        provider_headers: Optional[Dict[str, str]] = None,
+        **auth_kwargs,
+    ) -> Dict[str, str]:
         """
         Build complete headers with provider-specific fields
 
@@ -521,9 +563,7 @@ class StreamingProvider(ABC):
         # Add authentication if needed
         if auth_type != AuthType.NONE:
             headers = self._get_authenticated_headers(
-                auth_type=auth_type,
-                base_headers=headers,
-                **auth_kwargs
+                auth_type=auth_type, base_headers=headers, **auth_kwargs
             )
 
         # Add provider-specific headers
@@ -532,12 +572,14 @@ class StreamingProvider(ABC):
 
         return headers
 
-    def _add_auth_to_headers(self,
-                             headers: Dict[str, str],
-                             auth_type: AuthType = AuthType.BEARER,
-                             token_getter: Optional[Callable[[], str]] = None,
-                             token_key: str = 'Authorization',
-                             **kwargs) -> Dict[str, str]:
+    def _add_auth_to_headers(
+        self,
+        headers: Dict[str, str],
+        auth_type: AuthType = AuthType.BEARER,
+        token_getter: Optional[Callable[[], str]] = None,
+        token_key: str = "Authorization",
+        **kwargs,
+    ) -> Dict[str, str]:
         """
         Add authentication to existing headers (in-place modification)
 
@@ -568,20 +610,19 @@ class StreamingProvider(ABC):
         # Add auth header
         if token:
             if auth_type == AuthType.BEARER:
-                headers[token_key] = f'Bearer {token}'
+                headers[token_key] = f"Bearer {token}"
             elif auth_type == AuthType.BASIC:
-                headers[token_key] = f'Basic {token}'
+                headers[token_key] = f"Basic {token}"
             elif auth_type == AuthType.CLIENT:
-                headers[token_key] = f'Client {token}'
+                headers[token_key] = f"Client {token}"
             elif auth_type == AuthType.CUSTOM:
                 headers[token_key] = token
 
         return headers
 
-    def _get_auth_token(self,
-                        token_type: str = 'bearer',
-                        force_refresh: bool = False,
-                        **kwargs) -> Optional[str]:
+    def _get_auth_token(
+        self, token_type: str = "bearer", force_refresh: bool = False, **kwargs
+    ) -> Optional[str]:
         """
         Get authentication token from authenticator
 
@@ -601,14 +642,18 @@ class StreamingProvider(ABC):
 
         try:
             # Try to get token based on type
-            if token_type == 'bearer':
-                return self.authenticator.get_bearer_token(force_refresh=force_refresh, **kwargs)
-            elif hasattr(self.authenticator, f'get_{token_type}_token'):
-                getter = getattr(self.authenticator, f'get_{token_type}_token')
+            if token_type == "bearer":
+                return self.authenticator.get_bearer_token(
+                    force_refresh=force_refresh, **kwargs
+                )
+            elif hasattr(self.authenticator, f"get_{token_type}_token"):
+                getter = getattr(self.authenticator, f"get_{token_type}_token")
                 return getter(force_refresh=force_refresh, **kwargs)
             else:
                 # Default to bearer token
-                return self.authenticator.get_bearer_token(force_refresh=force_refresh, **kwargs)
+                return self.authenticator.get_bearer_token(
+                    force_refresh=force_refresh, **kwargs
+                )
         except Exception as e:
             logger.error(f"{self.provider_name}: Error getting {token_type} token: {e}")
             return None
@@ -617,12 +662,14 @@ class StreamingProvider(ABC):
     # CATCHUP ABSTRACT METHODS
     # ============================================================================
 
-    def get_catchup_manifest(self,
-                             channel_id: str,
-                             start_time: int,
-                             end_time: int,
-                             epg_id: Optional[str] = None,
-                             **kwargs) -> Optional[str]:
+    def get_catchup_manifest(
+        self,
+        channel_id: str,
+        start_time: int,
+        end_time: int,
+        epg_id: Optional[str] = None,
+        **kwargs,
+    ) -> Optional[str]:
         """
         Get manifest URL for catchup/timeshift content.
 
@@ -640,19 +687,25 @@ class StreamingProvider(ABC):
         Override in subclass to implement provider-specific catchup logic.
         """
         if not self.supports_catchup:
-            logger.debug(f"{self.provider_name}: Catchup not supported, falling back to live manifest")
+            logger.debug(
+                f"{self.provider_name}: Catchup not supported, falling back to live manifest"
+            )
             return self.get_manifest(channel_id, **kwargs)
 
-        logger.warning(f"{self.provider_name}: get_catchup_manifest not implemented, "
-                       f"falling back to live manifest")
+        logger.warning(
+            f"{self.provider_name}: get_catchup_manifest not implemented, "
+            f"falling back to live manifest"
+        )
         return self.get_manifest(channel_id, **kwargs)
 
-    def get_catchup_drm(self,
-                        channel_id: str,
-                        start_time: int,
-                        end_time: int,
-                        epg_id: Optional[str] = None,
-                        **kwargs) -> List[DRMConfig]:
+    def get_catchup_drm(
+        self,
+        channel_id: str,
+        start_time: int,
+        end_time: int,
+        epg_id: Optional[str] = None,
+        **kwargs,
+    ) -> List[DRMConfig]:
         """
         Get DRM configurations for catchup content.
 
@@ -670,11 +723,15 @@ class StreamingProvider(ABC):
         Override in subclass if catchup requires different DRM configuration.
         """
         if not self.supports_catchup:
-            logger.debug(f"{self.provider_name}: Catchup not supported, falling back to live DRM")
+            logger.debug(
+                f"{self.provider_name}: Catchup not supported, falling back to live DRM"
+            )
             return self.get_drm(channel_id, **kwargs)
 
-        logger.debug(f"{self.provider_name}: get_catchup_drm not implemented, "
-                     f"using live DRM configuration")
+        logger.debug(
+            f"{self.provider_name}: get_catchup_drm not implemented, "
+            f"using live DRM configuration"
+        )
         return self.get_drm(channel_id, **kwargs)
 
     # ============================================================================
@@ -693,7 +750,9 @@ class StreamingProvider(ABC):
         """
         return self.catchup_window
 
-    def validate_catchup_request(self, start_time: int, end_time: int) -> tuple[bool, Optional[str]]:
+    def validate_catchup_request(
+        self, start_time: int, end_time: int
+    ) -> tuple[bool, Optional[str]]:
         """
         Validate a catchup request against provider's capabilities.
 
@@ -722,16 +781,17 @@ class StreamingProvider(ABC):
 
         if content_age > max_age_seconds:
             hours_ago = content_age // 3600
-            return False, (f"Content is outside catchup window "
-                           f"(requested: {hours_ago} hours ago, "
-                           f"max: {self.catchup_window} hours)")
+            return False, (
+                f"Content is outside catchup window "
+                f"(requested: {hours_ago} hours ago, "
+                f"max: {self.catchup_window} hours)"
+            )
 
         return True, None
 
-    def format_catchup_time_params(self,
-                                   start_time: int,
-                                   end_time: int,
-                                   format_type: str = 'iso') -> Dict[str, str]:
+    def format_catchup_time_params(
+        self, start_time: int, end_time: int, format_type: str = "iso"
+    ) -> Dict[str, str]:
         """
         Format time parameters for provider-specific API calls.
 
@@ -750,38 +810,24 @@ class StreamingProvider(ABC):
         """
         from datetime import datetime
 
-        if format_type == 'iso':
+        if format_type == "iso":
             # ISO 8601 format
             start_dt = datetime.fromtimestamp(start_time)
             end_dt = datetime.fromtimestamp(end_time)
-            return {
-                'start': start_dt.isoformat(),
-                'end': end_dt.isoformat()
-            }
-        elif format_type == 'unix':
+            return {"start": start_dt.isoformat(), "end": end_dt.isoformat()}
+        elif format_type == "unix":
             # Unix timestamps (seconds)
-            return {
-                'start': str(start_time),
-                'end': str(end_time)
-            }
-        elif format_type == 'millis':
+            return {"start": str(start_time), "end": str(end_time)}
+        elif format_type == "millis":
             # Milliseconds since epoch
-            return {
-                'start': str(start_time * 1000),
-                'end': str(end_time * 1000)
-            }
+            return {"start": str(start_time * 1000), "end": str(end_time * 1000)}
         else:
             # Default to unix
-            return {
-                'start': str(start_time),
-                'end': str(end_time)
-            }
+            return {"start": str(start_time), "end": str(end_time)}
 
-    def build_catchup_manifest_url(self,
-                                   base_url: str,
-                                   start_time: int,
-                                   end_time: int,
-                                   url_format: str = 'query') -> str:
+    def build_catchup_manifest_url(
+        self, base_url: str, start_time: int, end_time: int, url_format: str = "query"
+    ) -> str:
         """
         Build catchup manifest URL with time parameters.
 
@@ -799,19 +845,19 @@ class StreamingProvider(ABC):
 
         Override in subclass for provider-specific URL construction.
         """
-        if url_format == 'query':
+        if url_format == "query":
             # Add as query parameters
-            separator = '&' if '?' in base_url else '?'
+            separator = "&" if "?" in base_url else "?"
             return f"{base_url}{separator}start={start_time}&end={end_time}"
-        elif url_format == 'path':
+        elif url_format == "path":
             # Add to path (e.g., /manifest/start/end.mpd)
             return f"{base_url}/{start_time}/{end_time}"
-        elif url_format == 'fragment':
+        elif url_format == "fragment":
             # Add as URL fragment (e.g., manifest.mpd#t=start,end)
             return f"{base_url}#t={start_time},{end_time}"
         else:
             # Default to query parameters
-            separator = '&' if '?' in base_url else '?'
+            separator = "&" if "?" in base_url else "?"
             return f"{base_url}{separator}start={start_time}&end={end_time}"
 
     # ============================================================================
@@ -866,7 +912,8 @@ class StreamingProvider(ABC):
         # Filter channels based on accessible channel IDs
         if subscription.accessible_channel_ids:
             return [
-                channel for channel in all_channels
+                channel
+                for channel in all_channels
                 if channel.channel_id in subscription.accessible_channel_ids
             ]
 
@@ -985,12 +1032,12 @@ class StreamingProvider(ABC):
             Description string or empty string if not supported
         """
         descriptions = {
-            'user_credentials': 'Username and password authentication',
-            'client_credentials': 'Client ID and secret authentication',
-            'network_based': 'Network/fixed-line authentication',
-            'anonymous': 'No authentication required',
-            'device_registration': 'Device registration authentication',
-            'embedded_client': 'Built-in credentials authentication'
+            "user_credentials": "Username and password authentication",
+            "client_credentials": "Client ID and secret authentication",
+            "network_based": "Network/fixed-line authentication",
+            "anonymous": "No authentication required",
+            "device_registration": "Device registration authentication",
+            "embedded_client": "Built-in credentials authentication",
         }
 
         if auth_type in descriptions:
@@ -1013,32 +1060,41 @@ class StreamingProvider(ABC):
             ValueError: If auth_type is not supported
         """
         if not self.validate_auth_type(auth_type):
-            raise ValueError(f"Auth type '{auth_type}' not supported by {self.provider_name}")
+            raise ValueError(
+                f"Auth type '{auth_type}' not supported by {self.provider_name}"
+            )
 
         requirements = {
-            'auth_type': auth_type,
-            'needs_storage': auth_type in ['user_credentials', 'client_credentials'],
-            'provides_token': auth_type != 'anonymous',
-            'user_interaction_required': auth_type in ['user_credentials', 'device_registration']
+            "auth_type": auth_type,
+            "needs_storage": auth_type in ["user_credentials", "client_credentials"],
+            "provides_token": auth_type != "anonymous",
+            "user_interaction_required": auth_type
+            in ["user_credentials", "device_registration"],
         }
 
         # Type-specific details
-        if auth_type == 'user_credentials':
-            requirements.update({
-                'fields': ['username', 'password'],
-                'optional_fields': ['client_id'],
-                'storage_key': 'user_password'
-            })
-        elif auth_type == 'client_credentials':
-            requirements.update({
-                'fields': ['client_id', 'client_secret'],
-                'storage_key': 'client_credentials'
-            })
-        elif auth_type == 'network_based':
-            requirements.update({
-                'description': 'Authenticates via your network provider',
-                'automatic': True
-            })
+        if auth_type == "user_credentials":
+            requirements.update(
+                {
+                    "fields": ["username", "password"],
+                    "optional_fields": ["client_id"],
+                    "storage_key": "user_password",
+                }
+            )
+        elif auth_type == "client_credentials":
+            requirements.update(
+                {
+                    "fields": ["client_id", "client_secret"],
+                    "storage_key": "client_credentials",
+                }
+            )
+        elif auth_type == "network_based":
+            requirements.update(
+                {
+                    "description": "Authenticates via your network provider",
+                    "automatic": True,
+                }
+            )
 
         return requirements
 
@@ -1054,14 +1110,15 @@ class StreamingProvider(ABC):
     def preferred_auth_type(self) -> str:
         """Preferred authentication type (first in supported list)."""
         types = self.supported_auth_types
-        return types[0] if types else 'unknown'
+        return types[0] if types else "unknown"
 
     @property
     def requires_stored_credentials(self) -> bool:
         """True if provider needs credentials stored in settings."""
-        credential_types = ['user_credentials', 'client_credentials']
-        return any(auth_type in credential_types
-                   for auth_type in self.supported_auth_types)
+        credential_types = ["user_credentials", "client_credentials"]
+        return any(
+            auth_type in credential_types for auth_type in self.supported_auth_types
+        )
 
     # ===== AUTHENTICATION PROPERTIES =====
 
@@ -1090,28 +1147,26 @@ class StreamingProvider(ABC):
             credentials = context.get_credentials(self.provider_name, self.country)
             if credentials:
                 # Map credential type to auth type
-                if hasattr(credentials, 'credential_type'):
-                    if credentials.credential_type == 'user_password':
-                        return 'user_credentials'
-                    elif credentials.credential_type == 'client_credentials':
-                        return 'client_credentials'
+                if hasattr(credentials, "credential_type"):
+                    if credentials.credential_type == "user_password":
+                        return "user_credentials"
+                    elif credentials.credential_type == "client_credentials":
+                        return "client_credentials"
 
         # 2. Check token auth level
         primary_token = context.get_token(
-            self.provider_name,
-            self.primary_token_scope,
-            self.country
+            self.provider_name, self.primary_token_scope, self.country
         )
         if primary_token:
-            auth_level = primary_token.get('auth_level')
-            if auth_level == 'user_authenticated':
-                return 'user_credentials'
-            elif auth_level == 'client_credentials':
-                return 'client_credentials'
-            elif auth_level == 'anonymous':
-                return 'anonymous'
-            elif auth_level == 'network_based':
-                return 'network_based'
+            auth_level = primary_token.get("auth_level")
+            if auth_level == "user_authenticated":
+                return "user_credentials"
+            elif auth_level == "client_credentials":
+                return "client_credentials"
+            elif auth_level == "anonymous":
+                return "anonymous"
+            elif auth_level == "network_based":
+                return "network_based"
 
         # 3. Return first supported type as default
         return self.preferred_auth_type
@@ -1139,7 +1194,7 @@ class StreamingProvider(ABC):
         scope = self.primary_token_scope
         return [scope] if scope else []
 
-    def get_auth_status(self, context: AuthContext) -> 'AuthStatus':
+    def get_auth_status(self, context: AuthContext) -> "AuthStatus":
         """
         Get authentication status for this provider.
         Uses AuthStatusBuilder by default.
@@ -1152,7 +1207,9 @@ class StreamingProvider(ABC):
         Returns:
             AuthStatus object
         """
-        from ..providers.auth_builder import AuthStatusBuilder  # Import here to avoid circular imports
+        from ..providers.auth_builder import \
+            AuthStatusBuilder  # Import here to avoid circular imports
+
         return AuthStatusBuilder.for_provider(self, context)
 
     # Optional override methods for providers with special logic

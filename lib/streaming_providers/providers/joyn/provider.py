@@ -1,72 +1,58 @@
 # streaming_providers/providers/joyn/provider.py
 # -*- coding: utf-8 -*-
-from typing import Dict, Optional, List, ClassVar
+import hashlib
 import json
 import time
-import hashlib
 import urllib.parse
-from datetime import datetime, timedelta
 from base64 import b64decode
+from datetime import datetime, timedelta
 from json import dumps
+from typing import ClassVar, Dict, List, Optional
 
-from ...base.provider import StreamingProvider, AuthType
-from ...base.models import DRMConfig, LicenseConfig, DRMSystem
-from ...base.models.streaming_channel import StreamingChannel
+from ...base.models import DRMConfig, DRMSystem, LicenseConfig
 from ...base.models.proxy_models import ProxyConfig
+from ...base.models.streaming_channel import StreamingChannel
+from ...base.provider import AuthType, StreamingProvider
 from ...base.utils.logger import logger
-from .models import JoynChannel, PlaybackRestrictedException
 from .auth import JoynAuthenticator
-from .constants import (
-    SIGNATURE_SECRET_KEY,
-    DEFAULT_VIDEO_CONFIG,
-    COUNTRY_TENANT_MAPPING,
-    SUPPORTED_COUNTRIES,
-    JOYN_GRAPHQL_ENDPOINTS,
-    JOYN_GRAPHQL_BASE_HEADERS,
-    JOYN_STREAMING_ENDPOINTS,
-    JOYN_CLIENT_VERSION,
-    DEFAULT_PLATFORM,
-    JOYN_USER_AGENT,
-    JOYN_API_BASE_HEADERS,
-    JOYN_DOMAINS,
-    ERROR_CODES,
-    CONTENT_TYPE_LIVE,
-    CONTENT_TYPE_VOD,
-    DEFAULT_LIVESTREAM_TYPES,
-    MODE_LIVE,
-    MODE_VOD,
-    DRM_SYSTEM_WIDEVINE,
-    DRM_REQUEST_HEADERS,
-    DEFAULT_REQUEST_TIMEOUT,
-    DEFAULT_MAX_RETRIES,
-    DEFAULT_EPG_WINDOW_HOURS,
-    GRAPHQL_PERSISTED_QUERY_VERSION,
-    GRAPHQL_LIVE_CHANNELS_FILTER,
-    GRAPHQL_MAX_RESULTS,
-    GRAPHQL_OFFSET,
-    GRAPHQL_QUERY_HASHES,
-    JOYN_LOGO
-)
+from .constants import (CONTENT_TYPE_LIVE, CONTENT_TYPE_VOD,
+                        COUNTRY_TENANT_MAPPING, DEFAULT_EPG_WINDOW_HOURS,
+                        DEFAULT_LIVESTREAM_TYPES, DEFAULT_MAX_RETRIES,
+                        DEFAULT_PLATFORM, DEFAULT_REQUEST_TIMEOUT,
+                        DEFAULT_VIDEO_CONFIG, DRM_REQUEST_HEADERS,
+                        DRM_SYSTEM_WIDEVINE, ERROR_CODES,
+                        GRAPHQL_LIVE_CHANNELS_FILTER, GRAPHQL_MAX_RESULTS,
+                        GRAPHQL_OFFSET, GRAPHQL_PERSISTED_QUERY_VERSION,
+                        GRAPHQL_QUERY_HASHES, JOYN_API_BASE_HEADERS,
+                        JOYN_CLIENT_VERSION, JOYN_DOMAINS,
+                        JOYN_GRAPHQL_BASE_HEADERS, JOYN_GRAPHQL_ENDPOINTS,
+                        JOYN_LOGO, JOYN_STREAMING_ENDPOINTS, JOYN_USER_AGENT,
+                        MODE_LIVE, MODE_VOD, SIGNATURE_SECRET_KEY,
+                        SUPPORTED_COUNTRIES)
+from .models import JoynChannel, PlaybackRestrictedException
 
 
 def create_video_payload(config: Optional[Dict] = None, compact: bool = True) -> str:
     """Create video data payload for requests"""
     video_config = config or DEFAULT_VIDEO_CONFIG
     payload = dumps(video_config)
-    return payload.replace(' ', '') if compact else payload
+    return payload.replace(" ", "") if compact else payload
 
 
-def build_signature(entitlement_token: str, video_payload: Optional[str] = None,
-                    secret_key: Optional[str] = None) -> str:
+def build_signature(
+    entitlement_token: str,
+    video_payload: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> str:
     """Build signature for video data requests"""
     if video_payload is None:
         video_payload = create_video_payload()
 
     if secret_key is None:
-        secret_key = b64decode(SIGNATURE_SECRET_KEY).decode('utf-8')
+        secret_key = b64decode(SIGNATURE_SECRET_KEY).decode("utf-8")
 
     signature_input = f"{video_payload},{entitlement_token}{secret_key}"
-    return hashlib.sha1(signature_input.encode('utf-8')).hexdigest()
+    return hashlib.sha1(signature_input.encode("utf-8")).hexdigest()
 
 
 class JoynProvider(StreamingProvider):
@@ -78,15 +64,21 @@ class JoynProvider(StreamingProvider):
     # STATIC METADATA (NEW)
     # ============================================================================
     PROVIDER_LABEL: ClassVar[str] = "Joyn"
-    SUPPORTED_AUTH_TYPES: ClassVar[List[str]] = ['client_credentials', 'user_credentials']
+    SUPPORTED_AUTH_TYPES: ClassVar[List[str]] = [
+        "client_credentials",
+        "user_credentials",
+    ]
     PROVIDER_LOGO: ClassVar[str] = JOYN_LOGO
     SUPPORTED_COUNTRIES: ClassVar[List[str]] = SUPPORTED_COUNTRIES
 
-    def __init__(self, country: str = 'de',
-                 platform: str = DEFAULT_PLATFORM,
-                 config_dir: Optional[str] = None,
-                 proxy_config: Optional[ProxyConfig] = None,
-                 proxy_url: Optional[str] = None):
+    def __init__(
+        self,
+        country: str = "de",
+        platform: str = DEFAULT_PLATFORM,
+        config_dir: Optional[str] = None,
+        proxy_config: Optional[ProxyConfig] = None,
+        proxy_url: Optional[str] = None,
+    ):
         """
         Initialize Joyn provider
 
@@ -98,29 +90,30 @@ class JoynProvider(StreamingProvider):
             proxy_url: Optional proxy URL string (medium priority)
         """
         if not self.validate_country(country):
-            supported = ', '.join(self.SUPPORTED_COUNTRIES)
+            supported = ", ".join(self.SUPPORTED_COUNTRIES)
             raise ValueError(
-                f"Unsupported country: {country}. "
-                f"Joyn supports: {supported}"
+                f"Unsupported country: {country}. " f"Joyn supports: {supported}"
             )
 
         super().__init__(country=country)
 
         if country not in SUPPORTED_COUNTRIES:
-            raise ValueError(f"Unsupported country: {country}. Must be one of: {SUPPORTED_COUNTRIES}")
+            raise ValueError(
+                f"Unsupported country: {country}. Must be one of: {SUPPORTED_COUNTRIES}"
+            )
 
         self.distribution_tenant = COUNTRY_TENANT_MAPPING[country]
         self.platform = platform
 
         # Setup HTTP manager using abstraction
         self.http_manager = self._setup_http_manager(
-            provider_name='joyn',
+            provider_name="joyn",
             proxy_config=proxy_config,
             proxy_url=proxy_url,
             config_dir=config_dir,
             user_agent=JOYN_USER_AGENT,
             timeout=DEFAULT_REQUEST_TIMEOUT,
-            max_retries=DEFAULT_MAX_RETRIES
+            max_retries=DEFAULT_MAX_RETRIES,
         )
 
         # Create authenticator with shared HTTP manager
@@ -129,7 +122,7 @@ class JoynProvider(StreamingProvider):
             platform=platform,
             config_dir=config_dir,
             http_manager=self.http_manager,
-            proxy_config=self.http_manager.config.proxy_config  # Use resolved proxy
+            proxy_config=self.http_manager.config.proxy_config,  # Use resolved proxy
         )
 
         # Authenticate
@@ -141,16 +134,16 @@ class JoynProvider(StreamingProvider):
 
     @property
     def provider_name(self) -> str:
-        return 'joyn'
+        return "joyn"
 
     # Override provider_label to provide custom country formatting
     @property
     def provider_label(self) -> str:
         """Return country-specific label"""
         country_map = {
-            'de': 'Joyn Germany',
-            'at': 'Joyn Austria',
-            'ch': 'Joyn Switzerland'
+            "de": "Joyn Germany",
+            "at": "Joyn Austria",
+            "ch": "Joyn Switzerland",
         }
         return country_map.get(self.country, f"Joyn ({self.country.upper()})")
 
@@ -173,11 +166,13 @@ class JoynProvider(StreamingProvider):
     def authenticate(self, **kwargs) -> str:
         """Authenticate and return bearer token"""
         self.bearer_token = self.authenticator.get_bearer_token(
-            force_refresh=kwargs.get('force_refresh', False)
+            force_refresh=kwargs.get("force_refresh", False)
         )
         return self.bearer_token
 
-    def get_dynamic_manifest_params(self, channel: StreamingChannel, **kwargs) -> Optional[str]:
+    def get_dynamic_manifest_params(
+        self, channel: StreamingChannel, **kwargs
+    ) -> Optional[str]:
         return None
 
     def _get_graphql_headers(self) -> Dict[str, str]:
@@ -186,12 +181,12 @@ class JoynProvider(StreamingProvider):
             base_headers=JOYN_GRAPHQL_BASE_HEADERS,
             auth_type=AuthType.NONE,  # GraphQL queries don't need auth
             provider_headers={
-                'joyn-client-version': JOYN_CLIENT_VERSION,
-                'joyn-country': self.country.upper(),
-                'joyn-distribution-tenant': self.distribution_tenant,
-                'joyn-platform': self.platform,
-                'joyn-user-state': 'code=R_A'
-            }
+                "joyn-client-version": JOYN_CLIENT_VERSION,
+                "joyn-country": self.country.upper(),
+                "joyn-distribution-tenant": self.distribution_tenant,
+                "joyn-platform": self.platform,
+                "joyn-user-state": "code=R_A",
+            },
         )
 
     def refresh_authentication(self) -> str:
@@ -199,11 +194,13 @@ class JoynProvider(StreamingProvider):
         self.bearer_token = self.authenticator.get_bearer_token(force_refresh=True)
         return self.bearer_token
 
-    def get_channels(self,
-                     time_window_hours: int = DEFAULT_EPG_WINDOW_HOURS,
-                     fetch_manifests: bool = False,
-                     populate_streaming_data: bool = True,
-                     **kwargs) -> List[StreamingChannel]:
+    def get_channels(
+        self,
+        time_window_hours: int = DEFAULT_EPG_WINDOW_HOURS,
+        fetch_manifests: bool = False,
+        populate_streaming_data: bool = True,
+        **kwargs,
+    ) -> List[StreamingChannel]:
         """
         Fetch available channels from Joyn GraphQL API
 
@@ -228,14 +225,14 @@ class JoynProvider(StreamingProvider):
                 "offset": GRAPHQL_OFFSET,
                 "livestreamTypes": DEFAULT_LIVESTREAM_TYPES,
                 "from": current_time,
-                "to": end_time
+                "to": end_time,
             }
 
             variables_encoded = urllib.parse.quote(json.dumps(variables))
             extensions = {
                 "persistedQuery": {
                     "version": GRAPHQL_PERSISTED_QUERY_VERSION,
-                    "sha256Hash": GRAPHQL_QUERY_HASHES['LIVE_CHANNELS']
+                    "sha256Hash": GRAPHQL_QUERY_HASHES["LIVE_CHANNELS"],
                 }
             }
             extensions_encoded = urllib.parse.quote(json.dumps(extensions))
@@ -243,10 +240,7 @@ class JoynProvider(StreamingProvider):
             url = f"{JOYN_GRAPHQL_ENDPOINTS['LIVE_CHANNELS']}&variables={variables_encoded}&extensions={extensions_encoded}"
 
             response = self.http_manager.get(
-                url,
-                operation='api',
-                headers=headers,
-                timeout=DEFAULT_REQUEST_TIMEOUT
+                url, operation="api", headers=headers, timeout=DEFAULT_REQUEST_TIMEOUT
             )
             response.raise_for_status()
             channel_data = response.json()
@@ -257,7 +251,9 @@ class JoynProvider(StreamingProvider):
             if fetch_manifests and populate_streaming_data:
                 channels = self.populate_streaming_data(channels)
 
-            logger.info(f"Successfully fetched {len(channels)} channels for country {self.country}")
+            logger.info(
+                f"Successfully fetched {len(channels)} channels for country {self.country}"
+            )
             return channels
 
         except Exception as e:
@@ -265,25 +261,27 @@ class JoynProvider(StreamingProvider):
 
     def _process_graphql_response(self, response_data: Dict) -> List[StreamingChannel]:
         """Process GraphQL response and convert to StreamingChannel objects"""
-        if 'data' not in response_data or 'liveStreams' not in response_data['data']:
+        if "data" not in response_data or "liveStreams" not in response_data["data"]:
             raise Exception("Invalid GraphQL response structure")
 
-        live_streams = response_data['data']['liveStreams']
+        live_streams = response_data["data"]["liveStreams"]
         channels = []
 
         for stream_data in live_streams:
             try:
-                channel_id = stream_data.get('id', '')
-                title = stream_data.get('title', 'Unknown Channel')
-                stream_type = stream_data.get('type', 'LINEAR')
-                quality = stream_data.get('quality', '')
+                channel_id = stream_data.get("id", "")
+                title = stream_data.get("title", "Unknown Channel")
+                stream_type = stream_data.get("type", "LINEAR")
+                quality = stream_data.get("quality", "")
 
                 logo_url = None
-                if 'logo' in stream_data and 'url' in stream_data['logo']:
-                    logo_url = stream_data['logo']['url']
+                if "logo" in stream_data and "url" in stream_data["logo"]:
+                    logo_url = stream_data["logo"]["url"]
 
-                content_type = CONTENT_TYPE_LIVE if stream_type == 'LINEAR' else CONTENT_TYPE_VOD
-                mode = MODE_LIVE if stream_type == 'LINEAR' else MODE_VOD
+                content_type = (
+                    CONTENT_TYPE_LIVE if stream_type == "LINEAR" else CONTENT_TYPE_VOD
+                )
+                mode = MODE_LIVE if stream_type == "LINEAR" else MODE_VOD
 
                 joyn_channel = JoynChannel(
                     name=title,
@@ -292,19 +290,19 @@ class JoynProvider(StreamingProvider):
                     mode=mode,
                     content_type=content_type,
                     country=self.country,
-                    raw_data=stream_data
+                    raw_data=stream_data,
                 )
 
                 if quality:
                     joyn_channel.name = f"{title} ({quality})"
 
-                if 'brand' in stream_data:
-                    brand_data = stream_data['brand']
-                    if 'brand_id' in brand_data:
-                        joyn_channel.raw_data['brand_id'] = brand_data['brand_id']
+                if "brand" in stream_data:
+                    brand_data = stream_data["brand"]
+                    if "brand_id" in brand_data:
+                        joyn_channel.raw_data["brand_id"] = brand_data["brand_id"]
 
-                if stream_data.get('eventStream', False):
-                    joyn_channel.raw_data['is_event_stream'] = True
+                if stream_data.get("eventStream", False):
+                    joyn_channel.raw_data["is_event_stream"] = True
 
                 streaming_channel = joyn_channel.to_streaming_channel(
                     provider_name=self.provider_name
@@ -316,7 +314,9 @@ class JoynProvider(StreamingProvider):
 
         return channels
 
-    def get_entitlement_token(self, content_id: str, content_type: str = CONTENT_TYPE_LIVE) -> str:
+    def get_entitlement_token(
+        self, content_id: str, content_type: str = CONTENT_TYPE_LIVE
+    ) -> str:
         """
         Get entitlement token for content
 
@@ -331,28 +331,25 @@ class JoynProvider(StreamingProvider):
             base_headers=JOYN_API_BASE_HEADERS,
             auth_type=AuthType.BEARER,
             provider_headers={
-                'joyn-client-version': JOYN_CLIENT_VERSION,
-                'joyn-country': self.country.upper(),
-                'joyn-distribution-tenant': self.distribution_tenant,
-                'joyn-platform': self.platform,
-                'joyn-b2b-context': 'UNKNOWN',
-                'joyn-client-os': 'UNKNOWN',
-                'origin': JOYN_DOMAINS.get(self.country, JOYN_DOMAINS['de'])
-            }
+                "joyn-client-version": JOYN_CLIENT_VERSION,
+                "joyn-country": self.country.upper(),
+                "joyn-distribution-tenant": self.distribution_tenant,
+                "joyn-platform": self.platform,
+                "joyn-b2b-context": "UNKNOWN",
+                "joyn-client-os": "UNKNOWN",
+                "origin": JOYN_DOMAINS.get(self.country, JOYN_DOMAINS["de"]),
+            },
         )
 
-        payload = {
-            "content_id": content_id,
-            "content_type": content_type
-        }
+        payload = {"content_id": content_id, "content_type": content_type}
 
         try:
             response = self.http_manager.post(
-                JOYN_STREAMING_ENDPOINTS['ENTITLEMENT'],
-                operation='auth',
+                JOYN_STREAMING_ENDPOINTS["ENTITLEMENT"],
+                operation="auth",
                 headers=headers,
                 json_data=payload,
-                timeout=DEFAULT_REQUEST_TIMEOUT
+                timeout=DEFAULT_REQUEST_TIMEOUT,
             )
 
             if response.status_code == 400:
@@ -362,16 +359,22 @@ class JoynProvider(StreamingProvider):
                         error = error_data[0]
                         code = error.get("code", "UNKNOWN")
                         msg = error.get("msg", "No error message provided")
-                        if code == ERROR_CODES['PLAYBACK_RESTRICTED']:
-                            raise PlaybackRestrictedException(f"Playback restricted for {content_id}: {msg}")
+                        if code == ERROR_CODES["PLAYBACK_RESTRICTED"]:
+                            raise PlaybackRestrictedException(
+                                f"Playback restricted for {content_id}: {msg}"
+                            )
                         else:
-                            raise Exception(f"Entitlement error for {content_id} ({code}): {msg}")
+                            raise Exception(
+                                f"Entitlement error for {content_id} ({code}): {msg}"
+                            )
                 except (json.JSONDecodeError, KeyError, IndexError) as e:
-                    raise Exception(f"Bad response for {content_id} (400), failed to parse error: {e}")
+                    raise Exception(
+                        f"Bad response for {content_id} (400), failed to parse error: {e}"
+                    )
 
             response.raise_for_status()
             data = response.json()
-            return data['entitlement_token']
+            return data["entitlement_token"]
 
         except PlaybackRestrictedException:
             raise
@@ -380,8 +383,12 @@ class JoynProvider(StreamingProvider):
         except Exception as e:
             raise Exception(f"Error getting entitlement token for {content_id}: {e}")
 
-    def get_channel_playlist(self, channel_id: str, entitlement_token: str,
-                             video_config: Optional[Dict] = None) -> Dict:
+    def get_channel_playlist(
+        self,
+        channel_id: str,
+        entitlement_token: str,
+        video_config: Optional[Dict] = None,
+    ) -> Dict:
         """
         Get channel playlist data
 
@@ -396,19 +403,19 @@ class JoynProvider(StreamingProvider):
         video_payload = create_video_payload(video_config)
         signature = build_signature(entitlement_token, video_payload)
 
-        url = JOYN_STREAMING_ENDPOINTS['PLAYLIST'].format(channel_id=channel_id)
+        url = JOYN_STREAMING_ENDPOINTS["PLAYLIST"].format(channel_id=channel_id)
         url += f"?signature={signature}"
 
         headers = JOYN_API_BASE_HEADERS.copy()
-        headers['Authorization'] = f'Bearer {entitlement_token}'
+        headers["Authorization"] = f"Bearer {entitlement_token}"
 
         try:
             response = self.http_manager.post(
                 url,
-                operation='manifest',
+                operation="manifest",
                 headers=headers,
                 data=video_payload,
-                timeout=DEFAULT_REQUEST_TIMEOUT
+                timeout=DEFAULT_REQUEST_TIMEOUT,
             )
             response.raise_for_status()
             return response.json()
@@ -416,9 +423,12 @@ class JoynProvider(StreamingProvider):
         except Exception as e:
             raise Exception(f"Error getting playlist for {channel_id}: {e}")
 
-    def populate_streaming_data(self, channels: List[StreamingChannel],
-                                video_config: Optional[Dict] = None,
-                                max_retries: int = DEFAULT_MAX_RETRIES) -> List[StreamingChannel]:
+    def populate_streaming_data(
+        self,
+        channels: List[StreamingChannel],
+        video_config: Optional[Dict] = None,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+    ) -> List[StreamingChannel]:
         """
         Populate streaming data (manifest, DRM) for all channels
 
@@ -439,25 +449,24 @@ class JoynProvider(StreamingProvider):
 
             while retries < max_retries and not success and not is_restricted:
                 try:
-                    logger.debug(f"Getting entitlement token for: {channel.name} (attempt {retries + 1})")
+                    logger.debug(
+                        f"Getting entitlement token for: {channel.name} (attempt {retries + 1})"
+                    )
 
                     entitlement_token = self.get_entitlement_token(
-                        content_id=channel.channel_id,
-                        content_type=channel.content_type
+                        content_id=channel.channel_id, content_type=channel.content_type
                     )
 
                     logger.debug(f"Getting playlist data for: {channel.name}")
 
                     playlist_data = self.get_channel_playlist(
-                        channel.channel_id,
-                        entitlement_token,
-                        video_config
+                        channel.channel_id, entitlement_token, video_config
                     )
 
-                    manifest_url = playlist_data.get('manifestUrl')
-                    license_url = playlist_data.get('licenseUrl')
-                    certificate_url = playlist_data.get('certificateUrl')
-                    streaming_format = playlist_data.get('streamingFormat', 'dash')
+                    manifest_url = playlist_data.get("manifestUrl")
+                    license_url = playlist_data.get("licenseUrl")
+                    certificate_url = playlist_data.get("certificateUrl")
+                    streaming_format = playlist_data.get("streamingFormat", "dash")
 
                     if manifest_url:
                         channel.manifest = manifest_url
@@ -480,22 +489,27 @@ class JoynProvider(StreamingProvider):
                 except Exception as e:
                     retries += 1
                     if retries < max_retries:
-                        logger.debug(f"Retry {retries}/{max_retries} for {channel.name}: {e}")
+                        logger.debug(
+                            f"Retry {retries}/{max_retries} for {channel.name}: {e}"
+                        )
                         time.sleep(1)
                     else:
-                        logger.error(f"Failed to get streaming data for {channel.name}: {e}")
+                        logger.error(
+                            f"Failed to get streaming data for {channel.name}: {e}"
+                        )
 
         logger.info(f"Streaming data population complete:")
         logger.info(f"  Successful: {len(successful_channels)}")
-        logger.info(f"  Restricted: {len([c for c in channels if c not in successful_channels])}")
+        logger.info(
+            f"  Restricted: {len([c for c in channels if c not in successful_channels])}"
+        )
         logger.info(f"  Total: {len(channels)}")
 
         return successful_channels
 
-    def enrich_channel_data(self,
-                            channel: StreamingChannel,
-                            video_config: Optional[Dict] = None,
-                            **kwargs) -> Optional[StreamingChannel]:
+    def enrich_channel_data(
+        self, channel: StreamingChannel, video_config: Optional[Dict] = None, **kwargs
+    ) -> Optional[StreamingChannel]:
         """
         Get manifest URL for a specific channel and properly configure DRM
 
@@ -509,38 +523,37 @@ class JoynProvider(StreamingProvider):
         """
         try:
             entitlement_token = self.get_entitlement_token(
-                content_id=channel.channel_id,
-                content_type=channel.content_type
+                content_id=channel.channel_id, content_type=channel.content_type
             )
 
             playlist_data = self.get_channel_playlist(
-                channel.channel_id,
-                entitlement_token,
-                video_config
+                channel.channel_id, entitlement_token, video_config
             )
 
-            manifest_url = playlist_data.get('manifestUrl')
+            manifest_url = playlist_data.get("manifestUrl")
             if not manifest_url:
                 return None
 
             channel.manifest = manifest_url
-            channel.streaming_format = playlist_data.get('streamingFormat', 'dash')
+            channel.streaming_format = playlist_data.get("streamingFormat", "dash")
 
-            license_url = playlist_data.get('licenseUrl')
+            license_url = playlist_data.get("licenseUrl")
             if license_url:
                 drm_config = DRMConfig(
                     system=DRMSystem.WIDEVINE,
                     priority=1,
                     license=LicenseConfig(
                         server_url=license_url,
-                        server_certificate=playlist_data.get('certificateUrl'),
-                        req_headers=json.dumps({
-                            'User-Agent': JOYN_USER_AGENT,
-                            'Content-Type': DRM_REQUEST_HEADERS['Content-Type']
-                        }),
+                        server_certificate=playlist_data.get("certificateUrl"),
+                        req_headers=json.dumps(
+                            {
+                                "User-Agent": JOYN_USER_AGENT,
+                                "Content-Type": DRM_REQUEST_HEADERS["Content-Type"],
+                            }
+                        ),
                         req_data="{CHA-RAW}",
-                        use_http_get_request=False
-                    )
+                        use_http_get_request=False,
+                    ),
                 )
                 channel.drm_config = drm_config
                 channel.cdm_type = DRM_SYSTEM_WIDEVINE
@@ -552,11 +565,13 @@ class JoynProvider(StreamingProvider):
             logger.error(f"Error getting manifest for {channel.name}: {e}")
             return None
 
-    def get_manifest(self,
-                     channel_id: str,
-                     content_type: str = CONTENT_TYPE_LIVE,
-                     video_config: Optional[Dict] = None,
-                     **kwargs) -> Optional[str]:
+    def get_manifest(
+        self,
+        channel_id: str,
+        content_type: str = CONTENT_TYPE_LIVE,
+        video_config: Optional[Dict] = None,
+        **kwargs,
+    ) -> Optional[str]:
         """
         Get manifest URL for a specific channel by ID
 
@@ -571,27 +586,26 @@ class JoynProvider(StreamingProvider):
         """
         try:
             entitlement_token = self.get_entitlement_token(
-                content_id=channel_id,
-                content_type=content_type
+                content_id=channel_id, content_type=content_type
             )
 
             playlist_data = self.get_channel_playlist(
-                channel_id,
-                entitlement_token,
-                video_config
+                channel_id, entitlement_token, video_config
             )
 
-            return playlist_data.get('manifestUrl')
+            return playlist_data.get("manifestUrl")
 
         except Exception as e:
             logger.error(f"Error getting manifest for channel {channel_id}: {e}")
             return None
 
-    def get_drm(self,
-                channel_id: str,
-                content_type: str = CONTENT_TYPE_LIVE,
-                video_config: Optional[Dict] = None,
-                **kwargs) -> List[DRMConfig]:
+    def get_drm(
+        self,
+        channel_id: str,
+        content_type: str = CONTENT_TYPE_LIVE,
+        video_config: Optional[Dict] = None,
+        **kwargs,
+    ) -> List[DRMConfig]:
         """
         Get all DRM configurations for a channel by ID
 
@@ -606,17 +620,14 @@ class JoynProvider(StreamingProvider):
         """
         try:
             entitlement_token = self.get_entitlement_token(
-                content_id=channel_id,
-                content_type=content_type
+                content_id=channel_id, content_type=content_type
             )
 
             playlist_data = self.get_channel_playlist(
-                channel_id,
-                entitlement_token,
-                video_config
+                channel_id, entitlement_token, video_config
             )
 
-            license_url = playlist_data.get('licenseUrl')
+            license_url = playlist_data.get("licenseUrl")
             if not license_url:
                 return []
 
@@ -626,14 +637,16 @@ class JoynProvider(StreamingProvider):
                 license=LicenseConfig.create_with_base64_req_data(
                     req_data_template="{CHA-RAW}",
                     server_url=license_url,
-                    server_certificate=playlist_data.get('certificateUrl'),
-                    req_headers=json.dumps({
-                        'Authorization': f'Bearer {self.bearer_token}',
-                        'Content-Type': DRM_REQUEST_HEADERS['Content-Type'],
-                        'User-Agent': JOYN_USER_AGENT
-                    }),
-                    use_http_get_request=False
-                )
+                    server_certificate=playlist_data.get("certificateUrl"),
+                    req_headers=json.dumps(
+                        {
+                            "Authorization": f"Bearer {self.bearer_token}",
+                            "Content-Type": DRM_REQUEST_HEADERS["Content-Type"],
+                            "User-Agent": JOYN_USER_AGENT,
+                        }
+                    ),
+                    use_http_get_request=False,
+                ),
             )
 
             return [drm_config]
@@ -642,11 +655,13 @@ class JoynProvider(StreamingProvider):
             logger.error(f"Error getting DRM configs for channel {channel_id}: {e}")
             return []
 
-    def get_epg(self,
-                channel_id: str,
-                start_time: Optional[datetime] = None,
-                end_time: Optional[datetime] = None,
-                **kwargs) -> List[Dict]:
+    def get_epg(
+        self,
+        channel_id: str,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        **kwargs,
+    ) -> List[Dict]:
         """
         Get EPG data for a channel
 
@@ -668,7 +683,9 @@ class JoynProvider(StreamingProvider):
             headers = self._get_graphql_headers()
 
             # Joyn EPG would require additional GraphQL queries
-            logger.info(f"EPG data requested for channel {channel_id} - not yet implemented")
+            logger.info(
+                f"EPG data requested for channel {channel_id} - not yet implemented"
+            )
             return []
 
         except Exception as e:

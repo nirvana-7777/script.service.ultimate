@@ -1,7 +1,7 @@
 # streaming_providers/providers/joyn/models.py
+import json
 from dataclasses import dataclass, field
 from typing import Dict, Optional
-import json
 
 from ...base.models import StreamingChannel
 
@@ -10,6 +10,7 @@ class PlaybackRestrictedException(Exception):
     """
     Exception raised when content playback is restricted
     """
+
     pass
 
 
@@ -18,6 +19,7 @@ class JoynChannel:
     """
     Represents a Joyn channel with all necessary streaming data
     """
+
     # Core identification
     name: str
     channel_id: str
@@ -35,19 +37,19 @@ class JoynChannel:
     cdm_type: Optional[str] = None
     use_cdm: bool = True
     cdm: Optional[str] = None  # Usually "pid={pid}"
-    cdm_mode: str = 'external'
+    cdm_mode: str = "external"
 
     # Video settings
-    video: str = 'best'
+    video: str = "best"
     on_demand: bool = True
     speed_up: bool = True
 
     # Additional metadata
-    content_type: str = 'LIVE'  # 'LIVE' or 'VOD'
+    content_type: str = "LIVE"  # 'LIVE' or 'VOD'
     description: Optional[str] = None
     genre: Optional[str] = None
-    language: str = 'de'
-    country: str = 'DE'
+    language: str = "de"
+    country: str = "DE"
 
     # Streaming data
     license_url: Optional[str] = None
@@ -58,7 +60,7 @@ class JoynChannel:
     raw_data: Dict = field(default_factory=dict)
 
     @classmethod
-    def from_api_data(cls, api_data: Dict, **kwargs) -> 'JoynChannel':
+    def from_api_data(cls, api_data: Dict, **kwargs) -> "JoynChannel":
         """
         Create JoynChannel from API response data
 
@@ -70,10 +72,10 @@ class JoynChannel:
             JoynChannel instance
         """
         channel = cls(
-            name=api_data.get('title', 'Unknown Channel'),
-            channel_id=api_data.get('id', ''),
-            content_type=api_data.get('type', 'LIVE'),
-            raw_data=api_data.copy()
+            name=api_data.get("title", "Unknown Channel"),
+            channel_id=api_data.get("id", ""),
+            content_type=api_data.get("type", "LIVE"),
+            raw_data=api_data.copy(),
         )
 
         # Apply any additional parameters
@@ -83,9 +85,15 @@ class JoynChannel:
 
         return channel
 
-    def set_streaming_data(self, manifest: str, cdm_type: str = None,
-                          pid: str = None, license_url: str = None,
-                          certificate_url: str = None, streaming_format: str = None) -> None:
+    def set_streaming_data(
+        self,
+        manifest: str,
+        cdm_type: str = None,
+        pid: str = None,
+        license_url: str = None,
+        certificate_url: str = None,
+        streaming_format: str = None,
+    ) -> None:
         """
         Configure streaming-specific data
 
@@ -127,13 +135,13 @@ class JoynChannel:
 
     def is_live(self) -> bool:
         """Check if channel is live TV"""
-        return self.content_type == 'LIVE' and self.mode == 'live'
+        return self.content_type == "LIVE" and self.mode == "live"
 
     def is_vod(self) -> bool:
         """Check if channel is video on demand"""
-        return self.content_type == 'VOD' or self.mode == 'vod'
+        return self.content_type == "VOD" or self.mode == "vod"
 
-    def to_streaming_channel(self, provider_name: str = 'joyn') -> StreamingChannel:
+    def to_streaming_channel(self, provider_name: str = "joyn") -> StreamingChannel:
         """
         Convert to generic StreamingChannel object
 
@@ -166,7 +174,7 @@ class JoynChannel:
             country=self.country,
             license_url=self.license_url,
             certificate_url=self.certificate_url,
-            streaming_format=self.streaming_format
+            streaming_format=self.streaming_format,
         )
 
     def to_dict(self) -> Dict:
@@ -177,19 +185,19 @@ class JoynChannel:
             Dictionary in the format expected by your application
         """
         return {
-            'Name': self.name,
-            'LogoUrl': self.logo_url,
-            'Mode': self.mode,
-            'SessionManifest': self.session_manifest,
-            'Manifest': self.manifest,
-            'ManifestScript': self.manifest_script,
-            'CdmType': self.cdm_type,
-            'UseCdm': self.use_cdm,
-            'Cdm': self.cdm,
-            'CdmMode': self.cdm_mode,
-            'Video': self.video,
-            'OnDemand': self.on_demand,
-            'SpeedUp': self.speed_up
+            "Name": self.name,
+            "LogoUrl": self.logo_url,
+            "Mode": self.mode,
+            "SessionManifest": self.session_manifest,
+            "Manifest": self.manifest,
+            "ManifestScript": self.manifest_script,
+            "CdmType": self.cdm_type,
+            "UseCdm": self.use_cdm,
+            "Cdm": self.cdm,
+            "CdmMode": self.cdm_mode,
+            "Video": self.video,
+            "OnDemand": self.on_demand,
+            "SpeedUp": self.speed_up,
         }
 
     def to_json(self, indent: int = 2) -> str:

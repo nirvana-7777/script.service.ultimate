@@ -2,7 +2,9 @@
 """
 Core provider registry handling discovery, metadata, and lifecycle management.
 """
-from typing import Dict, List, Optional, Any
+
+from typing import Any, Dict, List, Optional
+
 from .provider import StreamingProvider
 from .utils.logger import logger
 
@@ -19,7 +21,7 @@ class ProviderMetadata:
 
     def _extract_metadata(self):
         """Extract static metadata from provider class without instantiation"""
-        self.plugin_name = self.plugin_class.__name__.lower().replace('provider', '')
+        self.plugin_name = self.plugin_class.__name__.lower().replace("provider", "")
 
         # Check if provider supports multiple countries
         supports_multiple = self.plugin_class.supports_multiple_countries()
@@ -49,7 +51,7 @@ class ProviderMetadata:
         self.logo = self.plugin_class.get_static_logo(self.country)
         self.supported_countries = self.plugin_class.get_static_supported_countries()
         self.requires_credentials = any(
-            auth_type in ['user_credentials', 'client_credentials']
+            auth_type in ["user_credentials", "client_credentials"]
             for auth_type in self.supported_auth_types
         )
 
@@ -86,17 +88,17 @@ class ProviderMetadata:
     def to_dict(self) -> Dict[str, Any]:
         """Convert metadata to dictionary for API response"""
         return {
-            'name': self.name,
-            'label': self.label,
-            'plugin': self.plugin_name,
-            'country': self.country.upper(),
-            'enabled': self.enabled,
-            'instance_ready': self.instance is not None,
-            'requires_credentials': self.requires_credentials,
-            'supported_auth_types': self.supported_auth_types,
-            'logo': self.logo,
-            'is_multi_country': self.is_multi_country,
-            'supported_countries': self.supported_countries
+            "name": self.name,
+            "label": self.label,
+            "plugin": self.plugin_name,
+            "country": self.country.upper(),
+            "enabled": self.enabled,
+            "instance_ready": self.instance is not None,
+            "requires_credentials": self.requires_credentials,
+            "supported_auth_types": self.supported_auth_types,
+            "logo": self.logo,
+            "is_multi_country": self.is_multi_country,
+            "supported_countries": self.supported_countries,
         }
 
 
@@ -116,6 +118,7 @@ class ProviderRegistry:
         """Check if a provider is enabled via settings manager."""
         try:
             from .settings.provider_enable_manager import ProviderEnableManager
+
             enable_manager = ProviderEnableManager()
 
             instance_name = f"{provider_name}_{country}" if country else provider_name
@@ -124,7 +127,7 @@ class ProviderRegistry:
             logger.warning(f"Could not check enable status for '{provider_name}': {e}")
             return True
 
-    def discover_all_providers(self, default_country: str = 'DE') -> List[str]:
+    def discover_all_providers(self, default_country: str = "DE") -> List[str]:
         """Discover ALL provider instances and extract metadata."""
         from streaming_providers import AVAILABLE_PROVIDERS
 
@@ -158,7 +161,9 @@ class ProviderRegistry:
                     if instance:
                         self.providers[instance_name] = instance
 
-        logger.info(f"ProviderRegistry: Discovered {len(discovered)} provider instances")
+        logger.info(
+            f"ProviderRegistry: Discovered {len(discovered)} provider instances"
+        )
         return discovered
 
     def get_provider(self, provider_name: str) -> Optional[StreamingProvider]:
@@ -192,8 +197,11 @@ class ProviderRegistry:
 
         try:
             from .settings.provider_enable_manager import ProviderEnableManager
+
             enable_manager = ProviderEnableManager()
-            success, message = enable_manager.set_provider_enabled(provider_name, enabled)
+            success, message = enable_manager.set_provider_enabled(
+                provider_name, enabled
+            )
             return success
         except Exception as e:
             logger.error(f"Error updating enable status: {e}")

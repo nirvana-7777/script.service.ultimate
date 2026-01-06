@@ -1,11 +1,12 @@
 # streaming_providers/base/models/auth.py
-from typing import Optional, Dict, Any
-from enum import Enum
 from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Dict, Optional
 
 
 class AuthState(Enum):
     """Authentication state"""
+
     NOT_APPLICABLE = "not_applicable"
     NOT_AUTHENTICATED = "not_authenticated"
     AUTHENTICATED = "authenticated"
@@ -15,6 +16,7 @@ class AuthState(Enum):
 @dataclass
 class TokenInfo:
     """Information about a specific token scope"""
+
     scope: str
     has_token: bool
     is_valid: bool
@@ -26,6 +28,7 @@ class TokenInfo:
 @dataclass
 class AuthStatus:
     """Complete authentication status for a provider"""
+
     provider_name: str
     provider_label: str
     country: Optional[str]
@@ -53,7 +56,11 @@ class AuthStatus:
         import time
 
         result = {
-            "provider": f"{self.provider_name}_{self.country}" if self.country else self.provider_name,
+            "provider": (
+                f"{self.provider_name}_{self.country}"
+                if self.country
+                else self.provider_name
+            ),
             "provider_name": self.provider_name,
             "provider_label": self.provider_label,
             "country": self.country,
@@ -70,7 +77,7 @@ class AuthStatus:
                     "is_valid": info.is_valid,
                     "expires_at": info.expires_at,
                     "has_refresh_token": info.has_refresh_token,
-                    "auth_level": info.auth_level
+                    "auth_level": info.auth_level,
                 }
                 for scope, info in self.token_scopes.items()
             },
@@ -80,7 +87,7 @@ class AuthStatus:
             "timestamp": time.time(),
             "last_authentication": self.last_authentication,
             "provider_specific": self.provider_specific,
-            "auth_state_description": self._get_auth_state_description()
+            "auth_state_description": self._get_auth_state_description(),
         }
 
         # Add token expiration info if available
@@ -94,7 +101,9 @@ class AuthStatus:
             result["refresh_token_expires_at"] = self.refresh_token_expires_at
 
         if self.refresh_token_expires_in_seconds is not None:
-            result["refresh_token_expires_in_seconds"] = self.refresh_token_expires_in_seconds
+            result["refresh_token_expires_in_seconds"] = (
+                self.refresh_token_expires_in_seconds
+            )
 
         return result
 

@@ -1,8 +1,9 @@
 # streaming_providers/base/utils/mpd_rewriter.py
-import xml.etree.ElementTree as ET
 import base64
+import xml.etree.ElementTree as ET
 from typing import Optional, Tuple
 from urllib.parse import urljoin, urlparse
+
 from .logger import logger
 
 
@@ -18,7 +19,7 @@ class MPDRewriter:
     """
 
     # MPD namespace
-    MPD_NAMESPACE = {'mpd': 'urn:mpeg:dash:schema:mpd:2011'}
+    MPD_NAMESPACE = {"mpd": "urn:mpeg:dash:schema:mpd:2011"}
 
     def __init__(self, proxy_base_url: str, provider_name: str):
         """
@@ -28,20 +29,22 @@ class MPDRewriter:
             proxy_base_url: Base URL of the proxy service (e.g., http://localhost:7777)
             provider_name: Name of the provider for proxy routing
         """
-        self.proxy_base_url = proxy_base_url.rstrip('/')
+        self.proxy_base_url = proxy_base_url.rstrip("/")
         self.provider_name = provider_name
 
     @staticmethod
     def encode_url(url: str) -> str:
         """Encode URL to base64 for use in proxy endpoint"""
-        return base64.urlsafe_b64encode(url.encode('utf-8')).decode('utf-8')
+        return base64.urlsafe_b64encode(url.encode("utf-8")).decode("utf-8")
 
     @staticmethod
     def decode_url(encoded: str) -> str:
         """Decode base64 URL from proxy endpoint"""
-        return base64.urlsafe_b64decode(encoded.encode('utf-8')).decode('utf-8')
+        return base64.urlsafe_b64decode(encoded.encode("utf-8")).decode("utf-8")
 
-    def build_proxy_url(self, original_url: str, template_pattern: Optional[str] = None) -> str:
+    def build_proxy_url(
+        self, original_url: str, template_pattern: Optional[str] = None
+    ) -> str:
         """
         Build proxy URL for an original media URL
 
@@ -74,24 +77,24 @@ class MPDRewriter:
             - base_path: URL up to the last slash before any template variable
             - template_pattern: Path with template variables, or None if no templates
         """
-        if '$' not in url:
+        if "$" not in url:
             return url, None
 
         # Find the position of the first template variable
-        first_template_pos = url.find('$')
+        first_template_pos = url.find("$")
 
         # Find the last slash BEFORE the first template variable
         # This handles cases like:
         # - https://cdn.com/path/segment-$Number$.m4s
         # - https://cdn.com/path/$RepresentationID$/init.mp4
-        last_slash_before_template = url.rfind('/', 0, first_template_pos)
+        last_slash_before_template = url.rfind("/", 0, first_template_pos)
 
         if last_slash_before_template == -1:
             # No slash found before template, entire URL is template (unusual but handle it)
-            return '', url
+            return "", url
 
         base_path = url[:last_slash_before_template]
-        template_pattern = url[last_slash_before_template + 1:]
+        template_pattern = url[last_slash_before_template + 1 :]
 
         return base_path, template_pattern
 
@@ -118,7 +121,7 @@ class MPDRewriter:
             root = ET.fromstring(mpd_content)
 
             # Register namespace to preserve it in output
-            ET.register_namespace('', self.MPD_NAMESPACE['mpd'])
+            ET.register_namespace("", self.MPD_NAMESPACE["mpd"])
 
             # Get base URL for relative resolution
             base_url = self._extract_base_url(root, manifest_url)
@@ -130,13 +133,15 @@ class MPDRewriter:
             self._rewrite_urls_recursive(root, base_url)
 
             # Convert back to string
-            rewritten = ET.tostring(root, encoding='unicode', method='xml')
+            rewritten = ET.tostring(root, encoding="unicode", method="xml")
 
             # Add XML declaration if not present
-            if not rewritten.startswith('<?xml'):
+            if not rewritten.startswith("<?xml"):
                 rewritten = '<?xml version="1.0" encoding="UTF-8"?>\n' + rewritten
 
-            logger.debug(f"Successfully rewrote MPD for provider '{self.provider_name}'")
+            logger.debug(
+                f"Successfully rewrote MPD for provider '{self.provider_name}'"
+            )
             return rewritten
 
         except ET.ParseError as e:
@@ -162,17 +167,19 @@ class MPDRewriter:
             Base URL for resolving relative URLs
         """
         # Try to find BaseURL element
-        base_url_elem = root.find('.//mpd:BaseURL', self.MPD_NAMESPACE)
+        base_url_elem = root.find(".//mpd:BaseURL", self.MPD_NAMESPACE)
         if base_url_elem is not None and base_url_elem.text:
             base_url_text = base_url_elem.text.strip()
 
             # Check if the BaseURL is relative (doesn't start with http:// or https://)
-            if not base_url_text.startswith(('http://', 'https://')):
+            if not base_url_text.startswith(("http://", "https://")):
                 # It's a relative BaseURL, resolve it against the manifest URL's directory
                 parsed_manifest = urlparse(manifest_url)
                 manifest_dir = f"{parsed_manifest.scheme}://{parsed_manifest.netloc}{parsed_manifest.path.rsplit('/', 1)[0]}/"
                 resolved_base = urljoin(manifest_dir, base_url_text)
-                logger.debug(f"Resolved relative BaseURL '{base_url_text}' to: {resolved_base}")
+                logger.debug(
+                    f"Resolved relative BaseURL '{base_url_text}' to: {resolved_base}"
+                )
                 return resolved_base
             else:
                 # It's already an absolute URL
@@ -193,8 +200,10 @@ class MPDRewriter:
             root: MPD root element
         """
         # Find all BaseURL elements at any level
-        for parent in root.findall('.//*'):
-            for base_url_elem in list(parent.findall('mpd:BaseURL', self.MPD_NAMESPACE)):
+        for parent in root.findall(".//*"):
+            for base_url_elem in list(
+                parent.findall("mpd:BaseURL", self.MPD_NAMESPACE)
+            ):
                 parent.remove(base_url_elem)
                 logger.debug("Removed BaseURL element")
 
@@ -208,10 +217,10 @@ class MPDRewriter:
         """
         # Attributes that contain URLs
         url_attributes = [
-            'media',  # SegmentTemplate
-            'initialization',  # SegmentTemplate
-            'sourceURL',  # Initialization, RepresentationIndex
-            'indexRange',  # SegmentBase (not a URL but can be affected)
+            "media",  # SegmentTemplate
+            "initialization",  # SegmentTemplate
+            "sourceURL",  # Initialization, RepresentationIndex
+            "indexRange",  # SegmentBase (not a URL but can be affected)
         ]
 
         # Rewrite URL attributes in current element
@@ -226,28 +235,34 @@ class MPDRewriter:
                 resolved = urljoin(base_url, original_url)
 
                 # Check if URL contains template variables
-                if '$' in resolved:
+                if "$" in resolved:
                     # Split into base path and template pattern
                     base_path, template_pattern = self.split_template_url(resolved)
-                    element.attrib[attr] = self.build_proxy_url(base_path, template_pattern)
-                    logger.debug(f"Rewrote template URL: {original_url} -> proxy with template {template_pattern}")
+                    element.attrib[attr] = self.build_proxy_url(
+                        base_path, template_pattern
+                    )
+                    logger.debug(
+                        f"Rewrote template URL: {original_url} -> proxy with template {template_pattern}"
+                    )
                 else:
                     # Regular URL without templates
                     element.attrib[attr] = self.build_proxy_url(resolved)
                     logger.debug(f"Rewrote URL: {original_url} -> proxy")
 
         # Handle SegmentURL elements (used in SegmentList)
-        if element.tag.endswith('SegmentURL'):
-            if 'media' in element.attrib:
-                original_url = element.attrib['media']
+        if element.tag.endswith("SegmentURL"):
+            if "media" in element.attrib:
+                original_url = element.attrib["media"]
                 resolved = urljoin(base_url, original_url)
 
                 # SegmentURL typically doesn't have templates, but handle it just in case
-                if '$' in resolved:
+                if "$" in resolved:
                     base_path, template_pattern = self.split_template_url(resolved)
-                    element.attrib['media'] = self.build_proxy_url(base_path, template_pattern)
+                    element.attrib["media"] = self.build_proxy_url(
+                        base_path, template_pattern
+                    )
                 else:
-                    element.attrib['media'] = self.build_proxy_url(resolved)
+                    element.attrib["media"] = self.build_proxy_url(resolved)
 
         # Recurse to child elements
         for child in element:
@@ -270,25 +285,25 @@ class MPDRewriter:
             Cache TTL in seconds
         """
         # Check Cache-Control header
-        cache_control = headers.get('Cache-Control', headers.get('cache-control', ''))
-        if 'max-age=' in cache_control:
+        cache_control = headers.get("Cache-Control", headers.get("cache-control", ""))
+        if "max-age=" in cache_control:
             try:
                 # Extract max-age value
-                for directive in cache_control.split(','):
+                for directive in cache_control.split(","):
                     directive = directive.strip()
-                    if directive.startswith('max-age='):
-                        max_age = int(directive.split('=')[1])
+                    if directive.startswith("max-age="):
+                        max_age = int(directive.split("=")[1])
                         logger.debug(f"Cache TTL from Cache-Control: {max_age}s")
                         return max_age
             except (ValueError, IndexError) as e:
                 logger.warning(f"Failed to parse max-age from Cache-Control: {e}")
 
         # Check Expires header
-        expires = headers.get('Expires', headers.get('expires'))
+        expires = headers.get("Expires", headers.get("expires"))
         if expires:
             try:
-                from email.utils import parsedate_to_datetime
                 from datetime import datetime, timezone
+                from email.utils import parsedate_to_datetime
 
                 expires_dt = parsedate_to_datetime(expires)
                 now = datetime.now(timezone.utc)
@@ -320,12 +335,12 @@ class MPDRewriter:
             root = ET.fromstring(mpd_content)
 
             # Check if dynamic manifest
-            mpd_type = root.attrib.get('type', 'static')
-            if mpd_type != 'dynamic':
+            mpd_type = root.attrib.get("type", "static")
+            if mpd_type != "dynamic":
                 return None
 
             # Get minimumUpdatePeriod
-            update_period = root.attrib.get('minimumUpdatePeriod')
+            update_period = root.attrib.get("minimumUpdatePeriod")
             if update_period:
                 # Parse ISO 8601 duration (e.g., "PT5S" = 5 seconds)
                 return MPDRewriter._parse_iso_duration(update_period)
@@ -351,20 +366,20 @@ class MPDRewriter:
         import re
 
         # Remove PT prefix
-        duration = duration.replace('PT', '')
+        duration = duration.replace("PT", "")
 
         # Parse hours, minutes, seconds
         hours = minutes = seconds = 0
 
-        h_match = re.search(r'(\d+)H', duration)
+        h_match = re.search(r"(\d+)H", duration)
         if h_match:
             hours = int(h_match.group(1))
 
-        m_match = re.search(r'(\d+)M', duration)
+        m_match = re.search(r"(\d+)M", duration)
         if m_match:
             minutes = int(m_match.group(1))
 
-        s_match = re.search(r'(\d+(?:\.\d+)?)S', duration)
+        s_match = re.search(r"(\d+(?:\.\d+)?)S", duration)
         if s_match:
             seconds = float(s_match.group(1))
 
