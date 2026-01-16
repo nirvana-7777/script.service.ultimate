@@ -36,7 +36,7 @@ class MP4PSSHExtractor:
         offset = 0
 
         # First, extract all tenc boxes to get default KIDs
-        tenc_kids = MP4PSSHExtractor._extract_tenc_kids(data)
+        tenc_kids = MP4PSSHExtractor._extract_all_tenc_kids(data)
 
         while offset < len(data):
             try:
@@ -86,8 +86,8 @@ class MP4PSSHExtractor:
         return pssh_data_list
 
     @staticmethod
-    def _extract_tenc_kids(data: bytes) -> List[str]:
-        """Extract default KIDs from all tenc boxes in the MP4 data"""
+    def _extract_all_tenc_kids(data: bytes) -> List[str]:
+        """Recursively extract all KIDs from tenc boxes in the MP4 data"""
         kids = []
         offset = 0
 
@@ -97,7 +97,7 @@ class MP4PSSHExtractor:
                     break
 
                 box_size = struct.unpack(">I", data[offset:offset + 4])[0]
-                if box_size < 8:
+                if box_size < 8 or offset + box_size > len(data):
                     offset += 1
                     continue
 
@@ -106,11 +106,24 @@ class MP4PSSHExtractor:
                 if box_type == b'tenc':
                     # Parse tenc box
                     tenc_kid = MP4PSSHExtractor._parse_tenc_box(data[offset:offset + box_size])
-                    if tenc_kid:
+                    if tenc_kid and tenc_kid not in kids:
                         kids.append(tenc_kid)
+                        logger.debug(f"Found KID from tenc box: {tenc_kid}")
+                elif box_size > 8:
+                    # Recursively search inside container boxes
+                    # Check if this is a container box (moov, trak, mdia, minf, stbl, sinf, schi)
+                    container_boxes = {b'moov', b'trak', b'mdia', b'minf', b'stbl', b'sinf', b'schi'}
+                    if box_type in container_boxes:
+                        # Recursively search inside the container
+                        inner_data = data[offset + 8:offset + box_size]
+                        inner_kids = MP4PSSHExtractor._extract_all_tenc_kids(inner_data)
+                        for kid in inner_kids:
+                            if kid not in kids:
+                                kids.append(kid)
 
                 offset += box_size
-            except:
+            except Exception as e:
+                logger.debug(f"Error parsing box at offset {offset}: {e}")
                 offset += 1
 
         return kids
@@ -119,35 +132,37 @@ class MP4PSSHExtractor:
     def _parse_tenc_box(tenc_bytes: bytes) -> Optional[str]:
         """Parse a tenc box and extract the default key ID"""
         try:
-            if len(tenc_bytes) < 32:
+            # Minimum tenc box size is 28 bytes (short form) or 32 bytes (full)
+            if len(tenc_bytes) < 28:
                 return None
 
-            # tenc box structure:
-            # 0-3: box size (4 bytes)
-            # 4-7: box type 'tenc' (4 bytes)
-            # 8: version (1 byte)
-            # 9-11: flags (3 bytes)
-            # 12: reserved (24 bits) + is_encrypted (1 bit)
-            # 13: default_iv_size (1 byte)
-            # 14-29: default_KID (16 bytes)
+            # Parse box header
+            box_size = struct.unpack(">I", tenc_bytes[0:4])[0]
+            box_type = tenc_bytes[4:8]
 
-            # Check if box is long enough
-            if len(tenc_bytes) < 30:
+            if box_type != b'tenc':
                 return None
 
-            # Skip to default_KID (offset 14 from start of box)
-            kid_start = 14
+            version = tenc_bytes[8]
 
-            if kid_start + 16 > len(tenc_bytes):
+            # Determine KID offset based on version
+            if version == 0:
+                # Version 0: flags (3 bytes) + reserved/is_encrypted (1 byte) + default_iv_size (1 byte)
+                # KID starts at byte 14
+                kid_offset = 14
+            else:
+                # Version 1: more complex structure
+                # For now, assume similar offset
+                kid_offset = 14
+
+            if kid_offset + 16 > len(tenc_bytes):
                 return None
 
-            kid_bytes = tenc_bytes[kid_start:kid_start + 16]
+            kid_bytes = tenc_bytes[kid_offset:kid_offset + 16]
             kid_uuid = str(uuid.UUID(bytes=kid_bytes))
 
             # Convert to lowercase without dashes (same format as PSSH KIDs)
             clean_kid = kid_uuid.replace("-", "").lower()
-
-            logger.debug(f"Found KID from tenc box: {clean_kid}")
             return clean_kid
 
         except Exception as e:
@@ -160,9 +175,6 @@ class MP4PSSHExtractor:
         pssh_list = []
         offset = 8  # Skip moov header
 
-        # First extract tenc KIDs from this moov
-        tenc_kids = MP4PSSHExtractor._extract_tenc_kids(moov_data)
-
         while offset < len(moov_data):
             try:
                 box_size = struct.unpack(">I", moov_data[offset: offset + 4])[0]
@@ -172,11 +184,6 @@ class MP4PSSHExtractor:
                     # Parse track for PSSH
                     trak_data = moov_data[offset: offset + box_size]
                     pssh_in_trak = MP4PSSHExtractor._extract_from_trak(trak_data)
-
-                    # Add tenc KIDs to PSSH boxes if needed
-                    for pssh in pssh_in_trak:
-                        if not pssh.key_ids and tenc_kids:
-                            pssh.key_ids = tenc_kids.copy()
                     pssh_list.extend(pssh_in_trak)
 
                 elif box_type == "pssh":
@@ -185,9 +192,6 @@ class MP4PSSHExtractor:
                         moov_data[offset: offset + box_size]
                     )
                     if pssh_box:
-                        # Add tenc KIDs if PSSH doesn't have its own
-                        if not pssh_box.key_ids and tenc_kids:
-                            pssh_box.key_ids = tenc_kids.copy()
                         pssh_list.append(pssh_box)
 
                 offset += box_size
@@ -282,17 +286,6 @@ class MP4PSSHExtractor:
                     pssh_in_sinf = MP4PSSHExtractor._extract_from_sinf(sinf_data)
                     pssh_list.extend(pssh_in_sinf)
 
-                elif box_type == "tenc":
-                    # Direct tenc box in stbl (unusual but possible)
-                    tenc_kid = MP4PSSHExtractor._parse_tenc_box(
-                        stbl_data[offset:offset + box_size]
-                    )
-                    if tenc_kid:
-                        # If we have existing PSSH boxes without KIDs, add this KID
-                        for pssh in pssh_list:
-                            if not pssh.key_ids:
-                                pssh.key_ids.append(tenc_kid)
-
                 offset += box_size
 
             except:
@@ -315,17 +308,6 @@ class MP4PSSHExtractor:
                     schi_data = sinf_data[offset: offset + box_size]
                     pssh_in_schi = MP4PSSHExtractor._extract_from_schi(schi_data)
                     pssh_list.extend(pssh_in_schi)
-
-                elif box_type == "tenc":
-                    # tenc box directly in sinf
-                    tenc_kid = MP4PSSHExtractor._parse_tenc_box(
-                        sinf_data[offset:offset + box_size]
-                    )
-                    if tenc_kid:
-                        # If we have existing PSSH boxes without KIDs, add this KID
-                        for pssh in pssh_list:
-                            if not pssh.key_ids:
-                                pssh.key_ids.append(tenc_kid)
 
                 offset += box_size
 
@@ -351,17 +333,6 @@ class MP4PSSHExtractor:
                     )
                     if pssh_box:
                         pssh_list.append(pssh_box)
-
-                elif box_type == "tenc":
-                    # tenc box in schi (common structure)
-                    tenc_kid = MP4PSSHExtractor._parse_tenc_box(
-                        schi_data[offset:offset + box_size]
-                    )
-                    if tenc_kid:
-                        # If we have existing PSSH boxes without KIDs, add this KID
-                        for pssh in pssh_list:
-                            if not pssh.key_ids:
-                                pssh.key_ids.append(tenc_kid)
 
                 offset += box_size
 
