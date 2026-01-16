@@ -105,15 +105,16 @@ class MP4PSSHExtractor:
 
                 if box_type == b'tenc':
                     # Parse tenc box
-                    logger.debug(f"Found tenc box at offset {offset}, size {box_size}")
+                    logger.debug(f"Found tenc box at offset {offset} (0x{offset:x}), size {box_size}")
                     tenc_kid = MP4PSSHExtractor._parse_tenc_box(data[offset:offset + box_size])
                     if tenc_kid and tenc_kid not in kids:
                         kids.append(tenc_kid)
-                        logger.debug(f"Found KID from tenc box: {tenc_kid}")
                 elif box_size > 8:
                     # Recursively search inside container boxes
-                    # Check if this is a container box (moov, trak, mdia, minf, stbl, sinf, schi, encv)
-                    container_boxes = {b'moov', b'trak', b'mdia', b'minf', b'stbl', b'stsd', b'encv', b'sinf', b'schi'}
+                    container_boxes = {
+                        b'moov', b'trak', b'mdia', b'minf', b'stbl',
+                        b'stsd', b'encv', b'sinf', b'schi', b'udta'
+                    }
                     if box_type in container_boxes:
                         # Recursively search inside the container
                         inner_data = data[offset + 8:offset + box_size]
@@ -149,56 +150,53 @@ class MP4PSSHExtractor:
             version = tenc_bytes[8]
             logger.debug(f"tenc box version: {version}")
 
-            # According to ISO/IEC 23001-7, tenc box structure:
-            # Bytes 0-3: size
-            # Bytes 4-7: 'tenc'
+            # ISO/IEC 23001-7:2016 - tenc box structure for version 0:
+            # Bytes 0-3: box size
+            # Bytes 4-7: box type 'tenc'
             # Byte 8: version
             # Bytes 9-11: flags
-            # Byte 12: is_encrypted (bit 0) + reserved (bits 1-7)
+            # Byte 12: reserved (24 bits in big-endian) + is_encrypted (1 bit)
             # Byte 13: default_iv_size
             # Bytes 14-29: default_KID (16 bytes)
 
-            if version == 0:
-                # For version 0, KID is at offset 14
-                kid_offset = 14
-            else:
-                # Version 1 has additional fields
-                kid_offset = 14
-
-                # Skip optional fields if version == 1
-                # Byte 14: pattern
-                # Byte 15: crypt_byte_block
-                # Byte 16: skip_byte_block
-                if version == 1 and len(tenc_bytes) >= 32:
-                    kid_offset = 17
+            # For version 0, KID is ALWAYS at offset 14
+            kid_offset = 14
 
             if kid_offset + 16 > len(tenc_bytes):
                 logger.debug(f"tenc box too small for KID: {len(tenc_bytes)} bytes, need {kid_offset + 16}")
                 return None
 
+            # Extract KID bytes
             kid_bytes = tenc_bytes[kid_offset:kid_offset + 16]
-
-            # Debug: print hex of KID bytes
             hex_kid = kid_bytes.hex()
-            logger.debug(f"Raw KID bytes: {hex_kid}")
+
+            # Parse is_encrypted flag from byte 12
+            is_encrypted_byte = tenc_bytes[12]
+            is_encrypted = (is_encrypted_byte & 0x01) != 0  # Bit 0
+
+            # Parse default_iv_size from byte 13
+            default_iv_size = tenc_bytes[13]
+
+            logger.debug(f"tenc box: is_encrypted={is_encrypted}, default_iv_size={default_iv_size}")
+            logger.debug(f"KID bytes at offset {kid_offset}: {hex_kid}")
 
             # Format as UUID
             try:
                 kid_uuid = str(uuid.UUID(bytes=kid_bytes))
                 # Convert to lowercase without dashes (same format as PSSH KIDs)
                 clean_kid = kid_uuid.replace("-", "").lower()
-                logger.debug(f"Parsed KID: {clean_kid} (UUID: {kid_uuid})")
+                logger.debug(f"Parsed KID: {clean_kid}")
                 return clean_kid
             except Exception as e:
-                logger.debug(f"Failed to parse KID bytes as UUID: {e}")
-                # Fallback: just return hex
+                logger.debug(f"Failed to parse KID bytes as UUID: {e}, hex: {hex_kid}")
+                # Return hex string as fallback
                 return hex_kid
 
         except Exception as e:
             logger.debug(f"Failed to parse tenc box: {e}")
             return None
 
-    # [Keep the rest of the methods the same as before...]
+    # [Keep the rest of the methods exactly the same as in the previous version...]
     @staticmethod
     def _extract_from_moov(moov_data: bytes) -> List[PSSHData]:
         """Extract PSSH boxes from moov container"""
