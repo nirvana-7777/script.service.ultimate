@@ -15,15 +15,26 @@ from ...base.models.streaming_channel import StreamingChannel
 from ...base.network import HTTPManagerFactory, ProxyConfigManager
 from ...base.provider import StreamingProvider
 from ...base.utils.logger import logger
-from .auth import (Magenta2Authenticator, Magenta2Credentials,
-                   Magenta2UserCredentials)
+from .auth import Magenta2Authenticator, Magenta2Credentials, Magenta2UserCredentials
 from .config_models import ProviderConfig
-from .constants import (CONTENT_TYPE_LIVE, CONTENT_TYPE_VOD, DEFAULT_COUNTRY,
-                        DEFAULT_EPG_WINDOW_HOURS, DEFAULT_MAX_RETRIES,
-                        DEFAULT_PLATFORM, DEFAULT_REQUEST_TIMEOUT,
-                        DRM_REQUEST_HEADERS, DRM_SYSTEM_WIDEVINE, ERROR_CODES,
-                        MAGENTA2_CLIENT_IDS, MAGENTA2_LOGO, MAGENTA2_PLATFORMS,
-                        MODE_LIVE, MODE_VOD, SUPPORTED_COUNTRIES)
+from .constants import (
+    CONTENT_TYPE_LIVE,
+    CONTENT_TYPE_VOD,
+    DEFAULT_COUNTRY,
+    DEFAULT_EPG_WINDOW_HOURS,
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_PLATFORM,
+    DEFAULT_REQUEST_TIMEOUT,
+    DRM_REQUEST_HEADERS,
+    DRM_SYSTEM_WIDEVINE,
+    ERROR_CODES,
+    MAGENTA2_CLIENT_IDS,
+    MAGENTA2_LOGO,
+    MAGENTA2_PLATFORMS,
+    MODE_LIVE,
+    MODE_VOD,
+    SUPPORTED_COUNTRIES,
+)
 from .discovery import DiscoveryService
 from .endpoint_manager import EndpointManager
 from .models import Magenta2Channel, Magenta2PlaybackRestrictedException
@@ -155,9 +166,7 @@ class Magenta2Provider(StreamingProvider):
         # 🚨 UPDATE AUTHENTICATOR WITH DISCOVERED CONFIG
         if self.provider_config:
             # Update authenticator with discovered client_id and models
-            self.authenticator.provider_config = (
-                self.provider_config
-            )  # ✅ Store the config
+            self.authenticator.provider_config = self.provider_config  # ✅ Store the config
             logger.info("✓ ProviderConfig stored in authenticator")
 
             # Also update TokenFlowManager if it exists
@@ -165,9 +174,7 @@ class Magenta2Provider(StreamingProvider):
                 hasattr(self.authenticator, "token_flow_manager")
                 and self.authenticator.token_flow_manager
             ):
-                self.authenticator.token_flow_manager.provider_config = (
-                    self.provider_config
-                )
+                self.authenticator.token_flow_manager.provider_config = self.provider_config
                 logger.info("✓ ProviderConfig also stored in TokenFlowManager")
 
             if self.provider_config.bootstrap.sam3_client_id:
@@ -195,9 +202,7 @@ class Magenta2Provider(StreamingProvider):
                         self.provider_config.bootstrap.client_model
                     )
                 else:
-                    self.authenticator._client_model = (
-                        self.provider_config.bootstrap.client_model
-                    )
+                    self.authenticator._client_model = self.provider_config.bootstrap.client_model
                 logger.debug(
                     f"Updated authenticator with client model: {self.provider_config.bootstrap.client_model}"
                 )
@@ -208,9 +213,7 @@ class Magenta2Provider(StreamingProvider):
                         self.provider_config.bootstrap.device_model
                     )
                 else:
-                    self.authenticator._device_model = (
-                        self.provider_config.bootstrap.device_model
-                    )
+                    self.authenticator._device_model = self.provider_config.bootstrap.device_model
                 logger.debug(
                     f"Updated authenticator with device model: {self.provider_config.bootstrap.device_model}"
                 )
@@ -221,9 +224,7 @@ class Magenta2Provider(StreamingProvider):
                 authorize_tokens_url = self.provider_config.get_authorize_tokens_url()
 
                 if device_token:
-                    self.authenticator.set_device_token(
-                        device_token, authorize_tokens_url
-                    )
+                    self.authenticator.set_device_token(device_token, authorize_tokens_url)
                     logger.debug("Device token configured in authenticator")
 
                 # CRITICAL: Pass MPX account PID for account URI construction
@@ -237,9 +238,7 @@ class Magenta2Provider(StreamingProvider):
 
                 # Pass OpenID configuration if available
                 if self.provider_config.openid:
-                    self.authenticator.set_openid_config(
-                        self.provider_config.openid.raw_data
-                    )
+                    self.authenticator.set_openid_config(self.provider_config.openid.raw_data)
 
             # Update authenticator with discovered endpoints using public methods
             if self.endpoint_manager:
@@ -252,14 +251,10 @@ class Magenta2Provider(StreamingProvider):
                 # Update authenticator with discovered endpoints using public method
                 if hasattr(self.authenticator, "update_dynamic_endpoints"):
                     self.authenticator.update_dynamic_endpoints(all_endpoints)
-                    logger.info(
-                        f"✓ Updated authenticator with {len(all_endpoints)} endpoints"
-                    )
+                    logger.info(f"✓ Updated authenticator with {len(all_endpoints)} endpoints")
                 elif hasattr(self.authenticator, "update_endpoints"):
                     self.authenticator.update_endpoints(all_endpoints)
-                    logger.info(
-                        f"✓ Updated authenticator with {len(all_endpoints)} endpoints"
-                    )
+                    logger.info(f"✓ Updated authenticator with {len(all_endpoints)} endpoints")
                 else:
                     logger.warning("No public method available to update endpoints")
 
@@ -268,20 +263,14 @@ class Magenta2Provider(StreamingProvider):
                 if qr_url and hasattr(self.authenticator, "update_sam3_qr_code_url"):
                     success = self.authenticator.update_sam3_qr_code_url(qr_url)
                     if success:
-                        logger.info(
-                            "✓ Successfully updated SAM3 client with QR code URL"
-                        )
+                        logger.info("✓ Successfully updated SAM3 client with QR code URL")
                     else:
-                        logger.warning(
-                            "✗ Failed to update SAM3 client with QR code URL"
-                        )
+                        logger.warning("✗ Failed to update SAM3 client with QR code URL")
 
         # Initialize auth tokens (lazy - populated on first use)
         self.device_token = None
         self._persona_cache: Optional[PersonaResult] = None
-        self._smil_cache: Dict[str, Tuple[float, Dict]] = (
-            {}
-        )  # channel_id -> (timestamp, smil_data)
+        self._smil_cache: Dict[str, Tuple[float, Dict]] = {}  # channel_id -> (timestamp, smil_data)
         self._smil_cache_ttl = 3600
 
         logger.info("Magenta2 provider initialization completed successfully")
@@ -303,9 +292,7 @@ class Magenta2Provider(StreamingProvider):
         """Generate call ID for requests"""
         return str(uuid.uuid4())
 
-    def _load_proxy_from_manager(
-        self, config_dir: Optional[str]
-    ) -> Optional[ProxyConfig]:
+    def _load_proxy_from_manager(self, config_dir: Optional[str]) -> Optional[ProxyConfig]:
         """Load proxy configuration from ProxyConfigManager"""
         try:
             proxy_manager = ProxyConfigManager(config_dir)
@@ -325,9 +312,7 @@ class Magenta2Provider(StreamingProvider):
             self.provider_config = self.discovery_service.discover_provider_config()
 
             if not self.provider_config or not self.provider_config.is_complete:
-                logger.warning(
-                    "Configuration discovery incomplete, some features may not work"
-                )
+                logger.warning("Configuration discovery incomplete, some features may not work")
 
             # Initialize endpoint manager with discovered configuration
             self.endpoint_manager = EndpointManager(self.provider_config)
@@ -336,21 +321,15 @@ class Magenta2Provider(StreamingProvider):
             if self.endpoint_manager:
                 qr_url = self.endpoint_manager.get_endpoint("login_qr_code")
                 if qr_url:
-                    logger.info(
-                        f"✓ QR code endpoint discovered in endpoint manager: {qr_url}"
-                    )
+                    logger.info(f"✓ QR code endpoint discovered in endpoint manager: {qr_url}")
 
                     # PROPER FIX: Use public method to update SAM3 client
                     if hasattr(self.authenticator, "update_sam3_qr_code_url"):
                         success = self.authenticator.update_sam3_qr_code_url(qr_url)
                         if success:
-                            logger.info(
-                                "✓ Successfully updated SAM3 client with QR code URL"
-                            )
+                            logger.info("✓ Successfully updated SAM3 client with QR code URL")
                         else:
-                            logger.warning(
-                                "✗ Failed to update SAM3 client with QR code URL"
-                            )
+                            logger.warning("✗ Failed to update SAM3 client with QR code URL")
 
                     # Also debug the current status
                     if hasattr(self.authenticator, "get_sam3_client_status"):
@@ -364,16 +343,12 @@ class Magenta2Provider(StreamingProvider):
                 authorize_tokens_url = self.provider_config.get_authorize_tokens_url()
 
                 if device_token:
-                    logger.info(
-                        f"✓ Device token discovered (length: {len(device_token)})"
-                    )
+                    logger.info(f"✓ Device token discovered (length: {len(device_token)})")
                 else:
                     logger.warning("⚠️ No device token found in manifest")
 
                 if authorize_tokens_url:
-                    logger.info(
-                        f"✓ Line auth endpoint discovered: {authorize_tokens_url}"
-                    )
+                    logger.info(f"✓ Line auth endpoint discovered: {authorize_tokens_url}")
                 else:
                     logger.warning("⚠️ No authorize tokens URL found in manifest")
 
@@ -504,9 +479,7 @@ class Magenta2Provider(StreamingProvider):
         try:
             logger.info("Refreshing provider configuration")
 
-            new_config = self.discovery_service.discover_provider_config(
-                force_refresh=force
-            )
+            new_config = self.discovery_service.discover_provider_config(force_refresh=force)
 
             if new_config and new_config.is_complete:
                 self.provider_config = new_config
@@ -515,18 +488,12 @@ class Magenta2Provider(StreamingProvider):
                 # Update authenticator with new config
                 if new_config.manifest:
                     device_token = new_config.manifest.raw_data.get("deviceToken")
-                    authorize_tokens_url = new_config.manifest.raw_data.get(
-                        "authorizeTokensUrl"
-                    )
+                    authorize_tokens_url = new_config.manifest.raw_data.get("authorizeTokensUrl")
                     if device_token:
-                        self.authenticator.set_device_token(
-                            device_token, authorize_tokens_url
-                        )
+                        self.authenticator.set_device_token(device_token, authorize_tokens_url)
 
                     if new_config.manifest.mpx.account_pid:
-                        self.authenticator.set_mpx_account_pid(
-                            new_config.manifest.mpx.account_pid
-                        )
+                        self.authenticator.set_mpx_account_pid(new_config.manifest.mpx.account_pid)
 
                 logger.info("Configuration refresh successful")
                 return True
@@ -560,9 +527,7 @@ class Magenta2Provider(StreamingProvider):
                     logger.warning("Device registration failed")
                     return False
             else:
-                logger.warning(
-                    "Device authentication not supported in current authenticator"
-                )
+                logger.warning("Device authentication not supported in current authenticator")
                 return False
 
         except Exception as e:
@@ -610,9 +575,7 @@ class Magenta2Provider(StreamingProvider):
         self._persona_cache = None
         logger.debug("Cleared in-memory persona cache")
 
-    def get_dynamic_manifest_params(
-        self, channel: StreamingChannel, **kwargs
-    ) -> Optional[str]:
+    def get_dynamic_manifest_params(self, channel: StreamingChannel, **kwargs) -> Optional[str]:
         return None
 
     @staticmethod
@@ -682,9 +645,7 @@ class Magenta2Provider(StreamingProvider):
         }
 
         # Build query string
-        query_string = "&".join(
-            [f"{k}={self._url_encode(v)}" for k, v in params.items()]
-        )
+        query_string = "&".join([f"{k}={self._url_encode(v)}" for k, v in params.items()])
 
         return f"{base_url}/iss?{query_string}"
 
@@ -711,9 +672,7 @@ class Magenta2Provider(StreamingProvider):
 
                 if display_number is None:
                     # Process immediately if no number (no filtering needed)
-                    channel = self._create_channel_from_entry(
-                        entry, station_info, display_number
-                    )
+                    channel = self._create_channel_from_entry(entry, station_info, display_number)
                     if channel:
                         channels.append(channel)
                     continue
@@ -742,9 +701,7 @@ class Magenta2Provider(StreamingProvider):
 
         # Convert best entries to channels
         for display_number, (entry, station_info, _) in best_entries.items():
-            channel = self._create_channel_from_entry(
-                entry, station_info, display_number
-            )
+            channel = self._create_channel_from_entry(entry, station_info, display_number)
             if channel:
                 channels.append(channel)
 
@@ -812,12 +769,8 @@ class Magenta2Provider(StreamingProvider):
                 url = self.endpoint_manager.get_endpoint("channel_stations")
                 if not url:
                     url = self.endpoint_manager.get_endpoint("channel_list")
-                if not url and self.endpoint_manager.has_endpoint(
-                    "mpx_feed_entitledChannelsFeed"
-                ):
-                    url = self.endpoint_manager.get_endpoint(
-                        "mpx_feed_entitledChannelsFeed"
-                    )
+                if not url and self.endpoint_manager.has_endpoint("mpx_feed_entitledChannelsFeed"):
+                    url = self.endpoint_manager.get_endpoint("mpx_feed_entitledChannelsFeed")
 
             # Final fallback
             if not url:
@@ -884,9 +837,7 @@ class Magenta2Provider(StreamingProvider):
         for entry in entries:
             try:
                 title = entry.get("title", "Unknown")
-                channel_id = (
-                    entry.get("guid", "").split("/")[-1] if entry.get("guid") else ""
-                )
+                channel_id = entry.get("guid", "").split("/")[-1] if entry.get("guid") else ""
 
                 if not channel_id:
                     continue
@@ -899,9 +850,7 @@ class Magenta2Provider(StreamingProvider):
                     raw_data=entry,
                 )
 
-                streaming_channel = channel.to_streaming_channel(
-                    provider_name=self.provider_name
-                )
+                streaming_channel = channel.to_streaming_channel(provider_name=self.provider_name)
                 channels.append(streaming_channel)
 
             except Exception as e:
@@ -933,18 +882,13 @@ class Magenta2Provider(StreamingProvider):
                     logger.warning("Channel missing ID, skipping")
                     continue
 
-                title = channel_data.get(
-                    "title", channel_data.get("name", "Unknown Channel")
-                )
+                title = channel_data.get("title", channel_data.get("name", "Unknown Channel"))
                 stream_type = channel_data.get("type", "LIVE")
                 quality = channel_data.get("quality", "")
 
                 logo_url = None
                 if "logo" in channel_data:
-                    if (
-                        isinstance(channel_data["logo"], dict)
-                        and "url" in channel_data["logo"]
-                    ):
+                    if isinstance(channel_data["logo"], dict) and "url" in channel_data["logo"]:
                         logo_url = channel_data["logo"]["url"]
                     elif isinstance(channel_data["logo"], str):
                         logo_url = channel_data["logo"]
@@ -952,9 +896,7 @@ class Magenta2Provider(StreamingProvider):
                     logo_url = channel_data["image"]
 
                 content_type = (
-                    CONTENT_TYPE_LIVE
-                    if stream_type.upper() == "LIVE"
-                    else CONTENT_TYPE_VOD
+                    CONTENT_TYPE_LIVE if stream_type.upper() == "LIVE" else CONTENT_TYPE_VOD
                 )
                 mode = MODE_LIVE if stream_type.upper() == "LIVE" else MODE_VOD
 
@@ -981,9 +923,7 @@ class Magenta2Provider(StreamingProvider):
 
         return channels
 
-    def get_entitlement_token(
-        self, content_id: str, content_type: str = CONTENT_TYPE_LIVE
-    ) -> str:
+    def get_entitlement_token(self, content_id: str, content_type: str = CONTENT_TYPE_LIVE) -> str:
         """
         Get entitlement token using persona_token Basic auth
         """
@@ -1002,9 +942,7 @@ class Magenta2Provider(StreamingProvider):
         )
 
         try:
-            logger.debug(
-                f"Requesting entitlement token with persona token for: {content_id}"
-            )
+            logger.debug(f"Requesting entitlement token with persona token for: {content_id}")
             response = self.http_manager.post(
                 url,
                 operation="auth",
@@ -1016,25 +954,19 @@ class Magenta2Provider(StreamingProvider):
             if response.status_code == 400:
                 try:
                     error_data = response.json()
-                    error_list = (
-                        error_data if isinstance(error_data, list) else [error_data]
-                    )
+                    error_list = error_data if isinstance(error_data, list) else [error_data]
 
                     if len(error_list) > 0:
                         error = error_list[0]
                         code = error.get("code", error.get("errorCode", "UNKNOWN"))
-                        msg = error.get(
-                            "msg", error.get("message", "No error message provided")
-                        )
+                        msg = error.get("msg", error.get("message", "No error message provided"))
 
                         if code == ERROR_CODES["PLAYBACK_RESTRICTED"]:
                             raise Magenta2PlaybackRestrictedException(
                                 f"Playback restricted for {content_id}: {msg}"
                             )
                         else:
-                            raise Exception(
-                                f"Entitlement error for {content_id} ({code}): {msg}"
-                            )
+                            raise Exception(f"Entitlement error for {content_id} ({code}): {msg}")
                 except (json.JSONDecodeError, KeyError, IndexError) as e:
                     raise Exception(
                         f"Bad response for {content_id} (400), failed to parse error: {e}"
@@ -1056,22 +988,16 @@ class Magenta2Provider(StreamingProvider):
             raise
         except KeyError as e:
             logger.error(f"No entitlement token in response for {content_id}: {e}")
-            logger.debug(
-                f"Auth state: {self.authenticator.debug_authentication_state()}"
-            )
+            logger.debug(f"Auth state: {self.authenticator.debug_authentication_state()}")
             raise Exception(f"No entitlement token in response for {content_id}: {e}")
         except Exception as e:
             logger.error(f"Error getting entitlement token for {content_id}: {e}")
-            logger.debug(
-                f"Auth state: {self.authenticator.debug_authentication_state()}"
-            )
+            logger.debug(f"Auth state: {self.authenticator.debug_authentication_state()}")
             raise Exception(f"Error getting entitlement token for {content_id}: {e}")
 
     def get_channel_playlist(self, channel_id: str, entitlement_token: str) -> Dict:
         """Get channel playlist data"""
-        if self.endpoint_manager and self.endpoint_manager.has_endpoint(
-            "channel_playlist"
-        ):
+        if self.endpoint_manager and self.endpoint_manager.has_endpoint("channel_playlist"):
             url = self.endpoint_manager.get_endpoint("channel_playlist").format(
                 channel_id=channel_id
             )
@@ -1122,16 +1048,10 @@ class Magenta2Provider(StreamingProvider):
 
                     logger.debug(f"Getting playlist data for: {channel.name}")
 
-                    playlist_data = self.get_channel_playlist(
-                        channel.channel_id, entitlement_token
-                    )
+                    playlist_data = self.get_channel_playlist(channel.channel_id, entitlement_token)
 
-                    manifest_url = playlist_data.get(
-                        "manifestUrl", playlist_data.get("manifest")
-                    )
-                    license_url = playlist_data.get(
-                        "licenseUrl", playlist_data.get("license")
-                    )
+                    manifest_url = playlist_data.get("manifestUrl", playlist_data.get("manifest"))
+                    license_url = playlist_data.get("licenseUrl", playlist_data.get("license"))
                     certificate_url = playlist_data.get(
                         "certificateUrl", playlist_data.get("certificate")
                     )
@@ -1160,14 +1080,10 @@ class Magenta2Provider(StreamingProvider):
                 except Exception as e:
                     retries += 1
                     if retries < max_retries:
-                        logger.debug(
-                            f"Retry {retries}/{max_retries} for {channel.name}: {e}"
-                        )
+                        logger.debug(f"Retry {retries}/{max_retries} for {channel.name}: {e}")
                         time.sleep(1)
                     else:
-                        logger.error(
-                            f"Failed to get streaming data for {channel.name}: {e}"
-                        )
+                        logger.error(f"Failed to get streaming data for {channel.name}: {e}")
 
         logger.info(f"Streaming data population complete:")
         logger.info(f"  Successful: {len(successful_channels)}")
@@ -1187,13 +1103,9 @@ class Magenta2Provider(StreamingProvider):
                 content_id=channel.channel_id, content_type=channel.content_type
             )
 
-            playlist_data = self.get_channel_playlist(
-                channel.channel_id, entitlement_token
-            )
+            playlist_data = self.get_channel_playlist(channel.channel_id, entitlement_token)
 
-            manifest_url = playlist_data.get(
-                "manifestUrl", playlist_data.get("manifest")
-            )
+            manifest_url = playlist_data.get("manifestUrl", playlist_data.get("manifest"))
             if not manifest_url:
                 return None
 
@@ -1256,9 +1168,7 @@ class Magenta2Provider(StreamingProvider):
             )
 
             # First check for error cases
-            error_title_pattern = (
-                r'<ref[^>]*title="([^"]*)"[^>]*abstract="([^"]*)"[^>]*>'
-            )
+            error_title_pattern = r'<ref[^>]*title="([^"]*)"[^>]*abstract="([^"]*)"[^>]*>'
             error_match = re.search(error_title_pattern, smil_content)
 
             if error_match:
@@ -1270,14 +1180,10 @@ class Magenta2Provider(StreamingProvider):
 
                 # Check for specific error patterns
                 if "errorFiles/Unavailable.flv" in smil_content:
-                    logger.error(
-                        f"SMIL returned unavailable content for channel {channel_id}"
-                    )
+                    logger.error(f"SMIL returned unavailable content for channel {channel_id}")
                     return None
                 if "Invalid Token" in title or "InvalidAuthToken" in smil_content:
-                    logger.error(
-                        f"Invalid authentication token for channel {channel_id}"
-                    )
+                    logger.error(f"Invalid authentication token for channel {channel_id}")
                     return None
                 if "403" in smil_content:
                     logger.error(f"Access forbidden (403) for channel {channel_id}")
@@ -1325,9 +1231,7 @@ class Magenta2Provider(StreamingProvider):
                 return mpd_url
 
             # If we get here, no MPD URL was found
-            logger.warning(
-                f"No MPD URL found in SMIL response for channel {channel_id}"
-            )
+            logger.warning(f"No MPD URL found in SMIL response for channel {channel_id}")
 
             # Log the full SMIL content for debugging in case of unexpected format
             if len(smil_content) < 1000:  # Only log if it's reasonably short
@@ -1380,26 +1284,18 @@ class Magenta2Provider(StreamingProvider):
             start_iso = TimestampConverter.epoch_to_iso(
                 start_time, format_type="basic", as_utc=True
             )
-            end_iso = TimestampConverter.epoch_to_iso(
-                end_time, format_type="basic", as_utc=True
-            )
+            end_iso = TimestampConverter.epoch_to_iso(end_time, format_type="basic", as_utc=True)
 
             # Build the catchup manifest URL
             # Check if the manifest already has query parameters
             separator = "&" if "?" in base_manifest else "?"
-            catchup_manifest = (
-                f"{base_manifest}{separator}begin={start_iso}&end={end_iso}"
-            )
+            catchup_manifest = f"{base_manifest}{separator}begin={start_iso}&end={end_iso}"
 
-            logger.debug(
-                f"Catchup manifest for channel {channel_id}: {catchup_manifest}"
-            )
+            logger.debug(f"Catchup manifest for channel {channel_id}: {catchup_manifest}")
             return catchup_manifest
 
         except Exception as e:
-            logger.error(
-                f"Error building catchup manifest for channel {channel_id}: {e}"
-            )
+            logger.error(f"Error building catchup manifest for channel {channel_id}: {e}")
             # Fall back to live manifest if catchup formatting fails
             logger.warning(f"Falling back to live manifest for channel {channel_id}")
             return base_manifest
@@ -1449,9 +1345,7 @@ class Magenta2Provider(StreamingProvider):
                 self._smil_cache[channel_id] = (now, smil_data)
                 logger.debug(f"Cached SMIL data for {channel_id}")
             else:
-                logger.warning(
-                    f"No MPD URL or releasePid found for {channel_id}, not caching"
-                )
+                logger.warning(f"No MPD URL or releasePid found for {channel_id}, not caching")
 
             return smil_data
 
@@ -1466,9 +1360,7 @@ class Magenta2Provider(StreamingProvider):
         try:
             logger.debug("🔵 Step 1: Calling _ensure_authenticated()")
             persona_token = self._ensure_authenticated()
-            logger.debug(
-                f"🔵 _ensure_authenticated() SUCCESS, token length: {len(persona_token)}"
-            )
+            logger.debug(f"🔵 _ensure_authenticated() SUCCESS, token length: {len(persona_token)}")
 
             if not persona_token:
                 logger.error(f"No persona token!:")
@@ -1499,9 +1391,7 @@ class Magenta2Provider(StreamingProvider):
             for key, value in headers.items():
                 if key == "Authorization":
                     # Don't log full auth token for security, but show it exists
-                    logger.debug(
-                        f"  {key}: Basic [REDACTED] (length: {len(persona_token)})"
-                    )
+                    logger.debug(f"  {key}: Basic [REDACTED] (length: {len(persona_token)})")
                 else:
                     logger.debug(f"  {key}: {value}")
 
@@ -1534,16 +1424,12 @@ class Magenta2Provider(StreamingProvider):
                     smil_content,
                     self.http_manager,
                     client_id=client_id,  # Use the same client_id as SMIL request
-                    user_agent=self.platform_config[
-                        "user_agent"
-                    ],  # Platform user agent
+                    user_agent=self.platform_config["user_agent"],  # Platform user agent
                 )
 
                 return smil_content
             else:
-                logger.error(
-                    f"Failed to get SMIL content for DRM: {response.status_code}"
-                )
+                logger.error(f"Failed to get SMIL content for DRM: {response.status_code}")
                 return None
 
         except Exception as e:
@@ -1630,9 +1516,7 @@ class Magenta2Provider(StreamingProvider):
                 # Debug what we do have
                 logger.debug(f"SMIL data keys: {list(smil_data.keys())}")
                 if "content" in smil_data and smil_data["content"]:
-                    logger.debug(
-                        f"SMIL content preview: {smil_data['content'][:500]}..."
-                    )
+                    logger.debug(f"SMIL content preview: {smil_data['content'][:500]}...")
                 return []
 
             release_pid = smil_data["release_pid"]
@@ -1807,9 +1691,7 @@ class Magenta2Provider(StreamingProvider):
             if current_time >= (expires_at - 300):
                 # Token expired but might be refreshable
                 # Check if we have yo_digital token with refresh capability
-                yo_token = context.get_token(
-                    self.provider_name, "yo_digital", self.country
-                )
+                yo_token = context.get_token(self.provider_name, "yo_digital", self.country)
                 if yo_token and "refresh_token" in yo_token:
                     # Check if yo_digital refresh token is still valid
                     if (
@@ -1860,40 +1742,26 @@ class Magenta2Provider(StreamingProvider):
                     expires_at = token["expires_at"]
                     scope_info["expires_at"] = expires_at
                     scope_info["is_expired"] = current_time >= expires_at
-                    scope_info["time_remaining"] = int(
-                        max(0, expires_at - current_time)
-                    )
+                    scope_info["time_remaining"] = int(max(0, expires_at - current_time))
 
                 if "composed_at" in token:
                     scope_info["composed_at"] = token["composed_at"]
 
             # Handle yo_digital token
             elif scope == "yo_digital":
-                if (
-                    "access_token_expires_in" in token
-                    and "access_token_issued_at" in token
-                ):
+                if "access_token_expires_in" in token and "access_token_issued_at" in token:
                     current_time = time.time()
-                    expires_at = (
-                        token["access_token_issued_at"]
-                        + token["access_token_expires_in"]
-                    )
+                    expires_at = token["access_token_issued_at"] + token["access_token_expires_in"]
                     scope_info["access_token_expires_at"] = expires_at
                     scope_info["access_token_is_expired"] = current_time >= expires_at
 
-                if (
-                    "refresh_token_expires_in" in token
-                    and "refresh_token_issued_at" in token
-                ):
+                if "refresh_token_expires_in" in token and "refresh_token_issued_at" in token:
                     current_time = time.time()
                     refresh_expires_at = (
-                        token["refresh_token_issued_at"]
-                        + token["refresh_token_expires_in"]
+                        token["refresh_token_issued_at"] + token["refresh_token_expires_in"]
                     )
                     scope_info["refresh_token_expires_at"] = refresh_expires_at
-                    scope_info["refresh_token_is_expired"] = (
-                        current_time >= refresh_expires_at
-                    )
+                    scope_info["refresh_token_is_expired"] = current_time >= refresh_expires_at
                     scope_info["has_refresh_token"] = True
 
             # Standard token handling (tvhubs, taa)
@@ -1973,9 +1841,7 @@ class Magenta2Provider(StreamingProvider):
             result["endpoints"] = {
                 "has_taa_auth": self.endpoint_manager.has_endpoint("taa_auth"),
                 "has_entitlement": self.endpoint_manager.has_endpoint("entitlement"),
-                "has_widevine_license": self.endpoint_manager.has_endpoint(
-                    "widevine_license"
-                ),
+                "has_widevine_license": self.endpoint_manager.has_endpoint("widevine_license"),
                 "has_mpx_selector": self.endpoint_manager.has_endpoint("mpx_selector"),
                 "total_endpoints": len(self.endpoint_manager.get_all_endpoints()),
             }

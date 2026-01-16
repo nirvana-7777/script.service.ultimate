@@ -51,9 +51,7 @@ class RTLPlusProvider(StreamingProvider):
         )
 
         # ✅ Share HTTP manager with authenticator
-        self.http_manager = self._share_http_manager_with_authenticator(
-            self.authenticator
-        )
+        self.http_manager = self._share_http_manager_with_authenticator(self.authenticator)
 
         # Try authentication
         try:
@@ -259,9 +257,7 @@ class RTLPlusProvider(StreamingProvider):
             logger.debug(f"RTL+ Manifest Request: GET {manifest_url}")
 
             headers = self.rtl_config.get_base_headers()
-            response = self.http_manager.get(
-                manifest_url, operation="manifest", headers=headers
-            )
+            response = self.http_manager.get(manifest_url, operation="manifest", headers=headers)
 
             logger.debug(f"RTL+ Manifest Response: Status={response.status_code}")
             logger.debug(f"RTL+ Response Headers: {dict(response.headers)}")
@@ -269,9 +265,7 @@ class RTLPlusProvider(StreamingProvider):
             response.raise_for_status()
             manifest_data = response.json()
 
-            logger.debug(
-                f"RTL+ Manifest Data: {self._sanitize_manifest_log(manifest_data)}"
-            )
+            logger.debug(f"RTL+ Manifest Data: {self._sanitize_manifest_log(manifest_data)}")
 
             # Process manifest data
             quality_preference = ["dashhd", "dashsd"]
@@ -280,9 +274,7 @@ class RTLPlusProvider(StreamingProvider):
                 for stream in manifest_data:
                     if stream.get("name") == quality:
                         sources = stream.get("sources", [])
-                        non_yospace_sources = [
-                            s for s in sources if not s.get("isYospace", False)
-                        ]
+                        non_yospace_sources = [s for s in sources if not s.get("isYospace", False)]
 
                         if non_yospace_sources:
                             selected_url = non_yospace_sources[0].get("url")
@@ -361,9 +353,7 @@ class RTLPlusProvider(StreamingProvider):
                         if not license_url:
                             continue
 
-                        def create_drm_config(
-                            drm_system, priority, server_url, headers
-                        ):
+                        def create_drm_config(drm_system, priority, server_url, headers):
                             return DRMConfig(
                                 system=drm_system,
                                 priority=priority,
@@ -407,14 +397,10 @@ class RTLPlusProvider(StreamingProvider):
             return drm_configs
 
         except requests.RequestException as e:
-            logger.error(
-                f"Error fetching DRM configs for RTL+ channel {channel_id}: {e}"
-            )
+            logger.error(f"Error fetching DRM configs for RTL+ channel {channel_id}: {e}")
             return []
         except Exception as e:
-            logger.error(
-                f"Error parsing DRM configs for RTL+ channel {channel_id}: {e}"
-            )
+            logger.error(f"Error parsing DRM configs for RTL+ channel {channel_id}: {e}")
             return []
 
     @staticmethod

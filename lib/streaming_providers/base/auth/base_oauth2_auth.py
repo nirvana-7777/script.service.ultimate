@@ -17,9 +17,7 @@ from .base_auth import BaseAuthenticator, BaseAuthToken, TokenAuthLevel
 class OAuth2Error(Exception):
     """OAuth2-specific error with structured error information"""
 
-    def __init__(
-        self, error: str, error_description: str = None, error_uri: str = None
-    ):
+    def __init__(self, error: str, error_description: str = None, error_uri: str = None):
         self.error = error
         self.error_description = error_description
         self.error_uri = error_uri
@@ -117,9 +115,7 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
         if self._http_manager is not None:
             return self._http_manager
 
-        logger.warning(
-            f"No HTTP manager available for {self.provider_name}, creating one"
-        )
+        logger.warning(f"No HTTP manager available for {self.provider_name}, creating one")
 
         try:
             from ...base.network import HTTPManagerFactory
@@ -131,9 +127,7 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
                 timeout=getattr(self.config, "timeout", 30),
             )
         except Exception as e:
-            logger.warning(
-                f"Error creating HTTP manager via factory: {e}, using minimal fallback"
-            )
+            logger.warning(f"Error creating HTTP manager via factory: {e}, using minimal fallback")
             self._http_manager = self._create_minimal_http_manager()
 
         return self._http_manager
@@ -152,18 +146,14 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
             return self._config
 
         # Log who's calling this before config is set
-        logger.warning(
-            f"Config accessed before initialization for {self.provider_name}"
-        )
+        logger.warning(f"Config accessed before initialization for {self.provider_name}")
         logger.debug(f"Call stack:\n{''.join(traceback.format_stack()[-5:])}")
 
         # Only create minimal config if absolutely necessary
         class MinimalConfig:
             def __init__(self):
                 self.timeout = 30
-                self.user_agent = (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                )
+                self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
                 self.base_website = "https://example.com"
                 self.auth_endpoint = "https://auth.example.com"
 
@@ -215,9 +205,7 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
         if hasattr(self.config, "auth_endpoint"):
             return self.config.auth_endpoint
 
-        raise NotImplementedError(
-            "Subclass must implement auth_endpoint or set _auth_endpoint"
-        )
+        raise NotImplementedError("Subclass must implement auth_endpoint or set _auth_endpoint")
 
     @auth_endpoint.setter
     def auth_endpoint(self, value):
@@ -246,9 +234,7 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
         if hasattr(self, "auth_endpoint"):
             auth_endpoint = self.auth_endpoint
         else:
-            logger.warning(
-                f"auth_endpoint not defined for {self.provider_name}, using default"
-            )
+            logger.warning(f"auth_endpoint not defined for {self.provider_name}, using default")
             return "https://auth.example.com/oauth2/auth"
 
         if auth_endpoint.endswith("/token"):
@@ -320,9 +306,7 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
         Uses provider-specific headers and payload formatting
         """
         try:
-            logger.debug(
-                f"Starting OAuth2 client credentials flow for {self.provider_name}"
-            )
+            logger.debug(f"Starting OAuth2 client credentials flow for {self.provider_name}")
 
             headers = self._get_auth_headers()
             data = self._build_auth_payload()
@@ -335,23 +319,17 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
             response.raise_for_status()
 
             token_data = response.json()
-            logger.debug(
-                f"OAuth2 client credentials flow successful for {self.provider_name}"
-            )
+            logger.debug(f"OAuth2 client credentials flow successful for {self.provider_name}")
             return token_data
 
         except OAuth2Error:
             raise
         except Exception as e:
-            logger.error(
-                f"OAuth2 client credentials flow failed for {self.provider_name}: {e}"
-            )
+            logger.error(f"OAuth2 client credentials flow failed for {self.provider_name}: {e}")
             raise Exception(f"OAuth2 client credentials flow failed: {e}")
 
     # Authorization URL Building
-    def _build_authorization_url(
-        self, extra_params: Dict[str, Any] = None
-    ) -> tuple[str, str, str]:
+    def _build_authorization_url(self, extra_params: Dict[str, Any] = None) -> tuple[str, str, str]:
         """Build authorization URL with PKCE for authorization code flow"""
         code_verifier = self.generate_pkce_verifier()
         code_challenge = self.generate_pkce_challenge(code_verifier)
@@ -383,9 +361,7 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
         Enhanced to support provider-specific customizations
         """
         try:
-            logger.debug(
-                f"Exchanging authorization code for token for {self.provider_name}"
-            )
+            logger.debug(f"Exchanging authorization code for token for {self.provider_name}")
 
             # Allow subclasses to override the default payload
             data = self._build_token_exchange_payload(
@@ -419,17 +395,13 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
             response.raise_for_status()
 
             token_data = response.json()
-            logger.debug(
-                f"Authorization code exchange successful for {self.provider_name}"
-            )
+            logger.debug(f"Authorization code exchange successful for {self.provider_name}")
             return token_data
 
         except OAuth2Error:
             raise
         except Exception as e:
-            logger.error(
-                f"Authorization code exchange failed for {self.provider_name}: {e}"
-            )
+            logger.error(f"Authorization code exchange failed for {self.provider_name}: {e}")
             raise Exception(f"Authorization code exchange failed: {e}")
 
     # New flexible methods that subclasses can override
@@ -456,9 +428,7 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
         headers = self._get_auth_headers()
 
         # Ensure Content-Type is appropriate
-        if kwargs.get("use_json", False) or self._should_use_json_for_token_exchange(
-            **kwargs
-        ):
+        if kwargs.get("use_json", False) or self._should_use_json_for_token_exchange(**kwargs):
             headers["Content-Type"] = "application/json"
         else:
             headers["Content-Type"] = "application/x-www-form-urlencoded"
@@ -510,9 +480,7 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
             # Step 2: Extract login form action URL
             form_matches = re.findall(form_selector_pattern, auth_response.text)
             if not form_matches:
-                raise Exception(
-                    f"Could not find login form using pattern: {form_selector_pattern}"
-                )
+                raise Exception(f"Could not find login form using pattern: {form_selector_pattern}")
 
             login_url = html.unescape(form_matches[0])
 
@@ -538,19 +506,15 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
                 if not redirect_url:
                     raise Exception("No redirect URL found after login")
             else:
-                redirect_response = session.get(
-                    login_response.url, timeout=self.config.timeout
-                )
+                redirect_response = session.get(login_response.url, timeout=self.config.timeout)
                 redirect_url = redirect_response.url
 
             # Step 6: Validate and extract authorization code
-            is_valid, error_msg, authorization_code = (
-                self.validate_authentication_response(redirect_url, state)
+            is_valid, error_msg, authorization_code = self.validate_authentication_response(
+                redirect_url, state
             )
             if not is_valid:
-                raise Exception(
-                    f"Authentication response validation failed: {error_msg}"
-                )
+                raise Exception(f"Authentication response validation failed: {error_msg}")
 
             # Step 7: Exchange code for token
             token_data = self._exchange_authorization_code_for_token(
@@ -645,30 +609,22 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
         try:
             headers = self.config.get_base_headers()
 
-            response = self.http_manager.get(
-                main_page_url, operation="api", headers=headers
-            )
+            response = self.http_manager.get(main_page_url, operation="api", headers=headers)
             response.raise_for_status()
 
             js_matches = re.findall(js_file_pattern, response.text)
             if not js_matches:
-                logger.warning(
-                    f"Could not find JS file using pattern: {js_file_pattern}"
-                )
+                logger.warning(f"Could not find JS file using pattern: {js_file_pattern}")
                 return None
 
             js_url = main_page_url.rstrip("/") + "/" + js_matches[-1].lstrip("/")
 
-            js_response = self.http_manager.get(
-                js_url, operation="api", headers=headers
-            )
+            js_response = self.http_manager.get(js_url, operation="api", headers=headers)
             js_response.raise_for_status()
 
             client_id_match = re.search(client_id_pattern, js_response.text)
             if not client_id_match:
-                logger.warning(
-                    f"Could not find client ID using pattern: {client_id_pattern}"
-                )
+                logger.warning(f"Could not find client ID using pattern: {client_id_pattern}")
                 return None
 
             return client_id_match.group(1)
@@ -700,9 +656,7 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
         try:
             headers = self.config.get_base_headers()
 
-            response = self.http_manager.get(
-                main_page_url, operation="api", headers=headers
-            )
+            response = self.http_manager.get(main_page_url, operation="api", headers=headers)
             response.raise_for_status()
 
             js_matches = re.findall(js_file_pattern, response.text)
@@ -711,9 +665,7 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
 
             js_url = main_page_url.rstrip("/") + "/" + js_matches[-1].lstrip("/")
 
-            js_response = self.http_manager.get(
-                js_url, operation="api", headers=headers
-            )
+            js_response = self.http_manager.get(js_url, operation="api", headers=headers)
             js_response.raise_for_status()
 
             config_match = re.search(config_pattern, js_response.text)
@@ -746,9 +698,7 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
         from ...base.auth.credentials import UserPasswordCredentials
 
         # ALWAYS check stored credentials first for user credentials
-        stored_creds = self.settings_manager.get_provider_credentials(
-            self.provider_name
-        )
+        stored_creds = self.settings_manager.get_provider_credentials(self.provider_name)
         if stored_creds and isinstance(stored_creds, UserPasswordCredentials):
             if stored_creds.validate():
                 return stored_creds
@@ -762,9 +712,7 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
         self.credentials = fallback
         return fallback
 
-    def get_bearer_token(
-        self, force_refresh: bool = False, force_upgrade: bool = False
-    ) -> str:
+    def get_bearer_token(self, force_refresh: bool = False, force_upgrade: bool = False) -> str:
         """
         Get bearer token with automatic upgrade support
 
@@ -788,9 +736,7 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
             logger.debug(f"Token classified as: {current_token.auth_level.value}")
 
         # Check if upgrade is needed/requested
-        should_upgrade = force_upgrade or self._should_upgrade_to_user_token(
-            current_token
-        )
+        should_upgrade = force_upgrade or self._should_upgrade_to_user_token(current_token)
 
         if should_upgrade and not force_refresh:
             logger.info(
@@ -841,8 +787,7 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
     # Main Authentication Flow
     def _perform_authentication(self) -> BaseAuthToken:
         """Complete OAuth2 authentication based on credential type"""
-        from ...base.auth.credentials import (ClientCredentials,
-                                              UserPasswordCredentials)
+        from ...base.auth.credentials import ClientCredentials, UserPasswordCredentials
 
         logger.debug(
             f"Starting OAuth2 authentication for {self.provider_name} with credential type: {type(self.credentials)}"
@@ -852,9 +797,7 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
 
         try:
             if isinstance(self.credentials, UserPasswordCredentials):
-                logger.info(
-                    f"Attempting OAuth2 user authentication for {self.provider_name}"
-                )
+                logger.info(f"Attempting OAuth2 user authentication for {self.provider_name}")
                 token_data = self._perform_oauth_authorization_code_flow(
                     self.credentials.username, self.credentials.password
                 )
@@ -864,18 +807,14 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
                 )
                 token_data = self._perform_oauth_client_credentials_flow()
             else:
-                raise Exception(
-                    f"Unsupported credential type for OAuth2: {type(self.credentials)}"
-                )
+                raise Exception(f"Unsupported credential type for OAuth2: {type(self.credentials)}")
 
             token = self._create_token_from_response(token_data)
             logger.info(f"OAuth2 authentication successful for {self.provider_name}")
             return token
 
         except Exception as e:
-            logger.error(
-                f"Primary OAuth2 authentication failed for {self.provider_name}: {e}"
-            )
+            logger.error(f"Primary OAuth2 authentication failed for {self.provider_name}: {e}")
 
             if isinstance(original_credentials, UserPasswordCredentials):
                 logger.info(
@@ -900,9 +839,7 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
 
     # Token Management
     @abstractmethod
-    def _create_token_from_response(
-        self, response_data: Dict[str, Any]
-    ) -> BaseAuthToken:
+    def _create_token_from_response(self, response_data: Dict[str, Any]) -> BaseAuthToken:
         """Create provider-specific token from OAuth2 response"""
         pass
 
@@ -924,9 +861,7 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
             "pkce_support": True,
             "proxy_support": hasattr(self, "http_manager"),
             "credential_type": type(self.credentials).__name__,
-            "has_refresh_token": bool(
-                self._current_token and self._current_token.refresh_token
-            ),
+            "has_refresh_token": bool(self._current_token and self._current_token.refresh_token),
         }
 
         if self._current_token:

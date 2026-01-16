@@ -50,9 +50,7 @@ class EPGMapping:
         # Structure: {provider_name: {"mapping": {...}, "names": {...}}}
         self._cache: Dict[str, Dict[str, Any]] = {}
 
-        logger.info(
-            f"EPGMapping: Initialized with user path: {self.user_vfs.base_path}"
-        )
+        logger.info(f"EPGMapping: Initialized with user path: {self.user_vfs.base_path}")
 
         # Copy default mapping files from addon resources
         self._copy_default_mapping_files()
@@ -74,19 +72,13 @@ class EPGMapping:
                 addon_info = bridge.get_addon_info()
                 addon_path = addon_info.get("path")
                 if addon_path:
-                    default_dir = os.path.join(
-                        addon_path, "resources", "config", "epg_mappings"
-                    )
-                    logger.debug(
-                        f"EPGMapping: Default mapping dir (Kodi): {default_dir}"
-                    )
+                    default_dir = os.path.join(addon_path, "resources", "config", "epg_mappings")
+                    logger.debug(f"EPGMapping: Default mapping dir (Kodi): {default_dir}")
                     return default_dir
 
             # Fallback to standard filesystem
             addon_path = os.getcwd()
-            default_dir = os.path.join(
-                addon_path, "resources", "config", "epg_mappings"
-            )
+            default_dir = os.path.join(addon_path, "resources", "config", "epg_mappings")
             logger.debug(f"EPGMapping: Default mapping dir (standard): {default_dir}")
             return default_dir
 
@@ -94,9 +86,7 @@ class EPGMapping:
             logger.warning(f"EPGMapping: Could not determine default mapping dir: {e}")
             # Last resort fallback
             addon_path = os.getcwd()
-            default_dir = os.path.join(
-                addon_path, "resources", "config", "epg_mappings"
-            )
+            default_dir = os.path.join(addon_path, "resources", "config", "epg_mappings")
             return default_dir
 
     def _copy_default_mapping_files(self) -> bool:
@@ -114,9 +104,7 @@ class EPGMapping:
             # Check if any user mapping files already exist
             user_files = self.user_vfs.list_files(pattern=self.MAPPING_FILE_PATTERN)
             if user_files:
-                logger.info(
-                    f"EPGMapping: Found {len(user_files)} existing user mapping files"
-                )
+                logger.info(f"EPGMapping: Found {len(user_files)} existing user mapping files")
                 return True
             else:
                 logger.warning("EPGMapping: No default files and no user files found")
@@ -124,14 +112,10 @@ class EPGMapping:
 
         try:
             # Get list of default mapping files
-            default_files = glob.glob(
-                os.path.join(default_dir, self.MAPPING_FILE_PATTERN)
-            )
+            default_files = glob.glob(os.path.join(default_dir, self.MAPPING_FILE_PATTERN))
 
             if not default_files:
-                logger.warning(
-                    f"EPGMapping: No default mapping files found in {default_dir}"
-                )
+                logger.warning(f"EPGMapping: No default mapping files found in {default_dir}")
                 return False
 
             copied_count = 0
@@ -154,9 +138,7 @@ class EPGMapping:
                         logger.info(f"EPGMapping: Copied default mapping: {filename}")
                         copied_count += 1
                     else:
-                        logger.error(
-                            f"EPGMapping: Failed to write user mapping: {filename}"
-                        )
+                        logger.error(f"EPGMapping: Failed to write user mapping: {filename}")
 
                 except Exception as e:
                     logger.error(f"EPGMapping: Failed to read/copy {filename}: {e}")
@@ -215,18 +197,14 @@ class EPGMapping:
 
         # Check if file exists
         if not self.user_vfs.exists(filename):
-            logger.debug(
-                f"EPGMapping: No mapping file found for provider '{provider_name}'"
-            )
+            logger.debug(f"EPGMapping: No mapping file found for provider '{provider_name}'")
             return None
 
         try:
             # Load mapping from file
             raw_mapping = self.user_vfs.read_json(filename)
             if raw_mapping is None:
-                logger.warning(
-                    f"EPGMapping: Failed to parse mapping file for '{provider_name}'"
-                )
+                logger.warning(f"EPGMapping: Failed to parse mapping file for '{provider_name}'")
                 return None
 
             # Flatten the mapping
@@ -248,9 +226,7 @@ class EPGMapping:
                     epg_id = channel_data
                     name = channel_id
                 else:
-                    logger.warning(
-                        f"EPGMapping: Invalid format for {provider_name}/{channel_id}"
-                    )
+                    logger.warning(f"EPGMapping: Invalid format for {provider_name}/{channel_id}")
                     continue
 
                 if epg_id:
@@ -266,16 +242,13 @@ class EPGMapping:
             self._cache[provider_name] = cached_data
 
             logger.info(
-                f"EPGMapping: Loaded mapping for '{provider_name}' "
-                f"with {len(mapping)} channels"
+                f"EPGMapping: Loaded mapping for '{provider_name}' " f"with {len(mapping)} channels"
             )
 
             return cached_data
 
         except Exception as e:
-            logger.error(
-                f"EPGMapping: Failed to load mapping for '{provider_name}': {e}"
-            )
+            logger.error(f"EPGMapping: Failed to load mapping for '{provider_name}': {e}")
             return None
 
     def get_epg_channel_id(self, provider_name: str, channel_id: str) -> Optional[str]:
@@ -305,9 +278,7 @@ class EPGMapping:
         epg_id = provider_data["mapping"].get(channel_id)
 
         if epg_id:
-            logger.debug(
-                f"EPGMapping: Mapped '{provider_name}/{channel_id}' -> '{epg_id}'"
-            )
+            logger.debug(f"EPGMapping: Mapped '{provider_name}/{channel_id}' -> '{epg_id}'")
             return epg_id
         else:
             # Channel not in mapping - fall back to channel_id

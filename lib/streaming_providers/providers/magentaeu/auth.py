@@ -17,19 +17,37 @@ except ImportError:
     from Crypto.Cipher import PKCS1_OAEP
     from Crypto.PublicKey import RSA
 
-from ...base.auth.base_auth import (BaseAuthenticator, BaseAuthToken,
-                                    TokenAuthLevel)
+from ...base.auth.base_auth import BaseAuthenticator, BaseAuthToken, TokenAuthLevel
 from ...base.models.proxy_models import ProxyConfig
 from ...base.utils.logger import logger
-from .constants import (API_ENDPOINTS, APP_VERSION, AUTH_FLOWS, AUTH_STEPS,
-                        BROADCASTING_STREAM_LIMITATION_APPLIES, CALL_TYPES,
-                        CHANNEL_ID, COUNTRY_CONFIG, DEFAULT_COUNTRY,
-                        DEFAULT_REQUEST_TIMEOUT, DEVICE_CONCURRENCY_PARAM,
-                        DEVICE_MANUFACTURER, DEVICE_MODEL, DEVICE_NAME,
-                        DEVICE_OS, DEVICE_TYPE, LOGIN_CONTEXT, LOGIN_TYPE,
-                        MANAGE_DEVICE, SUPPORTED_COUNTRIES, USER_AGENT,
-                        X_USER_AGENT, get_base_headers, get_base_url,
-                        get_bifrost_url, get_language)
+from .constants import (
+    API_ENDPOINTS,
+    APP_VERSION,
+    AUTH_FLOWS,
+    AUTH_STEPS,
+    BROADCASTING_STREAM_LIMITATION_APPLIES,
+    CALL_TYPES,
+    CHANNEL_ID,
+    COUNTRY_CONFIG,
+    DEFAULT_COUNTRY,
+    DEFAULT_REQUEST_TIMEOUT,
+    DEVICE_CONCURRENCY_PARAM,
+    DEVICE_MANUFACTURER,
+    DEVICE_MODEL,
+    DEVICE_NAME,
+    DEVICE_OS,
+    DEVICE_TYPE,
+    LOGIN_CONTEXT,
+    LOGIN_TYPE,
+    MANAGE_DEVICE,
+    SUPPORTED_COUNTRIES,
+    USER_AGENT,
+    X_USER_AGENT,
+    get_base_headers,
+    get_base_url,
+    get_bifrost_url,
+    get_language,
+)
 
 
 class InvalidTokenError(Exception):
@@ -89,9 +107,7 @@ class MagentaAuthToken(BaseAuthToken):
             "expires_in": self.expires_in,
             "issued_at": self.issued_at,
             "auth_level": (
-                self.auth_level.value
-                if self.auth_level
-                else TokenAuthLevel.UNKNOWN.value
+                self.auth_level.value if self.auth_level else TokenAuthLevel.UNKNOWN.value
             ),
             "credential_type": self.credential_type or "",
         }
@@ -164,9 +180,7 @@ class MagentaAuthConfig:
         try:
             rsa_key = self.country_config["rsa_key"]
             if not rsa_key:
-                logger.error(
-                    f"No RSA public key configured for country: {self.country}"
-                )
+                logger.error(f"No RSA public key configured for country: {self.country}")
                 return password
 
             key = RSA.import_key(rsa_key)
@@ -265,9 +279,7 @@ class MagentaAuthenticator(BaseAuthenticator):
             logger.warning(f"CRITICAL: No session IDs available, using random fallback")
 
         # Ensure current token has the correct IDs
-        if not self._current_token or not isinstance(
-            self._current_token, MagentaAuthToken
-        ):
+        if not self._current_token or not isinstance(self._current_token, MagentaAuthToken):
             self._current_token = MagentaAuthToken(
                 access_token="",
                 refresh_token="",
@@ -370,9 +382,7 @@ class MagentaAuthenticator(BaseAuthenticator):
         """Build authentication payload - required by BaseAuthenticator"""
         from ...base.auth.credentials import UserPasswordCredentials
 
-        if not self.credentials or not isinstance(
-            self.credentials, UserPasswordCredentials
-        ):
+        if not self.credentials or not isinstance(self.credentials, UserPasswordCredentials):
             raise Exception("No valid credentials available")
 
         # Enhanced validation
@@ -416,9 +426,7 @@ class MagentaAuthenticator(BaseAuthenticator):
             },
         }
 
-    def _create_token_from_response(
-        self, response_data: Dict[str, Any]
-    ) -> BaseAuthToken:
+    def _create_token_from_response(self, response_data: Dict[str, Any]) -> BaseAuthToken:
         """Create token from API response - required by BaseAuthenticator"""
         # PRESERVE the existing session IDs (which follow the correct priority)
         device_id = ""
@@ -455,28 +463,20 @@ class MagentaAuthenticator(BaseAuthenticator):
 
         # DUAL KEY SUPPORT: Handle both camelCase (API responses) and snake_case (stored sessions)
         # Access token
-        access_token = response_data.get("accessToken") or response_data.get(
-            "access_token"
-        )
+        access_token = response_data.get("accessToken") or response_data.get("access_token")
         if not access_token:
             logger.error(f"CRITICAL: No access token found in response data")
             logger.error(f"Available keys: {list(response_data.keys())}")
             raise Exception("No access token found in response data")
 
         # Refresh token
-        refresh_token = response_data.get("refreshToken") or response_data.get(
-            "refresh_token", ""
-        )
+        refresh_token = response_data.get("refreshToken") or response_data.get("refresh_token", "")
 
         # Expires in
-        expires_in = response_data.get("expiresIn") or response_data.get(
-            "expires_in", 3600
-        )
+        expires_in = response_data.get("expiresIn") or response_data.get("expires_in", 3600)
 
         # Token type
-        token_type = response_data.get("tokenType") or response_data.get(
-            "token_type", "Bearer"
-        )
+        token_type = response_data.get("tokenType") or response_data.get("token_type", "Bearer")
 
         # For stored sessions, issued_at might be in the data, otherwise use current time
         issued_at = response_data.get("issued_at", time.time())
@@ -494,9 +494,7 @@ class MagentaAuthenticator(BaseAuthenticator):
 
         # Classify token
         token.auth_level = self._classify_token(token)
-        logger.debug(
-            f"Token created successfully from {len(response_data)} data fields"
-        )
+        logger.debug(f"Token created successfully from {len(response_data)} data fields")
 
         return token
 
@@ -531,9 +529,7 @@ class MagentaAuthenticator(BaseAuthenticator):
             headers = self._get_auth_headers()
             payload = self._build_auth_payload()
 
-            logger.debug(
-                f"Authentication payload prepared for user: {self.credentials.username}"
-            )
+            logger.debug(f"Authentication payload prepared for user: {self.credentials.username}")
 
             response = self._http_manager.post(
                 self.auth_endpoint,
@@ -554,9 +550,7 @@ class MagentaAuthenticator(BaseAuthenticator):
             return self._create_token_from_response(token_data)
 
         except Exception as e:
-            logger.error(
-                f"Authentication failed for user {self.credentials.username}: {e}"
-            )
+            logger.error(f"Authentication failed for user {self.credentials.username}: {e}")
             raise
 
     def _upgrade_token(self, refresh_token: str) -> Dict[str, Any]:
@@ -648,9 +642,7 @@ class MagentaAuthenticator(BaseAuthenticator):
             # Create new token with updated data but preserve session IDs
             new_token = MagentaAuthToken(
                 access_token=token_data["accessToken"],
-                refresh_token=token_data.get(
-                    "refreshToken", self._current_token.refresh_token
-                ),
+                refresh_token=token_data.get("refreshToken", self._current_token.refresh_token),
                 token_type="Bearer",
                 expires_in=token_data.get("expiresIn", 3600),
                 issued_at=time.time(),

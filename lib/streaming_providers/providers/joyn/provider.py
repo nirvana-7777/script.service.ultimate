@@ -15,20 +15,37 @@ from ...base.models.streaming_channel import StreamingChannel
 from ...base.provider import AuthType, StreamingProvider
 from ...base.utils.logger import logger
 from .auth import JoynAuthenticator
-from .constants import (CONTENT_TYPE_LIVE, CONTENT_TYPE_VOD,
-                        COUNTRY_TENANT_MAPPING, DEFAULT_EPG_WINDOW_HOURS,
-                        DEFAULT_LIVESTREAM_TYPES, DEFAULT_MAX_RETRIES,
-                        DEFAULT_PLATFORM, DEFAULT_REQUEST_TIMEOUT,
-                        DEFAULT_VIDEO_CONFIG, DRM_REQUEST_HEADERS,
-                        DRM_SYSTEM_WIDEVINE, ERROR_CODES,
-                        GRAPHQL_LIVE_CHANNELS_FILTER, GRAPHQL_MAX_RESULTS,
-                        GRAPHQL_OFFSET, GRAPHQL_PERSISTED_QUERY_VERSION,
-                        GRAPHQL_QUERY_HASHES, JOYN_API_BASE_HEADERS,
-                        JOYN_CLIENT_VERSION, JOYN_DOMAINS,
-                        JOYN_GRAPHQL_BASE_HEADERS, JOYN_GRAPHQL_ENDPOINTS,
-                        JOYN_LOGO, JOYN_STREAMING_ENDPOINTS, JOYN_USER_AGENT,
-                        MODE_LIVE, MODE_VOD, SIGNATURE_SECRET_KEY,
-                        SUPPORTED_COUNTRIES)
+from .constants import (
+    CONTENT_TYPE_LIVE,
+    CONTENT_TYPE_VOD,
+    COUNTRY_TENANT_MAPPING,
+    DEFAULT_EPG_WINDOW_HOURS,
+    DEFAULT_LIVESTREAM_TYPES,
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_PLATFORM,
+    DEFAULT_REQUEST_TIMEOUT,
+    DEFAULT_VIDEO_CONFIG,
+    DRM_REQUEST_HEADERS,
+    DRM_SYSTEM_WIDEVINE,
+    ERROR_CODES,
+    GRAPHQL_LIVE_CHANNELS_FILTER,
+    GRAPHQL_MAX_RESULTS,
+    GRAPHQL_OFFSET,
+    GRAPHQL_PERSISTED_QUERY_VERSION,
+    GRAPHQL_QUERY_HASHES,
+    JOYN_API_BASE_HEADERS,
+    JOYN_CLIENT_VERSION,
+    JOYN_DOMAINS,
+    JOYN_GRAPHQL_BASE_HEADERS,
+    JOYN_GRAPHQL_ENDPOINTS,
+    JOYN_LOGO,
+    JOYN_STREAMING_ENDPOINTS,
+    JOYN_USER_AGENT,
+    MODE_LIVE,
+    MODE_VOD,
+    SIGNATURE_SECRET_KEY,
+    SUPPORTED_COUNTRIES,
+)
 from .models import JoynChannel, PlaybackRestrictedException
 
 
@@ -91,9 +108,7 @@ class JoynProvider(StreamingProvider):
         """
         if not self.validate_country(country):
             supported = ", ".join(self.SUPPORTED_COUNTRIES)
-            raise ValueError(
-                f"Unsupported country: {country}. " f"Joyn supports: {supported}"
-            )
+            raise ValueError(f"Unsupported country: {country}. " f"Joyn supports: {supported}")
 
         super().__init__(country=country)
 
@@ -170,9 +185,7 @@ class JoynProvider(StreamingProvider):
         )
         return self.bearer_token
 
-    def get_dynamic_manifest_params(
-        self, channel: StreamingChannel, **kwargs
-    ) -> Optional[str]:
+    def get_dynamic_manifest_params(self, channel: StreamingChannel, **kwargs) -> Optional[str]:
         return None
 
     def _get_graphql_headers(self) -> Dict[str, str]:
@@ -251,9 +264,7 @@ class JoynProvider(StreamingProvider):
             if fetch_manifests and populate_streaming_data:
                 channels = self.populate_streaming_data(channels)
 
-            logger.info(
-                f"Successfully fetched {len(channels)} channels for country {self.country}"
-            )
+            logger.info(f"Successfully fetched {len(channels)} channels for country {self.country}")
             return channels
 
         except Exception as e:
@@ -278,9 +289,7 @@ class JoynProvider(StreamingProvider):
                 if "logo" in stream_data and "url" in stream_data["logo"]:
                     logo_url = stream_data["logo"]["url"]
 
-                content_type = (
-                    CONTENT_TYPE_LIVE if stream_type == "LINEAR" else CONTENT_TYPE_VOD
-                )
+                content_type = CONTENT_TYPE_LIVE if stream_type == "LINEAR" else CONTENT_TYPE_VOD
                 mode = MODE_LIVE if stream_type == "LINEAR" else MODE_VOD
 
                 joyn_channel = JoynChannel(
@@ -314,9 +323,7 @@ class JoynProvider(StreamingProvider):
 
         return channels
 
-    def get_entitlement_token(
-        self, content_id: str, content_type: str = CONTENT_TYPE_LIVE
-    ) -> str:
+    def get_entitlement_token(self, content_id: str, content_type: str = CONTENT_TYPE_LIVE) -> str:
         """
         Get entitlement token for content
 
@@ -364,9 +371,7 @@ class JoynProvider(StreamingProvider):
                                 f"Playback restricted for {content_id}: {msg}"
                             )
                         else:
-                            raise Exception(
-                                f"Entitlement error for {content_id} ({code}): {msg}"
-                            )
+                            raise Exception(f"Entitlement error for {content_id} ({code}): {msg}")
                 except (json.JSONDecodeError, KeyError, IndexError) as e:
                     raise Exception(
                         f"Bad response for {content_id} (400), failed to parse error: {e}"
@@ -489,20 +494,14 @@ class JoynProvider(StreamingProvider):
                 except Exception as e:
                     retries += 1
                     if retries < max_retries:
-                        logger.debug(
-                            f"Retry {retries}/{max_retries} for {channel.name}: {e}"
-                        )
+                        logger.debug(f"Retry {retries}/{max_retries} for {channel.name}: {e}")
                         time.sleep(1)
                     else:
-                        logger.error(
-                            f"Failed to get streaming data for {channel.name}: {e}"
-                        )
+                        logger.error(f"Failed to get streaming data for {channel.name}: {e}")
 
         logger.info(f"Streaming data population complete:")
         logger.info(f"  Successful: {len(successful_channels)}")
-        logger.info(
-            f"  Restricted: {len([c for c in channels if c not in successful_channels])}"
-        )
+        logger.info(f"  Restricted: {len([c for c in channels if c not in successful_channels])}")
         logger.info(f"  Total: {len(channels)}")
 
         return successful_channels
@@ -589,9 +588,7 @@ class JoynProvider(StreamingProvider):
                 content_id=channel_id, content_type=content_type
             )
 
-            playlist_data = self.get_channel_playlist(
-                channel_id, entitlement_token, video_config
-            )
+            playlist_data = self.get_channel_playlist(channel_id, entitlement_token, video_config)
 
             return playlist_data.get("manifestUrl")
 
@@ -623,9 +620,7 @@ class JoynProvider(StreamingProvider):
                 content_id=channel_id, content_type=content_type
             )
 
-            playlist_data = self.get_channel_playlist(
-                channel_id, entitlement_token, video_config
-            )
+            playlist_data = self.get_channel_playlist(channel_id, entitlement_token, video_config)
 
             license_url = playlist_data.get("licenseUrl")
             if not license_url:
@@ -683,9 +678,7 @@ class JoynProvider(StreamingProvider):
             headers = self._get_graphql_headers()
 
             # Joyn EPG would require additional GraphQL queries
-            logger.info(
-                f"EPG data requested for channel {channel_id} - not yet implemented"
-            )
+            logger.info(f"EPG data requested for channel {channel_id} - not yet implemented")
             return []
 
         except Exception as e:

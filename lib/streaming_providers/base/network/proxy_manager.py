@@ -62,9 +62,7 @@ class ProxyConfigManager:
             vfs_data = self.vfs.read_json(self.proxy_config_file)
 
             if vfs_data is None:
-                logger.debug(
-                    "No proxy configuration file found, starting with empty config"
-                )
+                logger.debug("No proxy configuration file found, starting with empty config")
                 return
 
             # Load global configuration
@@ -78,27 +76,18 @@ class ProxyConfigManager:
                 try:
                     # Check if this is a nested (country-aware) structure
                     if isinstance(provider_data, dict) and any(
-                        isinstance(v, dict) and len(k) <= 3
-                        for k, v in provider_data.items()
+                        isinstance(v, dict) and len(k) <= 3 for k, v in provider_data.items()
                     ):
                         # Country-aware structure
                         for country, config_data in provider_data.items():
                             if isinstance(config_data, dict) and len(country) <= 3:
                                 cache_key = f"{provider_name}_{country}"
-                                self._config_cache[cache_key] = ProxyConfig.from_dict(
-                                    config_data
-                                )
-                                logger.debug(
-                                    f"Loaded proxy config for {provider_name} ({country})"
-                                )
+                                self._config_cache[cache_key] = ProxyConfig.from_dict(config_data)
+                                logger.debug(f"Loaded proxy config for {provider_name} ({country})")
                     else:
                         # Flat structure (no country)
-                        self._config_cache[provider_name] = ProxyConfig.from_dict(
-                            provider_data
-                        )
-                        logger.debug(
-                            f"Loaded proxy configuration for provider: {provider_name}"
-                        )
+                        self._config_cache[provider_name] = ProxyConfig.from_dict(provider_data)
+                        logger.debug(f"Loaded proxy configuration for provider: {provider_name}")
                 except Exception as e:
                     logger.error(f"Error loading proxy config for {provider_name}: {e}")
 
@@ -230,22 +219,16 @@ class ProxyConfigManager:
                 cache_key, _ = self._get_proxy_path(provider_name, country)
                 self._config_cache[cache_key] = proxy_config
                 country_str = f" ({country})" if country else ""
-                logger.info(
-                    f"Set proxy configuration for provider: {provider_name}{country_str}"
-                )
+                logger.info(f"Set proxy configuration for provider: {provider_name}{country_str}")
 
             return self._save_configurations()
 
         except Exception as e:
             country_str = f" ({country})" if country else ""
-            logger.error(
-                f"Error setting proxy configuration for {provider_name}{country_str}: {e}"
-            )
+            logger.error(f"Error setting proxy configuration for {provider_name}{country_str}: {e}")
             return False
 
-    def remove_proxy_config(
-        self, provider_name: str, country: Optional[str] = None
-    ) -> bool:
+    def remove_proxy_config(self, provider_name: str, country: Optional[str] = None) -> bool:
         """
         Remove proxy configuration for a provider
 
@@ -266,9 +249,7 @@ class ProxyConfigManager:
                     cache_key, _ = self._get_proxy_path(provider_name, country)
                     if cache_key in self._config_cache:
                         del self._config_cache[cache_key]
-                        logger.info(
-                            f"Removed proxy configuration for {provider_name} ({country})"
-                        )
+                        logger.info(f"Removed proxy configuration for {provider_name} ({country})")
                     else:
                         logger.warning(
                             f"No proxy configuration found for {provider_name} ({country})"
@@ -285,13 +266,9 @@ class ProxyConfigManager:
                     if keys_to_remove:
                         for key in keys_to_remove:
                             del self._config_cache[key]
-                        logger.info(
-                            f"Removed all proxy configurations for {provider_name}"
-                        )
+                        logger.info(f"Removed all proxy configurations for {provider_name}")
                     else:
-                        logger.warning(
-                            f"No proxy configuration found for {provider_name}"
-                        )
+                        logger.warning(f"No proxy configuration found for {provider_name}")
                         return True
 
             return self._save_configurations()
@@ -372,9 +349,7 @@ class ProxyConfigManager:
         manager.close()
         return result
 
-    def get_proxy_info(
-        self, provider_name: str, country: Optional[str] = None
-    ) -> Dict[str, Any]:
+    def get_proxy_info(self, provider_name: str, country: Optional[str] = None) -> Dict[str, Any]:
         """
         Get detailed information about proxy configuration
 
@@ -431,9 +406,7 @@ class ProxyConfigManager:
             Path to exported file
         """
         if not export_path:
-            export_path = str(
-                self.config_dir / f"proxy_config_backup_{int(time.time())}.json"
-            )
+            export_path = str(self.config_dir / f"proxy_config_backup_{int(time.time())}.json")
 
         try:
             # Create export data with country-aware structure
@@ -459,9 +432,7 @@ class ProxyConfigManager:
                     "version": "1.1",
                     "source": "streaming_providers_proxy_manager",
                 },
-                "global": (
-                    self._global_config.to_dict() if self._global_config else None
-                ),
+                "global": (self._global_config.to_dict() if self._global_config else None),
                 "providers": providers_export,
             }
 
@@ -505,30 +476,23 @@ class ProxyConfigManager:
                 try:
                     # Check if nested (country-aware)
                     if isinstance(provider_data, dict) and any(
-                        isinstance(v, dict) and len(k) <= 3
-                        for k, v in provider_data.items()
+                        isinstance(v, dict) and len(k) <= 3 for k, v in provider_data.items()
                     ):
                         # Country-aware structure
                         for country, config_data in provider_data.items():
                             if isinstance(config_data, dict) and len(country) <= 3:
                                 cache_key = f"{provider_name}_{country}"
-                                self._config_cache[cache_key] = ProxyConfig.from_dict(
-                                    config_data
-                                )
+                                self._config_cache[cache_key] = ProxyConfig.from_dict(config_data)
                     else:
                         # Flat structure
-                        self._config_cache[provider_name] = ProxyConfig.from_dict(
-                            provider_data
-                        )
+                        self._config_cache[provider_name] = ProxyConfig.from_dict(provider_data)
                 except Exception as e:
                     logger.error(f"Error importing config for {provider_name}: {e}")
 
             # Save the imported configurations
             success = self._save_configurations()
             if success:
-                logger.info(
-                    f"Successfully imported proxy configurations from {import_path}"
-                )
+                logger.info(f"Successfully imported proxy configurations from {import_path}")
             return success
 
         except Exception as e:
@@ -583,9 +547,7 @@ class ProxyConfigManager:
         """
         results = {}
         for provider_name in provider_names:
-            results[provider_name] = self.set_proxy_config(
-                provider_name, proxy_config, country
-            )
+            results[provider_name] = self.set_proxy_config(provider_name, proxy_config, country)
         return results
 
     def get_all_proxy_info(self) -> Dict[str, Dict[str, Any]]:

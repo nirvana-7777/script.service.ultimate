@@ -99,9 +99,7 @@ class Sam3Client:
 
     def _get_token_endpoint(self) -> str:
         """Get the appropriate token endpoint with fallback logic"""
-        return (
-            self.oauth_token_endpoint or self.token_endpoint or self.line_auth_endpoint
-        )
+        return self.oauth_token_endpoint or self.token_endpoint or self.line_auth_endpoint
 
     def _get_line_auth_endpoint(self) -> str:
         """Get line auth endpoint with fallback"""
@@ -277,9 +275,7 @@ class Sam3Client:
             code, state = self._extract_code_and_state(redirect_url)
 
             if not code or not state:
-                raise Exception(
-                    "Could not extract authorization code and state from redirect"
-                )
+                raise Exception("Could not extract authorization code and state from redirect")
 
             logger.info("SAM3 login completed successfully")
             return {"code": code, "state": state, "redirect_url": redirect_url}
@@ -324,9 +320,7 @@ class Sam3Client:
                 logger.info("Line authentication successful, refresh token obtained")
                 return True
 
-            logger.warning(
-                "Line authentication succeeded but no refresh token received"
-            )
+            logger.warning("Line authentication succeeded but no refresh token received")
             return False
 
         except Exception as e:
@@ -403,9 +397,7 @@ class Sam3Client:
         """Check if remote login is available"""
         return self._get_remote_login_handler() is not None
 
-    def remote_login(
-        self, scope: str = "tvhubs offline_access"
-    ) -> Optional[Dict[str, Any]]:
+    def remote_login(self, scope: str = "tvhubs offline_access") -> Optional[Dict[str, Any]]:
         """
         Perform complete remote login (backchannel auth) flow
 
@@ -505,9 +497,7 @@ class Sam3Client:
                 logger.warning(f"Token refresh failed for scope {scope}: {e}")
 
         # If no refresh token available, we can't get an access token
-        logger.warning(
-            f"No access token available for scope {scope} - line auth may be needed"
-        )
+        logger.warning(f"No access token available for scope {scope} - line auth may be needed")
         return ""
 
     def get_token_endpoint(self) -> str:
@@ -575,9 +565,7 @@ class Sam3Client:
         form_html = html_content[form_start:form_end]
 
         # Find all hidden input fields
-        pattern = (
-            r'<input[^>]*type="hidden"[^>]*name="([^"]*)"[^>]*value="([^"]*)"[^>]*>'
-        )
+        pattern = r'<input[^>]*type="hidden"[^>]*name="([^"]*)"[^>]*value="([^"]*)"[^>]*>'
         matches = re.findall(pattern, form_html, re.IGNORECASE)
 
         for name, value in matches:
@@ -688,9 +676,7 @@ class Sam3Client:
         # Get backchannel auth start endpoint
         if "backchannel_auth_start" in openid_config:
             self.backchannel_start_url = openid_config["backchannel_auth_start"]
-            logger.debug(
-                f"Backchannel auth endpoint from OpenID: {self.backchannel_start_url}"
-            )
+            logger.debug(f"Backchannel auth endpoint from OpenID: {self.backchannel_start_url}")
 
         # OAuth token endpoint might be different from line auth endpoint
         if "token_endpoint" in openid_config:

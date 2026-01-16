@@ -17,9 +17,7 @@ class SubscriptionOperations:
         self.registry = registry
         logger.debug("SubscriptionOperations: Initialized")
 
-    def get_subscription_status(
-        self, provider_name: str, **kwargs
-    ) -> Optional[UserSubscription]:
+    def get_subscription_status(self, provider_name: str, **kwargs) -> Optional[UserSubscription]:
         """Get subscription status for a provider."""
         provider = self.registry.get_provider(provider_name)
         if not provider:
@@ -37,9 +35,7 @@ class SubscriptionOperations:
             logger.warning(f"Error getting subscription for '{provider_name}': {e}")
             return None
 
-    def get_subscribed_channels(
-        self, provider_name: str, **kwargs
-    ) -> List[StreamingChannel]:
+    def get_subscribed_channels(self, provider_name: str, **kwargs) -> List[StreamingChannel]:
         """Get subscribed channels."""
         provider = self.registry.get_provider(provider_name)
         if not provider:
@@ -47,17 +43,13 @@ class SubscriptionOperations:
 
         try:
             channels = provider.get_subscribed_channels(**kwargs)
-            logger.info(
-                f"Got {len(channels)} subscribed channels from '{provider_name}'"
-            )
+            logger.info(f"Got {len(channels)} subscribed channels from '{provider_name}'")
             return channels
         except Exception as e:
             logger.error(f"Error getting subscribed channels: {e}")
             return provider.get_channels(**kwargs)
 
-    def get_available_packages(
-        self, provider_name: str, **kwargs
-    ) -> List[SubscriptionPackage]:
+    def get_available_packages(self, provider_name: str, **kwargs) -> List[SubscriptionPackage]:
         """Get available subscription packages."""
         provider = self.registry.get_provider(provider_name)
         if not provider:
@@ -71,9 +63,7 @@ class SubscriptionOperations:
             logger.warning(f"Error getting packages for '{provider_name}': {e}")
             return []
 
-    def is_channel_accessible(
-        self, provider_name: str, channel_id: str, **kwargs
-    ) -> bool:
+    def is_channel_accessible(self, provider_name: str, channel_id: str, **kwargs) -> bool:
         """Check if channel is accessible with current subscription."""
         provider = self.registry.get_provider(provider_name)
         if not provider:

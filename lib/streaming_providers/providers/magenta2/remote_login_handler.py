@@ -12,11 +12,9 @@ from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, unquote, urlparse
 
 from ...base.network import HTTPManager
-from ...base.ui import (NotificationFactory, NotificationInterface,
-                        NotificationResult)
+from ...base.ui import NotificationFactory, NotificationInterface, NotificationResult
 from ...base.utils.logger import logger
-from .constants import (DEFAULT_PLATFORM, DEFAULT_REQUEST_TIMEOUT, GRANT_TYPES,
-                        MAGENTA2_PLATFORMS)
+from .constants import DEFAULT_PLATFORM, DEFAULT_REQUEST_TIMEOUT, GRANT_TYPES, MAGENTA2_PLATFORMS
 
 
 @dataclass
@@ -82,18 +80,14 @@ class RemoteLoginHandler:
 
         self._current_session: Optional[RemoteLoginSession] = None
 
-        logger.debug(
-            f"RemoteLoginHandler initialized with {self._notifier.__class__.__name__}"
-        )
+        logger.debug(f"RemoteLoginHandler initialized with {self._notifier.__class__.__name__}")
 
     def set_notifier(self, notifier: NotificationInterface) -> None:
         """Set custom notification interface"""
         self._notifier = notifier
         logger.debug(f"Notifier set to: {notifier.__class__.__name__}")
 
-    def start_remote_login(
-        self, scope: str = "tvhubs offline_access"
-    ) -> RemoteLoginSession:
+    def start_remote_login(self, scope: str = "tvhubs offline_access") -> RemoteLoginSession:
         """
         Start backchannel authentication flow
 
@@ -306,9 +300,7 @@ class RemoteLoginHandler:
 
                 # Perform poll
                 poll_count += 1
-                logger.debug(
-                    f"Poll {poll_count}/{max_polls} (remaining: {remaining:.0f}s)"
-                )
+                logger.debug(f"Poll {poll_count}/{max_polls} (remaining: {remaining:.0f}s)")
 
                 try:
                     response = self.http_manager.post(

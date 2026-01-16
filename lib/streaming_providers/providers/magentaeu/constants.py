@@ -91,7 +91,9 @@ DEVICE_CONCURRENCY_PARAM = "TVSOA-restriction-unmanagedDeviceStreamLimit"
 
 # User agent configuration
 USER_AGENT = f"Mozilla/5.0 (X11; {OS} x86_64) AppleWebKit/537.36 (KHTML, like Gecko) {BROWSER}/{BROWSER_VERSION}.0.0.0 Safari/537.36"
-X_USER_AGENT = f"{DEVICE_MODEL.lower()}|{DEVICE_TYPE.lower()}|{BROWSER}-{BROWSER_VERSION}|{APP_VERSION}|1"
+X_USER_AGENT = (
+    f"{DEVICE_MODEL.lower()}|{DEVICE_TYPE.lower()}|{BROWSER}-{BROWSER_VERSION}|{APP_VERSION}|1"
+)
 
 # ============================================================================
 # API Endpoints

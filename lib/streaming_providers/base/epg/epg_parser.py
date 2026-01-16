@@ -50,9 +50,7 @@ class EPGParser:
         provider_hash = int(provider_hash_obj.hexdigest()[:4], 16)
 
         self._provider_registry[provider_hash] = provider_name
-        logger.debug(
-            f"Registered provider '{provider_name}' with hash {provider_hash:04x}"
-        )
+        logger.debug(f"Registered provider '{provider_name}' with hash {provider_hash:04x}")
 
         return provider_hash
 
@@ -191,35 +189,23 @@ class EPGParser:
                 if len(parts) >= 2:
                     # Handle season number
                     season_str = parts[0].split("/")[0] if parts[0] else None
-                    series_num = (
-                        int(season_str) + 1
-                        if season_str and season_str.strip()
-                        else None
-                    )
+                    series_num = int(season_str) + 1 if season_str and season_str.strip() else None
 
                     # Handle episode number
-                    episode_str = (
-                        parts[1].split("/")[0] if len(parts) > 1 and parts[1] else None
-                    )
+                    episode_str = parts[1].split("/")[0] if len(parts) > 1 and parts[1] else None
                     episode_num = (
-                        int(episode_str) + 1
-                        if episode_str and episode_str.strip()
-                        else None
+                        int(episode_str) + 1 if episode_str and episode_str.strip() else None
                     )
 
                     # Handle part number (optional)
                     part_num = None
                     if len(parts) >= 3 and parts[2]:
                         part_str = parts[2].split("/")[0]
-                        part_num = (
-                            int(part_str) + 1 if part_str and part_str.strip() else None
-                        )
+                        part_num = int(part_str) + 1 if part_str and part_str.strip() else None
 
                     return series_num, episode_num, part_num
             except (ValueError, IndexError) as e:
-                logger.debug(
-                    f"Failed to parse xmltv_ns episode number '{episode_elem.text}': {e}"
-                )
+                logger.debug(f"Failed to parse xmltv_ns episode number '{episode_elem.text}': {e}")
 
         elif system == "onscreen":
             # Format: "S05E12" or "5x12"
@@ -304,11 +290,7 @@ class EPGParser:
             return EPGGenre.MUSICBALLETDANCE
         elif "arts" in genre_str or "culture" in genre_str or "art" in genre_str:
             return EPGGenre.ARTSCULTURE
-        elif (
-            "educational" in genre_str
-            or "education" in genre_str
-            or "science" in genre_str
-        ):
+        elif "educational" in genre_str or "education" in genre_str or "science" in genre_str:
             return EPGGenre.EDUCATIONALSCIENCE
         elif (
             "social" in genre_str
@@ -362,14 +344,10 @@ class EPGParser:
 
         # Get title
         title_elem = programme_elem.find("title")
-        title = (
-            title_elem.text if title_elem is not None and title_elem.text else "Unknown"
-        )
+        title = title_elem.text if title_elem is not None and title_elem.text else "Unknown"
 
         # Generate broadcast ID (with provider encoding if available)
-        broadcast_id = EPGParser.generate_broadcast_id(
-            epg_channel_id, start_time, provider_name
-        )
+        broadcast_id = EPGParser.generate_broadcast_id(epg_channel_id, start_time, provider_name)
 
         # Build EPGEntry with required fields
         entry_kwargs: Dict[str, Any] = {
@@ -452,9 +430,7 @@ class EPGParser:
         if series_num is None:
             for ep_elem in episode_nums:
                 if ep_elem.get("system") == "onscreen":
-                    series_num, episode_num, part_num = EPGParser.parse_episode_num(
-                        ep_elem
-                    )
+                    series_num, episode_num, part_num = EPGParser.parse_episode_num(ep_elem)
                     break
 
         if series_num is not None:
@@ -555,9 +531,7 @@ class EPGParser:
 
             if provider_hash not in self._provider_registry:
                 self._provider_registry[provider_hash] = provider_name
-                logger.debug(
-                    f"Registered provider '{provider_name}' with hash {provider_hash:04x}"
-                )
+                logger.debug(f"Registered provider '{provider_name}' with hash {provider_hash:04x}")
 
         programmes: List[EPGEntry] = []
 
@@ -571,16 +545,11 @@ class EPGParser:
                         # Check if this programme matches our channel
                         if elem.get("channel") == epg_channel_id:
                             # Parse the programme WITHOUT calling register_provider again
-                            epg_entry = self.parse_programme(
-                                elem, epg_channel_id, provider_name
-                            )
+                            epg_entry = self.parse_programme(elem, epg_channel_id, provider_name)
 
                             if epg_entry:
                                 # Filter by time range using EPGEntry methods
-                                if (
-                                    start_time is not None
-                                    and epg_entry.end < start_time
-                                ):
+                                if start_time is not None and epg_entry.end < start_time:
                                     # Programme ends before requested range
                                     elem.clear()
                                     continue
@@ -596,9 +565,7 @@ class EPGParser:
                         # Clear element to free memory
                         elem.clear()
 
-                logger.info(
-                    f"Parsed {len(programmes)} programmes for channel '{epg_channel_id}'"
-                )
+                logger.info(f"Parsed {len(programmes)} programmes for channel '{epg_channel_id}'")
                 return programmes
 
         except ET.ParseError as e:

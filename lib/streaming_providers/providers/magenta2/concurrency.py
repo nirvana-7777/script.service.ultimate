@@ -50,9 +50,7 @@ def extract_and_release_lock(
             return False
 
         # Build release URL with the same client_id formatted as player_{client_id}
-        base_url = (
-            lock_params["concurrencyServiceUrl"].rstrip("/") + "/web/Concurrency/unlock"
-        )
+        base_url = lock_params["concurrencyServiceUrl"].rstrip("/") + "/web/Concurrency/unlock"
         formatted_client_id = f"player_{client_id}"
 
         params = {
@@ -107,9 +105,7 @@ def extract_and_release_lock(
                 )
                 return False
         else:
-            logger.warning(
-                f"Concurrency lock release failed with status: {response.status_code}"
-            )
+            logger.warning(f"Concurrency lock release failed with status: {response.status_code}")
             return False
 
     except Exception as e:

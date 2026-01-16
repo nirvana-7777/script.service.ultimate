@@ -85,22 +85,16 @@ class SessionManager:
 
             for key in keys_path:
                 if not isinstance(session_data, dict) or key not in session_data:
-                    logger.info(
-                        f"No session data found at path: {' -> '.join(keys_path)}"
-                    )
+                    logger.info(f"No session data found at path: {' -> '.join(keys_path)}")
                     return None
                 session_data = session_data[key]
 
             if session_data:
                 # Log what we found (without sensitive data)
                 safe_data = self._get_safe_representation(session_data)
-                logger.info(
-                    f"Loaded session data for {provider}{country_str}: {safe_data}"
-                )
+                logger.info(f"Loaded session data for {provider}{country_str}: {safe_data}")
             else:
-                logger.info(
-                    f"No session data found for {provider}{country_str} in session file"
-                )
+                logger.info(f"No session data found for {provider}{country_str} in session file")
 
             return session_data
 
@@ -173,9 +167,7 @@ class SessionManager:
             success = self.vfs.write_json(self.session_file, data)
 
             if success:
-                logger.info(
-                    f"Successfully saved session data for {provider}{country_str}"
-                )
+                logger.info(f"Successfully saved session data for {provider}{country_str}")
 
                 # Verify by reading it back
                 verify_data = self.vfs.read_json(self.session_file)
@@ -183,10 +175,7 @@ class SessionManager:
                     verify_current = verify_data
                     found = True
                     for key in keys_path:
-                        if (
-                            not isinstance(verify_current, dict)
-                            or key not in verify_current
-                        ):
+                        if not isinstance(verify_current, dict) or key not in verify_current:
                             found = False
                             break
                         verify_current = verify_current[key]
@@ -201,9 +190,7 @@ class SessionManager:
                         )
                         return False
                 else:
-                    logger.error(
-                        f"Verification failed: Could not read back session file"
-                    )
+                    logger.error(f"Verification failed: Could not read back session file")
                     return False
             else:
                 logger.error(f"Failed to write session file")
@@ -240,9 +227,7 @@ class SessionManager:
         country_str = f" (country: {country})" if country else ""
 
         try:
-            logger.debug(
-                f"Saving scoped token for {provider}{country_str}, scope: {scope}"
-            )
+            logger.debug(f"Saving scoped token for {provider}{country_str}, scope: {scope}")
 
             # Load existing session data
             session_data = self.load_session(provider, country) or {}
@@ -252,25 +237,17 @@ class SessionManager:
 
             # Log what we're saving
             safe_token_data = self._get_safe_representation(token_data)
-            logger.info(
-                f"Scoped token data for {provider}{country_str}/{scope}: {safe_token_data}"
-            )
+            logger.info(f"Scoped token data for {provider}{country_str}/{scope}: {safe_token_data}")
 
             success = self.save_session(provider, session_data, country)
             if success:
-                logger.info(
-                    f"Successfully saved scoped token for {provider}{country_str}/{scope}"
-                )
+                logger.info(f"Successfully saved scoped token for {provider}{country_str}/{scope}")
             else:
-                logger.error(
-                    f"Failed to save scoped token for {provider}{country_str}/{scope}"
-                )
+                logger.error(f"Failed to save scoped token for {provider}{country_str}/{scope}")
             return success
 
         except Exception as e:
-            logger.error(
-                f"Error saving scoped token for {provider}{country_str}/{scope}: {e}"
-            )
+            logger.error(f"Error saving scoped token for {provider}{country_str}/{scope}: {e}")
             return False
 
     def load_scoped_token(
@@ -281,9 +258,7 @@ class SessionManager:
         """
         country_str = f" (country: {country})" if country else ""
 
-        logger.debug(
-            f"Loading scoped token for {provider}{country_str}, scope: {scope}"
-        )
+        logger.debug(f"Loading scoped token for {provider}{country_str}, scope: {scope}")
 
         session_data = self.load_session(provider, country)
         if not session_data:
@@ -292,9 +267,7 @@ class SessionManager:
 
         # Check if scope exists
         if scope not in session_data:
-            logger.info(
-                f"No token found for scope '{scope}' in {provider}{country_str}"
-            )
+            logger.info(f"No token found for scope '{scope}' in {provider}{country_str}")
             logger.debug(f"Available scopes: {list(session_data.keys())}")
             return None
 
@@ -303,9 +276,7 @@ class SessionManager:
         # 🚨 FIX: Special handling for persona scope
         if scope == "persona":
             if not isinstance(token_data, dict) or "persona_token" not in token_data:
-                logger.warning(
-                    f"Persona scope exists but doesn't contain valid persona token data"
-                )
+                logger.warning(f"Persona scope exists but doesn't contain valid persona token data")
                 return None
 
             # Persona tokens don't expire in the same way - they use expires_at field
@@ -314,9 +285,7 @@ class SessionManager:
 
         # Validate it's actually token data (for other scopes)
         if not isinstance(token_data, dict) or "access_token" not in token_data:
-            logger.warning(
-                f"Scope '{scope}' exists but doesn't contain valid token data"
-            )
+            logger.warning(f"Scope '{scope}' exists but doesn't contain valid token data")
             return None
 
         # Check access token expiration
@@ -332,9 +301,7 @@ class SessionManager:
                 )
                 return token_data  # Return so caller can attempt refresh
             elif access_token_expired and refresh_token_expired:
-                logger.warning(
-                    f"Both access and refresh tokens expired for scope '{scope}'"
-                )
+                logger.warning(f"Both access and refresh tokens expired for scope '{scope}'")
                 return None  # Both expired, no point returning
             else:
                 logger.info(f"Loaded valid token for {provider}{country_str}/{scope}")
@@ -350,9 +317,7 @@ class SessionManager:
         return token_data
 
     @staticmethod
-    def _is_token_expired(
-        token_data: Dict[str, Any], buffer_seconds: int = 300
-    ) -> bool:
+    def _is_token_expired(token_data: Dict[str, Any], buffer_seconds: int = 300) -> bool:
         """
         Check if token is expired with buffer
 
@@ -393,10 +358,7 @@ class SessionManager:
 
         # Format 2: yo_digital separate expiration for access_token
         # yo_digital tokens have separate expiry for access and refresh tokens
-        if (
-            "access_token_expires_in" in token_data
-            and "access_token_issued_at" in token_data
-        ):
+        if "access_token_expires_in" in token_data and "access_token_issued_at" in token_data:
             expires_in = token_data.get("access_token_expires_in", 0)
             issued_at = token_data.get("access_token_issued_at", 0)
             expires_at = issued_at + expires_in
@@ -430,9 +392,7 @@ class SessionManager:
         return False
 
     @staticmethod
-    def _is_refresh_token_expired(
-        token_data: Dict[str, Any], buffer_seconds: int = 300
-    ) -> bool:
+    def _is_refresh_token_expired(token_data: Dict[str, Any], buffer_seconds: int = 300) -> bool:
         """
         Check if refresh token is expired (for yo_digital tokens)
 
@@ -447,10 +407,7 @@ class SessionManager:
             True if refresh token expired, False otherwise or if no refresh token
         """
         # yo_digital format with separate refresh token expiry
-        if (
-            "refresh_token_expires_in" in token_data
-            and "refresh_token_issued_at" in token_data
-        ):
+        if "refresh_token_expires_in" in token_data and "refresh_token_issued_at" in token_data:
             current_time = time.time()
             expires_in = token_data.get("refresh_token_expires_in", 0)
             issued_at = token_data.get("refresh_token_issued_at", 0)
@@ -497,21 +454,15 @@ class SessionManager:
 
             # Log token info (without sensitive data)
             safe_token_data = self._get_safe_representation(token_data)
-            logger.info(
-                f"Token data to save for {provider}{country_str}: {safe_token_data}"
-            )
+            logger.info(f"Token data to save for {provider}{country_str}: {safe_token_data}")
 
             session_data.update(token_data)
 
             success = self.save_session(provider, session_data, country)
             if success:
-                logger.info(
-                    f"Successfully saved authentication token for {provider}{country_str}"
-                )
+                logger.info(f"Successfully saved authentication token for {provider}{country_str}")
             else:
-                logger.error(
-                    f"Failed to save authentication token for {provider}{country_str}"
-                )
+                logger.error(f"Failed to save authentication token for {provider}{country_str}")
             return success
 
         except Exception as e:
@@ -528,16 +479,12 @@ class SessionManager:
 
         session_data = self.load_session(provider, country)
         if not session_data:
-            logger.info(
-                f"No session data available for token loading for {provider}{country_str}"
-            )
+            logger.info(f"No session data available for token loading for {provider}{country_str}")
             return None
 
         # Check if we have token data
         if "access_token" not in session_data:
-            logger.info(
-                f"No access token found in session data for {provider}{country_str}"
-            )
+            logger.info(f"No access token found in session data for {provider}{country_str}")
             logger.debug(f"Available session keys: {list(session_data.keys())}")
             return None
 
@@ -569,13 +516,9 @@ class SessionManager:
             device_id = str(uuid.uuid4())
             session_data["device_id"] = device_id
             self.save_session(provider, session_data, country)
-            logger.info(
-                f"Generated new device ID for {provider}{country_str}: {device_id}"
-            )
+            logger.info(f"Generated new device ID for {provider}{country_str}: {device_id}")
         else:
-            logger.debug(
-                f"Using existing device ID for {provider}{country_str}: {device_id}"
-            )
+            logger.debug(f"Using existing device ID for {provider}{country_str}: {device_id}")
 
         return device_id
 
@@ -602,15 +545,11 @@ class SessionManager:
 
                     if not data[provider]:
                         del data[provider]
-                        logger.debug(
-                            f"Provider {provider} had no more countries, removed entirely"
-                        )
+                        logger.debug(f"Provider {provider} had no more countries, removed entirely")
 
                     return self.vfs.write_json(self.session_file, data)
                 else:
-                    logger.debug(
-                        f"No session data found to clear for {provider}{country_str}"
-                    )
+                    logger.debug(f"No session data found to clear for {provider}{country_str}")
             else:
                 if provider in data:
                     del data[provider]
@@ -625,9 +564,7 @@ class SessionManager:
             logger.error(f"Error clearing session for {provider}{country_str}: {e}")
             return False
 
-    def clear_scoped_token(
-        self, provider: str, scope: str, country: Optional[str] = None
-    ) -> bool:
+    def clear_scoped_token(self, provider: str, scope: str, country: Optional[str] = None) -> bool:
         """
         Clear token for a specific scope
 
@@ -652,15 +589,11 @@ class SessionManager:
                 logger.info(f"Cleared scoped token for {provider}{country_str}/{scope}")
                 return self.save_session(provider, session_data, country)
             else:
-                logger.debug(
-                    f"No token found for scope '{scope}' in {provider}{country_str}"
-                )
+                logger.debug(f"No token found for scope '{scope}' in {provider}{country_str}")
                 return True
 
         except Exception as e:
-            logger.error(
-                f"Error clearing scoped token for {provider}{country_str}/{scope}: {e}"
-            )
+            logger.error(f"Error clearing scoped token for {provider}{country_str}/{scope}: {e}")
             return False
 
     def clear_token(self, provider: str, country: Optional[str] = None) -> bool:
@@ -670,9 +603,7 @@ class SessionManager:
         try:
             session_data = self.load_session(provider, country)
             if not session_data:
-                logger.debug(
-                    f"No session data found, nothing to clear for {provider}{country_str}"
-                )
+                logger.debug(f"No session data found, nothing to clear for {provider}{country_str}")
                 return True
 
             # Remove token-related fields
@@ -691,9 +622,7 @@ class SessionManager:
                     fields_removed.append(field)
 
             if fields_removed:
-                logger.debug(
-                    f"Cleared token fields {fields_removed} for {provider}{country_str}"
-                )
+                logger.debug(f"Cleared token fields {fields_removed} for {provider}{country_str}")
 
             return self.save_session(provider, session_data, country)
 
@@ -783,17 +712,11 @@ class SessionManager:
                                     logger.info(f"  {provider} (country-aware):")
                                     for country, session_data in provider_data.items():
                                         if isinstance(session_data, dict):
-                                            safe_repr = self._get_safe_representation(
-                                                session_data
-                                            )
+                                            safe_repr = self._get_safe_representation(session_data)
                                             logger.info(f"    {country}: {safe_repr}")
                                 else:
-                                    safe_repr = self._get_safe_representation(
-                                        provider_data
-                                    )
-                                    logger.info(
-                                        f"  {provider} (no country): {safe_repr}"
-                                    )
+                                    safe_repr = self._get_safe_representation(provider_data)
+                                    logger.info(f"  {provider} (no country): {safe_repr}")
                     else:
                         logger.error("Session file contains invalid JSON or is empty")
                 else:

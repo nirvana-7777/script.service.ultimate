@@ -130,9 +130,7 @@ MAGENTA2_FALLBACK_ENDPOINTS = {
     "ENTITLEMENT": "https://entitlement.p7s1.io/api/user/entitlement-token",
 }
 
-MAGENTA2_FALLBACK_ACCOUNT_URI = (
-    "http://access.auth.theplatform.com/data/Account/2709353023"
-)
+MAGENTA2_FALLBACK_ACCOUNT_URI = "http://access.auth.theplatform.com/data/Account/2709353023"
 
 # ============================================================================
 # Application Configuration

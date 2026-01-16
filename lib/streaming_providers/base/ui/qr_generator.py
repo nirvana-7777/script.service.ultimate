@@ -41,9 +41,7 @@ def generate_qr_code_png(data: str, size: int = 512) -> Optional[bytes]:
         qr.make(fit=True)
 
         # Generate image using pure Python PNG backend
-        img = qr.make_image(
-            image_factory=PyPNGImage, fill_color="black", back_color="white"
-        )
+        img = qr.make_image(image_factory=PyPNGImage, fill_color="black", back_color="white")
 
         # Convert to PNG bytes
         buffer = io.BytesIO()

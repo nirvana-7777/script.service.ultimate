@@ -1,13 +1,22 @@
 # streaming_providers/providers/magenta2/__init__.py
 from .auth import Magenta2Authenticator, Magenta2AuthToken, Magenta2Credentials
-from .config_models import (BootstrapConfig, DrmConfig, ManifestConfig,
-                            MpxConfig, OpenIDConfig, ProviderConfig,
-                            TvHubConfig)
+from .config_models import (
+    BootstrapConfig,
+    DrmConfig,
+    ManifestConfig,
+    MpxConfig,
+    OpenIDConfig,
+    ProviderConfig,
+    TvHubConfig,
+)
 from .constants import SUPPORTED_COUNTRIES
 from .discovery import DiscoveryService
 from .endpoint_manager import EndpointCategory, EndpointManager
-from .models import (DeviceLimitExceededException, Magenta2Channel,
-                     Magenta2PlaybackRestrictedException)
+from .models import (
+    DeviceLimitExceededException,
+    Magenta2Channel,
+    Magenta2PlaybackRestrictedException,
+)
 from .provider import Magenta2Provider
 
 __all__ = [

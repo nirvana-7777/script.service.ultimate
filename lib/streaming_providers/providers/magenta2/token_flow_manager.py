@@ -110,9 +110,7 @@ class TokenFlowManager:
 
         if not token_result.success or not token_result.access_token:
             logger.debug("=== GET_PERSONA_TOKEN FAILED (token_result failed) ===")
-            return PersonaResult(
-                success=False, error=token_result.error or "No access token"
-            )
+            return PersonaResult(success=False, error=token_result.error or "No access token")
 
         # Compose persona token with expiry information using existing method
         from .token_utils import PersonaTokenComposer
@@ -161,9 +159,7 @@ class TokenFlowManager:
                 current_time = time.time()
                 expires_at = persona_data["expires_at"]
 
-                logger.debug(
-                    f"🟡 Current time: {current_time}, Expires at: {expires_at}"
-                )
+                logger.debug(f"🟡 Current time: {current_time}, Expires at: {expires_at}")
 
                 # Check if cached token is still valid using the actual persona JWT expiry
                 if current_time < (expires_at - 300):  # 5-minute buffer
@@ -176,9 +172,7 @@ class TokenFlowManager:
                         expires_at=expires_at,  # 🆕 Return expiry
                     )
                 else:
-                    logger.debug(
-                        f"🟡 Cached persona token expired at {time.ctime(expires_at)}"
-                    )
+                    logger.debug(f"🟡 Cached persona token expired at {time.ctime(expires_at)}")
 
             else:
                 logger.debug("🟡 No valid persona data in cache")
@@ -214,9 +208,7 @@ class TokenFlowManager:
         """Backward compatibility method - delegates to new composition"""
         from .token_utils import PersonaTokenComposer
 
-        result = PersonaTokenComposer.compose_from_jwt(
-            access_token, MAGENTA2_FALLBACK_ACCOUNT_URI
-        )
+        result = PersonaTokenComposer.compose_from_jwt(access_token, MAGENTA2_FALLBACK_ACCOUNT_URI)
         return result.persona_token if result else None
 
     def get_yo_digital_token(self, force_refresh: bool = False) -> TokenFlowResult:
@@ -312,9 +304,7 @@ class TokenFlowManager:
 
         except Exception as e:
             logger.debug(f"Error checking yo_digital access_token: {e}")
-            return TokenFlowResult(
-                success=False, error=str(e), flow_path="check_yo_digital_access"
-            )
+            return TokenFlowResult(success=False, error=str(e), flow_path="check_yo_digital_access")
 
     # ========================================================================
     # Step 2: Refresh yo_digital tokens
@@ -344,9 +334,7 @@ class TokenFlowManager:
 
             # Refresh via TaaClient (stub for now)
             logger.debug("Attempting to refresh yo_digital tokens")
-            new_tokens_dict = self.taa_client.refresh_yo_digital_tokens(
-                token_data["refresh_token"]
-            )
+            new_tokens_dict = self.taa_client.refresh_yo_digital_tokens(token_data["refresh_token"])
 
             if not new_tokens_dict:
                 return TokenFlowResult(
@@ -369,9 +357,7 @@ class TokenFlowManager:
 
         except Exception as e:
             logger.debug(f"Error refreshing yo_digital tokens: {e}")
-            return TokenFlowResult(
-                success=False, error=str(e), flow_path="refresh_yo_digital"
-            )
+            return TokenFlowResult(success=False, error=str(e), flow_path="refresh_yo_digital")
 
     # ========================================================================
     # Step 3: Get yo_digital from taa access_token
@@ -404,9 +390,7 @@ class TokenFlowManager:
             logger.debug("Getting yo_digital tokens from taa access_token")
             yo_digital_result = self.taa_client.get_yo_digital_tokens(
                 taa_access_token=taa_token_data["access_token"],
-                device_id=self.session_manager.get_device_id(
-                    self.provider_name, self.country
-                ),
+                device_id=self.session_manager.get_device_id(self.provider_name, self.country),
             )
 
             if not yo_digital_result:
@@ -419,12 +403,8 @@ class TokenFlowManager:
                 logger.info("Clearing cached tokens and falling back to remote_login")
 
                 # Clear the invalid cached tokens to prevent repeated failures
-                self.session_manager.clear_scoped_token(
-                    self.provider_name, "taa", self.country
-                )
-                self.session_manager.clear_scoped_token(
-                    self.provider_name, "tvhubs", self.country
-                )
+                self.session_manager.clear_scoped_token(self.provider_name, "taa", self.country)
+                self.session_manager.clear_scoped_token(self.provider_name, "tvhubs", self.country)
 
                 # Fallback to remote_login
                 return self._get_yo_digital_via_remote_login()
@@ -449,9 +429,7 @@ class TokenFlowManager:
 
         except Exception as e:
             logger.debug(f"Error getting yo_digital from taa: {e}")
-            return TokenFlowResult(
-                success=False, error=str(e), flow_path="yo_digital_from_taa"
-            )
+            return TokenFlowResult(success=False, error=str(e), flow_path="yo_digital_from_taa")
 
     # ========================================================================
     # Step 4: Exchange shared refresh_token for taa, then yo_digital
@@ -461,9 +439,7 @@ class TokenFlowManager:
         """Exchange shared refresh_token for taa, then get yo_digital"""
         try:
             # Check if we have shared refresh_token at provider level
-            session_data = self.session_manager.load_session(
-                self.provider_name, self.country
-            )
+            session_data = self.session_manager.load_session(self.provider_name, self.country)
 
             if not session_data or "refresh_token" not in session_data:
                 return TokenFlowResult(
@@ -494,9 +470,7 @@ class TokenFlowManager:
             logger.debug("Getting yo_digital tokens from exchanged taa token")
             yo_digital_result = self.taa_client.get_yo_digital_tokens(
                 taa_access_token=taa_token,
-                device_id=self.session_manager.get_device_id(
-                    self.provider_name, self.country
-                ),
+                device_id=self.session_manager.get_device_id(self.provider_name, self.country),
             )
 
             if not yo_digital_result:
@@ -509,17 +483,11 @@ class TokenFlowManager:
                 logger.info("Clearing cached tokens and falling back to remote_login")
 
                 # Clear the invalid cached tokens and refresh_token
-                self.session_manager.clear_scoped_token(
-                    self.provider_name, "taa", self.country
-                )
-                self.session_manager.clear_scoped_token(
-                    self.provider_name, "tvhubs", self.country
-                )
+                self.session_manager.clear_scoped_token(self.provider_name, "taa", self.country)
+                self.session_manager.clear_scoped_token(self.provider_name, "tvhubs", self.country)
 
                 # Clear the shared refresh_token from session data
-                session_data = self.session_manager.load_session(
-                    self.provider_name, self.country
-                )
+                session_data = self.session_manager.load_session(self.provider_name, self.country)
                 if session_data and "refresh_token" in session_data:
                     del session_data["refresh_token"]
                     self.session_manager.save_session(
@@ -609,9 +577,7 @@ class TokenFlowManager:
             logger.debug("Getting yo_digital tokens from line_auth taa token")
             yo_digital_result = self.taa_client.get_yo_digital_tokens(
                 taa_access_token=taa_token,
-                device_id=self.session_manager.get_device_id(
-                    self.provider_name, self.country
-                ),
+                device_id=self.session_manager.get_device_id(self.provider_name, self.country),
             )
 
             if not yo_digital_result:
@@ -621,9 +587,7 @@ class TokenFlowManager:
                     "yo_digital acquisition failed after successful line_auth - "
                     "likely ISP account differs from TV subscription account"
                 )
-                logger.info(
-                    "Falling back to remote_login for TV account authentication"
-                )
+                logger.info("Falling back to remote_login for TV account authentication")
 
                 # Fallback to remote_login (tokens will be overwritten)
                 return self._get_yo_digital_via_remote_login()
@@ -677,9 +641,7 @@ class TokenFlowManager:
             logger.info("Attempting remote_login flow")
 
             # Perform remote login
-            remote_token_data = self.sam3_client.remote_login(
-                scope="tvhubs offline_access"
-            )
+            remote_token_data = self.sam3_client.remote_login(scope="tvhubs offline_access")
 
             if not remote_token_data:
                 return TokenFlowResult(
@@ -717,9 +679,7 @@ class TokenFlowManager:
             logger.debug("Getting yo_digital tokens from remote_login taa token")
             yo_digital_result = self.taa_client.get_yo_digital_tokens(
                 taa_access_token=taa_token,
-                device_id=self.session_manager.get_device_id(
-                    self.provider_name, self.country
-                ),
+                device_id=self.session_manager.get_device_id(self.provider_name, self.country),
             )
 
             if not yo_digital_result:
@@ -766,9 +726,7 @@ class TokenFlowManager:
         ):
             return False
 
-        expires_at = (
-            token_data["access_token_issued_at"] + token_data["access_token_expires_in"]
-        )
+        expires_at = token_data["access_token_issued_at"] + token_data["access_token_expires_in"]
         # Use 5 minute buffer
         return time.time() < (expires_at - 300)
 
@@ -781,10 +739,7 @@ class TokenFlowManager:
         ):
             return False
 
-        expires_at = (
-            token_data["refresh_token_issued_at"]
-            + token_data["refresh_token_expires_in"]
-        )
+        expires_at = token_data["refresh_token_issued_at"] + token_data["refresh_token_expires_in"]
         # Use 5 minute buffer
         return time.time() < (expires_at - 300)
 
@@ -836,9 +791,7 @@ class TokenFlowManager:
             "issued_at": time.time(),
         }
 
-        self.session_manager.save_scoped_token(
-            self.provider_name, "taa", token_data, self.country
-        )
+        self.session_manager.save_scoped_token(self.provider_name, "taa", token_data, self.country)
         logger.debug("taa token saved")
 
     def _save_tvhubs_token(self, token_data: Dict[str, Any]) -> None:
@@ -857,18 +810,14 @@ class TokenFlowManager:
 
     def _save_refresh_token(self, refresh_token: str) -> None:
         """Save shared refresh_token at provider level"""
-        session_data = (
-            self.session_manager.load_session(self.provider_name, self.country) or {}
-        )
+        session_data = self.session_manager.load_session(self.provider_name, self.country) or {}
 
         session_data["refresh_token"] = refresh_token
         session_data["device_id"] = self.session_manager.get_device_id(
             self.provider_name, self.country
         )
 
-        self.session_manager.save_session(
-            self.provider_name, session_data, self.country
-        )
+        self.session_manager.save_session(self.provider_name, session_data, self.country)
         logger.debug("Shared refresh_token saved")
 
     # ========================================================================
@@ -905,9 +854,7 @@ class TokenFlowManager:
 
     def _get_taa_status(self) -> Dict[str, Any]:
         """Get taa token status"""
-        token_data = self.session_manager.load_scoped_token(
-            self.provider_name, "taa", self.country
-        )
+        token_data = self.session_manager.load_scoped_token(self.provider_name, "taa", self.country)
 
         if not token_data:
             return {"exists": False}
@@ -935,9 +882,7 @@ class TokenFlowManager:
 
     def _get_refresh_token_status(self) -> Dict[str, Any]:
         """Get shared refresh_token status"""
-        session_data = self.session_manager.load_session(
-            self.provider_name, self.country
-        )
+        session_data = self.session_manager.load_session(self.provider_name, self.country)
 
         if not session_data or "refresh_token" not in session_data:
             return {"exists": False}

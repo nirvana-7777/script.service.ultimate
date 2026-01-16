@@ -20,14 +20,10 @@ class AuthStatusBuilder:
         current_auth_type = provider.get_current_auth_type(context)
 
         # Calculate auth state (with provider override support)
-        auth_state = AuthStatusBuilder._calculate_auth_state_with_override(
-            provider, context
-        )
+        auth_state = AuthStatusBuilder._calculate_auth_state_with_override(provider, context)
 
         # Calculate readiness (with provider override support)
-        is_ready, reason = AuthStatusBuilder._calculate_readiness_with_override(
-            provider, context
-        )
+        is_ready, reason = AuthStatusBuilder._calculate_readiness_with_override(provider, context)
 
         # Build token info
         token_scopes = AuthStatusBuilder._build_token_scopes(provider, context)
@@ -65,9 +61,7 @@ class AuthStatusBuilder:
             has_valid_token=AuthStatusBuilder._has_valid_token(provider, context),
             primary_token_scope=provider.primary_token_scope,
             token_scopes=token_scopes,
-            last_authentication=AuthStatusBuilder._get_last_auth_time(
-                provider, context
-            ),
+            last_authentication=AuthStatusBuilder._get_last_auth_time(provider, context),
             provider_specific=provider_specific,
             token_expires_at=token_expires_at,
             token_expires_in_seconds=token_expires_in_seconds,
@@ -78,9 +72,7 @@ class AuthStatusBuilder:
     # ===== Calculation Methods (with provider override support) =====
 
     @staticmethod
-    def _calculate_auth_state_with_override(
-        provider, context: AuthContext
-    ) -> AuthState:
+    def _calculate_auth_state_with_override(provider, context: AuthContext) -> AuthState:
         """Calculate auth state, allowing provider override"""
         # Check if provider has custom logic
         if hasattr(provider, "_calculate_auth_state"):
@@ -92,9 +84,7 @@ class AuthStatusBuilder:
         return AuthStatusBuilder._calculate_auth_state(provider, context)
 
     @staticmethod
-    def _calculate_readiness_with_override(
-        provider, context: AuthContext
-    ) -> Tuple[bool, str]:
+    def _calculate_readiness_with_override(provider, context: AuthContext) -> Tuple[bool, str]:
         """Calculate readiness, allowing provider override"""
         # Check if provider has custom logic
         if hasattr(provider, "_calculate_readiness"):
@@ -120,9 +110,7 @@ class AuthStatusBuilder:
             return AuthState.AUTHENTICATED
 
         # Check if we have an expired token that can be refreshed
-        expired_token = AuthStatusBuilder._get_expired_token_with_refresh(
-            provider, context
-        )
+        expired_token = AuthStatusBuilder._get_expired_token_with_refresh(provider, context)
         if expired_token:
             return AuthState.EXPIRED
 
@@ -151,17 +139,13 @@ class AuthStatusBuilder:
             return True, "Has valid authentication token"
 
         # 3. Check if we have an expired token that can be refreshed
-        expired_token = AuthStatusBuilder._get_expired_token_with_refresh(
-            provider, context
-        )
+        expired_token = AuthStatusBuilder._get_expired_token_with_refresh(provider, context)
         if expired_token:
             return True, "Has expired token with refresh capability"
 
         # 4. Check credentials if required (only matters if no valid token)
         if provider.requires_stored_credentials:
-            credentials = context.get_credentials(
-                provider.provider_name, provider.country
-            )
+            credentials = context.get_credentials(provider.provider_name, provider.country)
             if not credentials:
                 return False, "Missing required credentials"
 
@@ -202,9 +186,7 @@ class AuthStatusBuilder:
         return False
 
     @staticmethod
-    def _get_expired_token_with_refresh(
-        provider, context: AuthContext
-    ) -> Optional[Dict[str, Any]]:
+    def _get_expired_token_with_refresh(provider, context: AuthContext) -> Optional[Dict[str, Any]]:
         """Get an expired token that has refresh capability"""
         # Check primary scope
         if provider.primary_token_scope:
@@ -233,9 +215,7 @@ class AuthStatusBuilder:
         token_scopes = {}
 
         for scope in provider.token_scopes:
-            token_data = context.get_token(
-                provider.provider_name, scope, provider.country
-            )
+            token_data = context.get_token(provider.provider_name, scope, provider.country)
             if token_data:
                 expires_at = None
                 if "issued_at" in token_data and "expires_in" in token_data:
@@ -256,9 +236,7 @@ class AuthStatusBuilder:
         return token_scopes
 
     @staticmethod
-    def _get_credentials_info(
-        provider, context: AuthContext
-    ) -> Tuple[bool, Optional[str]]:
+    def _get_credentials_info(provider, context: AuthContext) -> Tuple[bool, Optional[str]]:
         """Get credentials information"""
         if not provider.requires_stored_credentials:
             return False, None
@@ -335,16 +313,12 @@ class AuthStatusBuilder:
 
         # If no primary scope or no token, check root-level token
         if not token_data:
-            token_data = context.get_token(
-                provider.provider_name, None, provider.country
-            )
+            token_data = context.get_token(provider.provider_name, None, provider.country)
 
         # If still no token, try first available scope
         if not token_data and provider.token_scopes:
             for scope in provider.token_scopes:
-                token_data = context.get_token(
-                    provider.provider_name, scope, provider.country
-                )
+                token_data = context.get_token(provider.provider_name, scope, provider.country)
                 if token_data:
                     break
 
@@ -356,22 +330,15 @@ class AuthStatusBuilder:
         if "expires_in" in token_data and "issued_at" in token_data:
             expires_in = token_data["expires_in"]
             issued_at = token_data["issued_at"]
-            if isinstance(expires_in, (int, float)) and isinstance(
-                issued_at, (int, float)
-            ):
+            if isinstance(expires_in, (int, float)) and isinstance(issued_at, (int, float)):
                 token_expires_at = float(issued_at) + float(expires_in)
                 token_expires_in_seconds = int(token_expires_at - current_time)
 
         # yo_digital format: separate access token expiration
-        elif (
-            "access_token_expires_in" in token_data
-            and "access_token_issued_at" in token_data
-        ):
+        elif "access_token_expires_in" in token_data and "access_token_issued_at" in token_data:
             expires_in = token_data["access_token_expires_in"]
             issued_at = token_data["access_token_issued_at"]
-            if isinstance(expires_in, (int, float)) and isinstance(
-                issued_at, (int, float)
-            ):
+            if isinstance(expires_in, (int, float)) and isinstance(issued_at, (int, float)):
                 token_expires_at = float(issued_at) + float(expires_in)
                 token_expires_in_seconds = int(token_expires_at - current_time)
 
@@ -383,21 +350,14 @@ class AuthStatusBuilder:
                 token_expires_in_seconds = int(token_expires_at - current_time)
 
         # Calculate refresh token expiration (yo_digital format)
-        if (
-            "refresh_token_expires_in" in token_data
-            and "refresh_token_issued_at" in token_data
-        ):
+        if "refresh_token_expires_in" in token_data and "refresh_token_issued_at" in token_data:
             refresh_expires_in = token_data["refresh_token_expires_in"]
             refresh_issued_at = token_data["refresh_token_issued_at"]
             if isinstance(refresh_expires_in, (int, float)) and isinstance(
                 refresh_issued_at, (int, float)
             ):
-                refresh_token_expires_at = float(refresh_issued_at) + float(
-                    refresh_expires_in
-                )
-                refresh_token_expires_in_seconds = int(
-                    refresh_token_expires_at - current_time
-                )
+                refresh_token_expires_at = float(refresh_issued_at) + float(refresh_expires_in)
+                refresh_token_expires_in_seconds = int(refresh_token_expires_at - current_time)
 
         return (
             token_expires_at,

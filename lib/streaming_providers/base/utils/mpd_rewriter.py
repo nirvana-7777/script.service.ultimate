@@ -42,9 +42,7 @@ class MPDRewriter:
         """Decode base64 URL from proxy endpoint"""
         return base64.urlsafe_b64decode(encoded.encode("utf-8")).decode("utf-8")
 
-    def build_proxy_url(
-        self, original_url: str, template_pattern: Optional[str] = None
-    ) -> str:
+    def build_proxy_url(self, original_url: str, template_pattern: Optional[str] = None) -> str:
         """
         Build proxy URL for an original media URL
 
@@ -139,9 +137,7 @@ class MPDRewriter:
             if not rewritten.startswith("<?xml"):
                 rewritten = '<?xml version="1.0" encoding="UTF-8"?>\n' + rewritten
 
-            logger.debug(
-                f"Successfully rewrote MPD for provider '{self.provider_name}'"
-            )
+            logger.debug(f"Successfully rewrote MPD for provider '{self.provider_name}'")
             return rewritten
 
         except ET.ParseError as e:
@@ -177,9 +173,7 @@ class MPDRewriter:
                 parsed_manifest = urlparse(manifest_url)
                 manifest_dir = f"{parsed_manifest.scheme}://{parsed_manifest.netloc}{parsed_manifest.path.rsplit('/', 1)[0]}/"
                 resolved_base = urljoin(manifest_dir, base_url_text)
-                logger.debug(
-                    f"Resolved relative BaseURL '{base_url_text}' to: {resolved_base}"
-                )
+                logger.debug(f"Resolved relative BaseURL '{base_url_text}' to: {resolved_base}")
                 return resolved_base
             else:
                 # It's already an absolute URL
@@ -201,9 +195,7 @@ class MPDRewriter:
         """
         # Find all BaseURL elements at any level
         for parent in root.findall(".//*"):
-            for base_url_elem in list(
-                parent.findall("mpd:BaseURL", self.MPD_NAMESPACE)
-            ):
+            for base_url_elem in list(parent.findall("mpd:BaseURL", self.MPD_NAMESPACE)):
                 parent.remove(base_url_elem)
                 logger.debug("Removed BaseURL element")
 
@@ -238,9 +230,7 @@ class MPDRewriter:
                 if "$" in resolved:
                     # Split into base path and template pattern
                     base_path, template_pattern = self.split_template_url(resolved)
-                    element.attrib[attr] = self.build_proxy_url(
-                        base_path, template_pattern
-                    )
+                    element.attrib[attr] = self.build_proxy_url(base_path, template_pattern)
                     logger.debug(
                         f"Rewrote template URL: {original_url} -> proxy with template {template_pattern}"
                     )
@@ -258,9 +248,7 @@ class MPDRewriter:
                 # SegmentURL typically doesn't have templates, but handle it just in case
                 if "$" in resolved:
                     base_path, template_pattern = self.split_template_url(resolved)
-                    element.attrib["media"] = self.build_proxy_url(
-                        base_path, template_pattern
-                    )
+                    element.attrib["media"] = self.build_proxy_url(base_path, template_pattern)
                 else:
                     element.attrib["media"] = self.build_proxy_url(resolved)
 

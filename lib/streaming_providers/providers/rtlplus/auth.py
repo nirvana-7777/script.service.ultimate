@@ -8,8 +8,7 @@ from ...base.auth.base_oauth2_auth import BaseOAuth2Authenticator
 from ...base.models.proxy_models import ProxyConfig
 from ...base.utils.logger import logger
 from .constants import RTLPlusConfig, RTLPlusDefaults
-from .models import (RTLPlusAuthToken, RTLPlusClientCredentials,
-                     RTLPlusUserCredentials)
+from .models import RTLPlusAuthToken, RTLPlusClientCredentials, RTLPlusUserCredentials
 
 
 class RTLPlusAuthenticator(BaseOAuth2Authenticator):
@@ -86,9 +85,7 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
             config_creds = self._get_anonymous_credentials_from_config()
             if config_creds:
                 return RTLPlusClientCredentials(
-                    client_id=config_creds.get(
-                        "client_id", RTLPlusDefaults.ANONYMOUS_CLIENT_ID
-                    ),
+                    client_id=config_creds.get("client_id", RTLPlusDefaults.ANONYMOUS_CLIENT_ID),
                     client_secret=config_creds.get(
                         "client_secret", RTLPlusDefaults.ANONYMOUS_CLIENT_SECRET
                     ),
@@ -99,9 +96,7 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
         # Fallback to default credentials
         return RTLPlusClientCredentials()
 
-    def _create_token_from_response(
-        self, response_data: Dict[str, Any]
-    ) -> RTLPlusAuthToken:
+    def _create_token_from_response(self, response_data: Dict[str, Any]) -> RTLPlusAuthToken:
         """Create RTL+-specific token from OAuth2 response"""
         import time
 
@@ -168,9 +163,7 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
 
             # Check for user-authenticated token
             if preferred_username or email:
-                logger.debug(
-                    "RTL+ Token classified as USER_AUTHENTICATED (has user claims)"
-                )
+                logger.debug("RTL+ Token classified as USER_AUTHENTICATED (has user claims)")
                 return TokenAuthLevel.USER_AUTHENTICATED
 
             # Check for client credentials (anonymous) token
@@ -321,9 +314,7 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
         """
         from ...base.auth.credentials import UserPasswordCredentials
 
-        return isinstance(
-            self.credentials, (RTLPlusUserCredentials, UserPasswordCredentials)
-        )
+        return isinstance(self.credentials, (RTLPlusUserCredentials, UserPasswordCredentials))
 
     def has_stored_credentials(self) -> bool:
         """
@@ -331,9 +322,7 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
         """
         try:
             logger.debug("RTL+ Checking for stored credentials using settings manager")
-            stored_creds = self.settings_manager.get_provider_credentials(
-                self.provider_name
-            )
+            stored_creds = self.settings_manager.get_provider_credentials(self.provider_name)
 
             if not stored_creds:
                 logger.debug("RTL+ No stored credentials found")
@@ -366,9 +355,7 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
         status.update(
             {
                 "has_user_credentials": self.has_user_credentials(),
-                "authentication_mode": (
-                    "user" if self.has_user_credentials() else "anonymous"
-                ),
+                "authentication_mode": ("user" if self.has_user_credentials() else "anonymous"),
                 "client_version": self.config.client_version,
             }
         )

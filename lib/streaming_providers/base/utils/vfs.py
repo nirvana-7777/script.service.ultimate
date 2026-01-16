@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 # Import centralized environment manager
 from .environment import get_environment_manager, is_kodi_environment
+
 # Import centralized logger
 from .logger import logger
 
@@ -35,9 +36,7 @@ class VFS:
         self._explicit_config_dir = config_dir
         self._env_manager = get_environment_manager()
 
-        logger.debug(
-            f"VFS initialized with config_dir={config_dir}, addon_subdir={addon_subdir}"
-        )
+        logger.debug(f"VFS initialized with config_dir={config_dir}, addon_subdir={addon_subdir}")
 
     @property
     def base_path(self) -> str:
@@ -53,9 +52,9 @@ class VFS:
                 if self.addon_subdir:
                     if is_kodi_environment():
                         # Kodi uses forward slashes
-                        self._base_path = os.path.join(
-                            profile_path, self.addon_subdir
-                        ).replace("\\", "/")
+                        self._base_path = os.path.join(profile_path, self.addon_subdir).replace(
+                            "\\", "/"
+                        )
                     else:
                         # Standard filesystem
                         self._base_path = os.path.join(profile_path, self.addon_subdir)
@@ -208,9 +207,7 @@ class VFS:
 
                 with xbmcvfs.File(filepath, "w") as f:
                     bytes_written = f.write(content)
-                    logger.debug(
-                        f"Kodi file write: {bytes_written} bytes to {filepath}"
-                    )
+                    logger.debug(f"Kodi file write: {bytes_written} bytes to {filepath}")
                     return bytes_written > 0
             else:
                 import pathlib
@@ -474,16 +471,12 @@ def get_global_vfs(config_dir: Optional[str] = None, addon_subdir: str = "") -> 
 
 
 # Convenience functions that use VFS cache
-def exists(
-    filepath: str, config_dir: Optional[str] = None, addon_subdir: str = ""
-) -> bool:
+def exists(filepath: str, config_dir: Optional[str] = None, addon_subdir: str = "") -> bool:
     """Check if file exists"""
     return get_vfs(config_dir, addon_subdir).exists(filepath)
 
 
-def mkdirs(
-    dirpath: str, config_dir: Optional[str] = None, addon_subdir: str = ""
-) -> bool:
+def mkdirs(dirpath: str, config_dir: Optional[str] = None, addon_subdir: str = "") -> bool:
     """Create directories"""
     return get_vfs(config_dir, addon_subdir).mkdirs(dirpath)
 
@@ -527,9 +520,7 @@ def write_json(
     return get_vfs(config_dir, addon_subdir).write_json(filepath, data, indent)
 
 
-def delete(
-    filepath: str, config_dir: Optional[str] = None, addon_subdir: str = ""
-) -> bool:
+def delete(filepath: str, config_dir: Optional[str] = None, addon_subdir: str = "") -> bool:
     """Delete file"""
     return get_vfs(config_dir, addon_subdir).delete(filepath)
 

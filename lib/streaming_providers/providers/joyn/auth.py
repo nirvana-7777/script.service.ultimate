@@ -12,11 +12,20 @@ from ...base.auth.base_oauth2_auth import BaseOAuth2Authenticator
 from ...base.auth.credentials import ClientCredentials
 from ...base.models.proxy_models import ProxyConfig
 from ...base.utils.logger import logger
-from .constants import (COUNTRY_TENANT_MAPPING, DEFAULT_COUNTRY,
-                        DEFAULT_PLATFORM, DEFAULT_REQUEST_TIMEOUT, DEVICE_IDS,
-                        JOYN_AUTH_ENDPOINTS, JOYN_CLIENT_VERSION, JOYN_DOMAINS,
-                        JOYN_OAUTH_SCOPE, JOYN_SSO_DISCOVERY_URL,
-                        JOYN_USER_AGENT, SUPPORTED_COUNTRIES)
+from .constants import (
+    COUNTRY_TENANT_MAPPING,
+    DEFAULT_COUNTRY,
+    DEFAULT_PLATFORM,
+    DEFAULT_REQUEST_TIMEOUT,
+    DEVICE_IDS,
+    JOYN_AUTH_ENDPOINTS,
+    JOYN_CLIENT_VERSION,
+    JOYN_DOMAINS,
+    JOYN_OAUTH_SCOPE,
+    JOYN_SSO_DISCOVERY_URL,
+    JOYN_USER_AGENT,
+    SUPPORTED_COUNTRIES,
+)
 
 
 class JoynSSODiscovery:
@@ -110,9 +119,7 @@ class JoynCredentials(ClientCredentials):
     def __post_init__(self):
         # Set client_id from constant if not provided
         if not self.client_id:
-            self.client_id = DEVICE_IDS.get(
-                self.client_name, DEVICE_IDS[DEFAULT_PLATFORM]
-            )
+            self.client_id = DEVICE_IDS.get(self.client_name, DEVICE_IDS[DEFAULT_PLATFORM])
 
         if not self.distribution_tenant and self.country in COUNTRY_TENANT_MAPPING:
             self.distribution_tenant = COUNTRY_TENANT_MAPPING[self.country]
@@ -349,9 +356,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             if not client_id:
                 raise Exception("No client_id found in login endpoint")
 
-            logger.debug(
-                f"Extracted and cached client_id for {self.platform}: {client_id}"
-            )
+            logger.debug(f"Extracted and cached client_id for {self.platform}: {client_id}")
             return client_id
 
         except Exception as e:
@@ -399,9 +404,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             raise Exception("No credentials available")
         return self.credentials.to_auth_payload()
 
-    def _create_token_from_response(
-        self, response_data: Dict[str, Any]
-    ) -> BaseAuthToken:
+    def _create_token_from_response(self, response_data: Dict[str, Any]) -> BaseAuthToken:
         """Create token object from API response"""
         token = JoynAuthToken(
             access_token=response_data["access_token"],
@@ -434,22 +437,17 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
         """
         Perform authentication using appropriate flow based on credential type
         """
-        from ...base.auth.credentials import (ClientCredentials,
-                                              UserPasswordCredentials)
+        from ...base.auth.credentials import ClientCredentials, UserPasswordCredentials
 
         if isinstance(self.credentials, UserPasswordCredentials):
             # Use OAuth2 authorization code flow with PKCE
-            logger.info(
-                f"Using OAuth2 authorization code flow for {self.provider_name}"
-            )
+            logger.info(f"Using OAuth2 authorization code flow for {self.provider_name}")
             token_data = self._perform_oauth_authorization_code_flow(
                 self.credentials.username, self.credentials.password
             )
         elif isinstance(self.credentials, ClientCredentials):
             # Use client credentials flow (anonymous auth)
-            logger.info(
-                f"Using OAuth2 client credentials flow for {self.provider_name}"
-            )
+            logger.info(f"Using OAuth2 client credentials flow for {self.provider_name}")
             token_data = self._perform_oauth_client_credentials_flow()
         else:
             raise Exception(
@@ -483,9 +481,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             response.raise_for_status()
 
             token_data = response.json()
-            logger.debug(
-                f"OAuth2 client credentials flow successful for {self.provider_name}"
-            )
+            logger.debug(f"OAuth2 client credentials flow successful for {self.provider_name}")
             return token_data
 
         except Exception as e:
@@ -534,18 +530,14 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
         initiate_result = initiate_response.json()
 
         if not initiate_result.get("success"):
-            raise Exception(
-                f"Password verification initiation failed: {initiate_result}"
-            )
+            raise Exception(f"Password verification initiation failed: {initiate_result}")
 
         exchange_data = initiate_result["data"]
         exchange_id = exchange_data["exchange_id"]["exchange_id"]
         sub = exchange_data["sub"]
         status_id = exchange_data["status_id"]
 
-        logger.debug(
-            f"Got exchange_id: {exchange_id}, sub: {sub}, status_id: {status_id}"
-        )
+        logger.debug(f"Got exchange_id: {exchange_id}, sub: {sub}, status_id: {status_id}")
 
         # Step 2: Authenticate with password
         authenticate_data = {
@@ -564,9 +556,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             timeout=self._config.timeout,
         )
 
-        logger.debug(
-            f"Authenticate response status: {authenticate_response.status_code}"
-        )
+        logger.debug(f"Authenticate response status: {authenticate_response.status_code}")
         authenticate_response.raise_for_status()
         authenticate_result = authenticate_response.json()
 
@@ -656,9 +646,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                     fragment_params = parse_qs(fragment)
                     auth_code = fragment_params.get("code", [None])[0]
                     if auth_code:
-                        logger.debug(
-                            f"Found authorization code in fragment: {auth_code}"
-                        )
+                        logger.debug(f"Found authorization code in fragment: {auth_code}")
                         return auth_code
 
             # If no code found, try to follow redirects
@@ -712,18 +700,14 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             logger.debug("Fetching authorization page")
             auth_response = session.get(authorization_url, timeout=self._config.timeout)
 
-            logger.debug(
-                f"Authorization page response status: {auth_response.status_code}"
-            )
+            logger.debug(f"Authorization page response status: {auth_response.status_code}")
             logger.debug(f"Authorization page response URL: {auth_response.url}")
 
             auth_response.raise_for_status()
 
             # Step 2a: Check if we got redirected directly to callback (existing session)
             if self.oauth_redirect_uri in auth_response.url:
-                logger.info(
-                    "User already authenticated - extracting code from redirect"
-                )
+                logger.info("User already authenticated - extracting code from redirect")
 
                 # Parse the redirect URL for authorization code
                 parsed_url = urlparse(auth_response.url)
@@ -733,16 +717,12 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 received_state = query_params.get("state", [None])[0]
 
                 if not auth_code:
-                    raise Exception(
-                        "Redirect to callback but no authorization code found"
-                    )
+                    raise Exception("Redirect to callback but no authorization code found")
 
                 if not self.validate_oauth_state(received_state, state):
                     raise Exception("State validation failed on direct redirect")
 
-                logger.debug(
-                    f"Extracted authorization code from direct redirect: {auth_code}"
-                )
+                logger.debug(f"Extracted authorization code from direct redirect: {auth_code}")
 
                 # Exchange code for token
                 logger.debug("Exchanging authorization code for tokens")
@@ -752,9 +732,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                     state=state,
                 )
 
-                logger.debug(
-                    "Joyn OAuth2 authorization code flow successful (existing session)"
-                )
+                logger.debug("Joyn OAuth2 authorization code flow successful (existing session)")
                 return token_data
 
             # Step 2b: No existing session - need to perform login
@@ -773,9 +751,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 if request_id_match:
                     request_id = request_id_match.group(1)
                 else:
-                    raise Exception(
-                        "Could not extract request_id from authorization page"
-                    )
+                    raise Exception("Could not extract request_id from authorization page")
 
             logger.debug(f"Extracted request_id: {request_id}")
 
@@ -853,9 +829,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             # Use DEVICE_IDS directly instead of oauth_client_id
             # Joyn refresh might need the platform-specific device ID, not the OAuth client ID
             payload = {
-                "client_id": DEVICE_IDS.get(
-                    self.platform, DEVICE_IDS[DEFAULT_PLATFORM]
-                ),
+                "client_id": DEVICE_IDS.get(self.platform, DEVICE_IDS[DEFAULT_PLATFORM]),
                 "client_name": self.platform,
                 "grant_type": "Bearer",  # Joyn uses 'Bearer' instead of 'refresh_token'
                 "refresh_token": self._current_token.refresh_token,
@@ -965,9 +939,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
             # 2. Check for social_id presence - clear indicator of user authentication
             if "social_id" in claims:
-                logger.debug(
-                    "Token classified as USER_AUTHENTICATED (social_id present)"
-                )
+                logger.debug("Token classified as USER_AUTHENTICATED (social_id present)")
                 return TokenAuthLevel.USER_AUTHENTICATED
 
             # 3. Check client ID (cId) against known client IDs
@@ -987,9 +959,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             if subject and len(subject) == 36:  # UUID format
                 # Client credentials tokens often have UUID subjects representing the client
                 # User tokens might have different patterns or include user identifiers
-                logger.debug(
-                    "Token classified as CLIENT_CREDENTIALS (UUID subject pattern)"
-                )
+                logger.debug("Token classified as CLIENT_CREDENTIALS (UUID subject pattern)")
                 return TokenAuthLevel.CLIENT_CREDENTIALS
 
             # 5. Fallback: Check token scope or other claims
@@ -997,14 +967,10 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             if scope:
                 scopes = scope.split()
                 if "offline_access" in scopes and "profile" in scopes:
-                    logger.debug(
-                        "Token classified as USER_AUTHENTICATED (user scopes present)"
-                    )
+                    logger.debug("Token classified as USER_AUTHENTICATED (user scopes present)")
                     return TokenAuthLevel.USER_AUTHENTICATED
                 elif "openid" in scopes and len(scopes) <= 2:
-                    logger.debug(
-                        "Token classified as CLIENT_CREDENTIALS (minimal scopes)"
-                    )
+                    logger.debug("Token classified as CLIENT_CREDENTIALS (minimal scopes)")
                     return TokenAuthLevel.CLIENT_CREDENTIALS
 
             logger.warning(f"Could not definitively classify token, using UNKNOWN")
@@ -1037,9 +1003,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                     "cId": claims.get("cId", "MISSING"),
                     "social_id": "PRESENT" if "social_id" in claims else "MISSING",
                     "sub": (
-                        claims.get("sub", "MISSING")[:8] + "..."
-                        if claims.get("sub")
-                        else "MISSING"
+                        claims.get("sub", "MISSING")[:8] + "..." if claims.get("sub") else "MISSING"
                     ),
                     "scope": claims.get("scope", "MISSING"),
                 }

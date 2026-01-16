@@ -50,9 +50,7 @@ class ProviderManager:
     def discover_all_providers(self, default_country: str = "DE") -> List[str]:
         return self.registry.discover_all_providers(default_country)
 
-    def discover_providers(
-        self, country: str = "DE", detected_providers: Dict = None
-    ) -> List[str]:
+    def discover_providers(self, country: str = "DE", detected_providers: Dict = None) -> List[str]:
         """Legacy method for backward compatibility."""
         if not self.registry.provider_metadata:
             self.registry.discover_all_providers(country)
@@ -71,9 +69,7 @@ class ProviderManager:
         return self.registry.reinitialize_provider(provider_name)
 
     def reinitialize_providers(self, provider_names: List[str]) -> Dict[str, bool]:
-        return {
-            name: self.registry.reinitialize_provider(name) for name in provider_names
-        }
+        return {name: self.registry.reinitialize_provider(name) for name in provider_names}
 
     def reinitialize_all_providers(self) -> Dict[str, bool]:
         enabled = self.registry.get_enabled_providers()
@@ -111,12 +107,8 @@ class ProviderManager:
     ) -> List[StreamingChannel]:
         return self.channel_ops.get_channels(provider_name, fetch_manifests, **kwargs)
 
-    def get_channel_manifest(
-        self, provider_name: str, channel_id: str, **kwargs
-    ) -> Optional[str]:
-        return self.channel_ops.get_channel_manifest(
-            provider_name, channel_id, **kwargs
-        )
+    def get_channel_manifest(self, provider_name: str, channel_id: str, **kwargs) -> Optional[str]:
+        return self.channel_ops.get_channel_manifest(provider_name, channel_id, **kwargs)
 
     def get_all_channels(
         self, fetch_manifests: bool = True, **kwargs
@@ -127,9 +119,7 @@ class ProviderManager:
     # EPG OPERATIONS (delegate to EPGOperations)
     # ==========================================================================
 
-    def get_channel_epg(
-        self, provider_name: str, channel_id: str, **kwargs
-    ) -> List[Dict]:
+    def get_channel_epg(self, provider_name: str, channel_id: str, **kwargs) -> List[Dict]:
         return self.epg_ops.get_channel_epg(provider_name, channel_id, **kwargs)
 
     def get_provider_epg_xmltv(self, provider_name: str, **kwargs) -> Optional[str]:
@@ -154,9 +144,7 @@ class ProviderManager:
     # DRM OPERATIONS (delegate to DRMOperations)
     # ==========================================================================
 
-    def get_channel_drm_configs(
-        self, provider_name: str, channel_id: str, **kwargs
-    ) -> List:
+    def get_channel_drm_configs(self, provider_name: str, channel_id: str, **kwargs) -> List:
         return self.drm_ops.get_channel_drm_configs(provider_name, channel_id, **kwargs)
 
     def list_drm_plugins(self) -> Dict:
@@ -195,9 +183,7 @@ class ProviderManager:
             provider_name, channel_id, start_time, end_time, epg_id, country
         )
 
-    def get_catchup_window(
-        self, provider_name: str, channel_id: Optional[str] = None
-    ) -> int:
+    def get_catchup_window(self, provider_name: str, channel_id: Optional[str] = None) -> int:
         return self.catchup_ops.get_catchup_window(provider_name, channel_id)
 
     def supports_catchup(self, provider_name: str) -> bool:
@@ -220,9 +206,7 @@ class ProviderManager:
         return self.subscription_ops.get_available_packages(provider_name, **kwargs)
 
     def is_channel_accessible(self, provider_name: str, channel_id: str, **kwargs):
-        return self.subscription_ops.is_channel_accessible(
-            provider_name, channel_id, **kwargs
-        )
+        return self.subscription_ops.is_channel_accessible(provider_name, channel_id, **kwargs)
 
     # ==========================================================================
     # UTILITY METHODS (remain in ProviderManager as helpers)
@@ -237,9 +221,7 @@ class ProviderManager:
 
         http_manager = provider.http_manager
         if not http_manager:
-            logger.warning(
-                f"ProviderManager: Provider '{provider_name}' has no HTTP manager"
-            )
+            logger.warning(f"ProviderManager: Provider '{provider_name}' has no HTTP manager")
             return None
 
         logger.debug(f"ProviderManager: Retrieved HTTP manager for '{provider_name}'")
@@ -280,9 +262,7 @@ class ProviderManager:
         available = self.registry.get_enabled_providers()
 
         if not available:
-            logger.warning(
-                "ProviderManager: No enabled providers available for selection"
-            )
+            logger.warning("ProviderManager: No enabled providers available for selection")
             return []
 
         selected = []

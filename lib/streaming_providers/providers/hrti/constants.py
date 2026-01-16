@@ -68,14 +68,10 @@ class HRTiConfig:
         self.base_url = config.get("base_url", HRTiDefaults.BASE_URL)
         self.hsapi_base_url = config.get("hsapi_base_url", HRTiDefaults.HSAPI_BASE_URL)
         self.env_endpoint = config.get("env_endpoint", HRTiDefaults.ENV_ENDPOINT)
-        self.config_endpoint = config.get(
-            "config_endpoint", HRTiDefaults.CONFIG_ENDPOINT
-        )
+        self.config_endpoint = config.get("config_endpoint", HRTiDefaults.CONFIG_ENDPOINT)
 
         # API endpoints configuration
-        self.api_endpoints = config.get(
-            "api_endpoints", HRTiDefaults.API_ENDPOINTS.copy()
-        )
+        self.api_endpoints = config.get("api_endpoints", HRTiDefaults.API_ENDPOINTS.copy())
 
         # DRM and License
         self.license_url = config.get("license_url", HRTiDefaults.LICENSE_URL)
@@ -88,9 +84,7 @@ class HRTiConfig:
             "operator_reference_id", HRTiDefaults.OPERATOR_REFERENCE_ID
         )
         self.merchant = config.get("merchant", HRTiDefaults.MERCHANT)
-        self.connection_type = config.get(
-            "connection_type", HRTiDefaults.CONNECTION_TYPE
-        )
+        self.connection_type = config.get("connection_type", HRTiDefaults.CONNECTION_TYPE)
         self.application_version = config.get(
             "application_version", HRTiDefaults.APPLICATION_VERSION
         )

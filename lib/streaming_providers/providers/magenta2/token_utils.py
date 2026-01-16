@@ -46,9 +46,7 @@ class JWTClaims:
 
     def is_user_token(self) -> bool:
         """Check if this is a user-authenticated token"""
-        return bool(
-            self.persona_id or self.account_id or self.consumer_id or self.tv_account_id
-        )
+        return bool(self.persona_id or self.account_id or self.consumer_id or self.tv_account_id)
 
 
 class JWTParser:
@@ -203,9 +201,7 @@ class PersonaTokenComposer:
         """Compose persona token and return with expiry information"""
         logger.debug(f"🟢 PersonaTokenComposer.compose_from_jwt START")
         try:
-            logger.debug(
-                f"🟢 Input JWT token length: {len(jwt_token) if jwt_token else 0}"
-            )
+            logger.debug(f"🟢 Input JWT token length: {len(jwt_token) if jwt_token else 0}")
 
             claims = JWTParser.parse(jwt_token)
             if not claims:
@@ -225,9 +221,7 @@ class PersonaTokenComposer:
                 return None
 
             # Compose the persona token
-            composed_token = PersonaTokenComposer._compose_token(
-                account_uri, persona_jwt
-            )
+            composed_token = PersonaTokenComposer._compose_token(account_uri, persona_jwt)
             if not composed_token:
                 logger.error("🔴 _compose_token returned None")
                 return None
@@ -279,9 +273,7 @@ class PersonaTokenComposer:
             return None
 
     @staticmethod
-    def compose_from_components(
-        account_uri: str, dc_cts_persona_token: str
-    ) -> Optional[str]:
+    def compose_from_components(account_uri: str, dc_cts_persona_token: str) -> Optional[str]:
         """Original method - for backward compatibility"""
         return PersonaTokenComposer._compose_token(account_uri, dc_cts_persona_token)
 
@@ -315,9 +307,7 @@ class PersonaTokenComposer:
 
             # Verify persona_jwt looks like a JWT
             if not persona_jwt.startswith("eyJ"):
-                logger.warning(
-                    f"Extracted token doesn't look like a JWT: {persona_jwt[:20]}..."
-                )
+                logger.warning(f"Extracted token doesn't look like a JWT: {persona_jwt[:20]}...")
 
             return {"account_uri": account_uri, "persona_jwt": persona_jwt}
 

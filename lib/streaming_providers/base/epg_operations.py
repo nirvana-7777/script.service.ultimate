@@ -18,9 +18,7 @@ class EPGOperations:
         self.epg_manager = EPGManager()
         logger.debug("EPGOperations: Initialized")
 
-    def get_channel_epg(
-        self, provider_name: str, channel_id: str, **kwargs
-    ) -> List[Dict]:
+    def get_channel_epg(self, provider_name: str, channel_id: str, **kwargs) -> List[Dict]:
         """Get EPG data for a specific channel."""
         provider = self.registry.get_provider(provider_name)
         if not provider:

@@ -161,9 +161,7 @@ class ProviderRegistry:
                     if instance:
                         self.providers[instance_name] = instance
 
-        logger.info(
-            f"ProviderRegistry: Discovered {len(discovered)} provider instances"
-        )
+        logger.info(f"ProviderRegistry: Discovered {len(discovered)} provider instances")
         return discovered
 
     def get_provider(self, provider_name: str) -> Optional[StreamingProvider]:
@@ -199,9 +197,7 @@ class ProviderRegistry:
             from .settings.provider_enable_manager import ProviderEnableManager
 
             enable_manager = ProviderEnableManager()
-            success, message = enable_manager.set_provider_enabled(
-                provider_name, enabled
-            )
+            success, message = enable_manager.set_provider_enabled(provider_name, enabled)
             return success
         except Exception as e:
             logger.error(f"Error updating enable status: {e}")

@@ -205,7 +205,9 @@ class JoynChannel:
         return json.dumps(self.to_dict(), indent=indent, ensure_ascii=False)
 
     def __str__(self) -> str:
-        return f"JoynChannel(name='{self.name}', id='{self.channel_id}', type='{self.content_type}')"
+        return (
+            f"JoynChannel(name='{self.name}', id='{self.channel_id}', type='{self.content_type}')"
+        )
 
     def __repr__(self) -> str:
         return self.__str__()

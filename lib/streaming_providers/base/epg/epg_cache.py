@@ -97,9 +97,7 @@ class EPGCache:
         age = int(time.time()) - downloaded_at
 
         if age > self.CACHE_TTL_SECONDS:
-            logger.info(
-                f"EPGCache: Cache expired (age: {age}s, TTL: {self.CACHE_TTL_SECONDS}s)"
-            )
+            logger.info(f"EPGCache: Cache expired (age: {age}s, TTL: {self.CACHE_TTL_SECONDS}s)")
             return False
 
         logger.debug(f"EPGCache: Cache valid (age: {age}s)")
@@ -148,11 +146,7 @@ class EPGCache:
             # Determine if content is gzipped
             content_type = response.headers.get("Content-Type", "").lower()
             content_encoding = response.headers.get("Content-Encoding", "").lower()
-            is_gzipped = (
-                "gzip" in content_encoding
-                or url.endswith(".gz")
-                or "gzip" in content_type
-            )
+            is_gzipped = "gzip" in content_encoding or url.endswith(".gz") or "gzip" in content_type
 
             filename = self.EPG_GZ_FILE if is_gzipped else self.EPG_FILE
 

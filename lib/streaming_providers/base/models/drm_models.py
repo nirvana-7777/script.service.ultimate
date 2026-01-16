@@ -45,23 +45,17 @@ class WrapperType(str, Enum):
     NONE = "none"
 
 
-class UnwrapperType(str, Enum):
-    AUTO = "auto"
-    BASE64 = "base64"
-    JSON = "json"
-    XML = "xml"
-    NONE = "none"
-
-
 @dataclass
 class PSSHData:
-    """
-    Protection System Specific Header data for DRM systems
-    """
+    system_id: str
+    pssh_box: str = ""  # Base64 encoded PSSH box
+    key_ids: List[str] = field(default_factory=list)
+    source: str = "manifest"  # "manifest", "mp4_segment", "unknown"
 
-    system_id: str  # UUID of the DRM system
-    pssh_box: str  # Base64 encoded PSSH box data
-    key_ids: List[str] = field(default_factory=list)  # Optional key IDs
+    @property
+    def needs_extraction(self) -> bool:
+        """Check if PSSH/key_ids need to be extracted from segments"""
+        return not self.pssh_box or not self.key_ids
 
     @property
     def drm_system(self) -> Optional[DRMSystem]:
@@ -73,18 +67,25 @@ class PSSHData:
         if not self.system_id:
             raise ValueError("system_id is required")
 
-        if not self.pssh_box:
-            raise ValueError("pssh_box is required")
-
-        try:
-            base64.b64decode(self.pssh_box)
-        except Exception:
-            raise ValueError("pssh_box must be valid base64")
+        # FIX: pssh_box can be empty (PSSH in segments)
+        if self.pssh_box:  # Only validate if not empty
+            try:
+                base64.b64decode(self.pssh_box)
+            except Exception:
+                raise ValueError("pssh_box must be valid base64")
 
         # Validate key IDs if present
         for kid in self.key_ids:
             if not all(c in "0123456789abcdefABCDEF-" for c in kid):
                 raise ValueError(f"Invalid key ID format: {kid}")
+
+
+class UnwrapperType(str, Enum):
+    AUTO = "auto"
+    BASE64 = "base64"
+    JSON = "json"
+    XML = "xml"
+    NONE = "none"
 
 
 @dataclass
@@ -136,9 +137,7 @@ class LicenseConfig:
         """Helper to ensure req_data is base64 encoded"""
         import base64
 
-        req_data_encoded = base64.b64encode(req_data_template.encode("utf-8")).decode(
-            "utf-8"
-        )
+        req_data_encoded = base64.b64encode(req_data_template.encode("utf-8")).decode("utf-8")
         return cls(req_data=req_data_encoded, **kwargs)
 
 
@@ -181,9 +180,7 @@ class DRMConfig:
                 license_dict["unwrapper"] = self.license.unwrapper
             if self.license.unwrapper_params:
                 license_dict["unwrapper_params"] = {
-                    k: v
-                    for k, v in vars(self.license.unwrapper_params).items()
-                    if v is not None
+                    k: v for k, v in vars(self.license.unwrapper_params).items() if v is not None
                 }
             if self.license.keyids:
                 license_dict["keyids"] = self.license.keyids

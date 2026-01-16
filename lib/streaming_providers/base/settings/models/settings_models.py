@@ -120,9 +120,7 @@ class StandardValidationRules:
             except Exception:
                 return False
 
-        return ValidationRule(
-            name="valid_url", validator=validate_url, error_message=error_msg
-        )
+        return ValidationRule(name="valid_url", validator=validate_url, error_message=error_msg)
 
     @staticmethod
     def valid_ip_address(
@@ -155,9 +153,7 @@ class StandardValidationRules:
         )
 
     @staticmethod
-    def in_choices(
-        choices: List[Any], error_msg: Optional[str] = None
-    ) -> ValidationRule:
+    def in_choices(choices: List[Any], error_msg: Optional[str] = None) -> ValidationRule:
         """Rule to ensure value is in predefined choices"""
         if error_msg is None:
             error_msg = f"Value must be one of: {', '.join(map(str, choices))}"
@@ -203,8 +199,7 @@ class SettingValue:
             self.add_validation_rule(
                 ValidationRule(
                     name="is_integer",
-                    validator=lambda x: isinstance(x, int)
-                    or (isinstance(x, str) and x.isdigit()),
+                    validator=lambda x: isinstance(x, int) or (isinstance(x, str) and x.isdigit()),
                     error_message="Value must be an integer",
                 )
             )
@@ -279,16 +274,10 @@ class SettingValue:
             return None
 
         try:
-            if (
-                self.setting_type == SettingType.STRING
-                or self.setting_type == SettingType.PASSWORD
-            ):
+            if self.setting_type == SettingType.STRING or self.setting_type == SettingType.PASSWORD:
                 return str(value)
 
-            elif (
-                self.setting_type == SettingType.INTEGER
-                or self.setting_type == SettingType.PORT
-            ):
+            elif self.setting_type == SettingType.INTEGER or self.setting_type == SettingType.PORT:
                 if isinstance(value, int):
                     return value
                 elif isinstance(value, str) and value.isdigit():
@@ -355,9 +344,7 @@ class SettingValue:
     def remove_validation_rule(self, rule_name: str) -> bool:
         """Remove a validation rule by name"""
         original_length = len(self.validation_rules)
-        self.validation_rules = [
-            r for r in self.validation_rules if r.name != rule_name
-        ]
+        self.validation_rules = [r for r in self.validation_rules if r.name != rule_name]
         return len(self.validation_rules) < original_length
 
     def validate(self) -> tuple[bool, List[str]]:
@@ -369,9 +356,7 @@ class SettingValue:
         """
         if self.current_value is None:
             # Check if this setting is required (has not_empty rule)
-            has_required_rule = any(
-                rule.name == "not_empty" for rule in self.validation_rules
-            )
+            has_required_rule = any(rule.name == "not_empty" for rule in self.validation_rules)
             if has_required_rule:
                 return False, ["Value is required"]
             else:
@@ -508,9 +493,7 @@ class SettingValueBuilder:
         self, min_val: Union[int, float], max_val: Union[int, float]
     ) -> "SettingValueBuilder":
         """Add numeric range validation"""
-        self._validation_rules.append(
-            StandardValidationRules.numeric_range(min_val, max_val)
-        )
+        self._validation_rules.append(StandardValidationRules.numeric_range(min_val, max_val))
         return self
 
     def custom_validation(self, rule: ValidationRule) -> "SettingValueBuilder":

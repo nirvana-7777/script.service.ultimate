@@ -58,9 +58,7 @@ class ProviderEnableManager:
                 logger.debug(f"ProviderEnableManager: Kodi bridge not available: {e}")
                 self._kodi_bridge = None
             except Exception as e:
-                logger.error(
-                    f"ProviderEnableManager: Error initializing Kodi bridge: {e}"
-                )
+                logger.error(f"ProviderEnableManager: Error initializing Kodi bridge: {e}")
                 self._kodi_bridge = None
 
     def _load_file(self, force_reload: bool = False) -> Dict[str, Any]:
@@ -76,11 +74,7 @@ class ProviderEnableManager:
         current_time = time.time()
 
         # Check cache first
-        if (
-            not force_reload
-            and self._cache
-            and (current_time - self._cache_time) < self.CACHE_TTL
-        ):
+        if not force_reload and self._cache and (current_time - self._cache_time) < self.CACHE_TTL:
             return self._cache
 
         # Initialize default structure
@@ -100,9 +94,7 @@ class ProviderEnableManager:
             data = self.vfs.read_json(self.DEFAULT_FILENAME)
 
             if not isinstance(data, dict):
-                logger.warning(
-                    f"ProviderEnableManager: Invalid file format, using defaults"
-                )
+                logger.warning(f"ProviderEnableManager: Invalid file format, using defaults")
                 self._cache = default_data
                 self._cache_time = current_time
                 return default_data
@@ -139,9 +131,7 @@ class ProviderEnableManager:
             return data
 
         except Exception as e:
-            logger.error(
-                f"ProviderEnableManager: Error loading {self.DEFAULT_FILENAME}: {e}"
-            )
+            logger.error(f"ProviderEnableManager: Error loading {self.DEFAULT_FILENAME}: {e}")
             self._cache = default_data
             self._cache_time = current_time
             return default_data
@@ -173,16 +163,12 @@ class ProviderEnableManager:
                     f"ProviderEnableManager: Saved {len(data.get('providers', {}))} providers to file"
                 )
             else:
-                logger.error(
-                    f"ProviderEnableManager: Failed to write to {self.DEFAULT_FILENAME}"
-                )
+                logger.error(f"ProviderEnableManager: Failed to write to {self.DEFAULT_FILENAME}")
 
             return success
 
         except Exception as e:
-            logger.error(
-                f"ProviderEnableManager: Error saving {self.DEFAULT_FILENAME}: {e}"
-            )
+            logger.error(f"ProviderEnableManager: Error saving {self.DEFAULT_FILENAME}: {e}")
             return False
 
     def _get_kodi_enabled_status(self, provider_name: str) -> Optional[bool]:
@@ -228,9 +214,7 @@ class ProviderEnableManager:
                 return enabled
 
             # No Kodi setting found
-            logger.debug(
-                f"ProviderEnableManager: No Kodi setting found for {provider_name}"
-            )
+            logger.debug(f"ProviderEnableManager: No Kodi setting found for {provider_name}")
             return None
 
         except Exception as e:
@@ -293,9 +277,7 @@ class ProviderEnableManager:
 
         return EnableSource.DEFAULT
 
-    def set_provider_enabled(
-        self, provider_name: str, enabled: bool
-    ) -> Tuple[bool, str]:
+    def set_provider_enabled(self, provider_name: str, enabled: bool) -> Tuple[bool, str]:
         """
         Set enabled status for a provider (writes to file only).
 
@@ -400,9 +382,7 @@ class ProviderEnableManager:
         source = self.get_enabled_source(provider_name)
 
         if source == EnableSource.KODI:
-            message = (
-                f"Cannot delete setting for '{provider_name}' - controlled by Kodi"
-            )
+            message = f"Cannot delete setting for '{provider_name}' - controlled by Kodi"
             logger.warning(f"ProviderEnableManager: {message}")
             return False, message
 
@@ -515,17 +495,13 @@ class ProviderEnableManager:
                     # Kodi has explicit setting, migrate to file
                     data["providers"][provider_name] = kodi_enabled
                     migrated_count += 1
-                    logger.debug(
-                        f"ProviderEnableManager: Migrated {provider_name}={kodi_enabled}"
-                    )
+                    logger.debug(f"ProviderEnableManager: Migrated {provider_name}={kodi_enabled}")
 
             if migrated_count > 0:
                 # Save migrated data
                 success = self._save_file(data)
                 if success:
-                    message = (
-                        f"Migrated {migrated_count} provider settings from Kodi to file"
-                    )
+                    message = f"Migrated {migrated_count} provider settings from Kodi to file"
                     logger.info(f"ProviderEnableManager: {message}")
                     return True, message, migrated_count
                 else:

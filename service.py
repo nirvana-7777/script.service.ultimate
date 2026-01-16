@@ -2,6 +2,7 @@
 import os
 import sys
 import threading
+import traceback
 from datetime import datetime
 import time
 import json
@@ -1031,60 +1032,305 @@ class UltimateService:
 
         @self.app.route('/api/providers/<provider>/channels/<channel_id>/pssh')
         def get_channel_pssh(provider, channel_id):
+            """
+            Extract PSSH data for a channel.
+
+            Query parameters:
+            - country: Optional country code for geo-specific manifests
+            - force_refresh: If 'true', bypass cache and re-extract PSSH
+
+            Returns:
+            {
+                "provider": "provider_name",
+                "channel_id": "channel_id",
+                "manifest_url": "https://...",
+                "pssh_data": [
+                    {
+                        "system_id": "edef8ba9-79d6-4ace-a3c8-27dcd51d21ed",
+                        "drm_system": "com.widevine.alpha",
+                        "pssh_box": "AAAANHBzc2g...",
+                        "key_ids": ["64656d6f..."],
+                        "source": "mp4_segment"
+                    }
+                ],
+                "count": 1,
+                "cached": true
+            }
+            """
             try:
-                # Get the manifest URL first
-                manifest_url = self.manager.get_channel_manifest(
-                    provider_name=provider,
-                    channel_id=channel_id,
-                    country=request.query.get('country')
-                )
+                # Parse query parameters
+                country = request.params.get('country')
+                force_refresh = request.params.get('force_refresh', '').lower() == 'true'
+
+                # Clear cache if force refresh requested
+                if force_refresh:
+                    cache_key = f"{provider}:{channel_id}"
+                    self.manager.drm_operations.pssh_cache.clear()
+                    logger.info(f"Cache cleared for force_refresh request: {cache_key}")
+
+                # Get manifest URL
+                try:
+                    manifest_url = self.manager.get_channel_manifest(
+                        provider_name=provider,
+                        channel_id=channel_id,
+                        country=country
+                    )
+                except ValueError as e:
+                    response.status = 404
+                    return {
+                        'error': 'Provider not found',
+                        'message': str(e),
+                        'provider': provider
+                    }
+                except Exception as e:
+                    response.status = 500
+                    return {
+                        'error': 'Failed to get manifest',
+                        'message': str(e),
+                        'provider': provider,
+                        'channel_id': channel_id
+                    }
 
                 if not manifest_url:
                     response.status = 404
-                    return {'error': f'Manifest not available for channel "{channel_id}" from provider "{provider}"'}
+                    return {
+                        'error': 'Manifest not available',
+                        'message': f'No manifest found for channel "{channel_id}" from provider "{provider}"',
+                        'provider': provider,
+                        'channel_id': channel_id
+                    }
 
-                # Extract PSSH data from the manifest
-                pssh_data_list = self.manager.extract_pssh_from_manifest(manifest_url)
+                # Check if we're using cache
+                cache_key = f"{provider}:{channel_id}"
+                cached_pssh = self.manager.drm_operations.pssh_cache.get(cache_key)
+                was_cached = cached_pssh is not None
+
+                # Extract PSSH data (uses cache internally unless force_refresh)
+                try:
+                    pssh_data_list = self.manager.drm_operations._extract_pssh_from_manifest(
+                        manifest_url
+                    )
+                except Exception as e:
+                    response.status = 500
+                    return {
+                        'error': 'Failed to extract PSSH',
+                        'message': str(e),
+                        'provider': provider,
+                        'channel_id': channel_id,
+                        'manifest_url': manifest_url,
+                        'traceback': traceback.format_exc() if self.app.config.get('debug') else None
+                    }
 
                 if not pssh_data_list:
                     response.status = 404
                     return {
-                        'error': f'No PSSH data found in manifest for channel "{channel_id}" from provider "{provider}"'}
+                        'error': 'No PSSH data found',
+                        'message': f'No PSSH data found in manifest or segments for channel "{channel_id}"',
+                        'provider': provider,
+                        'channel_id': channel_id,
+                        'manifest_url': manifest_url,
+                        'hint': 'This channel may not use DRM, or PSSH extraction failed'
+                    }
 
-                # Convert PSSH data to dictionary format for JSON response
+                # Convert PSSH data to dictionary format
                 pssh_list = []
                 for pssh_data in pssh_data_list:
-                    if hasattr(pssh_data, 'to_dict'):
-                        pssh_list.append(pssh_data.to_dict())
-                    else:
-                        # Fallback for basic PSSH data structure
-                        pssh_dict = {
-                            'pssh': getattr(pssh_data, 'pssh', str(pssh_data)) if hasattr(pssh_data, 'pssh') else str(
-                                pssh_data),
-                            'system_id': getattr(pssh_data, 'system_id', None),
-                            'key_id': getattr(pssh_data, 'key_id', None) if hasattr(pssh_data, 'key_id') else None
-                        }
-                        # Remove None values
-                        pssh_dict = {k: v for k, v in pssh_dict.items() if v is not None}
-                        pssh_list.append(pssh_dict)
+                    pssh_dict = {
+                        'system_id': pssh_data.system_id,
+                        'drm_system': pssh_data.drm_system.value if pssh_data.drm_system else None,
+                        'pssh_box': pssh_data.pssh_box if pssh_data.pssh_box else None,
+                        'key_ids': pssh_data.key_ids if pssh_data.key_ids else [],
+                        'source': pssh_data.source
+                    }
 
+                    # Add human-readable system name
+                    if pssh_data.drm_system:
+                        pssh_dict['drm_system_name'] = {
+                            'com.widevine.alpha': 'Widevine',
+                            'com.microsoft.playready': 'PlayReady',
+                            'com.apple.fps': 'FairPlay',
+                            'org.w3.clearkey': 'ClearKey',
+                            'com.huawei.wiseplay': 'Wiseplay'
+                        }.get(pssh_data.drm_system.value, pssh_data.drm_system.value)
+
+                    # Remove None values for cleaner response
+                    pssh_dict = {k: v for k, v in pssh_dict.items() if v is not None}
+                    pssh_list.append(pssh_dict)
+
+                response.status = 200
                 return {
                     'provider': provider,
                     'channel_id': channel_id,
                     'manifest_url': manifest_url,
                     'pssh_data': pssh_list,
-                    'count': len(pssh_list)
+                    'count': len(pssh_list),
+                    'cached': was_cached,
+                    'cache_ttl_seconds': self.manager.drm_operations.pssh_cache.ttl
                 }
 
-            except ValueError as val_err:
-                # This handles the case where manager raises ValueError for unknown provider
-                logger.error(f"API Error in /api/providers/{provider}/channels/{channel_id}/pssh: {str(val_err)}")
-                response.status = 404
-                return {'error': str(val_err)}
-            except Exception as api_err:
-                logger.error(f"API Error in /api/providers/{provider}/channels/{channel_id}/pssh: {str(api_err)}")
+            except Exception as e:
+                # Catch-all for unexpected errors
+                logger.error(f"Unexpected error in get_channel_pssh: {e}")
+                logger.error(traceback.format_exc())
                 response.status = 500
-                return {'error': f'Internal server error: {str(api_err)}'}
+                return {
+                    'error': 'Internal server error',
+                    'message': str(e),
+                    'provider': provider,
+                    'channel_id': channel_id,
+                    'traceback': traceback.format_exc() if self.app.config.get('debug') else None
+                }
+
+        @self.app.route('/api/providers/<provider>/channels/<channel_id>/pssh/refresh', method='POST')
+        def refresh_channel_pssh(provider, channel_id):
+            """
+            Force refresh PSSH data for a channel (clears cache and re-extracts).
+
+            This is useful when:
+            - Keys have been rotated
+            - Manifest structure has changed
+            - Previous extraction failed
+            """
+            try:
+                # Clear cache for this specific channel
+                cache_key = f"{provider}:{channel_id}"
+
+                # Check if entry exists in cache
+                cached = self.manager.drm_operations.pssh_cache.get(cache_key)
+
+                # Clear it
+                if cached:
+                    # Remove specific key (you may need to add this method to PSSHCache)
+                    with self.manager.drm_operations.pssh_cache.lock:
+                        if cache_key in self.manager.drm_operations.pssh_cache.cache:
+                            del self.manager.drm_operations.pssh_cache.cache[cache_key]
+                    logger.info(f"Cleared cache for {cache_key}")
+
+                # Now extract fresh data
+                country = request.params.get('country')
+
+                manifest_url = self.manager.get_channel_manifest(
+                    provider_name=provider,
+                    channel_id=channel_id,
+                    country=country
+                )
+
+                if not manifest_url:
+                    response.status = 404
+                    return {
+                        'error': 'Manifest not available',
+                        'provider': provider,
+                        'channel_id': channel_id
+                    }
+
+                # Extract and cache
+                pssh_data_list = self.manager.drm_operations._extract_pssh_from_manifest(
+                    manifest_url
+                )
+
+                if pssh_data_list:
+                    # Cache it
+                    self.manager.drm_operations.pssh_cache.set(cache_key, pssh_data_list)
+
+                response.status = 200
+                return {
+                    'message': 'PSSH data refreshed',
+                    'provider': provider,
+                    'channel_id': channel_id,
+                    'count': len(pssh_data_list),
+                    'was_cached': cached is not None,
+                    'now_cached': len(pssh_data_list) > 0
+                }
+
+            except Exception as e:
+                logger.error(f"Error refreshing PSSH: {e}")
+                response.status = 500
+                return {
+                    'error': 'Failed to refresh',
+                    'message': str(e)
+                }
+
+        @self.app.route('/api/cache/pssh', method='DELETE')
+        def clear_pssh_cache():
+            """
+            Clear all PSSH cache entries.
+
+            This is useful for:
+            - Debugging
+            - Freeing memory
+            - Forcing re-extraction of all channels
+            """
+            try:
+                cache_size = len(self.manager.drm_operations.pssh_cache.cache)
+                self.manager.drm_operations.pssh_cache.clear()
+
+                response.status = 200
+                return {
+                    'message': 'PSSH cache cleared',
+                    'entries_cleared': cache_size
+                }
+
+            except Exception as e:
+                logger.error(f"Error clearing cache: {e}")
+                response.status = 500
+                return {
+                    'error': 'Failed to clear cache',
+                    'message': str(e)
+                }
+
+        @self.app.route('/api/cache/pssh', method='GET')
+        def get_pssh_cache_stats():
+            """
+            Get PSSH cache statistics.
+
+            Returns information about:
+            - Number of cached entries
+            - TTL configuration
+            - Memory usage estimate
+            """
+            try:
+                cache = self.manager.drm_operations.pssh_cache
+
+                with cache.lock:
+                    entries = []
+                    total_size = 0
+
+                    for key, (pssh_list, timestamp) in cache.cache.items():
+                        import time
+                        age = time.time() - timestamp
+                        expires_in = cache.ttl - age
+
+                        # Estimate size
+                        size = sum(
+                            len(p.pssh_box) + len(str(p.key_ids)) + len(p.system_id)
+                            for p in pssh_list
+                        )
+                        total_size += size
+
+                        entries.append({
+                            'key': key,
+                            'pssh_count': len(pssh_list),
+                            'age_seconds': int(age),
+                            'expires_in_seconds': int(expires_in),
+                            'size_bytes': size
+                        })
+
+                response.status = 200
+                return {
+                    'total_entries': len(entries),
+                    'ttl_seconds': cache.ttl,
+                    'total_size_bytes': total_size,
+                    'total_size_mb': round(total_size / 1024 / 1024, 2),
+                    'entries': sorted(entries, key=lambda x: x['age_seconds'], reverse=True)
+                }
+
+            except Exception as e:
+                logger.error(f"Error getting cache stats: {e}")
+                response.status = 500
+                return {
+                    'error': 'Failed to get cache stats',
+                    'message': str(e)
+                }
 
         @self.app.route('/api/providers/<provider>/channels/<channel_id>/epg')
         def get_channel_epg(provider, channel_id):

@@ -26,7 +26,9 @@ class RTLPlusDefaults:
     AUTH_ENDPOINT = f"{AUTH_BASE_URL}/token"
     AUTH_AUTHORIZE_ENDPOINT = f"{AUTH_BASE_URL}/auth"
     GRAPHQL_ENDPOINT = "https://cdn.gateway.now-plus-prod.aws-cbc.cloud/graphql"
-    MANIFEST_ENDPOINT = "https://stus.player.streamingtech.de/livestream/linear/{channel_id}?platform=web"
+    MANIFEST_ENDPOINT = (
+        "https://stus.player.streamingtech.de/livestream/linear/{channel_id}?platform=web"
+    )
     BASE_WEBSITE = "https://plus.rtl.de/"
     CONFIG_ENDPOINT = "https://plus.rtl.de/assets/config/config.json"
 
@@ -88,8 +90,7 @@ class RTLPlusHeaders:
                 "Content-Type": "application/json",
                 "Rtlplus-Client-Id": RTLPlusDefaults.CLIENT_ID,
                 "Rtlplus-Referrer": "",
-                "Rtlplus-Client-Version": client_version
-                or RTLPlusDefaults.CLIENT_VERSION,
+                "Rtlplus-Client-Version": client_version or RTLPlusDefaults.CLIENT_VERSION,
             }
         )
 
@@ -102,9 +103,7 @@ class RTLPlusHeaders:
         return headers
 
     @staticmethod
-    def get_drm_headers(
-        access_token: str, device_id: str = None, user_agent: str = None
-    ) -> dict:
+    def get_drm_headers(access_token: str, device_id: str = None, user_agent: str = None) -> dict:
         """Get headers for DRM license requests"""
         return {
             "X-Auth-Token": access_token,
@@ -126,27 +125,17 @@ class RTLPlusConfig:
         self.logo = config.get("logo", RTLPlusDefaults.RTLPLUS_LOGO)
 
         # Core settings (can be overridden)
-        self.client_version = config.get(
-            "client_version", RTLPlusDefaults.CLIENT_VERSION
-        )
-        self.chrome_version = config.get(
-            "chrome_version", RTLPlusDefaults.CHROME_VERSION
-        )
+        self.client_version = config.get("client_version", RTLPlusDefaults.CLIENT_VERSION)
+        self.chrome_version = config.get("chrome_version", RTLPlusDefaults.CHROME_VERSION)
         self.device_id = config.get("device_id", RTLPlusDefaults.DEVICE_ID)
         self.user_agent = config.get("user_agent", RTLPlusDefaults.USER_AGENT)
 
         # API endpoints (can be overridden for testing)
         self.auth_endpoint = config.get("auth_endpoint", RTLPlusDefaults.AUTH_ENDPOINT)
-        self.graphql_endpoint = config.get(
-            "graphql_endpoint", RTLPlusDefaults.GRAPHQL_ENDPOINT
-        )
-        self.manifest_endpoint = config.get(
-            "manifest_endpoint", RTLPlusDefaults.MANIFEST_ENDPOINT
-        )
+        self.graphql_endpoint = config.get("graphql_endpoint", RTLPlusDefaults.GRAPHQL_ENDPOINT)
+        self.manifest_endpoint = config.get("manifest_endpoint", RTLPlusDefaults.MANIFEST_ENDPOINT)
         self.base_website = config.get("base_website", RTLPlusDefaults.BASE_WEBSITE)
-        self.config_endpoint = config.get(
-            "config_endpoint", RTLPlusDefaults.CONFIG_ENDPOINT
-        )
+        self.config_endpoint = config.get("config_endpoint", RTLPlusDefaults.CONFIG_ENDPOINT)
 
         # HTTP settings
         self.timeout = config.get("timeout", RTLPlusDefaults.DEFAULT_TIMEOUT)

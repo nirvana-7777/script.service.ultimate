@@ -41,14 +41,8 @@ class NotificationFactory:
             NotificationInterface: Appropriate adapter for current environment
         """
         # Return cached adapter if available and no http_manager change
-        if (
-            cls._cached_adapter is not None
-            and force_environment is None
-            and http_manager is None
-        ):
-            logger.debug(
-                f"Using cached notification adapter: {cls._environment_detected}"
-            )
+        if cls._cached_adapter is not None and force_environment is None and http_manager is None:
+            logger.debug(f"Using cached notification adapter: {cls._environment_detected}")
             return cls._cached_adapter
 
         # Detect environment
@@ -89,9 +83,7 @@ class NotificationFactory:
 
         except ImportError:
             # If import fails, we're standalone
-            logger.debug(
-                "Kodi modules not available - using console notification adapter"
-            )
+            logger.debug("Kodi modules not available - using console notification adapter")
             return "console"
 
     @classmethod

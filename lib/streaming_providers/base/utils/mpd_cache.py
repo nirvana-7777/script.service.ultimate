@@ -58,9 +58,7 @@ class MPDCacheManager:
             now = int(time.time())
 
             if now >= expiry:
-                logger.debug(
-                    f"Cache expired for {cache_key} (expired {now - expiry}s ago)"
-                )
+                logger.debug(f"Cache expired for {cache_key} (expired {now - expiry}s ago)")
                 # Clean up expired cache
                 self.vfs.delete(manifest_file)
                 self.vfs.delete(meta_file)
@@ -72,9 +70,7 @@ class MPDCacheManager:
                 logger.info(f"Cache hit for {cache_key} (expires in {expiry - now}s)")
                 return manifest_content
             else:
-                logger.warning(
-                    f"Cache metadata exists but manifest file missing for {cache_key}"
-                )
+                logger.warning(f"Cache metadata exists but manifest file missing for {cache_key}")
                 self.vfs.delete(meta_file)
                 return None
 
@@ -135,9 +131,7 @@ class MPDCacheManager:
                 self.vfs.delete(manifest_file)
                 return False
 
-            logger.info(
-                f"Cached MPD for {cache_key} with TTL={ttl}s (expires at {expiry})"
-            )
+            logger.info(f"Cached MPD for {cache_key} with TTL={ttl}s (expires at {expiry})")
             return True
 
         except Exception as e:

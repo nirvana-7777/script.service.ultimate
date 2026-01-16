@@ -282,9 +282,7 @@ class StreamingChannel:
             self.is_radio = True
 
             # Update quality if not set
-            if not self.quality or self.quality.upper() not in [
-                q.value for q in Quality
-            ]:
+            if not self.quality or self.quality.upper() not in [q.value for q in Quality]:
                 self.quality = "AUDIO"
 
             # Update content_type if it's still LIVE

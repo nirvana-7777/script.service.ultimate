@@ -122,9 +122,7 @@ class HTTPManager:
         """Perform DELETE request with proxy support"""
         return self._make_request("DELETE", url, operation, **kwargs)
 
-    def _make_request(
-        self, method: str, url: str, operation: str, **kwargs
-    ) -> requests.Response:
+    def _make_request(self, method: str, url: str, operation: str, **kwargs) -> requests.Response:
         """
         Make HTTP request with full configuration support
         """
@@ -182,9 +180,7 @@ class HTTPManager:
             )
             raise
 
-    def _log_request(
-        self, method: str, url: str, operation: str, kwargs: Dict[str, Any]
-    ) -> None:
+    def _log_request(self, method: str, url: str, operation: str, kwargs: Dict[str, Any]) -> None:
         """Log request details with comprehensive proxy information"""
 
         # Build proxy information string
@@ -192,13 +188,9 @@ class HTTPManager:
         if self.config.proxy_config:
             if self.config.proxy_config.scope.should_use_proxy_for(operation):
                 # Proxy is configured and will be used
-                proxy_host = (
-                    f"{self.config.proxy_config.host}:{self.config.proxy_config.port}"
-                )
+                proxy_host = f"{self.config.proxy_config.host}:{self.config.proxy_config.port}"
                 proxy_type = self.config.proxy_config.proxy_type.value
-                has_auth = (
-                    "authenticated" if self.config.proxy_config.auth else "no-auth"
-                )
+                has_auth = "authenticated" if self.config.proxy_config.auth else "no-auth"
                 proxy_info = f" [proxy: {proxy_type}://{proxy_host} ({has_auth})]"
             else:
                 # Proxy is configured but not used for this operation
@@ -348,9 +340,7 @@ class HTTPManagerFactory:
         return HTTPManager(config)
 
     @staticmethod
-    def create_with_proxy_url(
-        provider_name: str, proxy_url: str, **kwargs
-    ) -> HTTPManager:
+    def create_with_proxy_url(provider_name: str, proxy_url: str, **kwargs) -> HTTPManager:
         """
         Create HTTP manager with proxy from URL string
 
@@ -363,6 +353,4 @@ class HTTPManagerFactory:
             Configured HTTPManager instance
         """
         proxy_config = ProxyConfig.from_url(proxy_url)
-        return HTTPManagerFactory.create_for_provider(
-            provider_name, proxy_config, **kwargs
-        )
+        return HTTPManagerFactory.create_for_provider(provider_name, proxy_config, **kwargs)

@@ -116,13 +116,9 @@ class BaseAuthenticator(ABC):
 
         # Log country configuration
         if self.country:
-            logger.info(
-                f"Initializing {provider_name} authenticator for country: {country}"
-            )
+            logger.info(f"Initializing {provider_name} authenticator for country: {country}")
         else:
-            logger.info(
-                f"Initializing {provider_name} authenticator (no country specified)"
-            )
+            logger.info(f"Initializing {provider_name} authenticator (no country specified)")
 
         # Use injected settings manager or create one for backward compatibility
         if settings_manager is not None:
@@ -133,9 +129,7 @@ class BaseAuthenticator(ABC):
             self.settings_manager = self._create_settings_manager(
                 config_dir, enable_kodi_integration
             )
-            logger.info(
-                f"Created settings manager for backward compatibility for {provider_name}"
-            )
+            logger.info(f"Created settings manager for backward compatibility for {provider_name}")
 
         # Register provider with settings manager
         if hasattr(self.settings_manager, "register_provider"):
@@ -177,8 +171,7 @@ class BaseAuthenticator(ABC):
     ):
         """Create fallback using adapter pattern"""
         try:
-            from ..settings.settings_manager_adapter import \
-                SettingsManagerFactory
+            from ..settings.settings_manager_adapter import SettingsManagerFactory
 
             adapter = SettingsManagerFactory.create_default_adapter(
                 prefer_unified=True,
@@ -211,14 +204,10 @@ class BaseAuthenticator(ABC):
 
                 def get_provider_credentials(self, provider_name, country=None):
                     if self.credential_manager:
-                        return self.credential_manager.load_credentials(
-                            provider_name, country
-                        )
+                        return self.credential_manager.load_credentials(provider_name, country)
                     return None
 
-                def save_provider_credentials(
-                    self, provider_name, credentials, country=None
-                ):
+                def save_provider_credentials(self, provider_name, credentials, country=None):
                     if self.credential_manager:
                         return self.credential_manager.save_credentials(
                             provider_name, credentials, country
@@ -229,9 +218,7 @@ class BaseAuthenticator(ABC):
                     return self.session_manager.load_token_data(provider_name, country)
 
                 def save_token_data(self, provider_name, token_data, country=None):
-                    return self.session_manager.save_session(
-                        provider_name, token_data, country
-                    )
+                    return self.session_manager.save_session(provider_name, token_data, country)
 
                 def get_device_id(self, provider_name, country=None):
                     return self.session_manager.get_device_id(provider_name, country)
@@ -264,9 +251,7 @@ class BaseAuthenticator(ABC):
             def get_provider_credentials(self, provider_name, country=None):
                 return None
 
-            def save_provider_credentials(
-                self, provider_name, credentials, country=None
-            ):
+            def save_provider_credentials(self, provider_name, credentials, country=None):
                 return False
 
             def load_token_data(self, provider_name, country=None):
@@ -311,9 +296,7 @@ class BaseAuthenticator(ABC):
                     logger.debug(
                         f"Settings manager doesn't support country parameter, using without"
                     )
-                    return self.settings_manager.get_provider_credentials(
-                        self.provider_name
-                    )
+                    return self.settings_manager.get_provider_credentials(self.provider_name)
             else:
                 logger.warning(
                     f"Settings manager has no credential loading method for {self.provider_name}"
@@ -321,9 +304,7 @@ class BaseAuthenticator(ABC):
                 return None
 
         except Exception as e:
-            logger.error(
-                f"Error loading credentials from manager for {self.provider_name}: {e}"
-            )
+            logger.error(f"Error loading credentials from manager for {self.provider_name}: {e}")
             return None
 
     # Abstract methods remain unchanged
@@ -344,9 +325,7 @@ class BaseAuthenticator(ABC):
         pass
 
     @abstractmethod
-    def _create_token_from_response(
-        self, response_data: Dict[str, Any]
-    ) -> BaseAuthToken:
+    def _create_token_from_response(self, response_data: Dict[str, Any]) -> BaseAuthToken:
         """Create token object from API response"""
         pass
 
@@ -369,14 +348,10 @@ class BaseAuthenticator(ABC):
 
             # Try country-aware call first
             try:
-                token_data = self.settings_manager.load_token_data(
-                    self.provider_name, self.country
-                )
+                token_data = self.settings_manager.load_token_data(self.provider_name, self.country)
             except TypeError:
                 # Fallback for managers that don't support country parameter
-                logger.debug(
-                    f"Settings manager doesn't support country parameter, using without"
-                )
+                logger.debug(f"Settings manager doesn't support country parameter, using without")
                 token_data = self.settings_manager.load_token_data(self.provider_name)
 
             if token_data:
@@ -385,9 +360,7 @@ class BaseAuthenticator(ABC):
                     f"Successfully loaded existing session for {self.provider_name}{country_str}"
                 )
             else:
-                logger.info(
-                    f"No existing session found for {self.provider_name}{country_str}"
-                )
+                logger.info(f"No existing session found for {self.provider_name}{country_str}")
                 self._current_token = None
 
         except Exception as e:
@@ -417,9 +390,7 @@ class BaseAuthenticator(ABC):
                 if success:
                     logger.debug(f"Saved session for {self.provider_name}{country_str}")
                 else:
-                    logger.warning(
-                        f"Failed to save session for {self.provider_name}{country_str}"
-                    )
+                    logger.warning(f"Failed to save session for {self.provider_name}{country_str}")
             except Exception as e:
                 logger.error(f"Error saving session for {self.provider_name}: {e}")
 
@@ -434,9 +405,7 @@ class BaseAuthenticator(ABC):
 
         # If we still don't have valid credentials, try fallback
         if not self.credentials or not self.credentials.validate():
-            logger.info(
-                f"No valid user credentials found for {self.provider_name}, using fallback"
-            )
+            logger.info(f"No valid user credentials found for {self.provider_name}, using fallback")
             self.credentials = self.get_fallback_credentials()
 
         return self.credentials is not None and self.credentials.validate()
@@ -460,14 +429,8 @@ class BaseAuthenticator(ABC):
             logger.debug(f"[{self.provider_name}{country_str}] No current token")
 
         # 1. Return existing token if valid
-        if (
-            not force_refresh
-            and self._current_token
-            and not self._current_token.is_expired
-        ):
-            logger.info(
-                f"[{self.provider_name}{country_str}] Using existing valid token"
-            )
+        if not force_refresh and self._current_token and not self._current_token.is_expired:
+            logger.info(f"[{self.provider_name}{country_str}] Using existing valid token")
             return self._current_token
 
         # 2. ENHANCED REFRESH LOGIC: Attempt refresh if we have a token with refresh capability
@@ -492,9 +455,7 @@ class BaseAuthenticator(ABC):
         if should_attempt_refresh:
             logger.info(f"[{self.provider_name}{country_str}] Attempting token refresh")
             try:
-                refreshed_token = (
-                    self._refresh_token()
-                )  # Provider-specific implementation
+                refreshed_token = self._refresh_token()  # Provider-specific implementation
                 logger.debug(
                     f"[{self.provider_name}{country_str}] Refresh result: {refreshed_token is not None}"
                 )
@@ -502,27 +463,21 @@ class BaseAuthenticator(ABC):
                 if refreshed_token:
                     self._current_token = refreshed_token
                     self._save_session()
-                    logger.info(
-                        f"[{self.provider_name}{country_str}] Token refresh successful"
-                    )
+                    logger.info(f"[{self.provider_name}{country_str}] Token refresh successful")
                     return self._current_token
                 else:
                     logger.debug(
                         f"[{self.provider_name}{country_str}] Refresh failed, falling back to full auth"
                     )
             except Exception as e:
-                logger.warning(
-                    f"[{self.provider_name}{country_str}] Token refresh failed: {e}"
-                )
+                logger.warning(f"[{self.provider_name}{country_str}] Token refresh failed: {e}")
 
         # 3. Ensure we have credentials before attempting full authentication
         if not self._ensure_credentials():
             raise Exception(f"No valid credentials available for {self.provider_name}")
 
         # 4. Perform full authentication
-        logger.info(
-            f"[{self.provider_name}{country_str}] Performing new authentication"
-        )
+        logger.info(f"[{self.provider_name}{country_str}] Performing new authentication")
         token = self._perform_authentication()
         self._current_token = token
         self._save_session()
@@ -540,9 +495,7 @@ class BaseAuthenticator(ABC):
                 )
             except TypeError:
                 # Fallback for managers that don't support country parameter
-                logger.debug(
-                    f"Settings manager doesn't support country parameter, using without"
-                )
+                logger.debug(f"Settings manager doesn't support country parameter, using without")
                 success = self.settings_manager.save_provider_credentials(
                     self.provider_name, credentials
                 )
@@ -574,14 +527,10 @@ class BaseAuthenticator(ABC):
 
                 return success
             else:
-                logger.debug(
-                    f"No Kodi sync capability available for {self.provider_name}"
-                )
+                logger.debug(f"No Kodi sync capability available for {self.provider_name}")
                 return True
         except Exception as e:
-            logger.error(
-                f"Error syncing credentials from Kodi for {self.provider_name}: {e}"
-            )
+            logger.error(f"Error syncing credentials from Kodi for {self.provider_name}: {e}")
             return False
 
     def get_credential_info(self) -> Dict[str, Any]:
@@ -606,14 +555,10 @@ class BaseAuthenticator(ABC):
                     self.provider_name, self.country
                 )
             except TypeError:
-                manager_info = self.settings_manager.get_credential_info(
-                    self.provider_name
-                )
+                manager_info = self.settings_manager.get_credential_info(self.provider_name)
             base_info.update(manager_info)
         except Exception as e:
-            logger.debug(
-                f"Could not get extended credential info for {self.provider_name}: {e}"
-            )
+            logger.debug(f"Could not get extended credential info for {self.provider_name}: {e}")
 
         return base_info
 
@@ -632,16 +577,12 @@ class BaseAuthenticator(ABC):
             if hasattr(self.settings_manager, "credential_manager"):
                 # Try country-aware call first
                 try:
-                    success = (
-                        self.settings_manager.credential_manager.delete_credentials(
-                            self.provider_name, self.country
-                        )
+                    success = self.settings_manager.credential_manager.delete_credentials(
+                        self.provider_name, self.country
                     )
                 except TypeError:
-                    success = (
-                        self.settings_manager.credential_manager.delete_credentials(
-                            self.provider_name
-                        )
+                    success = self.settings_manager.credential_manager.delete_credentials(
+                        self.provider_name
                     )
             else:
                 logger.debug(
@@ -649,19 +590,13 @@ class BaseAuthenticator(ABC):
                 )
 
             if success:
-                logger.info(
-                    f"{self.provider_name}: Stored credentials cleared successfully"
-                )
+                logger.info(f"{self.provider_name}: Stored credentials cleared successfully")
                 self.invalidate_token()
             else:
-                logger.warning(
-                    f"{self.provider_name}: Failed to clear stored credentials"
-                )
+                logger.warning(f"{self.provider_name}: Failed to clear stored credentials")
             return success
         except Exception as e:
-            logger.error(
-                f"Error clearing stored credentials for {self.provider_name}: {e}"
-            )
+            logger.error(f"Error clearing stored credentials for {self.provider_name}: {e}")
             return False
 
     def has_stored_credentials(self) -> bool:
@@ -673,14 +608,10 @@ class BaseAuthenticator(ABC):
                     self.provider_name, self.country
                 )
             except TypeError:
-                credentials = self.settings_manager.get_provider_credentials(
-                    self.provider_name
-                )
+                credentials = self.settings_manager.get_provider_credentials(self.provider_name)
             return credentials is not None and credentials.validate()
         except Exception as e:
-            logger.debug(
-                f"Error checking stored credentials for {self.provider_name}: {e}"
-            )
+            logger.debug(f"Error checking stored credentials for {self.provider_name}: {e}")
             return False
 
     def test_current_credentials(self) -> bool:
@@ -731,9 +662,7 @@ class BaseAuthenticator(ABC):
         try:
             # Try country-aware call first
             try:
-                return self.settings_manager.get_device_id(
-                    self.provider_name, self.country
-                )
+                return self.settings_manager.get_device_id(self.provider_name, self.country)
             except TypeError:
                 return self.settings_manager.get_device_id(self.provider_name)
         except Exception as e:
@@ -818,13 +747,10 @@ class BaseAuthenticator(ABC):
                 self.provider_name, self.country
             )
         except TypeError:
-            stored_creds = self.settings_manager.get_provider_credentials(
-                self.provider_name
-            )
+            stored_creds = self.settings_manager.get_provider_credentials(self.provider_name)
 
         has_user_creds = (
-            isinstance(stored_creds, UserPasswordCredentials)
-            and stored_creds.validate()
+            isinstance(stored_creds, UserPasswordCredentials) and stored_creds.validate()
         )
 
         # Check current credentials

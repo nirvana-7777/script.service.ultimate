@@ -39,9 +39,7 @@ class ChannelOperations:
 
         return channels
 
-    def get_channel_manifest(
-        self, provider_name: str, channel_id: str, **kwargs
-    ) -> Optional[str]:
+    def get_channel_manifest(self, provider_name: str, channel_id: str, **kwargs) -> Optional[str]:
         """Get manifest URL for a specific channel."""
         provider = self.registry.get_provider(provider_name)
         if not provider:
@@ -49,9 +47,7 @@ class ChannelOperations:
 
         manifest_url = provider.get_manifest(channel_id, **kwargs)
         if manifest_url:
-            logger.debug(
-                f"Retrieved manifest for '{channel_id}' from '{provider_name}'"
-            )
+            logger.debug(f"Retrieved manifest for '{channel_id}' from '{provider_name}'")
         return manifest_url
 
     def get_all_channels(

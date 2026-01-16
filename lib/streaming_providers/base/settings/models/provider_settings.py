@@ -3,9 +3,15 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
 from ...utils.logger import logger
-from .settings_models import (SettingValue, boolean_setting, integer_setting,
-                              password_setting, port_setting, select_setting,
-                              string_setting)
+from .settings_models import (
+    SettingValue,
+    boolean_setting,
+    integer_setting,
+    password_setting,
+    port_setting,
+    select_setting,
+    string_setting,
+)
 
 
 @dataclass
@@ -361,9 +367,7 @@ class ProviderSettingsSchema:
         required = []
         for setting_name, setting in self._settings.items():
             # Check if setting has a "not_empty" validation rule
-            has_required_rule = any(
-                rule.name == "not_empty" for rule in setting.validation_rules
-            )
+            has_required_rule = any(rule.name == "not_empty" for rule in setting.validation_rules)
             if has_required_rule:
                 required.append(setting_name)
         return required
@@ -468,12 +472,9 @@ class ProviderSettingsSchema:
         """Convert schema to dictionary representation"""
         return {
             "provider_name": self.provider_name,
-            "settings": {
-                name: setting.to_dict() for name, setting in self._settings.items()
-            },
+            "settings": {name: setting.to_dict() for name, setting in self._settings.items()},
             "categories": {
-                category: list(settings)
-                for category, settings in self._categories.items()
+                category: list(settings) for category, settings in self._categories.items()
             },
             "kodi_mapping": self._kodi_mapping.copy(),
             "configuration_status": self.get_configuration_completeness(),
@@ -576,17 +577,13 @@ class StandardProviderSettings:
         return cls._registered_schemas["ard"]
 
     @classmethod
-    def register_provider_schema(
-        cls, provider_name: str, schema: ProviderSettingsSchema
-    ) -> None:
+    def register_provider_schema(cls, provider_name: str, schema: ProviderSettingsSchema) -> None:
         """Register a custom provider schema"""
         cls._registered_schemas[provider_name] = schema
         logger.info(f"Registered custom settings schema for provider: {provider_name}")
 
     @classmethod
-    def get_provider_schema(
-        cls, provider_name: str
-    ) -> Optional[ProviderSettingsSchema]:
+    def get_provider_schema(cls, provider_name: str) -> Optional[ProviderSettingsSchema]:
         """Get schema for a provider, creating default if not found"""
         # Check if we have a specific schema method
         method_name = f"get_{provider_name}_schema"
@@ -617,9 +614,7 @@ class StandardProviderSettings:
                 provider_name = attr_name[4:-7]  # Remove 'get_' and '_schema'
                 builtin_providers.append(provider_name)
 
-        all_providers = list(
-            set(builtin_providers + list(cls._registered_schemas.keys()))
-        )
+        all_providers = list(set(builtin_providers + list(cls._registered_schemas.keys())))
         return sorted(all_providers)
 
     @classmethod

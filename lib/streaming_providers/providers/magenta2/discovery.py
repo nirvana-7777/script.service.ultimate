@@ -5,11 +5,15 @@ from typing import Any, Dict, Optional
 from ...base.models.proxy_models import ProxyConfig
 from ...base.network import HTTPManager
 from ...base.utils.logger import logger
-from .config_models import (BootstrapConfig, ManifestConfig, OpenIDConfig,
-                            ProviderConfig)
-from .constants import (BOOTSTRAP_CACHE_DURATION, DEFAULT_REQUEST_TIMEOUT,
-                        MAGENTA2_BOOTSTRAP_URL, MAGENTA2_MANIFEST_URL,
-                        OPENID_CONFIG_CACHE_DURATION, SUBSCRIBER_TYPES)
+from .config_models import BootstrapConfig, ManifestConfig, OpenIDConfig, ProviderConfig
+from .constants import (
+    BOOTSTRAP_CACHE_DURATION,
+    DEFAULT_REQUEST_TIMEOUT,
+    MAGENTA2_BOOTSTRAP_URL,
+    MAGENTA2_MANIFEST_URL,
+    OPENID_CONFIG_CACHE_DURATION,
+    SUBSCRIBER_TYPES,
+)
 
 
 class DiscoveryService:
@@ -97,9 +101,7 @@ class DiscoveryService:
             self._create_fallback_configuration()
             raise
 
-    def discover_bootstrap(
-        self, force_refresh: bool = False
-    ) -> Optional[BootstrapConfig]:
+    def discover_bootstrap(self, force_refresh: bool = False) -> Optional[BootstrapConfig]:
         """
         Discover bootstrap configuration
 
@@ -152,9 +154,7 @@ class DiscoveryService:
             if self._bootstrap_config.taa_url:
                 logger.debug(f"TAA URL: {self._bootstrap_config.taa_url}")
             if self._bootstrap_config.device_tokens_url:
-                logger.debug(
-                    f"Device tokens URL: {self._bootstrap_config.device_tokens_url}"
-                )
+                logger.debug(f"Device tokens URL: {self._bootstrap_config.device_tokens_url}")
 
             return self._bootstrap_config
 
@@ -165,9 +165,7 @@ class DiscoveryService:
             self._last_bootstrap = None
             return None
 
-    def discover_manifest(
-        self, force_refresh: bool = False
-    ) -> Optional[ManifestConfig]:
+    def discover_manifest(self, force_refresh: bool = False) -> Optional[ManifestConfig]:
         """
         ENHANCED: Discover manifest configuration including device token
         Uses correct manifest endpoint parameters
@@ -188,28 +186,27 @@ class DiscoveryService:
             # Determine manifest URL - prefer device_tokens_url from bootstrap
             if self._bootstrap_config and self._bootstrap_config.device_tokens_url:
                 manifest_url = self._bootstrap_config.device_tokens_url
-                logger.debug(
-                    f"Using bootstrap device_tokens_url for manifest: {manifest_url}"
-                )
+                logger.debug(f"Using bootstrap device_tokens_url for manifest: {manifest_url}")
             else:
                 terminal_type = self.terminal_type.lower().replace("_", "-")
                 manifest_url = MAGENTA2_MANIFEST_URL.format(terminal_type=terminal_type)
                 logger.debug(f"Using fallback manifest URL: {manifest_url}")
 
             # Build correct manifest parameters
-            from .constants import (MAGENTA2_APP_NAME, MAGENTA2_APP_VERSION,
-                                    MAGENTA2_RUNTIME_VERSION,
-                                    MANIFEST_FIRMWARE_MAPPINGS,
-                                    MANIFEST_MODEL_MAPPINGS)
+            from .constants import (
+                MAGENTA2_APP_NAME,
+                MAGENTA2_APP_VERSION,
+                MAGENTA2_RUNTIME_VERSION,
+                MANIFEST_FIRMWARE_MAPPINGS,
+                MANIFEST_MODEL_MAPPINGS,
+            )
 
             params = {
                 "model": MANIFEST_MODEL_MAPPINGS.get(self.platform, "DT:ATV-AndroidTV"),
                 "deviceId": self.device_id,
                 "appname": MAGENTA2_APP_NAME,
                 "appVersion": MAGENTA2_APP_VERSION,
-                "firmware": MANIFEST_FIRMWARE_MAPPINGS.get(
-                    self.platform, "API level 30"
-                ),
+                "firmware": MANIFEST_FIRMWARE_MAPPINGS.get(self.platform, "API level 30"),
                 "runtimeVersion": MAGENTA2_RUNTIME_VERSION,
                 "duid": self.device_id,  # Same as deviceId
             }
@@ -237,9 +234,7 @@ class DiscoveryService:
 
             if device_token:
                 logger.info("✓ Device token found in manifest")
-                logger.debug(
-                    f"Device token preview: {device_token[:20]}...{device_token[-10:]}"
-                )
+                logger.debug(f"Device token preview: {device_token[:20]}...{device_token[-10:]}")
             else:
                 logger.warning("⚠️ Device token NOT found in manifest response")
 
@@ -268,9 +263,7 @@ class DiscoveryService:
             self._last_manifest = None
             return None
 
-    def discover_openid_config(
-        self, force_refresh: bool = False
-    ) -> Optional[OpenIDConfig]:
+    def discover_openid_config(self, force_refresh: bool = False) -> Optional[OpenIDConfig]:
         """
         Discover OpenID Connect configuration
 
@@ -285,10 +278,7 @@ class DiscoveryService:
                 return self._openid_config
 
         try:
-            if (
-                not self._bootstrap_config
-                or not self._bootstrap_config.openid_config_url
-            ):
+            if not self._bootstrap_config or not self._bootstrap_config.openid_config_url:
                 logger.warning("No OpenID config URL available from bootstrap")
                 return None
 
@@ -367,14 +357,10 @@ class DiscoveryService:
                 "mpx_account_uri": self._manifest_config.mpx.get_account_uri(),
                 "feed_count": len(self._manifest_config.mpx.feeds),
                 "has_device_token": bool(device_token),
-                "device_token_preview": (
-                    device_token[:20] + "..." if device_token else None
-                ),
+                "device_token_preview": (device_token[:20] + "..." if device_token else None),
                 "drm_endpoints": {
                     "widevine": bool(self._manifest_config.drm.widevine_license_url),
-                    "vod_widevine": bool(
-                        self._manifest_config.drm.vod_widevine_license_url
-                    ),
+                    "vod_widevine": bool(self._manifest_config.drm.vod_widevine_license_url),
                     "fairplay": bool(self._manifest_config.drm.fairplay_license_url),
                 },
                 "tvhub_count": len(self._manifest_config.tv_hubs.base_urls),
@@ -383,17 +369,13 @@ class DiscoveryService:
         if self._openid_config:
             status["openid"] = {
                 "has_token_endpoint": bool(self._openid_config.token_endpoint),
-                "has_authorization_endpoint": bool(
-                    self._openid_config.authorization_endpoint
-                ),
+                "has_authorization_endpoint": bool(self._openid_config.authorization_endpoint),
             }
 
         # Cache status
         now = time.time()
         status["cache"] = {
-            "bootstrap_age": (
-                now - self._last_bootstrap if self._last_bootstrap else None
-            ),
+            "bootstrap_age": (now - self._last_bootstrap if self._last_bootstrap else None),
             "manifest_age": now - self._last_manifest if self._last_manifest else None,
             "openid_age": now - self._last_openid if self._last_openid else None,
         }

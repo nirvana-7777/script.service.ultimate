@@ -264,9 +264,7 @@ class StreamingProvider(ABC):
         """Get manifest URL for a specific channel by ID"""
         return None
 
-    def get_dynamic_manifest_params(
-        self, channel: StreamingChannel, **kwargs
-    ) -> Optional[str]:
+    def get_dynamic_manifest_params(self, channel: StreamingChannel, **kwargs) -> Optional[str]:
         """Optional: Get dynamic manifest parameters for a channel"""
         return None
 
@@ -283,9 +281,7 @@ class StreamingProvider(ABC):
 
     def to_json(self, channels: List[StreamingChannel] = None, indent: int = 2) -> str:
         """Convert to JSON string"""
-        return json.dumps(
-            self.to_output_format(channels), indent=indent, ensure_ascii=False
-        )
+        return json.dumps(self.to_output_format(channels), indent=indent, ensure_ascii=False)
 
     # ============================================================================
     # HTTP MANAGER SETUP (Already Implemented)
@@ -351,9 +347,7 @@ class StreamingProvider(ABC):
     ) -> Optional[ProxyConfig]:
         """Resolve proxy configuration from multiple sources with priority"""
         if proxy_config is not None:
-            logger.debug(
-                f"{provider_name}: Using directly provided proxy configuration"
-            )
+            logger.debug(f"{provider_name}: Using directly provided proxy configuration")
             return proxy_config
 
         if proxy_url:
@@ -361,9 +355,7 @@ class StreamingProvider(ABC):
                 logger.debug(f"{provider_name}: Creating proxy config from URL")
                 return ProxyConfig.from_url(proxy_url)
             except Exception as e:
-                logger.warning(
-                    f"{provider_name}: Failed to parse proxy URL '{proxy_url}': {e}"
-                )
+                logger.warning(f"{provider_name}: Failed to parse proxy URL '{proxy_url}': {e}")
 
         try:
             from .network import ProxyConfigManager
@@ -375,14 +367,10 @@ class StreamingProvider(ABC):
                 logger.debug(f"{provider_name}: Using proxy from ProxyConfigManager")
                 return managed_proxy
             else:
-                logger.debug(
-                    f"{provider_name}: No proxy configuration found in ProxyConfigManager"
-                )
+                logger.debug(f"{provider_name}: No proxy configuration found in ProxyConfigManager")
 
         except Exception as e:
-            logger.warning(
-                f"{provider_name}: Could not load proxy from ProxyConfigManager: {e}"
-            )
+            logger.warning(f"{provider_name}: Could not load proxy from ProxyConfigManager: {e}")
 
         logger.debug(f"{provider_name}: No proxy configuration available")
         return None
@@ -395,9 +383,7 @@ class StreamingProvider(ABC):
         info_parts = [f"HTTP manager initialized for '{provider_name}'"]
 
         if proxy_config:
-            proxy_type = (
-                proxy_config.proxy_type.value if proxy_config.proxy_type else "http"
-            )
+            proxy_type = proxy_config.proxy_type.value if proxy_config.proxy_type else "http"
             proxy_host = f"{proxy_config.host}:{proxy_config.port}"
             has_auth = "authenticated" if proxy_config.auth else "no-auth"
             info_parts.append(f"proxy: {proxy_type}://{proxy_host} ({has_auth})")
@@ -429,14 +415,10 @@ class StreamingProvider(ABC):
 
         if http_manager and hasattr(authenticator, "http_manager"):
             if authenticator.http_manager is None:
-                logger.debug(
-                    f"{self.provider_name}: Sharing HTTP manager with authenticator"
-                )
+                logger.debug(f"{self.provider_name}: Sharing HTTP manager with authenticator")
                 authenticator.http_manager = http_manager
             else:
-                logger.debug(
-                    f"{self.provider_name}: Using authenticator's existing HTTP manager"
-                )
+                logger.debug(f"{self.provider_name}: Using authenticator's existing HTTP manager")
                 http_manager = authenticator.http_manager
 
         return http_manager
@@ -512,9 +494,7 @@ class StreamingProvider(ABC):
             elif self.authenticator is not None:
                 token = self.authenticator.get_bearer_token(**kwargs)
             else:
-                logger.warning(
-                    f"{self.provider_name}: No token getter or authenticator available"
-                )
+                logger.warning(f"{self.provider_name}: No token getter or authenticator available")
                 token = None
 
             # Add auth header based on type
@@ -643,17 +623,13 @@ class StreamingProvider(ABC):
         try:
             # Try to get token based on type
             if token_type == "bearer":
-                return self.authenticator.get_bearer_token(
-                    force_refresh=force_refresh, **kwargs
-                )
+                return self.authenticator.get_bearer_token(force_refresh=force_refresh, **kwargs)
             elif hasattr(self.authenticator, f"get_{token_type}_token"):
                 getter = getattr(self.authenticator, f"get_{token_type}_token")
                 return getter(force_refresh=force_refresh, **kwargs)
             else:
                 # Default to bearer token
-                return self.authenticator.get_bearer_token(
-                    force_refresh=force_refresh, **kwargs
-                )
+                return self.authenticator.get_bearer_token(force_refresh=force_refresh, **kwargs)
         except Exception as e:
             logger.error(f"{self.provider_name}: Error getting {token_type} token: {e}")
             return None
@@ -723,9 +699,7 @@ class StreamingProvider(ABC):
         Override in subclass if catchup requires different DRM configuration.
         """
         if not self.supports_catchup:
-            logger.debug(
-                f"{self.provider_name}: Catchup not supported, falling back to live DRM"
-            )
+            logger.debug(f"{self.provider_name}: Catchup not supported, falling back to live DRM")
             return self.get_drm(channel_id, **kwargs)
 
         logger.debug(
@@ -1060,16 +1034,13 @@ class StreamingProvider(ABC):
             ValueError: If auth_type is not supported
         """
         if not self.validate_auth_type(auth_type):
-            raise ValueError(
-                f"Auth type '{auth_type}' not supported by {self.provider_name}"
-            )
+            raise ValueError(f"Auth type '{auth_type}' not supported by {self.provider_name}")
 
         requirements = {
             "auth_type": auth_type,
             "needs_storage": auth_type in ["user_credentials", "client_credentials"],
             "provides_token": auth_type != "anonymous",
-            "user_interaction_required": auth_type
-            in ["user_credentials", "device_registration"],
+            "user_interaction_required": auth_type in ["user_credentials", "device_registration"],
         }
 
         # Type-specific details
@@ -1116,9 +1087,7 @@ class StreamingProvider(ABC):
     def requires_stored_credentials(self) -> bool:
         """True if provider needs credentials stored in settings."""
         credential_types = ["user_credentials", "client_credentials"]
-        return any(
-            auth_type in credential_types for auth_type in self.supported_auth_types
-        )
+        return any(auth_type in credential_types for auth_type in self.supported_auth_types)
 
     # ===== AUTHENTICATION PROPERTIES =====
 
@@ -1207,8 +1176,9 @@ class StreamingProvider(ABC):
         Returns:
             AuthStatus object
         """
-        from ..providers.auth_builder import \
-            AuthStatusBuilder  # Import here to avoid circular imports
+        from ..providers.auth_builder import (
+            AuthStatusBuilder,
+        )  # Import here to avoid circular imports
 
         return AuthStatusBuilder.for_provider(self, context)
 

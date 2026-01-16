@@ -57,9 +57,7 @@ class EndpointManager:
 
         # Authentication endpoints
         if bootstrap.taa_url:
-            self._add_endpoint(
-                "taa_auth", EndpointCategory.AUTHENTICATION, bootstrap.taa_url
-            )
+            self._add_endpoint("taa_auth", EndpointCategory.AUTHENTICATION, bootstrap.taa_url)
 
         if bootstrap.openid_config_url:
             self._add_endpoint(
@@ -94,9 +92,7 @@ class EndpointManager:
             )
 
         if bootstrap.account_base_url:
-            self._add_endpoint(
-                "account_base", EndpointCategory.USER, bootstrap.account_base_url
-            )
+            self._add_endpoint("account_base", EndpointCategory.USER, bootstrap.account_base_url)
 
         if bootstrap.consumer_accounts_url:
             self._add_endpoint(
@@ -129,9 +125,7 @@ class EndpointManager:
                 EndpointCategory.CONTENT,
                 manifest.mpx.channel_stations_feed,
             )
-            logger.info(
-                f"Channel stations feed found: {manifest.mpx.channel_stations_feed}"
-            )
+            logger.info(f"Channel stations feed found: {manifest.mpx.channel_stations_feed}")
 
         # DRM endpoints
         if manifest.drm.widevine_license_url:
@@ -159,17 +153,13 @@ class EndpointManager:
         for feed_name, feed_template in manifest.mpx.feeds.items():
             resolved_url = self.config.get_resolved_feed_url(feed_name)
             if resolved_url:
-                self._add_endpoint(
-                    f"mpx_feed_{feed_name}", EndpointCategory.MPX, resolved_url
-                )
+                self._add_endpoint(f"mpx_feed_{feed_name}", EndpointCategory.MPX, resolved_url)
 
         # TV Hub URLs (resolved with client model)
         for hub_name in manifest.tv_hubs.base_urls.keys():
             resolved_url = self.config.get_resolved_tvhub_url(hub_name)
             if resolved_url:
-                self._add_endpoint(
-                    f"tvhub_{hub_name}", EndpointCategory.TVHUBS, resolved_url
-                )
+                self._add_endpoint(f"tvhub_{hub_name}", EndpointCategory.TVHUBS, resolved_url)
 
     def _add_openid_endpoints(self) -> None:
         """Add endpoints from OpenID configuration"""
@@ -260,9 +250,7 @@ class EndpointManager:
     def get_endpoints_by_category(self, category: EndpointCategory) -> Dict[str, str]:
         """Get all endpoints for a specific category"""
         return {
-            name: info.url
-            for name, info in self._endpoints.items()
-            if info.category == category
+            name: info.url for name, info in self._endpoints.items() if info.category == category
         }
 
     def has_endpoint(self, name: str) -> bool:

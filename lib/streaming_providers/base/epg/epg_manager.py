@@ -146,9 +146,7 @@ class EPGManager:
             # Step 1: Map to EPG channel ID
             epg_channel_id = self.mapping.get_epg_channel_id(provider_name, channel_id)
             if not epg_channel_id:
-                logger.warning(
-                    f"EPGManager: No EPG mapping found for {provider_name}/{channel_id}"
-                )
+                logger.warning(f"EPGManager: No EPG mapping found for {provider_name}/{channel_id}")
                 return []
 
             logger.debug(f"EPGManager: Mapped to EPG channel ID: {epg_channel_id}")
@@ -218,9 +216,7 @@ class EPGManager:
         try:
             epg_channel_id = self.mapping.get_epg_channel_id(provider_name, channel_id)
             if not epg_channel_id:
-                logger.warning(
-                    f"EPGManager: No EPG mapping found for {provider_name}/{channel_id}"
-                )
+                logger.warning(f"EPGManager: No EPG mapping found for {provider_name}/{channel_id}")
                 return []
 
             xml_path = self.cache.get_or_download(self.epg_url)
@@ -267,9 +263,7 @@ class EPGManager:
         Returns:
             Dictionary mapping channel IDs to their EPG entries (as dicts)
         """
-        logger.info(
-            f"EPGManager: Getting EPG for all channels of provider '{provider_name}'"
-        )
+        logger.info(f"EPGManager: Getting EPG for all channels of provider '{provider_name}'")
 
         result = {}
 
@@ -277,9 +271,7 @@ class EPGManager:
         provider_mapping = self.mapping.get_provider_mapping(provider_name)
 
         if not provider_mapping:
-            logger.warning(
-                f"EPGManager: No channels mapped for provider '{provider_name}'"
-            )
+            logger.warning(f"EPGManager: No channels mapped for provider '{provider_name}'")
             return result
 
         # Get EPG for each channel
@@ -395,14 +387,8 @@ class EPGManager:
 
                 addon = xbmcaddon.Addon()
                 kodi_url = addon.getSetting("epg_xml_url")
-                if (
-                    kodi_url
-                    and kodi_url.strip()
-                    and kodi_url != "https://example.com/epg.xml.gz"
-                ):
-                    logger.info(
-                        f"EPGManager: Using EPG URL from Kodi settings: {kodi_url}"
-                    )
+                if kodi_url and kodi_url.strip() and kodi_url != "https://example.com/epg.xml.gz":
+                    logger.info(f"EPGManager: Using EPG URL from Kodi settings: {kodi_url}")
                     return kodi_url.strip()
         except Exception as e:
             logger.debug(f"EPGManager: Could not get EPG URL from Kodi settings: {e}")
@@ -411,24 +397,16 @@ class EPGManager:
         try:
             env_manager = get_environment_manager()
             config_url = env_manager.get_config("epg_url")
-            if (
-                config_url
-                and config_url.strip()
-                and config_url != "https://example.com/epg.xml.gz"
-            ):
+            if config_url and config_url.strip() and config_url != "https://example.com/epg.xml.gz":
                 logger.info(f"EPGManager: Using EPG URL from config.json: {config_url}")
                 return config_url.strip()
         except Exception as e:
-            logger.debug(
-                f"EPGManager: Could not get EPG URL from environment manager: {e}"
-            )
+            logger.debug(f"EPGManager: Could not get EPG URL from environment manager: {e}")
 
         # 4. Environment variable
         env_url = os.environ.get("ULTIMATE_EPG_URL")
         if env_url and env_url.strip() and env_url != "https://example.com/epg.xml.gz":
-            logger.info(
-                f"EPGManager: Using EPG URL from environment variable: {env_url}"
-            )
+            logger.info(f"EPGManager: Using EPG URL from environment variable: {env_url}")
             return env_url.strip()
 
         # 5. Try to get the last known URL from cache metadata
@@ -451,12 +429,8 @@ class EPGManager:
 
         # 6. Default fallback (LAST RESORT - should rarely be used)
         default_url = "https://example.com/epg.xml.gz"
-        logger.warning(
-            f"EPGManager: No valid EPG URL found, using default: {default_url}"
-        )
-        logger.warning(
-            "Please set ULTIMATE_EPG_URL environment variable or configure in settings!"
-        )
+        logger.warning(f"EPGManager: No valid EPG URL found, using default: {default_url}")
+        logger.warning("Please set ULTIMATE_EPG_URL environment variable or configure in settings!")
         return default_url
 
     @staticmethod

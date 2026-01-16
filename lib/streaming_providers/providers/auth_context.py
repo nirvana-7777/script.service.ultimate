@@ -11,9 +11,7 @@ class AuthContext:
     def __init__(self, settings_manager):
         self.settings = settings_manager
         self.session = settings_manager.session_manager if settings_manager else None
-        self.credentials = (
-            settings_manager.credential_manager if settings_manager else None
-        )
+        self.credentials = settings_manager.credential_manager if settings_manager else None
 
     def get_credentials(self, provider_name: str, country: str = None) -> Optional[Any]:
         """Get credentials for provider"""

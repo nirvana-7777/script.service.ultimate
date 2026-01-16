@@ -18,14 +18,21 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
-from ...base.auth.base_auth import (BaseAuthenticator, BaseAuthToken,
-                                    TokenAuthLevel)
+from ...base.auth.base_auth import BaseAuthenticator, BaseAuthToken, TokenAuthLevel
 from ...base.auth.credentials import ClientCredentials
 from ...base.utils.logger import logger
-from .constants import (APPVERSION2, DEFAULT_COUNTRY, DEFAULT_PLATFORM, IDM,
-                        MAGENTA2_CLIENT_IDS, MAGENTA2_PLATFORMS,
-                        SSO_USER_AGENT, SUPPORTED_COUNTRIES,
-                        TAA_REQUEST_TEMPLATE)
+from .constants import (
+    APPVERSION2,
+    DEFAULT_COUNTRY,
+    DEFAULT_PLATFORM,
+    IDM,
+    MAGENTA2_CLIENT_IDS,
+    MAGENTA2_PLATFORMS,
+    SSO_USER_AGENT,
+    SUPPORTED_COUNTRIES,
+    TAA_REQUEST_TEMPLATE,
+)
+
 # Import Magenta2-specific components
 from .sam3_client import Sam3Client
 from .sso_client import SsoClient
@@ -142,11 +149,7 @@ class Magenta2UserCredentials(Magenta2Credentials):
 
     def validate_user_credentials(self) -> bool:
         """Validate user credentials"""
-        return (
-            self.has_user_credentials()
-            and len(self.username) > 0
-            and len(self.password) > 0
-        )
+        return self.has_user_credentials() and len(self.username) > 0 and len(self.password) > 0
 
     @property
     def credential_type(self) -> str:
@@ -258,9 +261,7 @@ class Magenta2AuthConfig:
         return headers
 
     @staticmethod
-    def get_sso_headers(
-        session_id: str = None, device_id: str = None
-    ) -> Dict[str, str]:
+    def get_sso_headers(session_id: str = None, device_id: str = None) -> Dict[str, str]:
         """Get headers for SSO requests"""
         headers = {
             "User-Agent": SSO_USER_AGENT,
@@ -431,34 +432,22 @@ class Magenta2Authenticator(BaseAuthenticator):
         # TokenFlowManager handles all token acquisition
         return {}
 
-    def _create_token_from_response(
-        self, response_data: Dict[str, Any]
-    ) -> BaseAuthToken:
+    def _create_token_from_response(self, response_data: Dict[str, Any]) -> BaseAuthToken:
         """
         Create token object from API response and compose persona token
         """
         # Handle different response key formats
-        access_token = response_data.get(
-            "access_token", response_data.get("accessToken")
-        )
+        access_token = response_data.get("access_token", response_data.get("accessToken"))
         if not access_token:
             raise ValueError("No access token in response")
 
         # Create token with ALL fields
         token = Magenta2AuthToken(
             access_token=access_token,
-            refresh_token=response_data.get(
-                "refresh_token", response_data.get("refreshToken", "")
-            ),
-            token_type=response_data.get(
-                "token_type", response_data.get("tokenType", "Bearer")
-            ),
-            expires_in=response_data.get(
-                "expires_in", response_data.get("expiresIn", 3600)
-            ),
-            issued_at=response_data.get(
-                "issued_at", response_data.get("issuedAt", time.time())
-            ),
+            refresh_token=response_data.get("refresh_token", response_data.get("refreshToken", "")),
+            token_type=response_data.get("token_type", response_data.get("tokenType", "Bearer")),
+            expires_in=response_data.get("expires_in", response_data.get("expiresIn", 3600)),
+            issued_at=response_data.get("issued_at", response_data.get("issuedAt", time.time())),
             # Magenta2-specific fields from JWT
             dc_cts_persona_token=response_data.get("dc_cts_persona_token"),
             persona_id=response_data.get("persona_id"),
@@ -495,9 +484,7 @@ class Magenta2Authenticator(BaseAuthenticator):
                 token.account_uri = f"urn:theplatform:auth:root:{self._mpx_account_pid}"
                 composed = token.compose_persona_token()
                 if composed:
-                    logger.info(
-                        "✓ Persona token composed using constructed account_uri"
-                    )
+                    logger.info("✓ Persona token composed using constructed account_uri")
 
         # Classify token if it's NOT from line_auth
         if not response_data.get("auth_source") == "line_auth":
@@ -558,22 +545,13 @@ class Magenta2Authenticator(BaseAuthenticator):
             if not token or not token.access_token:
                 return TokenAuthLevel.UNKNOWN
 
-            claims = (
-                token.get_jwt_claims() if hasattr(token, "get_jwt_claims") else None
-            )
+            claims = token.get_jwt_claims() if hasattr(token, "get_jwt_claims") else None
             if not claims:
                 # If we can't parse claims, check token attributes
-                if (
-                    hasattr(token, "dc_cts_persona_token")
-                    and token.dc_cts_persona_token
-                ):
-                    logger.debug(
-                        "Token classified as USER_AUTHENTICATED (persona token present)"
-                    )
+                if hasattr(token, "dc_cts_persona_token") and token.dc_cts_persona_token:
+                    logger.debug("Token classified as USER_AUTHENTICATED (persona token present)")
                     return TokenAuthLevel.USER_AUTHENTICATED
-                logger.debug(
-                    "Token classified as CLIENT_CREDENTIALS (no claims, no persona token)"
-                )
+                logger.debug("Token classified as CLIENT_CREDENTIALS (no claims, no persona token)")
                 return TokenAuthLevel.CLIENT_CREDENTIALS
 
             logger.debug(f"JWT claims for classification: {list(claims.keys())}")
@@ -599,9 +577,7 @@ class Magenta2Authenticator(BaseAuthenticator):
 
             for key in user_claim_keys:
                 if key in claims:
-                    logger.debug(
-                        f"Token classified as USER_AUTHENTICATED (found {key} in JWT)"
-                    )
+                    logger.debug(f"Token classified as USER_AUTHENTICATED (found {key} in JWT)")
                     return TokenAuthLevel.USER_AUTHENTICATED
 
             # Check for client credentials patterns
@@ -631,9 +607,7 @@ class Magenta2Authenticator(BaseAuthenticator):
             logger.info("Refreshing Magenta2 token via TokenFlowManager")
 
             # Force refresh through TokenFlowManager
-            persona_result = self.token_flow_manager.get_persona_token(
-                force_refresh=True
-            )
+            persona_result = self.token_flow_manager.get_persona_token(force_refresh=True)
 
             if persona_result.success:
                 token = Magenta2AuthToken(
@@ -678,16 +652,12 @@ class Magenta2Authenticator(BaseAuthenticator):
                 # Get QR code URL from dynamic endpoints
                 if "login_qr_code" in self._dynamic_endpoints:
                     qr_code_url_template = self._dynamic_endpoints["login_qr_code"]
-                    logger.debug(
-                        f"QR code URL from dynamic endpoints: {qr_code_url_template}"
-                    )
+                    logger.debug(f"QR code URL from dynamic endpoints: {qr_code_url_template}")
 
                 if self._openid_config:
                     issuer_url = self._openid_config.get("issuer")
                     oauth_endpoint = self._openid_config.get("token_endpoint")
-                    backchannel_start_url = self._openid_config.get(
-                        "backchannel_auth_start"
-                    )
+                    backchannel_start_url = self._openid_config.get("backchannel_auth_start")
 
                 self._sam3_client = Sam3Client(
                     http_manager=self._http_manager,
@@ -715,9 +685,7 @@ class Magenta2Authenticator(BaseAuthenticator):
 
     def _initialize_taa_client(self) -> None:
         """Initialize TAA client"""
-        self._taa_client = TaaClient(
-            http_manager=self._http_manager, platform=self.platform
-        )
+        self._taa_client = TaaClient(http_manager=self._http_manager, platform=self.platform)
         logger.debug("TAA client initialized")
 
     def _initialize_token_flow_manager(self) -> None:
@@ -725,9 +693,7 @@ class Magenta2Authenticator(BaseAuthenticator):
         if self._sam3_client and self._taa_client:
             session_manager = getattr(self.settings_manager, "session_manager", None)
             if not session_manager:
-                logger.error(
-                    "Cannot initialize TokenFlowManager: No session_manager available"
-                )
+                logger.error("Cannot initialize TokenFlowManager: No session_manager available")
                 return
 
             self.token_flow_manager = TokenFlowManager(
@@ -765,9 +731,7 @@ class Magenta2Authenticator(BaseAuthenticator):
         if not self.token_flow_manager:
             raise Exception("TokenFlowManager not initialized")
 
-        persona_result = self.token_flow_manager.get_persona_token(
-            force_refresh=force_refresh
-        )
+        persona_result = self.token_flow_manager.get_persona_token(force_refresh=force_refresh)
 
         if not persona_result.success:
             raise Exception(f"Failed to get persona token: {persona_result.error}")
@@ -808,13 +772,9 @@ class Magenta2Authenticator(BaseAuthenticator):
 
         if self._sam3_client:
             self._sam3_client.update_sam3_client_id(client_id)
-            logger.info(
-                f"✓ Updated SAM3 client ID: {old_client_id[:8]}... -> {client_id[:8]}..."
-            )
+            logger.info(f"✓ Updated SAM3 client ID: {old_client_id[:8]}... -> {client_id[:8]}...")
         else:
-            logger.debug(
-                f"Updated SAM3 client ID (no client to update yet): {client_id}"
-            )
+            logger.debug(f"Updated SAM3 client ID (no client to update yet): {client_id}")
 
     def update_client_model(self, client_model: str) -> None:
         """Update client model"""
@@ -846,9 +806,7 @@ class Magenta2Authenticator(BaseAuthenticator):
         self._mpx_account_pid = account_pid
         logger.debug(f"MPX account PID set: {account_pid}")
 
-    def set_device_token(
-        self, device_token: str, authorize_tokens_url: str = None
-    ) -> None:
+    def set_device_token(self, device_token: str, authorize_tokens_url: str = None) -> None:
         """
         Enhanced device token setup with both endpoints
 
@@ -863,9 +821,7 @@ class Magenta2Authenticator(BaseAuthenticator):
         if self._sam3_client and authorize_tokens_url:
             self._sam3_client.line_auth_endpoint = authorize_tokens_url
             self._sam3_client.token_endpoint = authorize_tokens_url  # Backwards compat
-            logger.info(
-                f"✓ Updated SAM3 client with line auth endpoint: {authorize_tokens_url}"
-            )
+            logger.info(f"✓ Updated SAM3 client with line auth endpoint: {authorize_tokens_url}")
 
         logger.debug("Device token configured with line authentication support")
 
@@ -931,9 +887,7 @@ class Magenta2Authenticator(BaseAuthenticator):
 
     def can_use_remote_login(self) -> bool:
         """Check if remote login components are available"""
-        return (
-            self._sam3_client is not None and self._sam3_client.can_use_remote_login()
-        )
+        return self._sam3_client is not None and self._sam3_client.can_use_remote_login()
 
     def get_authentication_capabilities(self) -> Dict[str, Any]:
         """Get authentication capabilities information"""
@@ -943,9 +897,7 @@ class Magenta2Authenticator(BaseAuthenticator):
         return {
             "line_auth_available": line_auth_available,
             "remote_login_available": remote_login_available,
-            "user_credentials_available": isinstance(
-                self.credentials, Magenta2UserCredentials
-            )
+            "user_credentials_available": isinstance(self.credentials, Magenta2UserCredentials)
             and self.credentials.has_user_credentials(),
             "client_credentials_available": True,
             "preferred_flow": (
@@ -969,9 +921,7 @@ class Magenta2Authenticator(BaseAuthenticator):
     def get_authentication_flow_info(self) -> Dict[str, Any]:
         """Get authentication flow information"""
         base_info = {
-            "user_credentials_available": isinstance(
-                self.credentials, Magenta2UserCredentials
-            )
+            "user_credentials_available": isinstance(self.credentials, Magenta2UserCredentials)
             and self.credentials.has_user_credentials(),
             "client_credentials_available": True,
             "sam3_client_available": self._sam3_client is not None,
@@ -991,9 +941,7 @@ class Magenta2Authenticator(BaseAuthenticator):
 
         # Add TAA-specific info if available
         if self._taa_client and self._current_token:
-            base_info["taa_token_valid"] = self.validate_taa_token(
-                self._current_token.access_token
-            )
+            base_info["taa_token_valid"] = self.validate_taa_token(self._current_token.access_token)
 
         return base_info
 
@@ -1021,9 +969,7 @@ class Magenta2Authenticator(BaseAuthenticator):
         """
         try:
             if not self._device_token or not self._authorize_tokens_url:
-                logger.warning(
-                    "Line auth skipped - missing device token or authorize URL"
-                )
+                logger.warning("Line auth skipped - missing device token or authorize URL")
                 return False
 
             if not self._sam3_client:
@@ -1070,9 +1016,7 @@ class Magenta2Authenticator(BaseAuthenticator):
             if response_data and "refresh_token" in response_data:
                 self._line_auth_refresh_token = response_data["refresh_token"]
                 logger.info(f"✓ Stored refresh token from line auth for SAM3 requests")
-                logger.debug(
-                    f"Refresh token preview: {self._line_auth_refresh_token[:20]}..."
-                )
+                logger.debug(f"Refresh token preview: {self._line_auth_refresh_token[:20]}...")
 
             return response_data
 
@@ -1150,13 +1094,9 @@ class Magenta2Authenticator(BaseAuthenticator):
 
         return {
             "has_access_token": bool(token.access_token),
-            "has_dc_cts_persona_token": bool(
-                getattr(token, "dc_cts_persona_token", None)
-            ),
+            "has_dc_cts_persona_token": bool(getattr(token, "dc_cts_persona_token", None)),
             "has_account_uri": bool(getattr(token, "account_uri", None)),
-            "has_composed_persona_token": bool(
-                getattr(token, "composed_persona_token", None)
-            ),
+            "has_composed_persona_token": bool(getattr(token, "composed_persona_token", None)),
             "persona_token_preview": (
                 getattr(token, "composed_persona_token", "")[:50] + "..."
                 if getattr(token, "composed_persona_token", None)
@@ -1189,15 +1129,11 @@ class Magenta2Authenticator(BaseAuthenticator):
             "auth_level": self._current_token.auth_level.value,
             "is_expired": self._current_token.is_expired,
             "has_refresh": bool(self._current_token.refresh_token),
-            "has_persona_token": bool(
-                getattr(self._current_token, "dc_cts_persona_token", None)
-            ),
+            "has_persona_token": bool(getattr(self._current_token, "dc_cts_persona_token", None)),
             "jwt_claims_available": bool(claims),
             "key_claims": (
                 {
-                    "client_id": claims.get(
-                        "client_id", claims.get("clientId", "MISSING")
-                    ),
+                    "client_id": claims.get("client_id", claims.get("clientId", "MISSING")),
                     "persona_id": claims.get(
                         "dc_cts_personaId", claims.get("personaId", "MISSING")
                     ),

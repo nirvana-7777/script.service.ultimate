@@ -3,11 +3,9 @@ import json
 import xml.etree.ElementTree as ElementTree
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from ..auth.credentials import (BaseCredentials, ClientCredentials,
-                                UserPasswordCredentials)
+from ..auth.credentials import BaseCredentials, ClientCredentials, UserPasswordCredentials
 from ..models.proxy_models import ProxyConfig
-from ..utils.environment import (get_environment_manager, get_vfs_instance,
-                                 is_kodi_environment)
+from ..utils.environment import get_environment_manager, get_vfs_instance, is_kodi_environment
 from ..utils.logger import logger
 
 
@@ -17,9 +15,7 @@ class KodiSettingsBridge:
     # Markers that identify credential settings
     CREDENTIAL_MARKERS = {"_username", "_password", "_client_id", "_client_secret"}
 
-    def __init__(
-        self, addon_id: Optional[str] = None, config_dir: Optional[str] = None
-    ):
+    def __init__(self, addon_id: Optional[str] = None, config_dir: Optional[str] = None):
         """Initialize Kodi settings bridge"""
         self.addon = None
         self.addon_id = addon_id
@@ -42,9 +38,7 @@ class KodiSettingsBridge:
                 else:
                     self.addon = xbmcaddon.Addon()
                 self.addon_id = self.addon.getAddonInfo("id")
-                logger.info(
-                    f"Kodi settings bridge initialized for addon: {self.addon_id}"
-                )
+                logger.info(f"Kodi settings bridge initialized for addon: {self.addon_id}")
             except Exception as e:
                 logger.error(f"Failed to initialize Kodi addon: {e}")
                 self.addon = None
@@ -60,9 +54,7 @@ class KodiSettingsBridge:
                 content = self.vfs.read_text(self._settings_file)
                 if content:
                     self._standalone_settings = json.loads(content)
-                    logger.debug(
-                        f"Loaded {len(self._standalone_settings)} standalone settings"
-                    )
+                    logger.debug(f"Loaded {len(self._standalone_settings)} standalone settings")
             except Exception as e:
                 logger.error(f"Error loading standalone settings: {e}")
 
@@ -71,9 +63,7 @@ class KodiSettingsBridge:
         if not is_kodi_environment():
             try:
                 self.vfs.write_json(self._settings_file, self._standalone_settings)
-                logger.debug(
-                    f"Saved {len(self._standalone_settings)} standalone settings"
-                )
+                logger.debug(f"Saved {len(self._standalone_settings)} standalone settings")
             except Exception as e:
                 logger.error(f"Error saving standalone settings: {e}")
 
@@ -166,9 +156,7 @@ class KodiSettingsBridge:
             logger.error(f"Error reading settings.xml: {e}")
             return []
 
-    def _parse_provider_country(
-        self, setting_id: str
-    ) -> Optional[Tuple[str, Optional[str]]]:
+    def _parse_provider_country(self, setting_id: str) -> Optional[Tuple[str, Optional[str]]]:
         """
         Parse a setting ID to extract provider and optional country.
 
@@ -312,9 +300,7 @@ class KodiSettingsBridge:
             username = self.get_setting(f"{provider}{country_suffix}_username")
             password = self.get_setting(f"{provider}{country_suffix}_password")
             client_id = self.get_setting(f"{provider}{country_suffix}_client_id")
-            client_secret = self.get_setting(
-                f"{provider}{country_suffix}_client_secret"
-            )
+            client_secret = self.get_setting(f"{provider}{country_suffix}_client_secret")
 
             logger.debug(f"Settings for {provider}{country_suffix}:")
             logger.debug(f"  username: '{username}' (empty={not username})")
@@ -324,9 +310,7 @@ class KodiSettingsBridge:
 
             # Determine credential type based on available values
             if username and password:
-                logger.info(
-                    f"Found username/password credentials for {provider}{country_suffix}"
-                )
+                logger.info(f"Found username/password credentials for {provider}{country_suffix}")
                 return UserPasswordCredentials(
                     username=username.strip(),
                     password=password.strip(),
@@ -353,25 +337,15 @@ class KodiSettingsBridge:
 
         try:
             if isinstance(credentials, UserPasswordCredentials):
-                self.set_setting(
-                    f"{provider}{country_suffix}_username", credentials.username
-                )
-                self.set_setting(
-                    f"{provider}{country_suffix}_password", credentials.password
-                )
+                self.set_setting(f"{provider}{country_suffix}_username", credentials.username)
+                self.set_setting(f"{provider}{country_suffix}_password", credentials.password)
                 if credentials.client_id:
-                    self.set_setting(
-                        f"{provider}{country_suffix}_client_id", credentials.client_id
-                    )
-                logger.info(
-                    f"Wrote username/password credentials for {provider}{country_suffix}"
-                )
+                    self.set_setting(f"{provider}{country_suffix}_client_id", credentials.client_id)
+                logger.info(f"Wrote username/password credentials for {provider}{country_suffix}")
                 return True
 
             elif isinstance(credentials, ClientCredentials):
-                self.set_setting(
-                    f"{provider}{country_suffix}_client_id", credentials.client_id
-                )
+                self.set_setting(f"{provider}{country_suffix}_client_id", credentials.client_id)
                 self.set_setting(
                     f"{provider}{country_suffix}_client_secret",
                     credentials.client_secret,
@@ -418,12 +392,8 @@ class KodiSettingsBridge:
 
         try:
             # Check if proxy is enabled
-            proxy_enabled = self.get_setting(
-                f"{provider}{country_suffix}_proxy_enabled"
-            )
-            logger.debug(
-                f"Proxy enabled setting for {provider}{country_suffix}: '{proxy_enabled}'"
-            )
+            proxy_enabled = self.get_setting(f"{provider}{country_suffix}_proxy_enabled")
+            logger.debug(f"Proxy enabled setting for {provider}{country_suffix}: '{proxy_enabled}'")
 
             if not proxy_enabled or proxy_enabled.lower() not in ["true", "1", "yes"]:
                 logger.debug(f"Proxy not enabled for {provider}{country_suffix}")
@@ -437,9 +407,7 @@ class KodiSettingsBridge:
             logger.debug(f"  port: '{proxy_port_str}'")
 
             if not proxy_host or not proxy_port_str:
-                logger.debug(
-                    f"Proxy host or port missing for {provider}{country_suffix}"
-                )
+                logger.debug(f"Proxy host or port missing for {provider}{country_suffix}")
                 return None
 
             try:
@@ -470,12 +438,8 @@ class KodiSettingsBridge:
 
         try:
             self.set_setting(f"{provider}{country_suffix}_proxy_enabled", "true")
-            self.set_setting(
-                f"{provider}{country_suffix}_proxy_host", proxy_config.host
-            )
-            self.set_setting(
-                f"{provider}{country_suffix}_proxy_port", str(proxy_config.port)
-            )
+            self.set_setting(f"{provider}{country_suffix}_proxy_host", proxy_config.host)
+            self.set_setting(f"{provider}{country_suffix}_proxy_port", str(proxy_config.port))
 
             logger.info(f"Wrote proxy config for {provider}{country_suffix}")
             return True
@@ -523,9 +487,7 @@ class KodiSettingsBridge:
         try:
             ip_address = self.get_setting(f"{provider}{country_suffix}_ipaddress")
 
-            logger.debug(
-                f"IP address setting for {provider}{country_suffix}: '{ip_address}'"
-            )
+            logger.debug(f"IP address setting for {provider}{country_suffix}: '{ip_address}'")
 
             if ip_address and ip_address.strip():
                 logger.info(
@@ -562,20 +524,13 @@ class KodiSettingsBridge:
                 and cred1.password == cred2.password
                 and cred1.client_id == cred2.client_id
             )
-        elif isinstance(cred1, ClientCredentials) and isinstance(
-            cred2, ClientCredentials
-        ):
-            return (
-                cred1.client_id == cred2.client_id
-                and cred1.client_secret == cred2.client_secret
-            )
+        elif isinstance(cred1, ClientCredentials) and isinstance(cred2, ClientCredentials):
+            return cred1.client_id == cred2.client_id and cred1.client_secret == cred2.client_secret
 
         return False
 
     @staticmethod
-    def _proxy_configs_equal(
-        proxy1: Optional[ProxyConfig], proxy2: Optional[ProxyConfig]
-    ) -> bool:
+    def _proxy_configs_equal(proxy1: Optional[ProxyConfig], proxy2: Optional[ProxyConfig]) -> bool:
         """Compare two proxy configurations for equality"""
         if proxy1 is None and proxy2 is None:
             return True

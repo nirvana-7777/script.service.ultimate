@@ -88,9 +88,7 @@ class ConsoleNotificationAdapter(NotificationInterface):
         print("=" * 70)
         print()
 
-        logger.info(
-            f"Remote login started: code={login_code}, expires_in={expires_in}s"
-        )
+        logger.info(f"Remote login started: code={login_code}, expires_in={expires_in}s")
         logger.info(f"QR target URL: {qr_target_url}")
 
         return NotificationResult.CONTINUE

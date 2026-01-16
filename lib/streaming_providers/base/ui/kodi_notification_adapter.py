@@ -286,9 +286,7 @@ class QRCodeDialog:
                 if self.polling_thread:
                     remaining = self.polling_thread.get_remaining_time()
                     if self.time_label:
-                        self.time_label.setLabel(
-                            f"Time remaining: {self._format_time(remaining)}"
-                        )
+                        self.time_label.setLabel(f"Time remaining: {self._format_time(remaining)}")
 
                     # Check if auth completed
                     if self.polling_thread.auth_completed:
@@ -303,13 +301,9 @@ class QRCodeDialog:
 
                     # Check for errors
                     if self.polling_thread.error:
-                        logger.error(
-                            f"Monitor: Polling error: {self.polling_thread.error}"
-                        )
+                        logger.error(f"Monitor: Polling error: {self.polling_thread.error}")
                         if self.status_label:
-                            self.status_label.setLabel(
-                                "[COLOR red]Authentication failed[/COLOR]"
-                            )
+                            self.status_label.setLabel("[COLOR red]Authentication failed[/COLOR]")
                         time.sleep(2)
                         self.close_dialog()
                         break

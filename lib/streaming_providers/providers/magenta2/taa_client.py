@@ -95,9 +95,7 @@ class TaaClient:
             )
 
             logger.debug(f"yo_digital request to: {endpoint}")
-            logger.debug(
-                f"TAA payload keyValue: {taa_payload.get('keyValue', 'MISSING')}"
-            )
+            logger.debug(f"TAA payload keyValue: {taa_payload.get('keyValue', 'MISSING')}")
 
             # Perform yo_digital request
             response = self.http_manager.post(
@@ -119,12 +117,8 @@ class TaaClient:
                     )
 
                     # Check for deviceLimitExceed (note: might be "Exceed" not "Exceeded")
-                    if error_data.get("deviceLimitExceed") or error_data.get(
-                        "deviceLimitExceeded"
-                    ):
-                        logger.error(
-                            "Device limit exceeded in yo_digital authentication"
-                        )
+                    if error_data.get("deviceLimitExceed") or error_data.get("deviceLimitExceeded"):
+                        logger.error("Device limit exceeded in yo_digital authentication")
                         return YoDigitalTokens(
                             access_token="",
                             access_token_expires_in=0,
@@ -135,17 +129,13 @@ class TaaClient:
 
                     # Log any other error details
                     if "error" in error_data:
-                        logger.error(
-                            f"yo_digital error type: {error_data.get('error')}"
-                        )
+                        logger.error(f"yo_digital error type: {error_data.get('error')}")
                     if "error_description" in error_data:
                         logger.error(
                             f"yo_digital error description: {error_data.get('error_description')}"
                         )
                     if "message" in error_data:
-                        logger.error(
-                            f"yo_digital error message: {error_data.get('message')}"
-                        )
+                        logger.error(f"yo_digital error message: {error_data.get('message')}")
 
                 except (ValueError, KeyError) as e:
                     logger.error(f"Could not parse 400 error response: {e}")
@@ -314,9 +304,7 @@ class TaaClient:
                     error_data = response.json()
                     if error_data.get("deviceLimitExceeded"):
                         logger.error("Device limit exceeded in TAA authentication")
-                        return TaaAuthResult(
-                            access_token="", device_limit_exceeded=True
-                        )
+                        return TaaAuthResult(access_token="", device_limit_exceeded=True)
                 except:
                     pass
 
@@ -399,9 +387,7 @@ class TaaClient:
         )
 
         # Get TAA-specific OS format
-        resolved_os = (
-            self.platform_config.get("taa_os") or self.platform_config["firmware"]
-        )
+        resolved_os = self.platform_config.get("taa_os") or self.platform_config["firmware"]
 
         resolved_client_model = client_model or f"ftv-{self.platform}"
 

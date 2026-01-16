@@ -1,7 +1,6 @@
 # streaming_providers/providers/magenta_eu/__init__.py
 from .auth import MagentaAuthenticator, MagentaAuthToken
-from .constants import (API_ENDPOINTS, COUNTRY_CONFIG, DEFAULT_COUNTRY,
-                        SUPPORTED_COUNTRIES)
+from .constants import API_ENDPOINTS, COUNTRY_CONFIG, DEFAULT_COUNTRY, SUPPORTED_COUNTRIES
 from .provider import MagentaEUProvider
 
 __all__ = [

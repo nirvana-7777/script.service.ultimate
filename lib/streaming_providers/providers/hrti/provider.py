@@ -4,8 +4,7 @@ from typing import ClassVar, Dict, List, Optional
 
 import requests
 
-from ...base.models import (DRMConfig, DRMSystem, LicenseConfig,
-                            LicenseUnwrapperParams)
+from ...base.models import DRMConfig, DRMSystem, LicenseConfig, LicenseUnwrapperParams
 from ...base.models.proxy_models import ProxyConfig
 from ...base.models.streaming_channel import StreamingChannel
 from ...base.provider import AuthType, StreamingProvider
@@ -56,9 +55,7 @@ class HRTiProvider(StreamingProvider):
         )
 
         # Share HTTP manager for consistency
-        self.http_manager = self._share_http_manager_with_authenticator(
-            self.authenticator
-        )
+        self.http_manager = self._share_http_manager_with_authenticator(self.authenticator)
 
         try:
             # Initialize authentication
@@ -176,9 +173,7 @@ class HRTiProvider(StreamingProvider):
                             channels.append(streaming_channel)
 
                     self.channels = channels
-                    logger.info(
-                        f"Successfully fetched {len(channels)} channels from HRTi on retry"
-                    )
+                    logger.info(f"Successfully fetched {len(channels)} channels from HRTi on retry")
                     return channels
                 else:
                     logger.warning("No channels found in HRTi retry response")
@@ -228,9 +223,7 @@ class HRTiProvider(StreamingProvider):
             channel.use_cdm = True
             channel.cdm_type = "widevine"
 
-            logger.debug(
-                f"Parsed HRTi channel: {name} ({channel_id}) - radio: {is_radio}"
-            )
+            logger.debug(f"Parsed HRTi channel: {name} ({channel_id}) - radio: {is_radio}")
             return channel
 
         except Exception as e:
@@ -276,9 +269,7 @@ class HRTiProvider(StreamingProvider):
             )
 
             if not session_data:
-                logger.warning(
-                    f"Failed to authorize session for channel {channel.name}"
-                )
+                logger.warning(f"Failed to authorize session for channel {channel.name}")
                 return channel
 
             # Check if authorized
@@ -301,9 +292,7 @@ class HRTiProvider(StreamingProvider):
 
             # Set DRM configuration with session data
             # Pass session_data to avoid re-authorizing
-            drm_configs = self.get_drm(
-                channel.channel_id, session_data=session_data, **kwargs
-            )
+            drm_configs = self.get_drm(channel.channel_id, session_data=session_data, **kwargs)
             if drm_configs:
                 channel.use_cdm = True
                 channel.cdm_type = "widevine"
@@ -367,9 +356,7 @@ class HRTiProvider(StreamingProvider):
             logger.error(f"Error getting manifest for channel {channel_id}: {e}")
             return None
 
-    def get_drm(
-        self, channel_id: str, session_data: Dict = None, **kwargs
-    ) -> List[DRMConfig]:
+    def get_drm(self, channel_id: str, session_data: Dict = None, **kwargs) -> List[DRMConfig]:
         """
         Get DRM configurations for a channel with proper license data.
         If session_data is not provided, will authorize a new session.
@@ -394,15 +381,11 @@ class HRTiProvider(StreamingProvider):
                         break
 
                 if not target_channel:
-                    logger.error(
-                        f"Channel {channel_id} not found for DRM authorization"
-                    )
+                    logger.error(f"Channel {channel_id} not found for DRM authorization")
                     return []
 
                 # Determine content type
-                content_type = (
-                    "rlive" if target_channel.content_type == "AUDIO" else "tlive"
-                )
+                content_type = "rlive" if target_channel.content_type == "AUDIO" else "tlive"
 
                 # Parse the streaming URL to get content DRM ID
                 from urllib.parse import urlparse
@@ -431,16 +414,12 @@ class HRTiProvider(StreamingProvider):
                 )
 
                 if not session_data:
-                    logger.error(
-                        f"Failed to authorize session for DRM - channel {channel_id}"
-                    )
+                    logger.error(f"Failed to authorize session for DRM - channel {channel_id}")
                     return []
 
                 # Check if authorized
                 if not session_data.get("Authorized", False):
-                    logger.warning(
-                        f"Session not authorized for DRM - channel {channel_id}"
-                    )
+                    logger.warning(f"Session not authorized for DRM - channel {channel_id}")
                     return []
 
                 logger.debug(f"Session authorized for DRM - channel {channel_id}")
@@ -497,13 +476,9 @@ class HRTiProvider(StreamingProvider):
             )
 
             # Create the DRM configuration
-            drm_config = DRMConfig(
-                system=DRMSystem.WIDEVINE, priority=1, license=license_config
-            )
+            drm_config = DRMConfig(system=DRMSystem.WIDEVINE, priority=1, license=license_config)
 
-            logger.debug(
-                f"Created DRM config for channel {channel_id} with DrmId {drm_id}"
-            )
+            logger.debug(f"Created DRM config for channel {channel_id} with DrmId {drm_id}")
             return [drm_config]
 
         except Exception as e:
@@ -592,9 +567,7 @@ class HRTiProvider(StreamingProvider):
         # HRTi doesn't provide XMLTV format natively
         return None
 
-    def get_dynamic_manifest_params(
-        self, channel: StreamingChannel, **kwargs
-    ) -> Optional[str]:
+    def get_dynamic_manifest_params(self, channel: StreamingChannel, **kwargs) -> Optional[str]:
         """
         Get dynamic manifest parameters for HRTi channels.
 

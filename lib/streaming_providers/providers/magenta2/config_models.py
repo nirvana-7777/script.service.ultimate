@@ -22,9 +22,7 @@ class BootstrapConfig:
     raw_data: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_api_response(
-        cls, bootstrap_data: Dict[str, Any], platform: str
-    ) -> "BootstrapConfig":
+    def from_api_response(cls, bootstrap_data: Dict[str, Any], platform: str) -> "BootstrapConfig":
         """Create BootstrapConfig from API response"""
         base_settings = bootstrap_data.get("baseSettings", {})
 
@@ -123,27 +121,20 @@ class MpxConfig:
         for feed_key in feed_keys:
             feed_url = get_param(feed_key)
             if feed_url:
-                simple_key = (
-                    feed_key.replace("mpx", "")
-                    .replace("Url", "")
-                    .replace("BasicUrl", "")
-                )
+                simple_key = feed_key.replace("mpx", "").replace("Url", "").replace("BasicUrl", "")
                 feeds[simple_key] = feed_url
 
         # ADD THIS: Extract channel stations feed
         channel_stations_feed = get_param("mpxDefaultUrlAllChannelStationsFeed")
 
         return cls(
-            account_pid=get_param("mpxAccountPid")
-            or mpx_data.get("accountPid", "mdeprod"),
+            account_pid=get_param("mpxAccountPid") or mpx_data.get("accountPid", "mdeprod"),
             license_service_url=get_param("mpxBasicUrlGetApplicableDistributionRights")
             or mpx_data.get("licenseServiceUrl", ""),
             selector_service_url=get_param("mpxBasicUrlSelectorService")
             or mpx_data.get("selectorServiceUrl", ""),
-            user_profile_url=get_param("mpxUserProfileUrl")
-            or mpx_data.get("userProfileUrl"),
-            bookmark_base_url=get_param("mpxBookmarkBaseUrl")
-            or mpx_data.get("bookmarkBaseUrl"),
+            user_profile_url=get_param("mpxUserProfileUrl") or mpx_data.get("userProfileUrl"),
+            bookmark_base_url=get_param("mpxBookmarkBaseUrl") or mpx_data.get("bookmarkBaseUrl"),
             pvr_base_url=get_param("mpxPvrBaseUrl") or mpx_data.get("pvrBaseUrl"),
             feeds=feeds,
             channel_stations_feed=channel_stations_feed,
@@ -239,9 +230,7 @@ class DrmConfig:
         else:
             vod_widevine = None  # Not in parameters array
 
-        logger.debug(
-            f"DRM config: widevine={bool(widevine_url)}, fairplay={bool(fairplay_url)}"
-        )
+        logger.debug(f"DRM config: widevine={bool(widevine_url)}, fairplay={bool(fairplay_url)}")
 
         return cls(
             widevine_license_url=widevine_url or "",

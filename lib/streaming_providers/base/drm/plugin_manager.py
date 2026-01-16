@@ -20,18 +20,14 @@ class DRMPluginManager:
         logger.debug("DRMPluginManager: Initialized with empty plugin registry")
 
         if auto_discover:
-            logger.debug(
-                "DRMPluginManager: Auto-discovery enabled, discovering plugins..."
-            )
+            logger.debug("DRMPluginManager: Auto-discovery enabled, discovering plugins...")
             discovered = self.discover_plugins()
             if discovered:
                 logger.debug(
                     f"DRMPluginManager: Auto-discovery completed, {len(discovered)} plugins ready"
                 )
             else:
-                logger.debug(
-                    "DRMPluginManager: Auto-discovery completed, no plugins found"
-                )
+                logger.debug("DRMPluginManager: Auto-discovery completed, no plugins found")
 
     def register_plugin(self, plugin: DRMPlugin) -> None:
         """
@@ -88,9 +84,7 @@ class DRMPluginManager:
 
         # Check if plugins directory exists
         if not os.path.exists(plugins_dir):
-            logger.debug(
-                f"DRMPluginManager: Plugins directory does not exist: {plugins_dir}"
-            )
+            logger.debug(f"DRMPluginManager: Plugins directory does not exist: {plugins_dir}")
             return []
 
         logger.debug(f"DRMPluginManager: Scanning plugins directory: {plugins_dir}")
@@ -125,9 +119,7 @@ class DRMPluginManager:
                     module_name = os.path.splitext(filename)[0]
 
                     # Import the module dynamically
-                    spec = importlib.util.spec_from_file_location(
-                        module_name, file_path
-                    )
+                    spec = importlib.util.spec_from_file_location(module_name, file_path)
                     if spec is None or spec.loader is None:
                         logger.debug(
                             f"DRMPluginManager: Could not create module spec for {filename}"
@@ -149,9 +141,7 @@ class DRMPluginManager:
                             plugin_classes.append((name, obj))
 
                     if not plugin_classes:
-                        logger.debug(
-                            f"DRMPluginManager: No DRMPlugin classes found in {filename}"
-                        )
+                        logger.debug(f"DRMPluginManager: No DRMPlugin classes found in {filename}")
                         continue
 
                     logger.debug(
@@ -182,17 +172,15 @@ class DRMPluginManager:
                             )
 
                         except Exception as e:
-                            error_msg = f"Failed to instantiate {class_name} from {filename}: {str(e)}"
-                            failed_plugins.append(
-                                (f"{filename}::{class_name}", error_msg)
+                            error_msg = (
+                                f"Failed to instantiate {class_name} from {filename}: {str(e)}"
                             )
+                            failed_plugins.append((f"{filename}::{class_name}", error_msg))
                             logger.warning(f"DRMPluginManager: {error_msg}")
 
                 except Exception as e:
                     traceback_str = traceback.format_exc()
-                    error_msg = (
-                        f"Failed to process file {filename}: {str(e)}\n{traceback_str}"
-                    )
+                    error_msg = f"Failed to process file {filename}: {str(e)}\n{traceback_str}"
                     failed_plugins.append((filename, error_msg))
                     logger.warning(f"DRMPluginManager: {error_msg}")
 
@@ -214,9 +202,7 @@ class DRMPluginManager:
             )
 
         if failed_plugins:
-            logger.debug(
-                f"DRMPluginManager: {len(failed_plugins)} plugins/files failed to load:"
-            )
+            logger.debug(f"DRMPluginManager: {len(failed_plugins)} plugins/files failed to load:")
             for plugin_name, error in failed_plugins:
                 logger.debug(f"  - {plugin_name}: {error}")
 
@@ -262,9 +248,7 @@ class DRMPluginManager:
         for drm_system, plugin in self.plugins.items():
             if drm_system == DRMSystem.GENERIC:
                 generic_plugins.append(plugin)
-                logger.debug(
-                    f"DRMPluginManager: Found generic plugin '{plugin.plugin_name}'"
-                )
+                logger.debug(f"DRMPluginManager: Found generic plugin '{plugin.plugin_name}'")
             else:
                 specific_plugins.append((drm_system, plugin))
 
@@ -303,9 +287,7 @@ class DRMPluginManager:
         # Process specific plugins
         final_configs = []
         for config in processed_configs:
-            logger.debug(
-                f"DRMPluginManager: Processing DRM config for system: {config.system}"
-            )
+            logger.debug(f"DRMPluginManager: Processing DRM config for system: {config.system}")
 
             # Find specific plugin for this DRM system
             plugin = self.plugins.get(config.system)
@@ -326,9 +308,7 @@ class DRMPluginManager:
                             f"DRMPluginManager: No PSSH data available for DRM system {config.system}"
                         )
 
-                    processed_config = plugin.process_drm_config(
-                        config, pssh_data, **kwargs
-                    )
+                    processed_config = plugin.process_drm_config(config, pssh_data, **kwargs)
                     if processed_config is not None:
                         # Check for ClearKey and return immediately if found
                         if processed_config.system == DRMSystem.CLEARKEY:
@@ -379,9 +359,7 @@ class DRMPluginManager:
                 f"DRMPluginManager: Retrieved plugin '{plugin.plugin_name}' for DRM system {drm_system}"
             )
         else:
-            logger.debug(
-                f"DRMPluginManager: No plugin found for DRM system {drm_system}"
-            )
+            logger.debug(f"DRMPluginManager: No plugin found for DRM system {drm_system}")
         return plugin
 
     def list_plugins(self) -> Dict[DRMSystem, str]:
@@ -392,8 +370,7 @@ class DRMPluginManager:
             Dictionary mapping DRM systems to plugin names
         """
         plugin_list = {
-            drm_system: plugin.plugin_name
-            for drm_system, plugin in self.plugins.items()
+            drm_system: plugin.plugin_name for drm_system, plugin in self.plugins.items()
         }
         logger.debug(f"DRMPluginManager: Currently registered plugins: {plugin_list}")
         return plugin_list

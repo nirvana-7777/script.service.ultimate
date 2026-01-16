@@ -84,9 +84,7 @@ class CatchupOperations:
                 provider_name, channel_id, country=country
             )
 
-    def get_catchup_window(
-        self, provider_name: str, channel_id: Optional[str] = None
-    ) -> int:
+    def get_catchup_window(self, provider_name: str, channel_id: Optional[str] = None) -> int:
         """Get catchup window in hours."""
         provider = self.registry.get_provider(provider_name)
         if not provider:
@@ -116,8 +114,7 @@ class CatchupOperations:
                 capabilities[name] = {
                     "supports_catchup": provider.supports_catchup,
                     "catchup_window": provider.catchup_window,
-                    "catchup_enabled": provider.supports_catchup
-                    and provider.catchup_window > 0,
+                    "catchup_enabled": provider.supports_catchup and provider.catchup_window > 0,
                 }
             except Exception as e:
                 logger.warning(f"Error getting catchup for '{name}': {e}")

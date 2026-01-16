@@ -40,9 +40,7 @@ class RTLPlusClientCredentials(ClientCredentials):
     RTL+ specific client credentials (anonymous access)
     """
 
-    def __init__(
-        self, client_id: Optional[str] = None, client_secret: Optional[str] = None
-    ):
+    def __init__(self, client_id: Optional[str] = None, client_secret: Optional[str] = None):
         super().__init__(
             client_id=client_id or RTLPlusDefaults.ANONYMOUS_CLIENT_ID,
             client_secret=client_secret or RTLPlusDefaults.ANONYMOUS_CLIENT_SECRET,
@@ -200,9 +198,7 @@ class RTLPlusStreamInfo:
             raise ValueError("Stream must have both manifest_url and channel_id")
 
     @classmethod
-    def from_manifest_response(
-        cls, data: Dict[str, Any], channel_id: str
-    ) -> "RTLPlusStreamInfo":
+    def from_manifest_response(cls, data: Dict[str, Any], channel_id: str) -> "RTLPlusStreamInfo":
         """Create stream info from manifest API response"""
         return cls(
             manifest_url=data["url"],

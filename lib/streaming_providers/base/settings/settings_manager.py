@@ -12,8 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from ..auth.credential_manager import CredentialManager
-from ..auth.credentials import (BaseCredentials, ClientCredentials,
-                                UserPasswordCredentials)
+from ..auth.credentials import BaseCredentials, ClientCredentials, UserPasswordCredentials
 from ..auth.session_manager import SessionManager
 from ..models.proxy_models import ProxyConfig
 from ..network.proxy_manager import ProxyConfigManager
@@ -31,12 +30,8 @@ class ProviderRegistration:
     registered_at: float = field(default_factory=time.time)
     is_active: bool = True
     settings_schema: Optional[Dict[str, Any]] = None
-    supports_countries: bool = (
-        False  # NEW: Flag if provider supports country-specific settings
-    )
-    available_countries: List[str] = field(
-        default_factory=list
-    )  # NEW: List of supported countries
+    supports_countries: bool = False  # NEW: Flag if provider supports country-specific settings
+    available_countries: List[str] = field(default_factory=list)  # NEW: List of supported countries
 
 
 # Maintain backward compatibility by keeping the original class name
@@ -49,9 +44,7 @@ class SettingsManager:
     Now supports country-specific settings for multi-region providers.
     """
 
-    def __init__(
-        self, config_dir: Optional[str] = None, enable_kodi_integration: bool = True
-    ):
+    def __init__(self, config_dir: Optional[str] = None, enable_kodi_integration: bool = True):
         """
         Initialize unified settings manager
 
@@ -112,9 +105,7 @@ class SettingsManager:
             # Auto-register any unregistered providers
             for provider_name, countries in detected_providers.items():
                 if not self.is_provider_registered(provider_name):
-                    logger.info(
-                        f"Auto-registering provider '{provider_name}' from Kodi"
-                    )
+                    logger.info(f"Auto-registering provider '{provider_name}' from Kodi")
                     self.register_provider(
                         provider_name,
                         supports_countries=bool(countries),
@@ -122,9 +113,7 @@ class SettingsManager:
                     )
                 else:
                     # Provider already registered - check if we need to upgrade to multi-country
-                    if countries and not self.provider_supports_countries(
-                        provider_name
-                    ):
+                    if countries and not self.provider_supports_countries(provider_name):
                         logger.info(
                             f"Auto-upgrading existing provider '{provider_name}' to multi-country: {countries}"
                         )
@@ -144,9 +133,7 @@ class SettingsManager:
                     )
 
                     for country in available_countries:
-                        logger.info(
-                            f"Syncing credentials for {provider_name} ({country})..."
-                        )
+                        logger.info(f"Syncing credentials for {provider_name} ({country})...")
                         self._sync_credentials_from_kodi(provider_name, country)
 
                         logger.info(f"Syncing proxy for {provider_name} ({country})...")
@@ -159,9 +146,7 @@ class SettingsManager:
                     logger.info(f"Syncing proxy for {provider_name}...")
                     self._sync_proxy_from_kodi(provider_name)
 
-        logger.info(
-            f"Initialized SettingsManager with config dir: {self.config_dir_path}"
-        )
+        logger.info(f"Initialized SettingsManager with config dir: {self.config_dir_path}")
 
     def _setup_kodi_integration(self) -> bool:
         """Setup Kodi integration, return True if successful"""
@@ -205,12 +190,8 @@ class SettingsManager:
                         registered_at=provider_info.get("registered_at", time.time()),
                         is_active=provider_info.get("is_active", True),
                         settings_schema=provider_info.get("settings_schema"),
-                        supports_countries=provider_info.get(
-                            "supports_countries", False
-                        ),
-                        available_countries=provider_info.get(
-                            "available_countries", []
-                        ),
+                        supports_countries=provider_info.get("supports_countries", False),
+                        available_countries=provider_info.get("available_countries", []),
                     )
                     self._registered_providers[provider_name] = registration
                     logger.debug(
@@ -220,9 +201,7 @@ class SettingsManager:
                 except Exception as e:
                     logger.error(f"Error loading provider {provider_name}: {e}")
 
-            logger.info(
-                f"Loaded {len(self._registered_providers)} provider registrations"
-            )
+            logger.info(f"Loaded {len(self._registered_providers)} provider registrations")
 
         except Exception as e:
             logger.error(f"Error loading unified settings configuration: {e}")
@@ -275,22 +254,16 @@ class SettingsManager:
             BaseCredentials instance or None
         """
         country_str = f" (country: {country})" if country else ""
-        logger.debug(
-            f"SettingsManager: Loading credentials for '{provider_name}{country_str}'"
-        )
+        logger.debug(f"SettingsManager: Loading credentials for '{provider_name}{country_str}'")
 
         # Try file-based credentials first
         credentials = self.credential_manager.load_credentials(provider_name, country)
         logger.debug(f"SettingsManager: File credentials result: {type(credentials)}")
 
         if credentials:
-            logger.debug(
-                f"SettingsManager: File credentials type: {credentials.credential_type}"
-            )
+            logger.debug(f"SettingsManager: File credentials type: {credentials.credential_type}")
             if hasattr(credentials, "username"):
-                logger.debug(
-                    f"SettingsManager: File credentials username: {credentials.username}"
-                )
+                logger.debug(f"SettingsManager: File credentials username: {credentials.username}")
             else:
                 logger.debug(
                     f"SettingsManager: File credentials class: {credentials.__class__.__name__}"
@@ -301,21 +274,13 @@ class SettingsManager:
             )
 
         # If no file credentials and Kodi is available, try syncing from Kodi
-        if (
-            not credentials
-            and self.kodi_bridge
-            and self.kodi_bridge.is_kodi_environment()
-        ):
+        if not credentials and self.kodi_bridge and self.kodi_bridge.is_kodi_environment():
             logger.debug(
                 f"SettingsManager: No file credentials for {provider_name}{country_str}, trying Kodi sync"
             )
             if self._sync_credentials_from_kodi(provider_name, country):
-                credentials = self.credential_manager.load_credentials(
-                    provider_name, country
-                )
-                logger.debug(
-                    f"SettingsManager: After Kodi sync, credentials: {type(credentials)}"
-                )
+                credentials = self.credential_manager.load_credentials(provider_name, country)
+                logger.debug(f"SettingsManager: After Kodi sync, credentials: {type(credentials)}")
                 if credentials:
                     logger.debug(
                         f"SettingsManager: Synced credentials type: {credentials.credential_type}"
@@ -344,15 +309,11 @@ class SettingsManager:
             True if successful, False otherwise
         """
         # Save to file first
-        file_success = self.credential_manager.save_credentials(
-            provider_name, credentials, country
-        )
+        file_success = self.credential_manager.save_credentials(provider_name, credentials, country)
 
         if not file_success:
             country_str = f" (country: {country})" if country else ""
-            logger.error(
-                f"Failed to save credentials to file for {provider_name}{country_str}"
-            )
+            logger.error(f"Failed to save credentials to file for {provider_name}{country_str}")
             return False
 
         # Sync to Kodi if available and in Kodi environment
@@ -361,9 +322,7 @@ class SettingsManager:
                 provider_name, credentials, country
             )
             if not kodi_success:
-                logger.warning(
-                    f"Failed to sync credentials to Kodi for {provider_name}"
-                )
+                logger.warning(f"Failed to sync credentials to Kodi for {provider_name}")
                 # Don't fail the entire operation if Kodi sync fails
 
         return True
@@ -468,22 +427,16 @@ class SettingsManager:
             success = self._save_configuration()
             if success:
                 country_info = (
-                    f" (supports countries: {available_countries})"
-                    if supports_countries
-                    else ""
+                    f" (supports countries: {available_countries})" if supports_countries else ""
                 )
-                logger.info(
-                    f"Successfully registered provider: {provider_name}{country_info}"
-                )
+                logger.info(f"Successfully registered provider: {provider_name}{country_info}")
             return success
 
         except Exception as e:
             logger.error(f"Error registering provider {provider_name}: {e}")
             return False
 
-    def unregister_provider(
-        self, provider_name: str, cleanup_data: bool = False
-    ) -> bool:
+    def unregister_provider(self, provider_name: str, cleanup_data: bool = False) -> bool:
         """
         Unregister a provider and optionally clean up its data
 
@@ -505,9 +458,7 @@ class SettingsManager:
                 reg = self._registered_providers[provider_name]
                 if reg.supports_countries:
                     for country in reg.available_countries:
-                        self.credential_manager.delete_credentials(
-                            provider_name, country
-                        )
+                        self.credential_manager.delete_credentials(provider_name, country)
                         self.session_manager.clear_session(provider_name, country)
                         self.proxy_manager.remove_proxy_config(provider_name, country)
                 else:
@@ -531,9 +482,7 @@ class SettingsManager:
 
     def list_registered_providers(self) -> List[str]:
         """Get list of all registered providers"""
-        return [
-            name for name, reg in self._registered_providers.items() if reg.is_active
-        ]
+        return [name for name, reg in self._registered_providers.items() if reg.is_active]
 
     def is_provider_registered(self, provider_name: str) -> bool:
         """Check if a provider is registered"""
@@ -632,9 +581,7 @@ class SettingsManager:
             "kodi_integration": {
                 "enabled": self.enable_kodi_integration,
                 "environment": (
-                    self.kodi_bridge.is_kodi_environment()
-                    if self.kodi_bridge
-                    else False
+                    self.kodi_bridge.is_kodi_environment() if self.kodi_bridge else False
                 ),
             },
         }
@@ -659,9 +606,7 @@ class SettingsManager:
 
         return status
 
-    def is_provider_ready(
-        self, provider_name: str, country: Optional[str] = None
-    ) -> bool:
+    def is_provider_ready(self, provider_name: str, country: Optional[str] = None) -> bool:
         """
         Check if provider is fully configured and ready to use
 
@@ -679,9 +624,9 @@ class SettingsManager:
 
         # Provider is ready if it has valid credentials
         credentials_status = status.get("credentials", {})
-        return credentials_status.get(
-            "has_credentials", False
-        ) and credentials_status.get("credentials_valid", False)
+        return credentials_status.get("has_credentials", False) and credentials_status.get(
+            "credentials_valid", False
+        )
 
     def get_ready_providers(self, country: Optional[str] = None) -> List[str]:
         """
@@ -715,9 +660,7 @@ class SettingsManager:
             True if successful or no sync needed, False on error
         """
         country_str = f" (country: {country})" if country else ""
-        logger.debug(
-            f"SettingsManager: Attempting Kodi sync for {provider_name}{country_str}"
-        )
+        logger.debug(f"SettingsManager: Attempting Kodi sync for {provider_name}{country_str}")
 
         if not self.kodi_bridge or not self.kodi_bridge.is_kodi_environment():
             logger.debug(
@@ -726,12 +669,8 @@ class SettingsManager:
             return False
 
         try:
-            kodi_credentials = self.kodi_bridge.read_credentials_from_kodi(
-                provider_name, country
-            )
-            logger.debug(
-                f"SettingsManager: Kodi credentials result: {type(kodi_credentials)}"
-            )
+            kodi_credentials = self.kodi_bridge.read_credentials_from_kodi(provider_name, country)
+            logger.debug(f"SettingsManager: Kodi credentials result: {type(kodi_credentials)}")
 
             if not kodi_credentials:
                 logger.debug(
@@ -746,14 +685,10 @@ class SettingsManager:
                 return True  # Not an error
 
             # Check if different from current file credentials
-            file_credentials = self.credential_manager.load_credentials(
-                provider_name, country
-            )
+            file_credentials = self.credential_manager.load_credentials(provider_name, country)
 
             # ← FIX: Only skip if BOTH exist AND are equal
-            if file_credentials and self._credentials_equal(
-                kodi_credentials, file_credentials
-            ):
+            if file_credentials and self._credentials_equal(kodi_credentials, file_credentials):
                 logger.debug(
                     f"SettingsManager: Credentials already in sync for {provider_name}{country_str}"
                 )
@@ -769,9 +704,7 @@ class SettingsManager:
             logger.debug(f"SettingsManager: Kodi sync save result: {success}")
 
             if success:
-                logger.info(
-                    f"Synced credentials from Kodi for {provider_name}{country_str}"
-                )
+                logger.info(f"Synced credentials from Kodi for {provider_name}{country_str}")
             return success
 
         except Exception as e:
@@ -809,13 +742,9 @@ class SettingsManager:
             if countries:
                 # Multi-country provider
                 for country in countries:
-                    cred_success = self._sync_credentials_from_kodi(
-                        provider_name, country
-                    )
+                    cred_success = self._sync_credentials_from_kodi(provider_name, country)
                     proxy_success = self._sync_proxy_from_kodi(provider_name, country)
-                    results[f"{provider_name}_{country}"] = (
-                        cred_success or proxy_success
-                    )
+                    results[f"{provider_name}_{country}"] = cred_success or proxy_success
             else:
                 # Single provider
                 cred_success = self._sync_credentials_from_kodi(provider_name)
@@ -853,32 +782,20 @@ class SettingsManager:
         proxy_config = self.proxy_manager.get_proxy_config(provider_name, country)
 
         # If no proxy config and Kodi available, sync from Kodi
-        if (
-            not proxy_config
-            and self.kodi_bridge
-            and self.kodi_bridge.is_kodi_environment()
-        ):
+        if not proxy_config and self.kodi_bridge and self.kodi_bridge.is_kodi_environment():
             if self._sync_proxy_from_kodi(provider_name, country):
-                proxy_config = self.proxy_manager.get_proxy_config(
-                    provider_name, country
-                )
+                proxy_config = self.proxy_manager.get_proxy_config(provider_name, country)
 
         return proxy_config
 
-    def _sync_proxy_from_kodi(
-        self, provider_name: str, country: Optional[str] = None
-    ) -> bool:
+    def _sync_proxy_from_kodi(self, provider_name: str, country: Optional[str] = None) -> bool:
         """Sync proxy config from Kodi to proxy manager"""
         if not self.kodi_bridge:
             return False
 
-        kodi_proxy_config = self.kodi_bridge.read_proxy_config_from_kodi(
-            provider_name, country
-        )
+        kodi_proxy_config = self.kodi_bridge.read_proxy_config_from_kodi(provider_name, country)
         if kodi_proxy_config:
-            return self.proxy_manager.set_proxy_config(
-                provider_name, kodi_proxy_config, country
-            )
+            return self.proxy_manager.set_proxy_config(provider_name, kodi_proxy_config, country)
         return False
 
     def set_provider_proxy(
@@ -888,29 +805,21 @@ class SettingsManager:
         country: Optional[str] = None,
     ) -> bool:
         """Set proxy configuration for a provider with Kodi sync"""
-        success = self.proxy_manager.set_proxy_config(
-            provider_name, proxy_config, country
-        )
+        success = self.proxy_manager.set_proxy_config(provider_name, proxy_config, country)
 
         # Also sync to Kodi if available
         if success and self.kodi_bridge and self.kodi_bridge.is_kodi_environment():
-            self.kodi_bridge.write_proxy_config_to_kodi(
-                provider_name, proxy_config, country
-            )
+            self.kodi_bridge.write_proxy_config_to_kodi(provider_name, proxy_config, country)
 
         return success
 
-    def remove_provider_proxy(
-        self, provider_name: str, country: Optional[str] = None
-    ) -> bool:
+    def remove_provider_proxy(self, provider_name: str, country: Optional[str] = None) -> bool:
         """Remove proxy configuration for a provider"""
         return self.proxy_manager.remove_proxy_config(provider_name, country)
 
     # ============= Session Management =============
 
-    def clear_provider_session(
-        self, provider_name: str, country: Optional[str] = None
-    ) -> bool:
+    def clear_provider_session(self, provider_name: str, country: Optional[str] = None) -> bool:
         """Clear all session data for a provider"""
         return self.session_manager.clear_session(provider_name, country)
 
@@ -990,8 +899,7 @@ class SettingsManager:
                 if reset_session:
                     self.session_manager.clear_session(provider_name, country)
                     logger.info(
-                        f"Reset session for {provider_name}"
-                        + (f" ({country})" if country else "")
+                        f"Reset session for {provider_name}" + (f" ({country})" if country else "")
                     )
 
                 if reset_proxy:
@@ -1054,9 +962,7 @@ class SettingsManager:
         if country is None and self.provider_supports_countries(provider_name):
             countries_data = {}
             for ctry in self.get_provider_countries(provider_name):
-                countries_data[ctry] = self.export_provider_settings(
-                    provider_name, ctry
-                )
+                countries_data[ctry] = self.export_provider_settings(provider_name, ctry)
             export_data["countries"] = countries_data
 
         return export_data
@@ -1075,9 +981,7 @@ class SettingsManager:
             timestamp = int(time.time())
             # Use config_path for backward compatibility
             if self.config_path:
-                export_path = str(
-                    self.config_path / f"settings_export_{timestamp}.json"
-                )
+                export_path = str(self.config_path / f"settings_export_{timestamp}.json")
             else:
                 export_path = f"settings_export_{timestamp}.json"
 
@@ -1088,9 +992,7 @@ class SettingsManager:
                 "source": "unified_settings_manager_v2.1_country_aware",
             },
             "system_info": {
-                "config_dir": (
-                    str(self.config_path) if self.config_path else "default_vfs_path"
-                ),
+                "config_dir": (str(self.config_path) if self.config_path else "default_vfs_path"),
                 "kodi_integration_enabled": self.enable_kodi_integration,
                 "registered_provider_count": len(self._registered_providers),
             },
@@ -1099,9 +1001,7 @@ class SettingsManager:
 
         # Export each provider
         for provider_name in self.list_registered_providers():
-            export_data["providers"][provider_name] = self.export_provider_settings(
-                provider_name
-            )
+            export_data["providers"][provider_name] = self.export_provider_settings(provider_name)
 
         # Write to file - use standard filesystem for exports (not VFS)
         with open(export_path, "w", encoding="utf-8") as f:
@@ -1140,18 +1040,14 @@ class SettingsManager:
                 "active": len(self.list_registered_providers()),
                 "ready": len(self.get_ready_providers()),
                 "country_aware": sum(
-                    1
-                    for reg in self._registered_providers.values()
-                    if reg.supports_countries
+                    1 for reg in self._registered_providers.values() if reg.supports_countries
                 ),
             },
             "kodi_integration": {
                 "enabled": self.enable_kodi_integration,
                 "bridge_available": self.kodi_bridge is not None,
                 "in_kodi_environment": (
-                    self.kodi_bridge.is_kodi_environment()
-                    if self.kodi_bridge
-                    else False
+                    self.kodi_bridge.is_kodi_environment() if self.kodi_bridge else False
                 ),
             },
             "storage": {
@@ -1160,9 +1056,7 @@ class SettingsManager:
             },
         }
 
-    def debug_provider(
-        self, provider_name: str, country: Optional[str] = None
-    ) -> Dict[str, Any]:
+    def debug_provider(self, provider_name: str, country: Optional[str] = None) -> Dict[str, Any]:
         """
         Get detailed debug information for a provider
 
@@ -1212,8 +1106,7 @@ class SettingsManager:
         # Component manager status
         debug_info["components"] = {
             "credential_manager": {
-                "has_credentials": provider_name
-                in self.credential_manager.list_providers()
+                "has_credentials": provider_name in self.credential_manager.list_providers()
             },
             "session_manager": {
                 "has_session": self.session_manager.load_session(provider_name, country)
@@ -1284,9 +1177,7 @@ class SettingsManager:
         # Get countries with session data
         return self.session_manager.get_all_countries(provider_name)
 
-    def migrate_to_country_structure(
-        self, provider_name: str, default_country: str
-    ) -> bool:
+    def migrate_to_country_structure(self, provider_name: str, default_country: str) -> bool:
         """
         Migrate a non-country provider to country-aware structure
 
@@ -1323,15 +1214,11 @@ class SettingsManager:
                 logger.debug(f"Migrated credentials to {default_country}")
 
             if old_session:
-                self.session_manager.save_session(
-                    provider_name, old_session, default_country
-                )
+                self.session_manager.save_session(provider_name, old_session, default_country)
                 logger.debug(f"Migrated session to {default_country}")
 
             if old_proxy:
-                self.proxy_manager.set_proxy_config(
-                    provider_name, old_proxy, default_country
-                )
+                self.proxy_manager.set_proxy_config(provider_name, old_proxy, default_country)
                 logger.debug(f"Migrated proxy to {default_country}")
 
             # Clear old non-country data
@@ -1395,9 +1282,7 @@ class SettingsManager:
                 'token_type': 'Bearer'
             }, 'de')
         """
-        return self.session_manager.save_scoped_token(
-            provider_name, scope, token_data, country
-        )
+        return self.session_manager.save_scoped_token(provider_name, scope, token_data, country)
 
     def load_scoped_token(
         self, provider_name: str, scope: str, country: Optional[str] = None
@@ -1443,9 +1328,7 @@ class SettingsManager:
         """
         return self.session_manager.clear_scoped_token(provider_name, scope, country)
 
-    def list_scoped_tokens(
-        self, provider_name: str, country: Optional[str] = None
-    ) -> List[str]:
+    def list_scoped_tokens(self, provider_name: str, country: Optional[str] = None) -> List[str]:
         """
         List all available token scopes for a provider
 
@@ -1529,13 +1412,9 @@ class SettingsManager:
                 status["access_token_valid"] = time.time() < expires_at
 
             # yo_digital style (separate access_token_expires_in)
-            elif (
-                "access_token_expires_in" in token_data
-                and "access_token_issued_at" in token_data
-            ):
+            elif "access_token_expires_in" in token_data and "access_token_issued_at" in token_data:
                 expires_at = (
-                    token_data["access_token_issued_at"]
-                    + token_data["access_token_expires_in"]
+                    token_data["access_token_issued_at"] + token_data["access_token_expires_in"]
                 )
                 status["access_token_expires_at"] = expires_at
                 status["access_token_valid"] = time.time() < expires_at
@@ -1546,13 +1425,9 @@ class SettingsManager:
         if "refresh_token" in token_data:
             status["has_refresh_token"] = True
 
-            if (
-                "refresh_token_expires_in" in token_data
-                and "refresh_token_issued_at" in token_data
-            ):
+            if "refresh_token_expires_in" in token_data and "refresh_token_issued_at" in token_data:
                 expires_at = (
-                    token_data["refresh_token_issued_at"]
-                    + token_data["refresh_token_expires_in"]
+                    token_data["refresh_token_issued_at"] + token_data["refresh_token_expires_in"]
                 )
                 status["refresh_token_expires_at"] = expires_at
                 status["refresh_token_valid"] = time.time() < expires_at
@@ -1561,9 +1436,7 @@ class SettingsManager:
 
         return status
 
-    def is_provider_enabled(
-        self, provider_name: str, country: Optional[str] = None
-    ) -> bool:
+    def is_provider_enabled(self, provider_name: str, country: Optional[str] = None) -> bool:
         """Check if provider is enabled (using ProviderEnableManager)"""
         # Import here to avoid circular imports
         from .provider_enable_manager import ProviderEnableManager
@@ -1647,15 +1520,11 @@ class SettingsManager:
                 return False, f"Credential validation failed: missing required fields"
 
             # Save directly to file (bypass Kodi sync)
-            success = self.credential_manager.save_credentials(
-                provider, credentials, country
-            )
+            success = self.credential_manager.save_credentials(provider, credentials, country)
 
             if success:
                 country_str = f" ({country})" if country else ""
-                logger.info(
-                    f"Successfully saved credentials from API for {provider}{country_str}"
-                )
+                logger.info(f"Successfully saved credentials from API for {provider}{country_str}")
                 return True, "Credentials saved successfully"
             else:
                 return False, "Failed to save credentials to file"
@@ -1689,9 +1558,7 @@ class SettingsManager:
             )
 
         # Check for client credentials
-        has_client_id = (
-            "client_id" in credentials_data and credentials_data["client_id"]
-        )
+        has_client_id = "client_id" in credentials_data and credentials_data["client_id"]
         has_client_secret = (
             "client_secret" in credentials_data and credentials_data["client_secret"]
         )
@@ -1744,15 +1611,11 @@ class SettingsManager:
                 return False, "Proxy validation failed: invalid host, port, or timeout"
 
             # Save directly to file (bypass Kodi sync)
-            success = self.proxy_manager.set_proxy_config(
-                provider, proxy_config, country
-            )
+            success = self.proxy_manager.set_proxy_config(provider, proxy_config, country)
 
             if success:
                 country_str = f" ({country})" if country else ""
-                logger.info(
-                    f"Successfully saved proxy config from API for {provider}{country_str}"
-                )
+                logger.info(f"Successfully saved proxy config from API for {provider}{country_str}")
                 return True, "Proxy configuration saved successfully"
             else:
                 return False, "Failed to save proxy configuration to file"
@@ -1772,8 +1635,7 @@ class SettingsManager:
         Returns:
             ProxyConfig instance or None if invalid
         """
-        from ..models.proxy_models import (ProxyAuth, ProxyConfig, ProxyScope,
-                                           ProxyType)
+        from ..models.proxy_models import ProxyAuth, ProxyConfig, ProxyScope, ProxyType
 
         # Required fields
         if "host" not in proxy_data or not proxy_data["host"]:
@@ -1829,9 +1691,7 @@ class SettingsManager:
             verify_ssl=verify_ssl,
         )
 
-    def delete_provider_credentials_from_api(
-        self, provider_name: str
-    ) -> Tuple[bool, str]:
+    def delete_provider_credentials_from_api(self, provider_name: str) -> Tuple[bool, str]:
         """
         Delete credentials via API request
 
@@ -1862,9 +1722,7 @@ class SettingsManager:
                 return False, "Failed to delete credentials"
 
         except Exception as e:
-            logger.error(
-                f"Error deleting credentials from API for {provider_name}: {e}"
-            )
+            logger.error(f"Error deleting credentials from API for {provider_name}: {e}")
             return False, f"Internal error: {str(e)}"
 
     def delete_provider_proxy_from_api(self, provider_name: str) -> Tuple[bool, str]:
@@ -1898,9 +1756,7 @@ class SettingsManager:
                 return False, "Failed to delete proxy configuration"
 
         except Exception as e:
-            logger.error(
-                f"Error deleting proxy config from API for {provider_name}: {e}"
-            )
+            logger.error(f"Error deleting proxy config from API for {provider_name}: {e}")
             return False, f"Internal error: {str(e)}"
 
 
