@@ -68,17 +68,20 @@ class DRMOperations:
         pssh_data_list = []
         if drm_configs and self.drm_plugin_manager.plugins:
             if self._needs_pssh_extraction(drm_configs):
-                manifest_url = provider.get_manifest(channel_id, **kwargs)
-                if manifest_url:
-                    # Try cache first
-                    cache_key = f"{provider_name}:{channel_id}"
-                    pssh_data_list = self.pssh_cache.get(cache_key)
+                # Try cache FIRST before fetching manifest
+                cache_key = f"{provider_name}:{channel_id}"
+                pssh_data_list = self.pssh_cache.get(cache_key)
 
-                    if pssh_data_list is None:
-                        # Cache miss - extract and cache
+                if pssh_data_list is None:
+                    # Cache miss - now fetch manifest and extract
+                    logger.debug(f"Cache miss for {cache_key}, fetching manifest")
+                    manifest_url = provider.get_manifest(channel_id, **kwargs)
+                    if manifest_url:
                         pssh_data_list = self._extract_pssh_from_manifest(manifest_url)
                         if pssh_data_list:
                             self.pssh_cache.set(cache_key, pssh_data_list)
+                else:
+                    logger.debug(f"Using cached PSSH for {cache_key}")
 
         # Process through plugins
         processed = self.drm_plugin_manager.process_drm_configs(
