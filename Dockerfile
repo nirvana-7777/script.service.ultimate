@@ -15,7 +15,8 @@ ENV PYTHONUNBUFFERED=1 \
     ULTIMATE_COUNTRY=DE \
     ULTIMATE_DEBUG=false \
     ULTIMATE_EPG_URL="https://example.com/epg.xml.gz" \
-    PYTHONPATH=/app/lib
+    PYTHONPATH=/app/lib \
+    DRM_PLUGINS_PATH=/drm-plugins
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -46,15 +47,23 @@ RUN pip install --no-cache-dir --upgrade pip && \
 RUN groupadd -g ${GROUP_ID} ${APP_USER} && \
     useradd -u ${USER_ID} -g ${APP_USER} -m -s /bin/bash ${APP_USER}
 
+# Create directories
+RUN mkdir -p /config /logs /cache /drm-plugins && \
+    chown -R ${USER_ID}:${GROUP_ID} /config /logs /cache /drm-plugins
+
 # Copy application code
 COPY --chown=${USER_ID}:${GROUP_ID} . .
 
+# Create the directory structure for DRM plugins
+RUN mkdir -p /app/lib/streaming_providers/base/drm/plugins && \
+    chown -R ${USER_ID}:${GROUP_ID} /app/lib/streaming_providers/base/drm
+
+# Copy entrypoint script
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 # Quick directory check
 RUN ls -la /app && echo "---" && ls -la /app/lib/ 2>/dev/null || echo "lib directory not found"
-
-# Create directories
-RUN mkdir -p /config /logs /cache && \
-    chown -R ${USER_ID}:${GROUP_ID} /config /logs /cache
 
 # Switch to non-root user
 USER ${USER_ID}
@@ -75,6 +84,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
 LABEL maintainer="nirvana-7777" \
       description="Ultimate Backend Streaming Service"
 
-# Simple entrypoint
-ENTRYPOINT ["python", "service.py"]
-CMD ["--standalone", "--config-dir", "/config"]
+# Entrypoint with wrapper script
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["python", "service.py", "--standalone", "--config-dir", "/config"]
