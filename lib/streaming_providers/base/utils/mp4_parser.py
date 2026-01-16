@@ -134,9 +134,9 @@ class MP4PSSHExtractor:
     def _parse_tenc_box(tenc_bytes: bytes) -> Optional[str]:
         """Parse a tenc box and extract the default key ID"""
         try:
-            # Minimum tenc box size is 20 bytes for version 0
-            if len(tenc_bytes) < 20:
-                logger.debug(f"tenc box too small: {len(tenc_bytes)} bytes")
+            # tenc box should be at least 32 bytes for version 0 with KID
+            if len(tenc_bytes) < 32:
+                logger.debug(f"tenc box too small: {len(tenc_bytes)} bytes, need at least 32")
                 return None
 
             # Parse box header
@@ -144,23 +144,45 @@ class MP4PSSHExtractor:
             box_type = tenc_bytes[4:8]
 
             if box_type != b'tenc':
-                logger.debug(f"Not a tenc box, type: {box_type}")
+                logger.debug(f"Not a tenc box, type: {box_type.hex()}")
                 return None
 
             version = tenc_bytes[8]
             logger.debug(f"tenc box version: {version}")
 
-            # ISO/IEC 23001-7:2016 - tenc box structure for version 0:
-            # Bytes 0-3: box size
-            # Bytes 4-7: box type 'tenc'
-            # Byte 8: version
-            # Bytes 9-11: flags
-            # Byte 12: reserved (24 bits in big-endian) + is_encrypted (1 bit)
-            # Byte 13: default_iv_size
-            # Bytes 14-29: default_KID (16 bytes)
+            if version == 0:
+                # For version 0: reserved(24) + is_encrypted(1) is a 32-bit field at bytes 12-15
+                # Actually, it's stored as a 32-bit big-endian integer
+                # Bytes 12-15: reserved (24 bits) + is_encrypted (1 bit)
+                # Byte 16: default_iv_size
+                # Bytes 17-32: default_KID (16 bytes)
 
-            # For version 0, KID is ALWAYS at offset 14
-            kid_offset = 14
+                # Read the 32-bit field at bytes 12-15
+                reserved_encrypted = struct.unpack(">I", tenc_bytes[12:16])[0]
+
+                # Extract is_encrypted from bit 24 (0-indexed from MSB)
+                # Actually, in big-endian, byte 14 is the 3rd byte of this 32-bit field
+                # Let me think: bytes[12], bytes[13], bytes[14], bytes[15]
+                # Byte 14 = tenc_bytes[14] = your "01"
+                # Byte 15 = tenc_bytes[15] = your "08"
+
+                # Actually simpler: byte 14 contains is_encrypted in its LSB
+                is_encrypted = (tenc_bytes[14] & 0x01) != 0
+                default_iv_size = tenc_bytes[15]
+
+                # KID starts at byte 16 (not 14!)
+                kid_offset = 16
+
+                logger.debug(
+                    f"tenc v0: is_encrypted={is_encrypted}, default_iv_size={default_iv_size}, kid_offset={kid_offset}")
+
+            elif version == 1:
+                # Version 1 has different structure
+                kid_offset = 16  # Adjust as needed for v1
+                logger.debug(f"tenc v1: kid_offset={kid_offset}")
+            else:
+                logger.debug(f"Unknown tenc version: {version}")
+                return None
 
             if kid_offset + 16 > len(tenc_bytes):
                 logger.debug(f"tenc box too small for KID: {len(tenc_bytes)} bytes, need {kid_offset + 16}")
@@ -170,14 +192,6 @@ class MP4PSSHExtractor:
             kid_bytes = tenc_bytes[kid_offset:kid_offset + 16]
             hex_kid = kid_bytes.hex()
 
-            # Parse is_encrypted flag from byte 12
-            is_encrypted_byte = tenc_bytes[12]
-            is_encrypted = (is_encrypted_byte & 0x01) != 0  # Bit 0
-
-            # Parse default_iv_size from byte 13
-            default_iv_size = tenc_bytes[13]
-
-            logger.debug(f"tenc box: is_encrypted={is_encrypted}, default_iv_size={default_iv_size}")
             logger.debug(f"KID bytes at offset {kid_offset}: {hex_kid}")
 
             # Format as UUID
@@ -196,7 +210,7 @@ class MP4PSSHExtractor:
             logger.debug(f"Failed to parse tenc box: {e}")
             return None
 
-    # [Keep the rest of the methods exactly the same as in the previous version...]
+    # [Keep all the rest of the methods EXACTLY the same...]
     @staticmethod
     def _extract_from_moov(moov_data: bytes) -> List[PSSHData]:
         """Extract PSSH boxes from moov container"""
