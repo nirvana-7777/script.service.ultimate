@@ -1065,7 +1065,7 @@ class UltimateService:
                 # Clear cache if force refresh requested
                 if force_refresh:
                     cache_key = f"{provider}:{channel_id}"
-                    self.manager.drm_operations.pssh_cache.clear()
+                    self.manager.drm_ops.pssh_cache.clear()
                     logger.info(f"Cache cleared for force_refresh request: {cache_key}")
 
                 # Get manifest URL
@@ -1102,12 +1102,12 @@ class UltimateService:
 
                 # Check if we're using cache
                 cache_key = f"{provider}:{channel_id}"
-                cached_pssh = self.manager.drm_operations.pssh_cache.get(cache_key)
+                cached_pssh = self.manager.drm_ops.pssh_cache.get(cache_key)
                 was_cached = cached_pssh is not None
 
                 # Extract PSSH data (uses cache internally unless force_refresh)
                 try:
-                    pssh_data_list = self.manager.drm_operations._extract_pssh_from_manifest(
+                    pssh_data_list = self.manager.drm_ops._extract_pssh_from_manifest(
                         manifest_url
                     )
                 except Exception as e:
@@ -1165,7 +1165,7 @@ class UltimateService:
                     'pssh_data': pssh_list,
                     'count': len(pssh_list),
                     'cached': was_cached,
-                    'cache_ttl_seconds': self.manager.drm_operations.pssh_cache.ttl
+                    'cache_ttl_seconds': self.manager.drm_ops.pssh_cache.ttl
                 }
 
             except Exception as e:
@@ -1196,14 +1196,14 @@ class UltimateService:
                 cache_key = f"{provider}:{channel_id}"
 
                 # Check if entry exists in cache
-                cached = self.manager.drm_operations.pssh_cache.get(cache_key)
+                cached = self.manager.drm_ops.pssh_cache.get(cache_key)
 
                 # Clear it
                 if cached:
                     # Remove specific key (you may need to add this method to PSSHCache)
-                    with self.manager.drm_operations.pssh_cache.lock:
-                        if cache_key in self.manager.drm_operations.pssh_cache.cache:
-                            del self.manager.drm_operations.pssh_cache.cache[cache_key]
+                    with self.manager.drm_ops.pssh_cache.lock:
+                        if cache_key in self.manager.drm_ops.pssh_cache.cache:
+                            del self.manager.drm_ops.pssh_cache.cache[cache_key]
                     logger.info(f"Cleared cache for {cache_key}")
 
                 # Now extract fresh data
@@ -1224,13 +1224,13 @@ class UltimateService:
                     }
 
                 # Extract and cache
-                pssh_data_list = self.manager.drm_operations._extract_pssh_from_manifest(
+                pssh_data_list = self.manager.drm_ops._extract_pssh_from_manifest(
                     manifest_url
                 )
 
                 if pssh_data_list:
                     # Cache it
-                    self.manager.drm_operations.pssh_cache.set(cache_key, pssh_data_list)
+                    self.manager.drm_ops.pssh_cache.set(cache_key, pssh_data_list)
 
                 response.status = 200
                 return {
@@ -1261,8 +1261,8 @@ class UltimateService:
             - Forcing re-extraction of all channels
             """
             try:
-                cache_size = len(self.manager.drm_operations.pssh_cache.cache)
-                self.manager.drm_operations.pssh_cache.clear()
+                cache_size = len(self.manager.drm_ops.pssh_cache.cache)
+                self.manager.drm_ops.pssh_cache.clear()
 
                 response.status = 200
                 return {
@@ -1289,7 +1289,7 @@ class UltimateService:
             - Memory usage estimate
             """
             try:
-                cache = self.manager.drm_operations.pssh_cache
+                cache = self.manager.drm_ops.pssh_cache
 
                 with cache.lock:
                     entries = []
