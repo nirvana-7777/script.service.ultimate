@@ -1062,15 +1062,22 @@ class UltimateService:
                 country = request.params.get('country')
                 force_refresh = request.params.get('force_refresh', '').lower() == 'true'
 
+                # Check cache status BEFORE clearing (to know if it was cached)
+                cache_key = f"{provider}:{channel_id}"
+                was_cached_before = self.manager.drm_ops.pssh_cache.get(cache_key) is not None
+
                 # Clear cache if force refresh requested
                 if force_refresh:
-                    cache_key = f"{provider}:{channel_id}"
-                    self.manager.drm_ops.pssh_cache.clear()
+                    with self.manager.drm_ops.pssh_cache.lock:
+                        if cache_key in self.manager.drm_ops.pssh_cache.cache:
+                            del self.manager.drm_ops.pssh_cache.cache[cache_key]
                     logger.info(f"Cache cleared for force_refresh request: {cache_key}")
+                    was_cached_before = False  # Since we just cleared it
 
-                # Get manifest URL
+                # Get DRM configs - this will check cache and extract if needed
                 try:
-                    manifest_url = self.manager.get_channel_manifest(
+                    # This method handles caching internally
+                    drm_configs = self.manager.drm_ops.get_channel_drm_configs(
                         provider_name=provider,
                         channel_id=channel_id,
                         country=country
@@ -1085,52 +1092,42 @@ class UltimateService:
                 except Exception as e:
                     response.status = 500
                     return {
-                        'error': 'Failed to get manifest',
+                        'error': 'Failed to get DRM configs',
                         'message': str(e),
                         'provider': provider,
                         'channel_id': channel_id
                     }
 
-                if not manifest_url:
-                    response.status = 404
-                    return {
-                        'error': 'Manifest not available',
-                        'message': f'No manifest found for channel "{channel_id}" from provider "{provider}"',
-                        'provider': provider,
-                        'channel_id': channel_id
-                    }
-
-                # Check if we're using cache
-                cache_key = f"{provider}:{channel_id}"
-                cached_pssh = self.manager.drm_ops.pssh_cache.get(cache_key)
-                was_cached = cached_pssh is not None
-
-                # Extract PSSH data (uses cache internally unless force_refresh)
+                # Get manifest URL for reference
                 try:
-                    pssh_data_list = self.manager.drm_ops._extract_pssh_from_manifest(
-                        manifest_url
+                    manifest_url = self.manager.get_channel_manifest(
+                        provider_name=provider,
+                        channel_id=channel_id,
+                        country=country
                     )
                 except Exception as e:
-                    response.status = 500
-                    return {
-                        'error': 'Failed to extract PSSH',
-                        'message': str(e),
-                        'provider': provider,
-                        'channel_id': channel_id,
-                        'manifest_url': manifest_url,
-                        'traceback': traceback.format_exc() if self.app.config.get('debug') else None
-                    }
+                    manifest_url = None
+                    logger.debug(f"Could not get manifest URL: {e}")
+
+                # Now get the PSSH data from cache (after get_channel_drm_configs has populated it)
+                pssh_data_list = self.manager.drm_ops.pssh_cache.get(cache_key)
+                was_cached_after = pssh_data_list is not None
 
                 if not pssh_data_list:
-                    response.status = 404
-                    return {
-                        'error': 'No PSSH data found',
-                        'message': f'No PSSH data found in manifest or segments for channel "{channel_id}"',
-                        'provider': provider,
-                        'channel_id': channel_id,
-                        'manifest_url': manifest_url,
-                        'hint': 'This channel may not use DRM, or PSSH extraction failed'
-                    }
+                    # If no PSSH data in cache, try to extract from manifest
+                    if manifest_url:
+                        try:
+                            pssh_data_list = self.manager.drm_ops._extract_pssh_from_manifest(
+                                manifest_url
+                            )
+                            # Cache the result
+                            if pssh_data_list:
+                                self.manager.drm_ops.pssh_cache.set(cache_key, pssh_data_list)
+                        except Exception as extract_err:
+                            logger.warning(f"Failed to extract PSSH from manifest: {extract_err}")
+                            pssh_data_list = []
+                    else:
+                        pssh_data_list = []
 
                 # Convert PSSH data to dictionary format
                 pssh_list = []
@@ -1164,7 +1161,8 @@ class UltimateService:
                     'manifest_url': manifest_url,
                     'pssh_data': pssh_list,
                     'count': len(pssh_list),
-                    'cached': was_cached,
+                    'cached': was_cached_after,  # Whether data came from cache AFTER the operation
+                    'was_cached_before': was_cached_before,  # Whether data was in cache BEFORE the operation
                     'cache_ttl_seconds': self.manager.drm_ops.pssh_cache.ttl
                 }
 
@@ -1192,61 +1190,80 @@ class UltimateService:
             - Previous extraction failed
             """
             try:
-                # Clear cache for this specific channel
-                cache_key = f"{provider}:{channel_id}"
-
-                # Check if entry exists in cache
-                cached = self.manager.drm_ops.pssh_cache.get(cache_key)
-
-                # Clear it
-                if cached:
-                    # Remove specific key (you may need to add this method to PSSHCache)
-                    with self.manager.drm_ops.pssh_cache.lock:
-                        if cache_key in self.manager.drm_ops.pssh_cache.cache:
-                            del self.manager.drm_ops.pssh_cache.cache[cache_key]
-                    logger.info(f"Cleared cache for {cache_key}")
-
-                # Now extract fresh data
+                # Parse query parameters
                 country = request.params.get('country')
 
-                manifest_url = self.manager.get_channel_manifest(
-                    provider_name=provider,
-                    channel_id=channel_id,
-                    country=country
-                )
+                # Generate cache key
+                cache_key = f"{provider}:{channel_id}"
 
-                if not manifest_url:
+                # Check if entry exists in cache before clearing
+                was_cached = self.manager.drm_ops.pssh_cache.get(cache_key) is not None
+
+                # Clear the specific cache entry
+                with self.manager.drm_ops.pssh_cache.lock:
+                    if cache_key in self.manager.drm_ops.pssh_cache.cache:
+                        del self.manager.drm_ops.pssh_cache.cache[cache_key]
+
+                if was_cached:
+                    logger.info(f"Cleared cache for {cache_key}")
+                else:
+                    logger.info(f"No cache entry found for {cache_key}")
+
+                # Now extract fresh data by calling get_channel_drm_configs
+                # This will force a fresh extraction since cache was cleared
+                try:
+                    drm_configs = self.manager.drm_ops.get_channel_drm_configs(
+                        provider_name=provider,
+                        channel_id=channel_id,
+                        country=country
+                    )
+                except ValueError as e:
                     response.status = 404
                     return {
-                        'error': 'Manifest not available',
+                        'error': 'Provider not found',
+                        'message': str(e),
+                        'provider': provider
+                    }
+                except Exception as e:
+                    response.status = 500
+                    return {
+                        'error': 'Failed to refresh DRM configs',
+                        'message': str(e),
                         'provider': provider,
                         'channel_id': channel_id
                     }
 
-                # Extract and cache
-                pssh_data_list = self.manager.drm_ops._extract_pssh_from_manifest(
-                    manifest_url
-                )
+                # Get the newly cached PSSH data
+                pssh_data_list = self.manager.drm_ops.pssh_cache.get(cache_key)
+                now_cached = pssh_data_list is not None
 
-                if pssh_data_list:
-                    # Cache it
-                    self.manager.drm_ops.pssh_cache.set(cache_key, pssh_data_list)
+                # Get manifest URL for reference
+                try:
+                    manifest_url = self.manager.get_channel_manifest(
+                        provider_name=provider,
+                        channel_id=channel_id,
+                        country=country
+                    )
+                except Exception as e:
+                    manifest_url = None
 
                 response.status = 200
                 return {
-                    'message': 'PSSH data refreshed',
+                    'message': 'PSSH data refreshed successfully',
                     'provider': provider,
                     'channel_id': channel_id,
-                    'count': len(pssh_data_list),
-                    'was_cached': cached is not None,
-                    'now_cached': len(pssh_data_list) > 0
+                    'manifest_url': manifest_url,
+                    'pssh_count': len(pssh_data_list) if pssh_data_list else 0,
+                    'was_cached': was_cached,
+                    'now_cached': now_cached,
+                    'extraction_successful': len(pssh_data_list) > 0 if pssh_data_list else False
                 }
 
             except Exception as e:
                 logger.error(f"Error refreshing PSSH: {e}")
                 response.status = 500
                 return {
-                    'error': 'Failed to refresh',
+                    'error': 'Failed to refresh PSSH data',
                     'message': str(e)
                 }
 
