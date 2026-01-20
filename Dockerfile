@@ -47,23 +47,30 @@ RUN pip install --no-cache-dir --upgrade pip && \
 RUN groupadd -g ${GROUP_ID} ${APP_USER} && \
     useradd -u ${USER_ID} -g ${APP_USER} -m -s /bin/bash ${APP_USER}
 
-# Create directories
-RUN mkdir -p /config /logs /cache /drm-plugins && \
-    chown -R ${USER_ID}:${GROUP_ID} /config /logs /cache /drm-plugins
+# Create directories for new structure
+RUN mkdir -p /config /logs /cache /drm-plugins /app/routes && \
+    chown -R ${USER_ID}:${GROUP_ID} /config /logs /cache /drm-plugins /app/routes
 
-# Copy application code
-COPY --chown=${USER_ID}:${GROUP_ID} . .
+# Copy application code with new structure
+COPY --chown=${USER_ID}:${GROUP_ID} service.py .
+# IMPORTANT: Copy the entire routes directory
+COPY --chown=${USER_ID}:${GROUP_ID} routes/ /app/routes/
 
 # Create the directory structure for DRM plugins
 RUN mkdir -p /app/lib/streaming_providers/base/drm/plugins && \
     chown -R ${USER_ID}:${GROUP_ID} /app/lib/streaming_providers/base/drm
 
-# Copy entrypoint script
+# Quick directory check (for debugging)
+RUN echo "=== Directory structure ===" && \
+    ls -la /app && \
+    echo "---" && \
+    ls -la /app/routes/ 2>/dev/null || echo "routes directory not found" && \
+    echo "---" && \
+    ls -la /app/lib/ 2>/dev/null || echo "lib directory not found"
+
+# Copy updated entrypoint script
 COPY docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
-
-# Quick directory check
-RUN ls -la /app && echo "---" && ls -la /app/lib/ 2>/dev/null || echo "lib directory not found"
 
 # Switch to non-root user
 USER ${USER_ID}

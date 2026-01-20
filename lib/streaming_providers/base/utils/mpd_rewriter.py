@@ -2,63 +2,102 @@
 import base64
 import xml.etree.ElementTree as ET
 from typing import Optional, Tuple
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, quote
 
 from .logger import logger
 
 
 class MPDRewriter:
     """
-    Utility for rewriting MPD (MPEG-DASH) manifest URLs to point to proxy endpoints
+    Utility for rewriting MPD (MPEG-DASH) manifest URLs to point to media proxy endpoints
 
     Strategy:
     - Remove all BaseURL elements
     - Convert all relative URLs to absolute URLs
-    - Rewrite all absolute URLs to proxy endpoint
+    - Rewrite all absolute URLs to media proxy endpoint
     - Keep template variables visible for client-side substitution
     """
 
     # MPD namespace
     MPD_NAMESPACE = {"mpd": "urn:mpeg:dash:schema:mpd:2011"}
 
-    def __init__(self, proxy_base_url: str, provider_name: str):
+    def __init__(self, media_proxy_url: str, provider_proxy_url: Optional[str] = None,
+                 clearkey_keyids: Optional[dict] = None):
         """
         Initialize MPD rewriter
 
         Args:
-            proxy_base_url: Base URL of the proxy service (e.g., http://localhost:7777)
-            provider_name: Name of the provider for proxy routing
+            media_proxy_url: Base URL of the media proxy service (e.g., http://10.77.77.7:7775)
+            provider_proxy_url: Optional proxy URL for the provider (e.g., http://nordlynx_germany:8888)
+            clearkey_keyids: Optional dict of kid:key pairs for decrypted playback
         """
-        self.proxy_base_url = proxy_base_url.rstrip("/")
-        self.provider_name = provider_name
+        self.media_proxy_url = media_proxy_url.rstrip("/")
+        self.provider_proxy_url = provider_proxy_url
+        self.clearkey_keyids = clearkey_keyids or {}
 
     @staticmethod
     def encode_url(url: str) -> str:
-        """Encode URL to base64 for use in proxy endpoint"""
-        return base64.urlsafe_b64encode(url.encode("utf-8")).decode("utf-8")
+        """
+        Encode URL to base64 for use in media proxy endpoint.
+        Strips padding as required by media proxy.
+        """
+        encoded = base64.urlsafe_b64encode(url.encode("utf-8")).decode("utf-8")
+        # Strip padding
+        return encoded.rstrip("=")
 
     @staticmethod
     def decode_url(encoded: str) -> str:
-        """Decode base64 URL from proxy endpoint"""
+        """
+        Decode base64 URL from media proxy endpoint.
+        Adds back padding if needed.
+        """
+        # Add back padding if needed
+        padding = 4 - (len(encoded) % 4)
+        if padding != 4:
+            encoded += "=" * padding
         return base64.urlsafe_b64decode(encoded.encode("utf-8")).decode("utf-8")
 
     def build_proxy_url(self, original_url: str, template_pattern: Optional[str] = None) -> str:
         """
-        Build proxy URL for an original media URL
+        Build media proxy URL for an original media URL
 
         Args:
             original_url: Original URL to be proxied (base path for templates)
             template_pattern: Optional template pattern to append (e.g., "segment-$Number$.m4s")
 
         Returns:
-            Proxy URL
+            Media proxy URL
         """
         encoded = self.encode_url(original_url)
-        proxy_url = f"{self.proxy_base_url}/api/proxy/{self.provider_name}/{encoded}"
+
+        # Choose endpoint based on whether we have clearkey data
+        if self.clearkey_keyids:
+            proxy_url = f"{self.media_proxy_url}/api/decrypt/{encoded}"
+        else:
+            proxy_url = f"{self.media_proxy_url}/api/proxy/{encoded}"
 
         # Append template pattern if provided (keeps variables visible for client)
         if template_pattern:
-            proxy_url += f"/{template_pattern}"
+            # URL encode the template pattern (same as current behavior)
+            encoded_pattern = quote(template_pattern, safe=".-_$")
+            proxy_url += f"/{encoded_pattern}"
+
+        # Build query parameters
+        query_params = []
+
+        # Add clearkey parameters if present
+        if self.clearkey_keyids:
+            for kid, key in self.clearkey_keyids.items():
+                query_params.append(f"kid={kid}")
+                query_params.append(f"key={key}")
+
+        # Add provider proxy parameter if configured
+        if self.provider_proxy_url:
+            query_params.append(f"proxy={self.provider_proxy_url}")
+
+        # Append query string if we have parameters
+        if query_params:
+            proxy_url += "?" + "&".join(query_params)
 
         return proxy_url
 
@@ -98,13 +137,13 @@ class MPDRewriter:
 
     def rewrite_mpd(self, mpd_content: str, manifest_url: str) -> str:
         """
-        Rewrite MPD content to use proxy URLs
+        Rewrite MPD content to use media proxy URLs
 
         Strategy:
         1. Parse MPD XML
         2. Extract and remove all BaseURL elements
         3. Resolve all relative URLs to absolute using BaseURLs and manifest URL
-        4. Rewrite all absolute URLs to proxy endpoints
+        4. Rewrite all absolute URLs to media proxy endpoints
         5. Keep template variables visible for client substitution
 
         Args:
@@ -124,7 +163,7 @@ class MPDRewriter:
             # Get base URL for relative resolution
             base_url = self._extract_base_url(root, manifest_url)
 
-            # Remove all BaseURL elements (Option 3 strategy)
+            # Remove all BaseURL elements
             self._remove_base_urls(root)
 
             # Rewrite all URLs in the MPD
@@ -137,7 +176,7 @@ class MPDRewriter:
             if not rewritten.startswith("<?xml"):
                 rewritten = '<?xml version="1.0" encoding="UTF-8"?>\n' + rewritten
 
-            logger.debug(f"Successfully rewrote MPD for provider '{self.provider_name}'")
+            logger.debug(f"Successfully rewrote MPD for media proxy")
             return rewritten
 
         except ET.ParseError as e:
@@ -188,7 +227,7 @@ class MPDRewriter:
 
     def _remove_base_urls(self, root: ET.Element) -> None:
         """
-        Remove all BaseURL elements from MPD (Option 3 strategy)
+        Remove all BaseURL elements from MPD
 
         Args:
             root: MPD root element
@@ -232,12 +271,12 @@ class MPDRewriter:
                     base_path, template_pattern = self.split_template_url(resolved)
                     element.attrib[attr] = self.build_proxy_url(base_path, template_pattern)
                     logger.debug(
-                        f"Rewrote template URL: {original_url} -> proxy with template {template_pattern}"
+                        f"Rewrote template URL: {original_url} -> media proxy with template {template_pattern}"
                     )
                 else:
                     # Regular URL without templates
                     element.attrib[attr] = self.build_proxy_url(resolved)
-                    logger.debug(f"Rewrote URL: {original_url} -> proxy")
+                    logger.debug(f"Rewrote URL: {original_url} -> media proxy")
 
         # Handle SegmentURL elements (used in SegmentList)
         if element.tag.endswith("SegmentURL"):

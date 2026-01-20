@@ -15,8 +15,9 @@ services:
     environment:
       - ULTIMATE_PORT=7777
       - ULTIMATE_DEBUG=false
-      - ULTIMATE_EPG_URL=https://raw.githubusercontent.com/epgshare01/share01/master/epg.xml.gz
+      - ULTIMATE_EPG_URL=https://example.com/epg.xml.gz
       - TZ=${TZ:-Europe/Berlin}
+      - MEDIA_PROXY_URL=http://media-proxy:8080  # if using media proxy
     volumes:
       - ./config:/config
       - ./logs:/logs

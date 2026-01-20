@@ -9,4 +9,10 @@ python-dateutil>=2.8.2
 urllib3>=2.0.7
 chardet>=5.2.0
 pycryptodome>=3.19.0
-cryptography>=41.0.0
+
+# Optional but recommended
+aiohttp>=3.8.5
+cryptography>=41.0.4
+
+# For development/debugging
+python-dotenv>=1.0.0

@@ -1,32 +1,49 @@
 #!/usr/bin/env python3
+import json
 import os
 import sys
 import threading
-import traceback
-from datetime import datetime
 import time
-import json
-from bottle import Bottle, run, request, response, redirect, HTTPResponse
-from urllib.parse import urlencode, parse_qsl
+from urllib.parse import parse_qsl, urlencode
+
+from bottle import Bottle, redirect, request, response, run
 
 # Add lib path for imports
 script_dir = os.path.dirname(os.path.abspath(__file__))
-LIB_PATH = os.path.join(script_dir, 'lib')
+LIB_PATH = os.path.join(script_dir, "lib")
 if os.path.exists(LIB_PATH):
     sys.path.insert(0, LIB_PATH)
 
 try:
     from streaming_providers import get_configured_manager
-    from streaming_providers.base.models import StreamingChannel
-    from streaming_providers.base.utils import logger, MPDRewriter, MPDCacheManager
-    from streaming_providers.base.utils.environment import get_environment_manager, get_vfs_instance
-    from streaming_providers.base.utils.environment import is_kodi_environment
-    from streaming_providers.base.settings.provider_enable_manager import ProviderEnableManager
+
     # Add EPG Manager import
     from streaming_providers.base.epg.epg_manager import EPGManager
+    from streaming_providers.base.models import StreamingChannel
+    from streaming_providers.base.settings.provider_enable_manager import (
+        ProviderEnableManager,
+    )
+    from streaming_providers.base.utils import MPDCacheManager, MPDRewriter, logger
+    from streaming_providers.base.utils.environment import (
+        get_environment_manager,
+        get_vfs_instance,
+        is_kodi_environment,
+    )
 except ImportError as import_err:
-    print(f"Ultimate Backend: Critical import failed - {str(import_err)}", file=sys.stderr)
+    print(
+        f"Ultimate Backend: Critical import failed - {str(import_err)}", file=sys.stderr
+    )
     raise
+
+from routes.cache import setup_cache_routes
+from routes.config import setup_config_routes
+from routes.drm import setup_drm_routes
+from routes.epg import setup_epg_routes
+from routes.m3u import setup_m3u_routes
+
+# Import route handlers
+from routes.providers import setup_provider_routes
+from routes.streams import setup_stream_routes
 
 
 class UltimateService:
@@ -38,11 +55,11 @@ class UltimateService:
 
         # Override config directory if provided
         if config_dir:
-            self.env_manager.set_config('profile_path', config_dir)
+            self.env_manager.set_config("profile_path", config_dir)
 
         # Get settings
-        self.server_port = self.env_manager.get_config('server_port', 7777)
-        self.default_country = self.env_manager.get_config('default_country', 'DE')
+        self.server_port = self.env_manager.get_config("server_port", 7777)
+        self.default_country = self.env_manager.get_config("default_country", "DE")
 
         # Initialize manager
         try:
@@ -51,6 +68,15 @@ class UltimateService:
         except Exception as init_err:
             logger.error(f"Failed to initialize manager - {str(init_err)}")
             raise
+
+        # Get media proxy URL from environment variable
+        self.media_proxy_url = os.environ.get("MEDIA_PROXY_URL", "").strip()
+        if not self.media_proxy_url:
+            logger.warning(
+                "MEDIA_PROXY_URL environment variable not set - media proxy features disabled"
+            )
+        else:
+            logger.info(f"Media proxy URL: {self.media_proxy_url}")
 
         # Initialize VFS for M3U caching
         self.vfs = get_vfs_instance(subdir="m3u_cache")
@@ -85,97 +111,118 @@ class UltimateService:
         import os
 
         # 1. Environment variable (highest priority for Docker)
-        env_url = os.environ.get('ULTIMATE_EPG_URL')
+        env_url = os.environ.get("ULTIMATE_EPG_URL")
         if env_url and env_url.strip() and env_url != "https://example.com/epg.xml.gz":
-            logger.info(f"UltimateService: Using EPG URL from environment variable: {env_url}")
+            logger.info(
+                f"UltimateService: Using EPG URL from environment variable: {env_url}"
+            )
             return env_url.strip()
 
         # 2. Try config.json via environment manager
         try:
-            config_url = self.env_manager.get_config('epg_url')
-            if config_url and config_url.strip() and config_url != "https://example.com/epg.xml.gz":
-                logger.info(f"UltimateService: Using EPG URL from config.json: {config_url}")
+            config_url = self.env_manager.get_config("epg_url")
+            if (
+                config_url
+                and config_url.strip()
+                and config_url != "https://example.com/epg.xml.gz"
+            ):
+                logger.info(
+                    f"UltimateService: Using EPG URL from config.json: {config_url}"
+                )
                 return config_url.strip()
         except Exception as e:
-            logger.debug(f"UltimateService: Could not get EPG URL from environment manager: {e}")
+            logger.debug(
+                f"UltimateService: Could not get EPG URL from environment manager: {e}"
+            )
 
         # 3. Try Kodi addon setting
         try:
             if is_kodi_environment():
                 import xbmcaddon
+
                 addon = xbmcaddon.Addon()
-                kodi_url = addon.getSetting('epg_xml_url')
-                if kodi_url and kodi_url.strip() and kodi_url != "https://example.com/epg.xml.gz":
-                    logger.info(f"UltimateService: Using EPG URL from Kodi settings: {kodi_url}")
+                kodi_url = addon.getSetting("epg_xml_url")
+                if (
+                    kodi_url
+                    and kodi_url.strip()
+                    and kodi_url != "https://example.com/epg.xml.gz"
+                ):
+                    logger.info(
+                        f"UltimateService: Using EPG URL from Kodi settings: {kodi_url}"
+                    )
                     return kodi_url.strip()
         except Exception as e:
-            logger.debug(f"UltimateService: Could not get EPG URL from Kodi settings: {e}")
+            logger.debug(
+                f"UltimateService: Could not get EPG URL from Kodi settings: {e}"
+            )
 
         # 4. Default fallback
         default_url = "https://example.com/epg.xml.gz"
-        logger.warning(f"UltimateService: No valid EPG URL found, using default: {default_url}")
+        logger.warning(
+            f"UltimateService: No valid EPG URL found, using default: {default_url}"
+        )
         logger.warning("Please set ULTIMATE_EPG_URL environment variable!")
         return default_url
 
     def _load_config_html(self):
         """Load the web interface HTML template with embedded CSS and JS"""
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        web_dir = os.path.join(base_dir, 'resources', 'web')
+        web_dir = os.path.join(base_dir, "resources", "web")
 
         # Define file paths
-        html_path = os.path.join(web_dir, 'config.html')
-        css_path = os.path.join(web_dir, 'config.css')
-        js_path = os.path.join(web_dir, 'config.js')
+        html_path = os.path.join(web_dir, "config.html")
+        css_path = os.path.join(web_dir, "config.css")
+        js_path = os.path.join(web_dir, "config.js")
 
         # Proxy files
-        proxy_css_path = os.path.join(web_dir, 'proxy.css')
-        proxy_js_path = os.path.join(web_dir, 'proxy.js')
+        proxy_css_path = os.path.join(web_dir, "proxy.css")
+        proxy_js_path = os.path.join(web_dir, "proxy.js")
 
         # EPG mapping files
-        epg_css_path = os.path.join(web_dir, 'epg_mapping.css')
-        epg_js_path = os.path.join(web_dir, 'epg_mapping.js')
-        fuzzyset_path = os.path.join(web_dir, 'lib', 'fuzzyset.js')
-        debounce_path = os.path.join(web_dir, 'lib', 'debounce.js')
+        epg_css_path = os.path.join(web_dir, "epg_mapping.css")
+        epg_js_path = os.path.join(web_dir, "epg_mapping.js")
+        fuzzyset_path = os.path.join(web_dir, "lib", "fuzzyset.js")
+        debounce_path = os.path.join(web_dir, "lib", "debounce.js")
 
         # Enable/disable files
-        enable_css_path = os.path.join(web_dir, 'provider_enable.css')
-        enable_js_path = os.path.join(web_dir, 'provider_enable.js')
+        enable_css_path = os.path.join(web_dir, "provider_enable.css")
+        enable_js_path = os.path.join(web_dir, "provider_enable.js")
 
         try:
             # Load HTML
-            with open(html_path, 'r', encoding='utf-8') as f:
+            with open(html_path, "r", encoding="utf-8") as f:
                 html = f.read()
 
             # Load CSS files
-            with open(css_path, 'r', encoding='utf-8') as f:
+            with open(css_path, "r", encoding="utf-8") as f:
                 css = f.read()
 
-            with open(proxy_css_path, 'r', encoding='utf-8') as f:
+            with open(proxy_css_path, "r", encoding="utf-8") as f:
                 proxy_css = f.read()
 
-            with open(epg_css_path, 'r', encoding='utf-8') as f:
+            with open(epg_css_path, "r", encoding="utf-8") as f:
                 epg_css = f.read()
 
-            with open(enable_css_path, 'r', encoding='utf-8') as f:
+            with open(enable_css_path, "r", encoding="utf-8") as f:
                 enable_css = f.read()
 
             # Load JS files
-            with open(js_path, 'r', encoding='utf-8') as f:
+            with open(js_path, "r", encoding="utf-8") as f:
                 js = f.read()
 
-            with open(proxy_js_path, 'r', encoding='utf-8') as f:
+            with open(proxy_js_path, "r", encoding="utf-8") as f:
                 proxy_js = f.read()
 
-            with open(epg_js_path, 'r', encoding='utf-8') as f:
+            with open(epg_js_path, "r", encoding="utf-8") as f:
                 epg_js = f.read()
 
-            with open(fuzzyset_path, 'r', encoding='utf-8') as f:
+            with open(fuzzyset_path, "r", encoding="utf-8") as f:
                 fuzzyset_js = f.read()
 
-            with open(debounce_path, 'r', encoding='utf-8') as f:
+            with open(debounce_path, "r", encoding="utf-8") as f:
                 debounce_js = f.read()
 
-            with open(enable_js_path, 'r', encoding='utf-8') as f:
+            with open(enable_js_path, "r", encoding="utf-8") as f:
                 enable_js = f.read()
 
             # Combine all CSS (correct order: base -> proxy -> epg -> enable)
@@ -203,16 +250,18 @@ class UltimateService:
             """
 
             # Replace CSS in HTML
-            html = html.replace('<link rel="stylesheet" href="config.css">',
-                                f'<style>\n{combined_css}\n</style>')
+            html = html.replace(
+                '<link rel="stylesheet" href="config.css">',
+                f"<style>\n{combined_css}\n</style>",
+            )
 
             # Inject JavaScript before </body> tag
-            script_tag = f'<script>\n{combined_js}\n</script>'
+            script_tag = f"<script>\n{combined_js}\n</script>"
 
             if '<script src="config.js"></script>' in html:
                 html = html.replace('<script src="config.js"></script>', script_tag)
             else:
-                html = html.replace('</body>', f'{script_tag}\n</body>')
+                html = html.replace("</body>", f"{script_tag}\n</body>")
 
             return html
 
@@ -283,6 +332,7 @@ class UltimateService:
         if is_kodi_environment():
             try:
                 import xbmcaddon
+
                 addon = xbmcaddon.Addon()
                 value = addon.getSetting(setting_id)
                 return value if value else default
@@ -292,9 +342,81 @@ class UltimateService:
         # Fallback to environment manager config
         return self.env_manager.get_config(setting_id, default)
 
+    def _get_decrypted_manifest(
+        self, provider: str, channel_id: str, keyids: dict
+    ) -> str:
+        """
+        Get rewritten MPD manifest for decrypted playback via media proxy.
+        Similar to _get_proxied_manifest but adds kid/key parameters.
+
+        Args:
+            provider: Provider name
+            channel_id: Channel ID
+            keyids: Dictionary of kid:key pairs
+
+        Returns:
+            Rewritten MPD content as string
+        """
+        country = request.query.get("country")
+
+        # Note: We don't cache decrypted manifests as they contain keys
+        logger.info(f"Generating decrypted manifest for {provider}/{channel_id}")
+
+        # Get original manifest URL
+        manifest_url = self.manager.get_channel_manifest(
+            provider_name=provider, channel_id=channel_id, country=country
+        )
+
+        if not manifest_url:
+            response.status = 404
+            response.content_type = "application/json"
+            return json.dumps(
+                {
+                    "error": f'Manifest not available for channel "{channel_id}" from provider "{provider}"'
+                }
+            )
+
+        # Get provider's HTTP manager
+        http_manager = self.manager.get_provider_http_manager(provider)
+        if not http_manager:
+            logger.error(f"No HTTP manager found for provider '{provider}'")
+            response.status = 502
+            response.content_type = "application/json"
+            return json.dumps(
+                {"error": f'Provider "{provider}" not configured properly'}
+            )
+
+        # Fetch manifest
+        try:
+            logger.debug(f"Fetching manifest for decryption: {manifest_url}")
+            manifest_response = http_manager.get(manifest_url, operation="manifest")
+
+            # Get provider proxy URL if configured
+            provider_proxy_url = None
+            if http_manager.config.proxy_config:
+                proxy_cfg = http_manager.config.proxy_config
+                provider_proxy_url = (
+                    f"{proxy_cfg.proxy_type}://{proxy_cfg.host}:{proxy_cfg.port}"
+                )
+                logger.debug(f"Provider has proxy configured: {provider_proxy_url}")
+
+            # Rewrite MPD URLs to point to media proxy decrypt endpoint with keys
+            rewriter = MPDRewriter(self.media_proxy_url, provider_proxy_url, keyids)
+            rewritten_mpd = rewriter.rewrite_mpd(manifest_response.text, manifest_url)
+
+            # Return rewritten MPD
+            response.content_type = "application/dash+xml; charset=utf-8"
+            return rewritten_mpd
+
+        except Exception as fetch_err:
+            logger.error(f"Failed to fetch manifest for decryption: {fetch_err}")
+            response.status = 502
+            response.content_type = "application/json"
+            return json.dumps({"error": f"Failed to fetch manifest: {str(fetch_err)}"})
+
     def _get_proxied_manifest(self, provider: str, channel_id: str) -> str:
         """
-        Get proxied and rewritten MPD manifest for a channel.
+        Get proxied and rewritten MPD manifest for a channel using media proxy.
         Uses cache when available and valid.
 
         Args:
@@ -304,41 +426,52 @@ class UltimateService:
         Returns:
             Rewritten MPD content as string
         """
-        country = request.query.get('country')
+        country = request.query.get("country")
 
         # Try cache first
         cached_mpd = self.mpd_cache.get(provider, channel_id)
         if cached_mpd:
-            response.content_type = 'application/dash+xml; charset=utf-8'
+            response.content_type = "application/dash+xml; charset=utf-8"
             return cached_mpd
 
         # Cache miss - fetch and rewrite
         logger.info(f"Cache miss for {provider}/{channel_id}, fetching manifest")
 
+        # Check if media proxy is configured
+        if not self.media_proxy_url:
+            response.status = 503
+            response.content_type = "application/json"
+            return json.dumps(
+                {"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"}
+            )
+
         # Get original manifest URL
         manifest_url = self.manager.get_channel_manifest(
-            provider_name=provider,
-            channel_id=channel_id,
-            country=country
+            provider_name=provider, channel_id=channel_id, country=country
         )
 
         if not manifest_url:
             response.status = 404
-            response.content_type = 'application/json'
+            response.content_type = "application/json"
             return json.dumps(
-                {'error': f'Manifest not available for channel "{channel_id}" from provider "{provider}"'})
+                {
+                    "error": f'Manifest not available for channel "{channel_id}" from provider "{provider}"'
+                }
+            )
 
-        # Get provider's HTTP manager
+        # Get provider's HTTP manager to fetch manifest and check proxy config
         http_manager = self.manager.get_provider_http_manager(provider)
         if not http_manager:
             logger.error(f"No HTTP manager found for provider '{provider}'")
             response.status = 502
-            response.content_type = 'application/json'
-            return json.dumps({'error': f'Provider "{provider}" not configured properly'})
+            response.content_type = "application/json"
+            return json.dumps(
+                {"error": f'Provider "{provider}" not configured properly'}
+            )
 
-        # Fetch manifest via proxy
+        # Fetch manifest via provider's HTTP manager
         try:
-            logger.debug(f"Fetching manifest via proxy: {manifest_url}")
+            logger.debug(f"Fetching manifest: {manifest_url}")
             manifest_response = http_manager.get(manifest_url, operation="manifest")
 
             # Extract cache TTL from response headers
@@ -350,9 +483,18 @@ class UltimateService:
                 ttl = mpd_ttl
                 logger.debug(f"Using MPD minimumUpdatePeriod as TTL: {ttl}s")
 
-            # Rewrite MPD URLs to point to proxy
-            base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
-            rewriter = MPDRewriter(base_url, provider)
+            # Get provider proxy URL if configured
+            provider_proxy_url = None
+            if http_manager.config.proxy_config:
+                # Build proxy URL from config
+                proxy_cfg = http_manager.config.proxy_config
+                provider_proxy_url = (
+                    f"{proxy_cfg.proxy_type}://{proxy_cfg.host}:{proxy_cfg.port}"
+                )
+                logger.debug(f"Provider has proxy configured: {provider_proxy_url}")
+
+            # Rewrite MPD URLs to point to media proxy
+            rewriter = MPDRewriter(self.media_proxy_url, provider_proxy_url)
             rewritten_mpd = rewriter.rewrite_mpd(manifest_response.text, manifest_url)
 
             # Cache the rewritten MPD
@@ -361,20 +503,22 @@ class UltimateService:
                 channel_id=channel_id,
                 mpd_content=rewritten_mpd,
                 ttl=ttl,
-                original_url=manifest_url
+                original_url=manifest_url,
             )
 
             # Return rewritten MPD
-            response.content_type = 'application/dash+xml; charset=utf-8'
+            response.content_type = "application/dash+xml; charset=utf-8"
             return rewritten_mpd
 
         except Exception as fetch_err:
-            logger.error(f"Failed to fetch manifest via proxy: {fetch_err}")
+            logger.error(f"Failed to fetch manifest: {fetch_err}")
             response.status = 502
-            response.content_type = 'application/json'
-            return json.dumps({'error': f'Failed to fetch manifest via proxy: {str(fetch_err)}'})
+            response.content_type = "application/json"
+            return json.dumps({"error": f"Failed to fetch manifest: {str(fetch_err)}"})
 
-    def _generate_m3u_content(self, providers=None, save_to_cache=True, cache_filename=None):
+    def _generate_m3u_content(
+        self, providers=None, save_to_cache=True, cache_filename=None
+    ):
         """
         Internal method to generate M3U content for specified providers.
 
@@ -399,23 +543,28 @@ class UltimateService:
             cache_filename = cache_filename or "playlist.m3u"
         else:
             # Specific provider(s)
-            providers_to_process = [providers] if isinstance(providers, str) else providers
+            providers_to_process = (
+                [providers] if isinstance(providers, str) else providers
+            )
             cache_filename = cache_filename or f"{providers_to_process[0]}.m3u"
 
         for provider_name in providers_to_process:
             try:
                 # Get channels for this provider
                 channels = self.manager.get_channels(
-                    provider_name=provider_name,
-                    fetch_manifests=False
+                    provider_name=provider_name, fetch_manifests=False
                 )
 
                 # Add each channel to M3U
                 for channel in channels:
-                    m3u_content += self._generate_m3u_channel_entry(base_url, provider_name, channel)
+                    m3u_content += self._generate_m3u_channel_entry(
+                        base_url, provider_name, channel
+                    )
 
             except Exception as provider_err:
-                logger.warning(f"Failed to get channels for provider '{provider_name}': {str(provider_err)}")
+                logger.warning(
+                    f"Failed to get channels for provider '{provider_name}': {str(provider_err)}"
+                )
                 continue
 
         # Save to cache if requested
@@ -444,10 +593,12 @@ class UltimateService:
         # Access StreamingChannel attributes directly
         channel_id = channel.channel_id
         channel_name = channel.name
-        channel_logo = channel.logo_url or ''
+        channel_logo = channel.logo_url or ""
 
         # Build stream URL
-        stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream"
+        stream_url = (
+            f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream"
+        )
 
         # Get provider instance to access provider_label
         try:
@@ -463,8 +614,7 @@ class UltimateService:
         # Get DRM configs and add KODIPROP directives
         try:
             drm_configs = self.manager.get_channel_drm_configs(
-                provider_name=provider_name,
-                channel_id=channel_id
+                provider_name=provider_name, channel_id=channel_id
             )
 
             if drm_configs:
@@ -472,12 +622,258 @@ class UltimateService:
                 entry_content += drm_directives
 
         except Exception as drm_err:
-            logger.debug(f"Could not get DRM for {provider_name}/{channel_id}: {str(drm_err)}")
+            logger.debug(
+                f"Could not get DRM for {provider_name}/{channel_id}: {str(drm_err)}"
+            )
 
         # Add stream URL
-        entry_content += f'{stream_url}\n'
+        entry_content += f"{stream_url}\n"
 
         return entry_content
+
+    def _generate_m3u_decrypted_content(
+        self, providers=None, save_to_cache=True, cache_filename=None
+    ):
+        """
+        Internal method to generate decrypted M3U content for specified providers.
+        Only includes channels with ClearKey DRM or unencrypted channels.
+
+        Args:
+            providers: List of provider names, or None for all providers
+            save_to_cache: Whether to save to cache
+            cache_filename: Cache filename to use
+
+        Returns:
+            M3U content as string
+        """
+        # Check if media proxy is configured
+        if not self.media_proxy_url:
+            logger.error("Cannot generate decrypted M3U: MEDIA_PROXY_URL not set")
+            return None
+
+        # Get base URL for absolute stream URLs
+        base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
+
+        # Start M3U content
+        m3u_content = "#EXTM3U\n"
+
+        # Determine which providers to process
+        if providers is None:
+            # All providers
+            providers_to_process = self.manager.list_providers()
+            cache_filename = cache_filename or "playlist_decrypted.m3u"
+        else:
+            # Specific provider(s)
+            providers_to_process = (
+                [providers] if isinstance(providers, str) else providers
+            )
+            cache_filename = (
+                cache_filename or f"{providers_to_process[0]}_decrypted.m3u"
+            )
+
+        channels_included = 0
+        channels_skipped = 0
+
+        for provider_name in providers_to_process:
+            try:
+                # Get channels for this provider
+                channels = self.manager.get_channels(
+                    provider_name=provider_name, fetch_manifests=False
+                )
+
+                # Get provider instance for label and proxy config
+                try:
+                    provider_instance = self.manager.get_provider(provider_name)
+                    provider_label = provider_instance.provider_label
+                except (AttributeError, KeyError, ValueError):
+                    provider_label = provider_name
+
+                # Get provider proxy URL if configured
+                http_manager = self.manager.get_provider_http_manager(provider_name)
+                provider_proxy_url = None
+                if http_manager and http_manager.config.proxy_config:
+                    proxy_cfg = http_manager.config.proxy_config
+                    provider_proxy_url = (
+                        f"{proxy_cfg.proxy_type}://{proxy_cfg.host}:{proxy_cfg.port}"
+                    )
+
+                # Process each channel
+                for channel in channels:
+                    channel_id = channel.channel_id
+                    channel_name = channel.name
+                    channel_logo = channel.logo_url or ""
+
+                    # Try to get DRM configs
+                    try:
+                        drm_configs = self.manager.get_channel_drm_configs(
+                            provider_name=provider_name, channel_id=channel_id
+                        )
+
+                        # Check if channel has ClearKey DRM
+                        has_clearkey = False
+                        clearkey_data = None
+
+                        if (
+                            isinstance(drm_configs, dict)
+                            and "org.w3.clearkey" in drm_configs
+                        ):
+                            clearkey_data = drm_configs["org.w3.clearkey"]
+                            has_clearkey = True
+                        elif isinstance(drm_configs, list):
+                            # Legacy format - convert to dict
+                            for config in drm_configs:
+                                if hasattr(config, "to_dict"):
+                                    config_dict = config.to_dict()
+                                    if "org.w3.clearkey" in config_dict:
+                                        clearkey_data = config_dict["org.w3.clearkey"]
+                                        has_clearkey = True
+                                        break
+
+                        if has_clearkey and clearkey_data:
+                            # Channel has ClearKey - generate decrypted entry
+                            entry_content = self._generate_m3u_decrypted_channel_entry(
+                                base_url=base_url,
+                                provider_name=provider_name,
+                                provider_label=provider_label,
+                                channel=channel,
+                                clearkey_data=clearkey_data,
+                                provider_proxy_url=provider_proxy_url,
+                            )
+                            m3u_content += entry_content
+                            channels_included += 1
+                        elif not drm_configs or (
+                            isinstance(drm_configs, dict) and len(drm_configs) == 0
+                        ):
+                            # Unencrypted channel - include with direct stream URL
+                            stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream"
+                            m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
+                            m3u_content += f"{stream_url}\n"
+                            channels_included += 1
+                        else:
+                            # Channel has other DRM (not ClearKey) - skip
+                            channels_skipped += 1
+                            logger.debug(
+                                f"Skipping {provider_name}/{channel_id} - no ClearKey DRM"
+                            )
+
+                    except Exception as drm_err:
+                        # Could not get DRM info - skip channel
+                        logger.warning(
+                            f"Could not get DRM for {provider_name}/{channel_id}: {drm_err}"
+                        )
+                        channels_skipped += 1
+                        continue
+
+            except Exception as provider_err:
+                logger.warning(
+                    f"Failed to process provider '{provider_name}': {str(provider_err)}"
+                )
+                continue
+
+        logger.info(
+            f"Decrypted M3U: included {channels_included} channels, skipped {channels_skipped}"
+        )
+
+        # Save to cache if requested
+        if save_to_cache and cache_filename:
+            if self.vfs.write_text(cache_filename, m3u_content):
+                logger.info(f"Decrypted M3U playlist cached to {cache_filename}")
+            else:
+                logger.warning(
+                    f"Failed to cache decrypted M3U playlist to {cache_filename}"
+                )
+
+        return m3u_content
+
+    def _generate_m3u_decrypted_channel_entry(
+        self,
+        base_url,
+        provider_name,
+        provider_label,
+        channel,
+        clearkey_data,
+        provider_proxy_url,
+    ):
+        """
+        Generate M3U entry for a ClearKey encrypted channel with decryption URL.
+
+        Args:
+            base_url: Base URL for stream endpoints
+            provider_name: Name of the provider
+            provider_label: Display label for the provider
+            channel: StreamingChannel object
+            clearkey_data: ClearKey DRM data
+            provider_proxy_url: Optional provider proxy URL
+
+        Returns:
+            M3U entry as string
+        """
+        entry_content = ""
+
+        channel_id = channel.channel_id
+        channel_name = channel.name
+        channel_logo = channel.logo_url or ""
+
+        # Build decrypted stream URL via media proxy
+        # Format: /api/providers/{provider}/channels/{channel_id}/stream/decrypted
+        stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/decrypted"
+
+        # Add M3U entry with extended info
+        entry_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
+
+        # Add KODIPROP for inputstream.adaptive (still needed for DASH playback)
+        entry_content += "#KODIPROP:inputstream=inputstream.adaptive\n"
+
+        # Add stream URL
+        entry_content += f"{stream_url}\n"
+
+        return entry_content
+
+    def _generate_m3u_decrypted_all(self, save_to_cache: bool = False) -> str:
+        """Internal method to generate decrypted M3U for all providers."""
+        logger.info("Generating decrypted M3U playlist for all providers")
+        m3u_content = self._generate_m3u_decrypted_content(
+            providers=None, save_to_cache=save_to_cache
+        )
+
+        if m3u_content is None:
+            response.status = 503
+            response.content_type = "application/json"
+            return json.dumps(
+                {"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"}
+            )
+
+        # Set appropriate headers for M3U
+        response.content_type = "audio/x-mpegurl; charset=utf-8"
+        response.headers["Content-Disposition"] = (
+            'attachment; filename="playlist_decrypted.m3u8"'
+        )
+
+        return m3u_content
+
+    def _generate_m3u_decrypted_provider(
+        self, provider: str, save_to_cache: bool = False
+    ) -> str:
+        """Internal method to generate decrypted M3U for a specific provider."""
+        logger.info(f"Generating decrypted M3U playlist for provider '{provider}'")
+        m3u_content = self._generate_m3u_decrypted_content(
+            providers=provider, save_to_cache=save_to_cache
+        )
+
+        if m3u_content is None:
+            response.status = 503
+            response.content_type = "application/json"
+            return json.dumps(
+                {"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"}
+            )
+
+        # Set appropriate headers for M3U
+        response.content_type = "audio/x-mpegurl; charset=utf-8"
+        response.headers["Content-Disposition"] = (
+            f'attachment; filename="{provider}_decrypted_playlist.m3u8"'
+        )
+
+        return m3u_content
 
     def _generate_drm_directives(self, drm_configs):
         """
@@ -498,7 +894,7 @@ class UltimateService:
                 # Convert list to dict
                 temp_dict = {}
                 for config in drm_configs:
-                    if hasattr(config, 'to_dict'):
+                    if hasattr(config, "to_dict"):
                         temp_dict.update(config.to_dict())
                     elif isinstance(config, dict):
                         temp_dict.update(config)
@@ -509,7 +905,11 @@ class UltimateService:
         # Rest of the method remains the same...
         # Prioritize: clearkey > widevine > playready
         selected_drm = None
-        priority_order = ['org.w3.clearkey', 'com.widevine.alpha', 'com.microsoft.playready']
+        priority_order = [
+            "org.w3.clearkey",
+            "com.widevine.alpha",
+            "com.microsoft.playready",
+        ]
 
         for priority_system in priority_order:
             if priority_system in drm_configs:
@@ -525,26 +925,28 @@ class UltimateService:
             # Build DRM legacy string
             drm_legacy_parts = [drm_system]
 
-            license_info = drm_data.get('license', {})
+            license_info = drm_data.get("license", {})
 
             # Add license server URL or keyids
-            if drm_system == 'org.w3.clearkey' and license_info.get('keyids'):
+            if drm_system == "org.w3.clearkey" and license_info.get("keyids"):
                 # ClearKey: format as kid:key,kid:key
-                keyids = license_info['keyids']
-                keys_str = ','.join([f"{kid}:{key}" for kid, key in keyids.items()])
+                keyids = license_info["keyids"]
+                keys_str = ",".join([f"{kid}:{key}" for kid, key in keyids.items()])
                 drm_legacy_parts.append(keys_str)
-            elif license_info.get('server_url'):
+            elif license_info.get("server_url"):
                 # Widevine/PlayReady: add license server URL
-                drm_legacy_parts.append(license_info['server_url'])
+                drm_legacy_parts.append(license_info["server_url"])
 
                 # Add headers if present (URL-encoded)
-                if license_info.get('req_headers'):
-                    req_headers = self._process_license_headers(license_info['req_headers'])
+                if license_info.get("req_headers"):
+                    req_headers = self._process_license_headers(
+                        license_info["req_headers"]
+                    )
                     if req_headers:
                         drm_legacy_parts.append(req_headers)
 
             # Join parts with pipe separator
-            drm_legacy = '|'.join(drm_legacy_parts)
+            drm_legacy = "|".join(drm_legacy_parts)
             directives += f"#KODIPROP:inputstream.adaptive.drm_legacy={drm_legacy}\n"
 
         return directives
@@ -562,7 +964,7 @@ class UltimateService:
         """
         if isinstance(req_headers, str):
             # Check if it's JSON format
-            if req_headers.strip().startswith('{'):
+            if req_headers.strip().startswith("{"):
                 try:
                     # Parse JSON and convert to URL-encoded
                     headers_dict = json.loads(req_headers)
@@ -575,7 +977,9 @@ class UltimateService:
                         headers_dict = dict(parsed_items)
                         return urlencode(headers_dict)
                     except ValueError as val_err:
-                        logger.warning(f"Invalid query string format in headers: {val_err}")
+                        logger.warning(
+                            f"Invalid query string format in headers: {val_err}"
+                        )
                         return req_headers
                     except Exception as parse_err:
                         # Catch anything else unexpected
@@ -598,30 +1002,42 @@ class UltimateService:
     def _generate_m3u_all(self, save_to_cache: bool = False) -> str:
         """Internal method to generate M3U for all providers."""
         logger.info("Generating M3U playlist for all providers")
-        m3u_content = self._generate_m3u_content(providers=None, save_to_cache=save_to_cache)
+        m3u_content = self._generate_m3u_content(
+            providers=None, save_to_cache=save_to_cache
+        )
 
         # Set appropriate headers for M3U
-        response.content_type = 'audio/x-mpegurl; charset=utf-8'
-        response.headers['Content-Disposition'] = 'attachment; filename="playlist.m3u8"'
+        response.content_type = "audio/x-mpegurl; charset=utf-8"
+        response.headers["Content-Disposition"] = 'attachment; filename="playlist.m3u8"'
 
         return m3u_content
 
     def _generate_m3u_provider(self, provider: str, save_to_cache: bool = False) -> str:
         """Internal method to generate M3U for a specific provider."""
         logger.info(f"Generating M3U playlist for provider '{provider}'")
-        m3u_content = self._generate_m3u_content(providers=provider, save_to_cache=save_to_cache)
+        m3u_content = self._generate_m3u_content(
+            providers=provider, save_to_cache=save_to_cache
+        )
 
         # Set appropriate headers for M3U
-        response.content_type = 'audio/x-mpegurl; charset=utf-8'
-        response.headers['Content-Disposition'] = f'attachment; filename="{provider}_playlist.m3u8"'
+        response.content_type = "audio/x-mpegurl; charset=utf-8"
+        response.headers["Content-Disposition"] = (
+            f'attachment; filename="{provider}_playlist.m3u8"'
+        )
 
         return m3u_content
 
-    def _get_proxied_catchup_manifest(self, provider: str, channel_id: str,
-                                      start_time: int, end_time: int,
-                                      epg_id: str = None, country: str = None) -> str:
+    def _get_proxied_catchup_manifest(
+        self,
+        provider: str,
+        channel_id: str,
+        start_time: int,
+        end_time: int,
+        epg_id: str = None,
+        country: str = None,
+    ) -> str:
         """
-        Get proxied and rewritten MPD manifest for catchup content.
+        Get proxied and rewritten MPD manifest for catchup content using media proxy.
         Similar to _get_proxied_manifest but for catchup streams.
         """
         # Generate cache key that includes time parameters
@@ -630,10 +1046,20 @@ class UltimateService:
         # Try cache first (with catchup-specific key)
         cached_mpd = self.mpd_cache.get(provider, cache_key)
         if cached_mpd:
-            response.content_type = 'application/dash+xml; charset=utf-8'
+            response.content_type = "application/dash+xml; charset=utf-8"
             return cached_mpd
 
-        logger.info(f"Cache miss for catchup {provider}/{channel_id}, fetching manifest")
+        logger.info(
+            f"Cache miss for catchup {provider}/{channel_id}, fetching manifest"
+        )
+
+        # Check if media proxy is configured
+        if not self.media_proxy_url:
+            response.status = 503
+            response.content_type = "application/json"
+            return json.dumps(
+                {"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"}
+            )
 
         # Get catchup manifest URL
         manifest_url = self.manager.get_catchup_manifest(
@@ -642,25 +1068,27 @@ class UltimateService:
             start_time=start_time,
             end_time=end_time,
             epg_id=epg_id,
-            country=country
+            country=country,
         )
 
         if not manifest_url:
             response.status = 404
-            response.content_type = 'application/json'
-            return json.dumps({'error': f'Catchup manifest not available'})
+            response.content_type = "application/json"
+            return json.dumps({"error": f"Catchup manifest not available"})
 
         # Get provider's HTTP manager
         http_manager = self.manager.get_provider_http_manager(provider)
         if not http_manager:
             logger.error(f"No HTTP manager found for provider '{provider}'")
             response.status = 502
-            response.content_type = 'application/json'
-            return json.dumps({'error': f'Provider "{provider}" not configured properly'})
+            response.content_type = "application/json"
+            return json.dumps(
+                {"error": f'Provider "{provider}" not configured properly'}
+            )
 
-        # Fetch manifest via proxy
+        # Fetch manifest
         try:
-            logger.debug(f"Fetching catchup manifest via proxy: {manifest_url}")
+            logger.debug(f"Fetching catchup manifest: {manifest_url}")
             manifest_response = http_manager.get(manifest_url, operation="manifest")
 
             # Extract cache TTL
@@ -669,9 +1097,17 @@ class UltimateService:
             if mpd_ttl and mpd_ttl < ttl:
                 ttl = mpd_ttl
 
-            # Rewrite MPD URLs to point to proxy
-            base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
-            rewriter = MPDRewriter(base_url, provider)
+            # Get provider proxy URL if configured
+            provider_proxy_url = None
+            if http_manager.config.proxy_config:
+                proxy_cfg = http_manager.config.proxy_config
+                provider_proxy_url = (
+                    f"{proxy_cfg.proxy_type}://{proxy_cfg.host}:{proxy_cfg.port}"
+                )
+                logger.debug(f"Provider has proxy configured: {provider_proxy_url}")
+
+            # Rewrite MPD URLs to point to media proxy
+            rewriter = MPDRewriter(self.media_proxy_url, provider_proxy_url)
             rewritten_mpd = rewriter.rewrite_mpd(manifest_response.text, manifest_url)
 
             # Cache the rewritten MPD with catchup-specific key
@@ -680,2299 +1116,63 @@ class UltimateService:
                 channel_id=cache_key,  # Use catchup-specific cache key
                 mpd_content=rewritten_mpd,
                 ttl=ttl,
-                original_url=manifest_url
+                original_url=manifest_url,
             )
 
-            response.content_type = 'application/dash+xml; charset=utf-8'
+            response.content_type = "application/dash+xml; charset=utf-8"
             return rewritten_mpd
 
         except Exception as fetch_err:
-            logger.error(f"Failed to fetch catchup manifest via proxy: {fetch_err}")
+            logger.error(f"Failed to fetch catchup manifest: {fetch_err}")
             response.status = 502
-            response.content_type = 'application/json'
-            return json.dumps({'error': f'Failed to fetch manifest: {str(fetch_err)}'})
+            response.content_type = "application/json"
+            return json.dumps({"error": f"Failed to fetch manifest: {str(fetch_err)}"})
 
     @staticmethod
     def _get_settings_manager():
         """Simple helper to get SettingsManager"""
         try:
-            from streaming_providers.base.settings.settings_manager import SettingsManager
+            from streaming_providers.base.settings.settings_manager import (
+                SettingsManager,
+            )
+
             return SettingsManager()
         except ImportError:
             # Try alternative path
             try:
                 from base.settings.settings_manager import SettingsManager
+
                 return SettingsManager()
             except ImportError as e:
                 logger.error(f"Cannot import SettingsManager: {e}")
                 # Re-raise with a clearer message
                 raise ImportError(
-                    f"SettingsManager not available. Ensure streaming_providers module is installed. Error: {e}")
+                    f"SettingsManager not available. Ensure streaming_providers module is installed. Error: {e}"
+                )
 
     def setup_routes(self):
-        @self.app.route('/api/providers')
-        def list_providers():
-            try:
-                # Get metadata for ALL providers (enabled + disabled)
-                all_metadata = self.manager.get_all_providers_metadata()
-
-                # For backward compatibility, also get details for enabled providers
-                enabled_providers = []
-                for metadata in all_metadata:
-                    if metadata['enabled'] and metadata['instance_ready']:
-                        provider_instance = self.manager.get_provider(metadata['name'])
-                        if provider_instance:
-                            # Get detailed auth info from instance
-                            supported_auth_types = getattr(provider_instance, 'supported_auth_types', [])
-                            preferred_auth_type = getattr(provider_instance, 'preferred_auth_type', 'unknown')
-                            requires_stored_credentials = getattr(
-                                provider_instance, 'requires_stored_credentials', False
-                            )
-
-                            # Check specific auth type needs
-                            needs_user_creds = 'user_credentials' in supported_auth_types
-                            needs_client_creds = 'client_credentials' in supported_auth_types
-                            is_network_based = 'network_based' in supported_auth_types
-                            is_anonymous = 'anonymous' in supported_auth_types
-                            uses_device_reg = 'device_registration' in supported_auth_types
-                            uses_embedded = 'embedded_client' in supported_auth_types
-
-                            provider_details = {
-                                'name': metadata['name'],
-                                'label': metadata['label'],
-                                'logo': metadata['logo'],
-                                'country': metadata['country'],
-
-                                # Core authentication properties
-                                'auth': {
-                                    'supported_auth_types': supported_auth_types,
-                                    'preferred_auth_type': preferred_auth_type,
-                                    'requires_stored_credentials': requires_stored_credentials,
-
-                                    # Specific auth type flags for easy UI decisions
-                                    'needs_user_credentials': needs_user_creds,
-                                    'needs_client_credentials': needs_client_creds,
-                                    'is_network_based': is_network_based,
-                                    'is_anonymous': is_anonymous,
-                                    'uses_device_registration': uses_device_reg,
-                                    'uses_embedded_client': uses_embedded,
-
-                                    # Derived summary for UI
-                                    'needs_user_input': needs_user_creds or uses_device_reg,
-                                    'needs_configuration': needs_user_creds or needs_client_creds,
-                                    'is_automatic': is_network_based or is_anonymous or uses_embedded,
-                                },
-
-                                # Token properties
-                                'primary_token_scope': getattr(provider_instance, 'primary_token_scope', None),
-                                'token_scopes': getattr(provider_instance, 'token_scopes', []),
-
-                                # Metadata fields
-                                'enabled': metadata['enabled'],
-                                'instance_ready': metadata['instance_ready'],
-                                'requires_credentials': metadata['requires_credentials']
-                            }
-                            enabled_providers.append(provider_details)
-
-                return {
-                    'providers': enabled_providers,
-                    'all_providers': all_metadata,  # NEW: Include all providers metadata
-                    'default_country': self.default_country
-                }
-            except Exception as api_err:
-                logger.error(f"API Error in /api/providers: {str(api_err)}")
-                response.status = 500
-                return {'error': str(api_err)}
-
-        @self.app.route('/api/providers/<provider>/channels')
-        def get_channels(provider):
-            try:
-                channels = self.manager.get_channels(
-                    provider_name=provider,
-                    fetch_manifests=request.query.get('fetch_manifests', 'false').lower() == 'true',
-                    country=request.query.get('country')
-                )
-
-                # Get provider instance to check catchup support
-                provider_instance = self.manager.get_provider(provider)
-                provider_catchup_hours = getattr(provider_instance, 'catchup_window', 0)  # CHANGE
-
-                # Build channel list with catchup info
-                channels_data = []
-                for c in channels:
-                    channel_dict = c.to_dict()
-
-                    # Add catchup hours - use channel-specific if available, else provider default
-                    if hasattr(c, 'catchup_hours'):  # CHANGE
-                        channel_dict['CatchupHours'] = c.catchup_hours  # CHANGE
-                    else:
-                        channel_dict['CatchupHours'] = provider_catchup_hours  # CHANGE
-
-                    channels_data.append(channel_dict)
-
-                return {
-                    'provider': provider,
-                    'country': provider_instance.country if provider_instance else 'DE',
-                    'catchup_window_hours': provider_catchup_hours,  # CHANGE
-                    'channels': channels_data
-                }
-            except Exception as api_err:
-                logger.error(f"API Error in /api/providers/{provider}: {str(api_err)}")
-                response.status = 500
-                return {'error': str(api_err)}
-
-        @self.app.route('/api/providers/<provider>/channels/<channel_id>/manifest')
-        def get_channel_manifest(provider, channel_id):
-            """
-            Get channel manifest. Always returns JSON with manifest_url pointing to stream endpoint.
-            """
-            try:
-                # Build the stream URL (which will handle both proxy and non-proxy)
-                base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
-                stream_url = f"{base_url}/api/providers/{provider}/channels/{channel_id}/stream"
-
-                # Add country parameter if provided
-                country = request.query.get('country')
-                if country:
-                    stream_url += f"?country={country}"
-
-                return {
-                    'provider': provider,
-                    'channel_id': channel_id,
-                    'manifest_url': stream_url  # Always point to /stream endpoint
-                }
-
-            except ValueError as val_err:
-                logger.error(f"API Error in /api/providers/{provider}/channels/{channel_id}/manifest: {str(val_err)}")
-                response.status = 404
-                return {'error': str(val_err)}
-            except Exception as api_err:
-                logger.error(f"API Error in /api/providers/{provider}/channels/{channel_id}/manifest: {str(api_err)}")
-                response.status = 500
-                return {'error': f'Internal server error: {str(api_err)}'}
-
-        @self.app.route('/api/providers/<provider>/channels/<channel_id>/stream')
-        def get_channel_stream(provider, channel_id):
-            """
-            Returns HTTP 302 redirect to the actual manifest or rewritten manifest endpoint.
-            Supports both live and catchup streaming.
-            """
-            try:
-                # Get optional catchup parameters
-                start_time = request.query.get('start_time')
-                end_time = request.query.get('end_time')
-                epg_id = request.query.get('epg_id')
-                country = request.query.get('country')
-
-                # Determine if this is a catchup request
-                is_catchup = bool(start_time and end_time)
-
-                if is_catchup:
-                    logger.info(f"Catchup stream request for {provider}/{channel_id}: "
-                                f"start={start_time}, end={end_time}, epg_id={epg_id}")
-
-                    # Convert Unix timestamps to integers
-                    try:
-                        start_time_int = int(start_time)
-                        end_time_int = int(end_time)
-                    except (ValueError, TypeError):
-                        response.status = 400
-                        return {'error': 'Invalid start_time or end_time format'}
-
-                    # Validate catchup is supported
-                    provider_instance = self.manager.get_provider(provider)
-                    catchup_hours = getattr(provider_instance, 'catchup_window', 0)  # Now in hours
-
-                    if catchup_hours == 0:
-                        response.status = 400
-                        return {'error': f'Catchup not supported for provider "{provider}"'}
-
-                    # Validate time is within catchup window (in HOURS)
-                    import time
-                    now = int(time.time())
-                    max_age_seconds = catchup_hours * 3600  # Hours to seconds
-
-                    if (now - start_time_int) > max_age_seconds:
-                        response.status = 400
-                        return {'error': f'Content outside catchup window (max {catchup_hours} hours)'}
-
-                    # Check if provider needs proxy for catchup
-                    if self.manager.needs_proxy(provider):
-                        # Proxy mode: return rewritten MPD content directly
-                        return self._get_proxied_catchup_manifest(
-                            provider, channel_id, start_time_int, end_time_int, epg_id, country
-                        )
-                    else:
-                        # Direct mode: get catchup manifest URL and redirect
-                        manifest_url = self.manager.get_catchup_manifest(
-                            provider_name=provider,
-                            channel_id=channel_id,
-                            start_time=start_time_int,
-                            end_time=end_time_int,
-                            epg_id=epg_id,
-                            country=country
-                        )
-
-                        if not manifest_url:
-                            response.status = 404
-                            return {'error': f'Catchup manifest not available for channel "{channel_id}"'}
-
-                        logger.debug(f"Redirecting to catchup manifest: {manifest_url}")
-                        redirect(manifest_url)
-                else:
-                    # Live stream - existing logic
-                    if self.manager.needs_proxy(provider):
-                        return self._get_proxied_manifest(provider, channel_id)
-                    else:
-                        manifest_url = self.manager.get_channel_manifest(
-                            provider_name=provider,
-                            channel_id=channel_id,
-                            country=country
-                        )
-
-                        if not manifest_url:
-                            response.status = 404
-                            return {'error': f'Manifest not available for channel "{channel_id}"'}
-
-                        logger.debug(f"Redirecting to manifest: {manifest_url}")
-                        redirect(manifest_url)
-
-            except HTTPResponse:
-                raise
-            except ValueError as val_err:
-                logger.error(f"API Error in stream: {str(val_err)}")
-                response.status = 404
-                return {'error': str(val_err)}
-            except Exception as api_err:
-                logger.error(f"API Error in stream: {str(api_err)}")
-                response.status = 500
-                return {'error': f'Internal server error: {str(api_err)}'}
-
-        @self.app.route('/api/proxy/<provider>/<encoded_url:path>')
-        def proxy_media_segment(provider, encoded_url):
-            """
-            Proxy media segments through provider's HTTP manager.
-            Decodes base64 URL and appends any template suffix, then fetches via configured proxy.
-
-            URL format: /api/proxy/<provider>/<base64_encoded_base_url>/<optional_template_path>
-            Example: /api/proxy/joyn_ch/aHR0cHM6Ly9jZG4uZXhhbXBsZS5jb20vcGF0aA==/segment-123.m4s
-            """
-            try:
-                # Split the encoded_url into base64 part and optional suffix
-                # The first path segment is the base64-encoded base URL
-                # Everything after that is the template path (already resolved by client)
-                parts = encoded_url.split('/', 1)
-                base64_part = parts[0]
-                template_suffix = parts[1] if len(parts) > 1 else ''
-
-                # Decode the base URL
-                try:
-                    base_url = MPDRewriter.decode_url(base64_part)
-                except Exception as decode_err:
-                    logger.error(f"Failed to decode proxy URL: {decode_err}")
-                    response.status = 400
-                    return {'error': 'Invalid encoded URL'}
-
-                # Reconstruct the full URL
-                # If there's a template suffix, append it to the base URL
-                if template_suffix:
-                    # Ensure proper joining (base_url might or might not end with /)
-                    if base_url.endswith('/'):
-                        original_url = base_url + template_suffix
-                    else:
-                        original_url = base_url + '/' + template_suffix
-                else:
-                    original_url = base_url
-
-                logger.debug(f"Proxy request for {provider}:")
-                logger.debug(f"  Base64 part: {base64_part[:50]}...")
-                logger.debug(f"  Decoded base: {base_url}")
-                logger.debug(f"  Template suffix: {template_suffix}")
-                logger.debug(f"  Final URL: {original_url}")
-
-                # Get provider's HTTP manager
-                http_manager = self.manager.get_provider_http_manager(provider)
-                if not http_manager:
-                    logger.error(f"No HTTP manager found for provider '{provider}'")
-                    response.status = 404
-                    return {'error': f'Provider "{provider}" not found or not configured'}
-
-                # Check if proxy is configured
-                if not http_manager.config.proxy_config:
-                    logger.error(f"Provider '{provider}' has no proxy configured")
-                    response.status = 502
-                    return {'error': f'Provider "{provider}" has no proxy configured'}
-
-                logger.info(f"Fetching media segment via proxy for {provider}: {original_url[:100]}...")
-
-                # Fetch via proxy using 'manifest' operation
-                proxy_response = http_manager.get(original_url, operation="manifest")
-
-                logger.info(f"Successfully fetched segment, size: {len(proxy_response.content)} bytes")
-
-                # Set response headers from proxied response
-                response.content_type = proxy_response.headers.get('Content-Type', 'application/octet-stream')
-
-                # Add Content-Length if available
-                if 'Content-Length' in proxy_response.headers:
-                    response.headers['Content-Length'] = proxy_response.headers['Content-Length']
-
-                # Copy other potentially useful headers
-                for header in ['Cache-Control', 'ETag', 'Last-Modified']:
-                    if header in proxy_response.headers:
-                        response.headers[header] = proxy_response.headers[header]
-
-                # Return the content directly
-                return proxy_response.content
-
-            except Exception as proxy_err:
-                logger.error(f"Proxy error for {provider}: {str(proxy_err)}", exc_info=True)
-                response.status = 502
-                return {'error': f'Proxy failed: {str(proxy_err)}'}
-
-        @self.app.route('/api/providers/<provider>/channels/<channel_id>/pssh')
-        def get_channel_pssh(provider, channel_id):
-            """
-            Extract PSSH data for a channel.
-
-            Query parameters:
-            - country: Optional country code for geo-specific manifests
-            - force_refresh: If 'true', bypass cache and re-extract PSSH
-
-            Returns:
-            {
-                "provider": "provider_name",
-                "channel_id": "channel_id",
-                "manifest_url": "https://...",
-                "pssh_data": [
-                    {
-                        "system_id": "edef8ba9-79d6-4ace-a3c8-27dcd51d21ed",
-                        "drm_system": "com.widevine.alpha",
-                        "pssh_box": "AAAANHBzc2g...",
-                        "key_ids": ["64656d6f..."],
-                        "source": "mp4_segment"
-                    }
-                ],
-                "count": 1,
-                "cached": true
-            }
-            """
-            try:
-                # Parse query parameters
-                country = request.params.get('country')
-                force_refresh = request.params.get('force_refresh', '').lower() == 'true'
-
-                # Check cache status BEFORE clearing (to know if it was cached)
-                cache_key = f"{provider}:{channel_id}"
-                was_cached_before = self.manager.drm_ops.pssh_cache.get(cache_key) is not None
-
-                # Clear cache if force refresh requested
-                if force_refresh:
-                    with self.manager.drm_ops.pssh_cache.lock:
-                        if cache_key in self.manager.drm_ops.pssh_cache.cache:
-                            del self.manager.drm_ops.pssh_cache.cache[cache_key]
-                    logger.info(f"Cache cleared for force_refresh request: {cache_key}")
-                    was_cached_before = False  # Since we just cleared it
-
-                # Get DRM configs - this will check cache and extract if needed
-                try:
-                    # This method handles caching internally
-                    drm_configs = self.manager.drm_ops.get_channel_drm_configs(
-                        provider_name=provider,
-                        channel_id=channel_id,
-                        country=country
-                    )
-                except ValueError as e:
-                    response.status = 404
-                    return {
-                        'error': 'Provider not found',
-                        'message': str(e),
-                        'provider': provider
-                    }
-                except Exception as e:
-                    response.status = 500
-                    return {
-                        'error': 'Failed to get DRM configs',
-                        'message': str(e),
-                        'provider': provider,
-                        'channel_id': channel_id
-                    }
-
-                # Get manifest URL for reference
-                try:
-                    manifest_url = self.manager.get_channel_manifest(
-                        provider_name=provider,
-                        channel_id=channel_id,
-                        country=country
-                    )
-                except Exception as e:
-                    manifest_url = None
-                    logger.debug(f"Could not get manifest URL: {e}")
-
-                # Now get the PSSH data from cache (after get_channel_drm_configs has populated it)
-                pssh_data_list = self.manager.drm_ops.pssh_cache.get(cache_key)
-                was_cached_after = pssh_data_list is not None
-
-                if not pssh_data_list:
-                    # If no PSSH data in cache, try to extract from manifest
-                    if manifest_url:
-                        try:
-                            pssh_data_list = self.manager.drm_ops._extract_pssh_from_manifest(
-                                manifest_url
-                            )
-                            # Cache the result
-                            if pssh_data_list:
-                                self.manager.drm_ops.pssh_cache.set(cache_key, pssh_data_list)
-                        except Exception as extract_err:
-                            logger.warning(f"Failed to extract PSSH from manifest: {extract_err}")
-                            pssh_data_list = []
-                    else:
-                        pssh_data_list = []
-
-                # Convert PSSH data to dictionary format
-                pssh_list = []
-                for pssh_data in pssh_data_list:
-                    pssh_dict = {
-                        'system_id': pssh_data.system_id,
-                        'drm_system': pssh_data.drm_system.value if pssh_data.drm_system else None,
-                        'pssh_box': pssh_data.pssh_box if pssh_data.pssh_box else None,
-                        'key_ids': pssh_data.key_ids if pssh_data.key_ids else [],
-                        'source': pssh_data.source
-                    }
-
-                    # Add human-readable system name
-                    if pssh_data.drm_system:
-                        pssh_dict['drm_system_name'] = {
-                            'com.widevine.alpha': 'Widevine',
-                            'com.microsoft.playready': 'PlayReady',
-                            'com.apple.fps': 'FairPlay',
-                            'org.w3.clearkey': 'ClearKey',
-                            'com.huawei.wiseplay': 'Wiseplay'
-                        }.get(pssh_data.drm_system.value, pssh_data.drm_system.value)
-
-                    # Remove None values for cleaner response
-                    pssh_dict = {k: v for k, v in pssh_dict.items() if v is not None}
-                    pssh_list.append(pssh_dict)
-
-                response.status = 200
-                return {
-                    'provider': provider,
-                    'channel_id': channel_id,
-                    'manifest_url': manifest_url,
-                    'pssh_data': pssh_list,
-                    'count': len(pssh_list),
-                    'cached': was_cached_after,  # Whether data came from cache AFTER the operation
-                    'was_cached_before': was_cached_before,  # Whether data was in cache BEFORE the operation
-                    'cache_ttl_seconds': self.manager.drm_ops.pssh_cache.ttl
-                }
-
-            except Exception as e:
-                # Catch-all for unexpected errors
-                logger.error(f"Unexpected error in get_channel_pssh: {e}")
-                logger.error(traceback.format_exc())
-                response.status = 500
-                return {
-                    'error': 'Internal server error',
-                    'message': str(e),
-                    'provider': provider,
-                    'channel_id': channel_id,
-                    'traceback': traceback.format_exc() if self.app.config.get('debug') else None
-                }
-
-        @self.app.route('/api/providers/<provider>/channels/<channel_id>/pssh/refresh', method='POST')
-        def refresh_channel_pssh(provider, channel_id):
-            """
-            Force refresh PSSH data for a channel (clears cache and re-extracts).
-
-            This is useful when:
-            - Keys have been rotated
-            - Manifest structure has changed
-            - Previous extraction failed
-            """
-            try:
-                # Parse query parameters
-                country = request.params.get('country')
-
-                # Generate cache key
-                cache_key = f"{provider}:{channel_id}"
-
-                # Check if entry exists in cache before clearing
-                was_cached = self.manager.drm_ops.pssh_cache.get(cache_key) is not None
-
-                # Clear the specific cache entry
-                with self.manager.drm_ops.pssh_cache.lock:
-                    if cache_key in self.manager.drm_ops.pssh_cache.cache:
-                        del self.manager.drm_ops.pssh_cache.cache[cache_key]
-
-                if was_cached:
-                    logger.info(f"Cleared cache for {cache_key}")
-                else:
-                    logger.info(f"No cache entry found for {cache_key}")
-
-                # Now extract fresh data by calling get_channel_drm_configs
-                # This will force a fresh extraction since cache was cleared
-                try:
-                    drm_configs = self.manager.drm_ops.get_channel_drm_configs(
-                        provider_name=provider,
-                        channel_id=channel_id,
-                        country=country
-                    )
-                except ValueError as e:
-                    response.status = 404
-                    return {
-                        'error': 'Provider not found',
-                        'message': str(e),
-                        'provider': provider
-                    }
-                except Exception as e:
-                    response.status = 500
-                    return {
-                        'error': 'Failed to refresh DRM configs',
-                        'message': str(e),
-                        'provider': provider,
-                        'channel_id': channel_id
-                    }
-
-                # Get the newly cached PSSH data
-                pssh_data_list = self.manager.drm_ops.pssh_cache.get(cache_key)
-                now_cached = pssh_data_list is not None
-
-                # Get manifest URL for reference
-                try:
-                    manifest_url = self.manager.get_channel_manifest(
-                        provider_name=provider,
-                        channel_id=channel_id,
-                        country=country
-                    )
-                except Exception as e:
-                    manifest_url = None
-
-                response.status = 200
-                return {
-                    'message': 'PSSH data refreshed successfully',
-                    'provider': provider,
-                    'channel_id': channel_id,
-                    'manifest_url': manifest_url,
-                    'pssh_count': len(pssh_data_list) if pssh_data_list else 0,
-                    'was_cached': was_cached,
-                    'now_cached': now_cached,
-                    'extraction_successful': len(pssh_data_list) > 0 if pssh_data_list else False
-                }
-
-            except Exception as e:
-                logger.error(f"Error refreshing PSSH: {e}")
-                response.status = 500
-                return {
-                    'error': 'Failed to refresh PSSH data',
-                    'message': str(e)
-                }
-
-        @self.app.route('/api/cache/pssh', method='DELETE')
-        def clear_pssh_cache():
-            """
-            Clear all PSSH cache entries.
-
-            This is useful for:
-            - Debugging
-            - Freeing memory
-            - Forcing re-extraction of all channels
-            """
-            try:
-                cache_size = len(self.manager.drm_ops.pssh_cache.cache)
-                self.manager.drm_ops.pssh_cache.clear()
-
-                response.status = 200
-                return {
-                    'message': 'PSSH cache cleared',
-                    'entries_cleared': cache_size
-                }
-
-            except Exception as e:
-                logger.error(f"Error clearing cache: {e}")
-                response.status = 500
-                return {
-                    'error': 'Failed to clear cache',
-                    'message': str(e)
-                }
-
-        @self.app.route('/api/cache/pssh', method='GET')
-        def get_pssh_cache_stats():
-            """
-            Get PSSH cache statistics.
-
-            Returns information about:
-            - Number of cached entries
-            - TTL configuration
-            - Memory usage estimate
-            """
-            try:
-                cache = self.manager.drm_ops.pssh_cache
-
-                with cache.lock:
-                    entries = []
-                    total_size = 0
-
-                    for key, (pssh_list, timestamp) in cache.cache.items():
-                        import time
-                        age = time.time() - timestamp
-                        expires_in = cache.ttl - age
-
-                        # Estimate size
-                        size = sum(
-                            len(p.pssh_box) + len(str(p.key_ids)) + len(p.system_id)
-                            for p in pssh_list
-                        )
-                        total_size += size
-
-                        entries.append({
-                            'key': key,
-                            'pssh_count': len(pssh_list),
-                            'age_seconds': int(age),
-                            'expires_in_seconds': int(expires_in),
-                            'size_bytes': size
-                        })
-
-                response.status = 200
-                return {
-                    'total_entries': len(entries),
-                    'ttl_seconds': cache.ttl,
-                    'total_size_bytes': total_size,
-                    'total_size_mb': round(total_size / 1024 / 1024, 2),
-                    'entries': sorted(entries, key=lambda x: x['age_seconds'], reverse=True)
-                }
-
-            except Exception as e:
-                logger.error(f"Error getting cache stats: {e}")
-                response.status = 500
-                return {
-                    'error': 'Failed to get cache stats',
-                    'message': str(e)
-                }
-
-        @self.app.route('/api/providers/<provider>/channels/<channel_id>/epg')
-        def get_channel_epg(provider, channel_id):
-            try:
-                # Parse optional parameters
-                kwargs = {'country': request.query.get('country')}
-
-                from datetime import timezone
-                # Handle start_time - can be Unix timestamp (from Kodi) or datetime
-                if request.query.get('start_time'):
-                    start_time_str = request.query.get('start_time')
-                    try:
-                        # Try to parse as Unix timestamp (integer from Kodi PVR)
-                        start_time_int = int(start_time_str)
-                        kwargs['start_time'] = datetime.fromtimestamp(start_time_int, tz=timezone.utc)
-                    except (ValueError, TypeError):
-                        # Try to parse as ISO format string (for manual API calls)
-                        try:
-                            kwargs['start_time'] = datetime.fromisoformat(
-                                start_time_str.replace('Z', '+00:00')
-                            )
-                        except ValueError:
-                            logger.warning(f"Invalid start_time format: {start_time_str}")
-                            # Continue without start_time filter
-                            pass
-
-                # Handle end_time - can be Unix timestamp or datetime
-                if request.query.get('end_time'):
-                    end_time_str = request.query.get('end_time')
-                    try:
-                        # Try to parse as Unix timestamp (integer from Kodi PVR)
-                        end_time_int = int(end_time_str)
-                        kwargs['end_time'] = datetime.fromtimestamp(end_time_int, tz=timezone.utc)
-                    except (ValueError, TypeError):
-                        # Try to parse as ISO format string (for manual API calls)
-                        try:
-                            kwargs['end_time'] = datetime.fromisoformat(
-                                end_time_str.replace('Z', '+00:00')
-                            )
-                        except ValueError:
-                            logger.warning(f"Invalid end_time format: {end_time_str}")
-                            # Continue without end_time filter
-                            pass
-
-                # Get EPG data from manager
-                epg_data = self.manager.get_channel_epg(
-                    provider_name=provider,
-                    channel_id=channel_id,
-                    **kwargs
-                )
-
-                # Return as JSON
-                response.content_type = 'application/json; charset=utf-8'
-                return {
-                    'provider': provider,
-                    'channel_id': channel_id,
-                    'epg': epg_data
-                }
-
-            except ValueError as val_err:
-                # This handles the case where manager raises ValueError for unknown provider
-                logger.error(f"API Error in /api/providers/{provider}/channels/{channel_id}/epg: {str(val_err)}")
-                response.status = 404
-                response.content_type = 'application/json; charset=utf-8'
-                return {'error': str(val_err)}
-            except Exception as api_err:
-                logger.error(f"API Error in /api/providers/{provider}/channels/{channel_id}/epg: {str(api_err)}")
-                response.status = 500
-                response.content_type = 'application/json; charset=utf-8'
-                return {'error': f'Internal server error: {str(api_err)}'}
-
-        @self.app.route('/api/providers/<provider>/epg')
-        def get_provider_epg_xmltv(provider):
-            try:
-                # Set appropriate headers for XMLTV
-                response.content_type = 'application/xml; charset=utf-8'
-                response.headers['Content-Disposition'] = f'attachment; filename="{provider}_epg.xml"'
-
-                # Get the XMLTV data from the provider
-                xmltv_data = self.manager.get_provider_epg_xmltv(
-                    provider_name=provider,
-                    country=request.query.get('country')
-                )
-
-                if not xmltv_data:
-                    response.status = 404
-                    return {'error': f'EPG data not available for provider "{provider}"'}
-
-                return xmltv_data
-
-            except ValueError as val_err:
-                # Handle unknown provider
-                logger.error(f"API Error in /api/providers/{provider}/epg: {str(val_err)}")
-                response.status = 404
-                return {'error': str(val_err)}
-            except Exception as api_err:
-                logger.error(f"API Error in /api/providers/{provider}/epg: {str(api_err)}")
-                response.status = 500
-                return {'error': f'Internal server error: {str(api_err)}'}
-
-        @self.app.route('/api/providers/<provider>/channels/<channel_id>/drm')
-        def get_channel_drm(provider, channel_id):
-            try:
-                # Get optional catchup parameters
-                start_time = request.query.get('start_time')
-                end_time = request.query.get('end_time')
-                epg_id = request.query.get('epg_id')
-                country = request.query.get('country')
-
-                # Determine if this is a catchup request
-                is_catchup = bool(start_time and end_time)
-
-                if is_catchup:
-                    logger.debug(f"Catchup DRM request for {provider}/{channel_id}: "
-                                 f"epg_id={epg_id}")
-
-                    # Convert timestamps
-                    try:
-                        start_time_int = int(start_time)
-                        end_time_int = int(end_time)
-                    except (ValueError, TypeError):
-                        response.status = 400
-                        return {'error': 'Invalid start_time or end_time format'}
-
-                    # Get catchup DRM configs
-                    drm_configs = self.manager.get_catchup_drm_configs(
-                        provider_name=provider,
-                        channel_id=channel_id,
-                        start_time=start_time_int,
-                        end_time=end_time_int,
-                        epg_id=epg_id,
-                        country=country
-                    )
-                else:
-                    # Live DRM - existing logic
-                    drm_configs = self.manager.get_channel_drm_configs(
-                        provider_name=provider,
-                        channel_id=channel_id,
-                        country=country
-                    )
-
-                # Merge all DRM configs into a single dictionary
-                merged_drm_configs = {}
-                for config in drm_configs:
-                    if hasattr(config, 'to_dict'):
-                        config_dict = config.to_dict()
-                    else:
-                        config_dict = config
-                    merged_drm_configs.update(config_dict)
-
-                return {
-                    'provider': provider,
-                    'channel_id': channel_id,
-                    'is_catchup': is_catchup,
-                    'drm_configs': merged_drm_configs
-                }
-
-            except ValueError as val_err:
-                logger.error(f"API Error in DRM endpoint: {str(val_err)}")
-                response.status = 404
-                return {'error': str(val_err)}
-            except Exception as api_err:
-                logger.error(f"API Error in DRM endpoint: {str(api_err)}")
-                response.status = 500
-                return {'error': f'Internal server error: {str(api_err)}'}
-
-        @self.app.route('/api/m3u')
-        def get_m3u_all():
-            """
-            Generates M3U playlist for all configured providers.
-            Returns cached version if available, otherwise generates new one.
-
-            Example: http://localhost:7777/api/m3u
-            """
-            try:
-                cache_file = "playlist.m3u"
-
-                # Try to read cached file
-                cached_content = self.vfs.read_text(cache_file)
-
-                if cached_content:
-                    logger.info("Serving cached M3U playlist for all providers")
-                    response.content_type = 'audio/x-mpegurl; charset=utf-8'
-                    response.headers['Content-Disposition'] = 'attachment; filename="playlist.m3u8"'
-                    return cached_content
-
-                # Cache doesn't exist or is corrupt, generate new M3U
-                logger.info("No valid cache found, generating M3U playlist for all providers")
-                return self._generate_m3u_all(save_to_cache=True)
-
-            except Exception as api_err:
-                logger.error(f"API Error in /api/m3u: {str(api_err)}")
-                response.status = 500
-                return {'error': f'Internal server error: {str(api_err)}'}
-
-        @self.app.route('/api/m3u/generate')
-        def generate_m3u_all():
-            """
-            Forces regeneration of M3U playlist for all providers and saves to cache.
-
-            Example: http://localhost:7777/api/m3u/generate
-            """
-            try:
-                logger.info("Force generating M3U playlist for all providers")
-                return self._generate_m3u_all(save_to_cache=True)
-
-            except Exception as api_err:
-                logger.error(f"API Error in /api/m3u/generate: {str(api_err)}")
-                response.status = 500
-                return {'error': f'Internal server error: {str(api_err)}'}
-
-        @self.app.route('/api/providers/<provider>/m3u')
-        def get_m3u_provider(provider):
-            """
-            Generates M3U playlist for a specific provider.
-            Returns cached version if available, otherwise generates new one.
-
-            Example: http://localhost:7777/api/providers/rtlplus/m3u
-            """
-            try:
-                cache_file = f"{provider}.m3u"
-
-                # Try to read cached file
-                cached_content = self.vfs.read_text(cache_file)
-
-                if cached_content:
-                    logger.info(f"Serving cached M3U playlist for provider '{provider}'")
-                    response.content_type = 'audio/x-mpegurl; charset=utf-8'
-                    response.headers['Content-Disposition'] = f'attachment; filename="{provider}_playlist.m3u8"'
-                    return cached_content
-
-                # Cache doesn't exist or is corrupt, generate new M3U
-                logger.info(f"No valid cache found, generating M3U playlist for provider '{provider}'")
-                return self._generate_m3u_provider(provider, save_to_cache=True)
-
-            except ValueError as val_err:
-                logger.error(f"API Error in /api/providers/{provider}/m3u: {str(val_err)}")
-                response.status = 404
-                return {'error': str(val_err)}
-            except Exception as api_err:
-                logger.error(f"API Error in /api/providers/{provider}/m3u: {str(api_err)}")
-                response.status = 500
-                return {'error': f'Internal server error: {str(api_err)}'}
-
-        @self.app.route('/api/providers/<provider>/m3u/generate')
-        def generate_m3u_provider(provider):
-            """
-            Forces regeneration of M3U playlist for a specific provider and saves to cache.
-
-            Example: http://localhost:7777/api/providers/rtlplus/m3u/generate
-            """
-            try:
-                logger.info(f"Force generating M3U playlist for provider '{provider}'")
-                return self._generate_m3u_provider(provider, save_to_cache=True)
-
-            except ValueError as val_err:
-                logger.error(f"API Error in /api/providers/{provider}/m3u/generate: {str(val_err)}")
-                response.status = 404
-                return {'error': str(val_err)}
-            except Exception as api_err:
-                logger.error(f"API Error in /api/providers/{provider}/m3u/generate: {str(api_err)}")
-                response.status = 500
-                return {'error': f'Internal server error: {str(api_err)}'}
-
-        @self.app.route('/api/cache/mpd/clear')
-        def clear_mpd_cache():
-            """Clear all cached MPD manifests"""
-            try:
-                self.mpd_cache.clear_all()
-                return {'success': True, 'message': 'MPD cache cleared'}
-            except Exception as e:
-                logger.error(f"Error clearing MPD cache: {e}")
-                response.status = 500
-                return {'error': str(e)}
-
-        @self.app.route('/api/cache/mpd/clear-expired')
-        def clear_expired_mpd_cache():
-            """Clear expired MPD cache entries"""
-            try:
-                cleared = self.mpd_cache.clear_expired()
-                return {'success': True, 'cleared': cleared}
-            except Exception as e:
-                logger.error(f"Error clearing expired MPD cache: {e}")
-                response.status = 500
-                return {'error': str(e)}
-
-        @self.app.route('/api/cache/mpd/<provider>/<channel_id>')
-        def get_mpd_cache_info(provider, channel_id):
-            """Get cache information for a specific channel"""
-            try:
-                info = self.mpd_cache.get_cache_info(provider, channel_id)
-                if info:
-                    return {'success': True, 'cache_info': info}
-                else:
-                    response.status = 404
-                    return {'success': False, 'message': 'No cache found'}
-            except Exception as e:
-                logger.error(f"Error getting cache info: {e}")
-                response.status = 500
-                return {'error': str(e)}
-
-        @self.app.route('/api/cache/mpd/<provider>/<channel_id>/delete')
-        def delete_mpd_cache(provider, channel_id):
-            """Delete cached MPD for a specific channel"""
-            try:
-                self.mpd_cache.delete(provider, channel_id)
-                return {'success': True, 'message': f'Cache deleted for {provider}/{channel_id}'}
-            except Exception as e:
-                logger.error(f"Error deleting cache: {e}")
-                response.status = 500
-                return {'error': str(e)}
-
-        @self.app.route('/api/providers/<provider>/auth/status')
-        def get_provider_auth_status(provider):
-            """Get authentication status from provider itself"""
-            try:
-                # Get provider instance
-                provider_instance = self.manager.get_provider(provider)
-                if not provider_instance:
-                    response.status = 404
-                    return {'error': f'Provider {provider} not found'}
-
-                # Get SettingsManager
-                settings_manager = self._get_settings_manager()
-                if not settings_manager:
-                    response.status = 500
-                    return {'error': 'Settings manager not available'}
-
-                # Import and use new auth system
-                from streaming_providers.providers.auth_context import AuthContext
-
-                try:
-                    auth_context = AuthContext(settings_manager)
-                    auth_status = provider_instance.get_auth_status(auth_context)
-                    return auth_status.to_dict()
-                except AttributeError as attr_err:
-                    logger.error(f"Provider {provider} missing required auth property: {attr_err}")
-                    response.status = 501  # Not Implemented
-                    return {
-                        'error': f'Provider {provider} does not fully implement auth status',
-                        'details': str(attr_err)
-                    }
-                except Exception as e:
-                    logger.error(f"Error getting auth status: {e}", exc_info=True)
-                    response.status = 500
-                    return {'error': str(e)}
-
-            except ImportError as import_error:
-                # This happens during development if modules not created yet
-                logger.warning(f"Auth modules not available: {import_error}")
-                return {
-                    'provider': provider,
-                    'auth_state': 'not_implemented',
-                    'is_ready': False,
-                    'message': 'New auth system in development'
-                }
-            except Exception as e:
-                logger.error(f"Error getting auth status for {provider}: {e}", exc_info=True)
-                response.status = 500
-                return {'error': f'Internal server error: {str(e)}'}
-
-        @self.app.route('/api/providers/<provider>/credentials', method='GET')
-        def get_provider_credentials(provider):
-            """
-            GET: Retrieve current credentials (masked for security)
-
-            Example: GET /api/providers/joyn/credentials
-            Returns: {
-                "has_credentials": true,
-                "credential_type": "user_password",
-                "username_masked": "us***@example.com",
-                "username": "user@example.com"  # Note: only included for pre-fill with user consent
-            }
-            """
-            try:
-                settings_manager = self._get_settings_manager()
-
-                # Parse provider and country
-                provider_name, country = settings_manager.parse_provider_country(provider)
-
-                # Get credentials
-                credentials = settings_manager.get_provider_credentials(provider_name, country)
-
-                response_data = {
-                    'provider': provider,
-                    'has_credentials': credentials is not None,
-                    'credential_type': None,
-                    'username_masked': None,
-                    'username': None  # We'll include this only if user explicitly allows
-                }
-
-                if credentials:
-                    response_data['credential_type'] = credentials.credential_type
-                    response_data['is_valid'] = credentials.validate()
-
-                    # Get username if it exists (for user_password credentials)
-                    if hasattr(credentials, 'username') and credentials.username:
-                        username = credentials.username
-
-                        # Create masked version for display
-                        if '@' in username:  # Email address
-                            parts = username.split('@')
-                            if len(parts[0]) > 2:
-                                masked = parts[0][:2] + '***@' + parts[1]
-                            else:
-                                masked = '***@' + parts[1]
-                        else:  # Username
-                            if len(username) > 4:
-                                masked = username[:2] + '***' + username[-2:]
-                            else:
-                                masked = '***'
-
-                        response_data['username_masked'] = masked
-
-                        # For pre-filling forms (security consideration - you can omit this)
-                        # Only include if you trust your frontend and have HTTPS
-                        response_data['username'] = username
-
-                    # Log for debugging (remove in production)
-                    logger.debug(
-                        f"GET credentials for {provider}: type={credentials.credential_type}, has_username={hasattr(credentials, 'username')}")
-
-                return response_data
-
-            except Exception as e:
-                logger.error(f"GET credentials error for {provider}: {e}", exc_info=True)
-                response.status = 500
-                return {'error': f'Internal server error: {str(e)}'}
-
-        @self.app.route('/api/providers/<provider>/credentials', method='POST')
-        def save_provider_credentials(provider):
-            """
-            Save credentials for a provider via API
-
-            Accepts JSON body with credentials:
-            - User/password: {"username": "...", "password": "..."}
-            - For updates: {"password": "..."} (keep existing username)
-            """
-            try:
-                # Parse JSON body
-                try:
-                    credentials_data = request.json
-                    logger.debug(f"Received credentials data for {provider}: {credentials_data}")
-                except Exception as json_err:
-                    logger.error(f"Invalid JSON in request body: {json_err}")
-                    response.status = 400
-                    return {'error': 'Invalid JSON in request body'}
-
-                if not credentials_data:
-                    logger.error("No credentials data provided")
-                    response.status = 400
-                    return {'error': 'Request body must contain credentials data'}
-
-                # Validate it's a dictionary
-                if not isinstance(credentials_data, dict):
-                    logger.error(f"Credentials data is not a dict: {type(credentials_data)}")
-                    response.status = 400
-                    return {'error': 'Credentials data must be a JSON object'}
-
-                # Get settings manager
-                settings_manager = self._get_settings_manager()
-
-                # Parse provider and country
-                provider_name, country = settings_manager.parse_provider_country(provider)
-
-                # Check if we have existing credentials (for partial updates)
-                existing_credentials = settings_manager.get_provider_credentials(provider_name, country)
-
-                if existing_credentials and 'username' not in credentials_data:
-                    # Partial update - keep existing username, only update password
-                    if hasattr(existing_credentials, 'username'):
-                        credentials_data['username'] = existing_credentials.username
-                    else:
-                        response.status = 400
-                        return {'error': 'Cannot update - existing credentials do not have username'}
-
-                # Save credentials
-                success, message = settings_manager.save_provider_credentials_from_api(
-                    provider, credentials_data
-                )
-
-                logger.info(f"Save result for {provider}: success={success}, message={message}")
-
-                if success:
-                    # Reinitialize provider to pick up new credentials
-                    reinit_success = self.manager.reinitialize_provider(provider)
-                    if not reinit_success:
-                        logger.warning(f"Failed to reinitialize provider '{provider}' after credential change")
-
-                    response.status = 200
-                    response.content_type = 'application/json; charset=utf-8'
-                    return {
-                        'success': True,
-                        'provider': provider,
-                        'message': message,
-                        'action': 'updated' if existing_credentials else 'created',
-                        'reinitialized': reinit_success
-                    }
-                else:
-                    # Determine appropriate status code
-                    if 'not registered' in message.lower():
-                        response.status = 404
-                    elif 'invalid' in message.lower() or 'validation failed' in message.lower():
-                        response.status = 400
-                    else:
-                        response.status = 500
-
-                    return {'error': message}
-
-            except Exception as api_err:
-                logger.error(f"API Error in POST /api/providers/{provider}/credentials: {str(api_err)}", exc_info=True)
-                response.status = 500
-                return {'error': f'Internal server error: {str(api_err)}'}
-
-        @self.app.route('/api/providers/<provider>/credentials', method='DELETE')
-        def delete_provider_credentials(provider):
-            """
-            Delete credentials for a provider via API
-
-            Example: DELETE /api/providers/joyn_de/credentials
-            """
-            try:
-                settings_manager = self._get_settings_manager()
-                success, message = settings_manager.delete_provider_credentials_from_api(provider)
-
-                if success:
-                    # Reinitialize provider to clear any cached authentication
-                    reinit_success = self.manager.reinitialize_provider(provider)
-                    if not reinit_success:
-                        logger.warning(f"Failed to reinitialize provider '{provider}' after credential deletion")
-
-                    response.status = 200
-                    response.content_type = 'application/json; charset=utf-8'
-                    return {
-                        'success': True,
-                        'provider': provider,
-                        'message': message,
-                        'reinitialized': reinit_success
-                    }
-                else:
-                    # Determine appropriate status code
-                    if 'not registered' in message.lower():
-                        response.status = 404
-                    else:
-                        response.status = 500
-
-                    return {'error': message}
-
-            except Exception as api_err:
-                logger.error(f"API Error in DELETE /api/providers/{provider}/credentials: {str(api_err)}")
-                response.status = 500
-                return {'error': f'Internal server error: {str(api_err)}'}
-
-        @self.app.route('/api/providers/<provider>/proxy', method='GET')
-        def get_provider_proxy(provider):
-            """
-            Get current proxy configuration for a provider
-
-            Example: GET /api/providers/joyn/proxy
-            """
-            try:
-                settings_manager = self._get_settings_manager()
-
-                # Parse provider and country
-                provider_name, country = settings_manager.parse_provider_country(provider)
-
-                # Get proxy config
-                proxy_config = settings_manager.get_provider_proxy(provider_name, country)
-
-                if proxy_config:
-                    return {
-                        'success': True,
-                        'provider': provider,
-                        'proxy_config': proxy_config.to_dict() if hasattr(proxy_config, 'to_dict') else proxy_config
-                    }
-                else:
-                    return {
-                        'success': True,
-                        'provider': provider,
-                        'proxy_config': None,
-                        'message': 'No proxy configuration found'
-                    }
-
-            except Exception as api_err:
-                logger.error(f"API Error in GET /api/providers/{provider}/proxy: {str(api_err)}")
-                response.status = 500
-                return {'error': f'Internal server error: {str(api_err)}'}
-
-        @self.app.route('/api/providers/<provider>/proxy', method='POST')
-        def save_provider_proxy(provider):
-            """
-            Save proxy configuration for a provider via API
-
-            Accepts JSON body with proxy configuration:
-            Required: {"host": "proxy.example.com", "port": 8080}
-            Optional: {
-                "proxy_type": "http",  # http, https, socks4, socks5
-                "username": "proxyuser",
-                "password": "proxypass",
-                "timeout": 30,
-                "verify_ssl": true,
-                "scope": {
-                    "api_calls": true,
-                    "authentication": true,
-                    "manifests": true,
-                    "license": true,
-                    "all": true
-                }
-            }
-
-            Example: POST /api/providers/joyn_de/proxy
-            Body: {"host": "proxy.example.com", "port": 8080}
-            """
-            try:
-                # Parse JSON body
-                try:
-                    proxy_data = request.json
-                except Exception as json_err:
-                    logger.error(f"Invalid JSON in request body: {json_err}")
-                    response.status = 400
-                    return {'error': 'Invalid JSON in request body'}
-
-                if not proxy_data:
-                    response.status = 400
-                    return {'error': 'Request body must contain proxy configuration'}
-
-                # Validate it's a dictionary
-                if not isinstance(proxy_data, dict):
-                    response.status = 400
-                    return {'error': 'Proxy data must be a JSON object'}
-
-                settings_manager = self._get_settings_manager()
-                success, message = settings_manager.save_provider_proxy_from_api(
-                    provider, proxy_data
-                )
-
-                if success:
-                    # Reinitialize provider to pick up new proxy configuration
-                    reinit_success = self.manager.reinitialize_provider(provider)
-                    if not reinit_success:
-                        logger.warning(f"Failed to reinitialize provider '{provider}' after proxy change")
-
-                    response.status = 200
-                    response.content_type = 'application/json; charset=utf-8'
-                    return {
-                        'success': True,
-                        'provider': provider,
-                        'message': message,
-                        'reinitialized': reinit_success
-                    }
-                else:
-                    # Determine appropriate status code
-                    if 'not registered' in message.lower():
-                        response.status = 404
-                    elif 'invalid' in message.lower() or 'validation failed' in message.lower():
-                        response.status = 400
-                    else:
-                        response.status = 500
-
-                    return {'error': message}
-
-            except Exception as api_err:
-                logger.error(f"API Error in POST /api/providers/{provider}/proxy: {str(api_err)}")
-                response.status = 500
-                return {'error': f'Internal server error: {str(api_err)}'}
-
-        @self.app.route('/api/providers/<provider>/proxy', method='DELETE')
-        def delete_provider_proxy(provider):
-            """
-            Delete proxy configuration for a provider via API
-
-            Example: DELETE /api/providers/joyn_de/proxy
-            """
-            try:
-                settings_manager = self._get_settings_manager()
-                success, message = settings_manager.delete_provider_proxy_from_api(provider)
-
-                if success:
-                    # Reinitialize provider to remove proxy configuration
-                    reinit_success = self.manager.reinitialize_provider(provider)  # Changed: self.manager
-                    if not reinit_success:
-                        logger.warning(f"Failed to reinitialize provider '{provider}' after proxy deletion")
-
-                    response.status = 200
-                    response.content_type = 'application/json; charset=utf-8'
-                    return {
-                        'success': True,
-                        'provider': provider,
-                        'message': message,
-                        'reinitialized': reinit_success
-                    }
-                else:
-                    # Determine appropriate status code
-                    if 'not registered' in message.lower():
-                        response.status = 404
-                    else:
-                        response.status = 500
-
-                    return {'error': message}
-
-            except Exception as api_err:
-                logger.error(f"API Error in DELETE /api/providers/{provider}/proxy: {str(api_err)}")
-                response.status = 500
-                return {'error': f'Internal server error: {str(api_err)}'}
-
-        @self.app.route('/api/providers/<provider>/reinitialize', method='POST')
-        def reinitialize_provider(provider):
-            """
-            Manually reinitialize a provider (e.g., after external configuration changes)
-
-            Example: POST /api/providers/joyn_de/reinitialize
-            """
-            try:
-                success = self.manager.reinitialize_provider(provider)  # self.manager
-
-                if success:
-                    return {
-                        'success': True,
-                        'provider': provider,
-                        'message': f'Provider {provider} reinitialized successfully'
-                    }
-                else:
-                    response.status = 500
-                    return {
-                        'success': False,
-                        'provider': provider,
-                        'message': f'Failed to reinitialize provider {provider}'
-                    }
-
-            except Exception as e:
-                logger.error(f"Error reinitializing provider {provider}: {e}")
-                response.status = 500
-                return {'error': f'Internal server error: {str(e)}'}
-
-        @self.app.route('/api/providers/<provider>/subscription')
-        def get_provider_subscription(provider):
-            """Get subscription status for a provider"""
-            try:
-                subscription = self.manager.get_subscription_status(provider)
-
-                if subscription:
-                    return {
-                        'success': True,
-                        'subscription': subscription.to_dict()
-                    }
-                else:
-                    return {
-                        'success': True,
-                        'subscription': None,
-                        'message': 'No subscription information available'
-                    }
-
-            except ValueError as val_err:
-                response.status = 404
-                return {'error': str(val_err)}
-            except Exception as api_err:
-                logger.error(f"API Error in subscription endpoint: {str(api_err)}")
-                response.status = 500
-                return {'error': f'Internal server error: {str(api_err)}'}
-
-        @self.app.route('/api/providers/<provider>/channels/subscribed')
-        def get_subscribed_channels(provider):
-            """Get channels the user is subscribed to for a provider"""
-            try:
-                channels = self.manager.get_subscribed_channels(provider)
-
-                # Get provider instance for additional info
-                provider_instance = self.manager.get_provider(provider)
-                provider_catchup_hours = getattr(provider_instance, 'catchup_window', 0) if provider_instance else 0
-
-                channels_data = []
-                for c in channels:
-                    channel_dict = c.to_dict()
-
-                    # Add catchup hours
-                    if hasattr(c, 'catchup_hours'):
-                        channel_dict['CatchupHours'] = c.catchup_hours
-                    else:
-                        channel_dict['CatchupHours'] = provider_catchup_hours
-
-                    channels_data.append(channel_dict)
-
-                return {
-                    'provider': provider,
-                    'channels': channels_data,
-                    'count': len(channels_data),
-                    'is_filtered': True  # Indicates subscription filtering was applied
-                }
-
-            except ValueError as val_err:
-                response.status = 404
-                return {'error': str(val_err)}
-            except Exception as api_err:
-                logger.error(f"API Error in subscribed channels endpoint: {str(api_err)}")
-                response.status = 500
-                return {'error': f'Internal server error: {str(api_err)}'}
-
-        @self.app.route('/api/providers/<provider>/packages')
-        def get_provider_packages(provider):
-            """Get available subscription packages for a provider"""
-            try:
-                packages = self.manager.get_available_packages(provider)
-
-                return {
-                    'success': True,
-                    'provider': provider,
-                    'packages': [
-                        {
-                            'package_id': pkg.package_id,
-                            'name': pkg.name,
-                            'description': pkg.description,
-                            'price_info': pkg.price_info,
-                            'channel_count': pkg.channel_count,
-                            'metadata': pkg.metadata
-                        }
-                        for pkg in packages
-                    ],
-                    'count': len(packages)
-                }
-
-            except ValueError as val_err:
-                response.status = 404
-                return {'error': str(val_err)}
-            except Exception as api_err:
-                logger.error(f"API Error in packages endpoint: {str(api_err)}")
-                response.status = 500
-                return {'error': f'Internal server error: {str(api_err)}'}
-
-        @self.app.route('/api/providers/channels/subscribed')
-        def get_all_subscribed_channels():
-            """Get all subscribed channels across all providers"""
-            try:
-                all_subscribed = {}
-                provider_list = self.manager.list_providers()
-
-                for provider in provider_list:
-                    try:
-                        channels = self.manager.get_subscribed_channels(provider)
-                        if channels:
-                            all_subscribed[provider] = [c.to_dict() for c in channels]
-                    except Exception as provider_err:
-                        logger.warning(f"Could not get subscribed channels for {provider}: {provider_err}")
-                        continue
-
-                total_channels = sum(len(channels) for channels in all_subscribed.values())
-
-                return {
-                    'success': True,
-                    'providers': list(all_subscribed.keys()),
-                    'channels_by_provider': all_subscribed,
-                    'total_channels': total_channels,
-                    'provider_count': len(all_subscribed)
-                }
-
-            except Exception as api_err:
-                logger.error(f"API Error in all subscribed channels endpoint: {str(api_err)}")
-                response.status = 500
-                return {'error': f'Internal server error: {str(api_err)}'}
-
-        @self.app.route('/api/m3u/subscribed')
-        def get_m3u_subscribed():
-            """
-            Generate M3U playlist with only subscribed channels.
-
-            Note: This uses the same caching mechanism as regular M3U,
-            but with '_subscribed' suffix in cache filename.
-            """
-            try:
-                cache_file = "playlist_subscribed.m3u"
-
-                # Try cached version
-                cached_content = self.vfs.read_text(cache_file)
-                if cached_content:
-                    logger.info("Serving cached subscribed M3U playlist")
-                    response.content_type = 'audio/x-mpegurl; charset=utf-8'
-                    response.headers['Content-Disposition'] = 'attachment; filename="playlist_subscribed.m3u8"'
-                    return cached_content
-
-                # Generate new M3U with subscribed channels
-                base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
-                m3u_content = "#EXTM3U\n"
-
-                provider_list = self.manager.list_providers()
-                for provider_name in provider_list:
-                    try:
-                        channels = self.manager.get_subscribed_channels(provider_name)
-
-                        for channel in channels:
-                            # Generate M3U entry for each subscribed channel
-                            channel_id = channel.channel_id
-                            channel_name = channel.name
-                            channel_logo = channel.logo_url or ''
-
-                            # Get provider label
-                            try:
-                                provider_instance = self.manager.get_provider(provider_name)
-                                provider_label = getattr(provider_instance, 'provider_label', provider_name)
-                            except:
-                                provider_label = provider_name
-
-                            # Build stream URL
-                            stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream"
-
-                            # Add M3U entry
-                            m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
-
-                            # Add DRM directives if available
-                            try:
-                                drm_configs = self.manager.get_channel_drm_configs(provider_name, channel_id)
-                                if drm_configs:
-                                    drm_directives = self._generate_drm_directives(drm_configs)
-                                    m3u_content += drm_directives
-                            except Exception as drm_err:
-                                logger.debug(f"Could not get DRM for {provider_name}/{channel_id}: {drm_err}")
-
-                            m3u_content += f'{stream_url}\n'
-
-                    except Exception as provider_err:
-                        logger.warning(
-                            f"Failed to process subscribed channels for '{provider_name}': {str(provider_err)}")
-                        continue
-
-                # Cache the result
-                if self.vfs.write_text(cache_file, m3u_content):
-                    logger.info(f"Subscribed M3U playlist cached to {cache_file}")
-
-                response.content_type = 'audio/x-mpegurl; charset=utf-8'
-                response.headers['Content-Disposition'] = 'attachment; filename="playlist_subscribed.m3u8"'
-                return m3u_content
-
-            except Exception as api_err:
-                logger.error(f"API Error in /api/m3u/subscribed: {str(api_err)}")
-                response.status = 500
-                return {'error': f'Internal server error: {str(api_err)}'}
-
-        @self.app.route('/api/m3u/subscribed/generate')
-        def generate_m3u_subscribed():
-            """Force regenerate subscribed M3U playlist"""
-            try:
-                # Clear cache and regenerate
-                cache_file = "playlist_subscribed.m3u"
-                self.vfs.delete(cache_file)  # Delete if exists
-
-                # Call the subscribed M3U endpoint which will regenerate
-                return get_m3u_subscribed()
-
-            except Exception as api_err:
-                logger.error(f"API Error in /api/m3u/subscribed/generate: {str(api_err)}")
-                response.status = 500
-                return {'error': f'Internal server error: {str(api_err)}'}
-
-        @self.app.route('/api/providers/<provider>/enabled', method='GET')
-        def get_provider_enabled(provider):
-            """Get enabled status for specific provider"""
-            try:
-                # Validate provider exists
-                if not self.manager.get_provider(provider):
-                    response.status = 404
-                    return {'error': f'Provider {provider} not found'}
-
-                enable_manager = ProviderEnableManager()
-                status = enable_manager.is_provider_enabled(provider)
-                source = enable_manager.get_enabled_source(provider)
-
-                # FIX: Convert enum to string value
-                source_value = source.value if hasattr(source, 'value') else str(source)
-
-                return {
-                    'success': True,
-                    'provider': provider,
-                    'enabled': status,
-                    'source': source_value,  # Now a string
-                    'can_modify': source != 'kodi'
-                }
-
-            except Exception as e:
-                logger.error(f"Error getting enabled status for {provider}: {e}")
-                response.status = 500
-                return {'error': str(e)}
-
-        @self.app.route('/api/providers/<provider>/enabled', method='POST')
-        def set_provider_enabled(provider):
-            """Set enabled status for provider"""
-            try:
-                # Parse request
-                try:
-                    data = request.json
-                    if not data or 'enabled' not in data:
-                        response.status = 400
-                        return {'error': 'Missing "enabled" field'}
-
-                    enabled = bool(data['enabled'])
-                except ValueError:
-                    response.status = 400
-                    return {'error': 'Invalid JSON'}
-
-                # Use the new manager method
-                success = self.manager.set_provider_enabled(provider, enabled)
-
-                if success:
-                    # Get updated metadata
-                    metadata = None
-                    all_metadata = self.manager.get_all_providers_metadata()
-                    for md in all_metadata:
-                        if md['name'] == provider:
-                            metadata = md
-                            break
-
-                    return {
-                        'success': True,
-                        'provider': provider,
-                        'enabled': enabled,
-                        'metadata': metadata,
-                        'message': f'Provider {provider} {"enabled" if enabled else "disabled"}'
-                    }
-                else:
-                    response.status = 500
-                    return {'error': f'Failed to {"enable" if enabled else "disable"} provider {provider}'}
-
-            except Exception as e:
-                logger.error(f"Error setting enabled status for {provider}: {e}")
-                response.status = 500
-                return {'error': str(e)}
-
-        @self.app.route('/api/config/export')
-        def export_config():
-            """Export all configurations as JSON"""
-            try:
-                settings_manager = self._get_settings_manager()
-
-                # Use SettingsManager's export method
-                export_path = settings_manager.export_all_settings()
-
-                # Read the exported file
-                with open(export_path, 'r', encoding='utf-8') as f:
-                    config_data = json.load(f)
-
-                response.content_type = 'application/json'
-                response.headers['Content-Disposition'] = f'attachment; filename="{os.path.basename(export_path)}"'
-                return json.dumps(config_data, indent=2)
-
-            except Exception as e:
-                logger.error(f"Error exporting config: {e}")
-                response.status = 500
-                return {'error': str(e)}
-
-        @self.app.route('/api/config/import', method='POST')
-        def import_config():
-            """Import configurations from JSON"""
-            try:
-                import_data = request.json
-            except ValueError:
-                response.status = 400
-                return {'error': 'Invalid JSON format'}
-
-            if not import_data:
-                response.status = 400
-                return {'error': 'No data provided'}
-
-            # Validate it's a dict
-            if not isinstance(import_data, dict):
-                response.status = 400
-                return {'error': 'Import data must be a JSON object'}
-
-            # Create temp file
-            try:
-                import tempfile
-                import uuid
-                import json
-
-                temp_dir = tempfile.gettempdir()
-                temp_file = os.path.join(temp_dir, f'import_{uuid.uuid4()}.json')
-
-                with open(temp_file, 'w', encoding='utf-8') as f:
-                    json.dump(import_data, f)
-            except (IOError, OSError, PermissionError) as file_err:
-                logger.error(f"Failed to create temp file: {file_err}")
-                response.status = 500
-                return {'error': 'Failed to process import file'}
-
-            imported_count = 0
-            try:
-                # Use SettingsManager to import
-                settings_manager = self._get_settings_manager()
-
-                # Import credentials
-                credentials = import_data.get('providers', {})
-
-                for provider_name, provider_data in credentials.items():
-                    # Validate provider data
-                    if not isinstance(provider_data, dict):
-                        logger.warning(f"Skipping invalid provider data for {provider_name}")
-                        continue
-
-                    # Extract credential data if available
-                    if 'credentials' in provider_data:
-                        cred_data = provider_data['credentials']
-                        if isinstance(cred_data, dict):
-                            success, message = settings_manager.save_provider_credentials_from_api(
-                                provider_name, cred_data
-                            )
-                            if success:
-                                imported_count += 1
-                                logger.info(f"Imported credentials for {provider_name}")
-                            else:
-                                logger.warning(f"Failed to import credentials for {provider_name}: {message}")
-
-                    # Import proxy data if available
-                    if 'proxy' in provider_data:
-                        proxy_data = provider_data['proxy']
-                        if isinstance(proxy_data, dict):
-                            success, message = settings_manager.save_provider_proxy_from_api(
-                                provider_name, proxy_data
-                            )
-                            if success:
-                                imported_count += 1
-                                logger.info(f"Imported proxy for {provider_name}")
-                            else:
-                                logger.warning(f"Failed to import proxy for {provider_name}: {message}")
-
-            except Exception as process_err:
-                logger.error(f"Error during import processing: {process_err}", exc_info=True)
-                response.status = 500
-                return {'error': f'Import failed: {str(process_err)}'}
-
-            finally:
-                # Always try to clean up temp file
-                try:
-                    if os.path.exists(temp_file):
-                        os.remove(temp_file)
-                except (FileNotFoundError, PermissionError, OSError) as cleanup_err:
-                    logger.debug(f"Could not remove temp file {temp_file}: {cleanup_err}")
-
-            return {
-                'success': True,
-                'imported': imported_count,
-                'message': f'Imported {imported_count} configurations'
-            }
-
-        @self.app.route('/api/config/epg', method='GET')
-        def get_epg_config():
-            """Get current EPG configuration"""
-            try:
-                # Use the already imported get_environment_manager
-                env_mgr = get_environment_manager()
-
-                config = {
-                    'epg_url': env_mgr.get_config('epg_url', ''),
-                    'epg_cache_ttl': env_mgr.get_config('epg_cache_ttl', 86400),
-                    'source': 'config.json' if env_mgr.get_config('epg_url') else 'default'
-                }
-
-                # Also check environment variable for reference
-                import os
-                env_epg_url = os.environ.get('ULTIMATE_EPG_URL')
-                if env_epg_url:
-                    config['environment_variable'] = env_epg_url
-
-                return {
-                    'success': True,
-                    'config': config,
-                    'epg_manager_status': 'initialized' if hasattr(self, 'epg_manager') else 'not_initialized'
-                }
-            except Exception as e:
-                logger.error(f"API Error in /api/config/epg: {str(e)}")
-                response.status = 500
-                return {'error': f'Internal server error: {str(e)}'}
-
-        @self.app.route('/api/config/epg', method='POST')
-        def set_epg_config():
-            """Set EPG configuration"""
-            try:
-                # Parse JSON body
-                try:
-                    epg_data = request.json
-                except Exception as json_err:
-                    logger.error(f"Invalid JSON in request body: {json_err}")
-                    response.status = 400
-                    return {'error': 'Invalid JSON in request body'}
-
-                if not epg_data:
-                    response.status = 400
-                    return {'error': 'Request body must contain EPG configuration'}
-
-                # Validate it's a dictionary
-                if not isinstance(epg_data, dict):
-                    response.status = 400
-                    return {'error': 'EPG data must be a JSON object'}
-
-                # Validate URL format
-                epg_url = epg_data.get('epg_url', '').strip()
-                if epg_url:
-                    # Basic URL validation
-                    if not (epg_url.startswith('http://') or epg_url.startswith('https://')):
-                        response.status = 400
-                        return {'error': 'EPG URL must start with http:// or https://'}
-
-                    # Validate it's an XML/GZ file
-                    if not (epg_url.endswith('.xml') or epg_url.endswith('.xml.gz') or epg_url.endswith('.gz')):
-                        logger.warning(f"EPG URL doesn't end with .xml or .gz: {epg_url}")
-
-                # Use environment manager
-                env_mgr = get_environment_manager()
-
-                # Get current config
-                import os
-                import json
-                profile_path = env_mgr.get_config('profile_path', '')
-                config_file = os.path.join(profile_path, 'config.json')
-                config_data = {}
-
-                if os.path.exists(config_file):
-                    try:
-                        with open(config_file, 'r', encoding='utf-8') as f:
-                            config_data = json.load(f)
-                    except Exception as e:
-                        logger.error(f"Error reading config.json: {e}")
-                        config_data = {}
-
-                # Update with new values
-                config_data['epg_url'] = epg_url
-
-                # Optional: EPG cache TTL
-                if 'epg_cache_ttl' in epg_data:
-                    try:
-                        ttl = int(epg_data['epg_cache_ttl'])
-                        if ttl > 0:
-                            config_data['epg_cache_ttl'] = ttl
-                    except ValueError:
-                        pass
-
-                # Save back to config.json
-                try:
-                    with open(config_file, 'w', encoding='utf-8') as f:
-                        json.dump(config_data, f, indent=2, ensure_ascii=False)
-
-                    # Update environment manager cache
-                    env_mgr.set_config('epg_url', epg_url)
-                    if 'epg_cache_ttl' in config_data:
-                        env_mgr.set_config('epg_cache_ttl', config_data['epg_cache_ttl'])
-
-                    logger.info(f"Updated EPG configuration: URL={epg_url}")
-
-                    return {
-                        'success': True,
-                        'message': 'EPG configuration updated successfully',
-                        'config': {
-                            'epg_url': epg_url,
-                            'epg_cache_ttl': config_data.get('epg_cache_ttl', 86400)
-                        }
-                    }
-
-                except Exception as e:
-                    logger.error(f"Error writing config.json: {e}")
-                    response.status = 500
-                    return {'error': f'Failed to save configuration: {str(e)}'}
-
-            except Exception as e:
-                logger.error(f"API Error in POST /api/config/epg: {str(e)}")
-                response.status = 500
-                return {'error': f'Internal server error: {str(e)}'}
-
-        @self.app.route('/api/config/epg/clear-cache', method='POST')
-        def clear_epg_cache():
-            """Clear EPG cache"""
-            try:
-                if hasattr(self, 'epg_manager') and self.epg_manager:
-                    success = self.epg_manager.clear_cache()
-                    if success:
-                        return {'success': True, 'message': 'EPG cache cleared'}
-                    else:
-                        response.status = 500
-                        return {'error': 'Failed to clear EPG cache'}
-                else:
-                    response.status = 404
-                    return {'error': 'EPG manager not initialized'}
-            except Exception as e:
-                logger.error(f"API Error clearing EPG cache: {str(e)}")
-                response.status = 500
-                return {'error': f'Internal server error: {str(e)}'}
-
-        @self.app.route('/api/config/epg/cache-info', method='GET')
-        def get_epg_cache_info():
-            """Get EPG cache information"""
-            try:
-                if hasattr(self, 'epg_manager') and self.epg_manager:
-                    cache_info = self.epg_manager.get_cache_info()
-                    mapping_stats = self.epg_manager.get_mapping_stats()
-
-                    return {
-                        'success': True,
-                        'cache_info': cache_info,
-                        'mapping_stats': mapping_stats
-                    }
-                else:
-                    response.status = 404
-                    return {'error': 'EPG manager not initialized'}
-            except Exception as e:
-                logger.error(f"API Error getting EPG cache info: {str(e)}")
-                response.status = 500
-                return {'error': f'Internal server error: {str(e)}'}
-
-        @self.app.route('/config')
+        """Setup all routes from separate modules"""
+        # Setup routes from separate modules
+        setup_provider_routes(self.app, self.manager, self)
+        setup_stream_routes(self.app, self.manager, self)
+        setup_m3u_routes(self.app, self.manager, self)
+        setup_drm_routes(self.app, self.manager, self)
+        setup_cache_routes(self.app, self.manager, self)
+        setup_config_routes(self.app, self.manager, self)
+        setup_epg_routes(self.app, self.manager, self)
+
+        # Core UI routes
+        @self.app.route("/config")
         def serve_config_ui():
             """Serve the web configuration interface"""
-            response.content_type = 'text/html; charset=utf-8'
+            response.content_type = "text/html; charset=utf-8"
             return self.config_html
 
-        @self.app.route("/api/epg/status", method='GET')
-        def get_epg_status():
-            """Get EPG configuration and cache status"""
-            try:
-                result = {
-                    "configured": bool(self.epg_url) and self.epg_url != "https://example.com/epg.xml.gz",
-                    "epg_url": self.epg_url if self.epg_url else "Not configured",
-                    "cache_valid": False,
-                    "cache_path": None,
-                    "channel_count": 0,
-                    "environment_used": False
-                }
-
-                # Check if we used the environment variable
-                import os
-                env_url = os.environ.get('ULTIMATE_EPG_URL')
-                if env_url and env_url == self.epg_url:
-                    result["environment_used"] = True
-
-                if result["configured"] and hasattr(self, 'epg_manager') and self.epg_manager:
-                    try:
-                        cache = self.epg_manager.cache
-                        xml_path = cache.get_cached_file_path()
-
-                        if xml_path:
-                            result["cache_valid"] = True
-                            result["cache_path"] = xml_path
-
-                            # Try to count channels
-                            import xml.etree.ElementTree as ET
-                            import gzip
-
-                            def open_xml_file(file_path):
-                                if file_path.endswith('.gz'):
-                                    return gzip.open(file_path, 'rt', encoding='utf-8')
-                                else:
-                                    return open(file_path, 'r', encoding='utf-8')
-
-                            channel_ids = set()
-                            try:
-                                with open_xml_file(xml_path) as xml_file:
-                                    context = ET.iterparse(xml_file, events=('start',))
-                                    for event, elem in context:
-                                        if elem.tag == 'channel':
-                                            channel_id = elem.get('id')
-                                            if channel_id:
-                                                channel_ids.add(channel_id)
-                                        elem.clear()
-                                result["channel_count"] = len(channel_ids)
-                            except Exception as parse_err:
-                                result["parse_error"] = str(parse_err)
-                    except Exception as cache_err:
-                        result["cache_error"] = str(cache_err)
-                else:
-                    result["hint"] = "Please configure EPG URL in Advanced settings"
-
-                return result
-
-            except Exception as e:
-                logger.error(f"Error getting EPG status: {e}")
-                response.status = 500
-                return {"error": str(e)}
-
-        @self.app.route("/api/epg/xmltv-channels", method='GET')
-        def get_epg_xmltv_channels():
-            """Get all unique channel IDs from EPG XML file with display names"""
-            try:
-                # Check if EPG manager is available
-                if not hasattr(self, 'epg_manager') or not self.epg_manager:
-                    response.status = 404
-                    return {"error": "EPG module not available"}
-
-                # Check if we have a valid EPG URL configured
-                if not self.epg_url or self.epg_url == "https://example.com/epg.xml.gz":
-                    response.status = 400
-                    return {
-                        "error": "EPG URL not configured",
-                        "hint": "Please configure a valid EPG URL in Advanced settings",
-                        "current_url": self.epg_url
-                    }
-
-                # Get the cache manager from EPG manager
-                cache = self.epg_manager.cache
-
-                logger.info(f"EPG Channels: Using URL: {self.epg_url}")
-
-                # This will download if not cached, or return cached path
-                xml_path = cache.get_or_download(self.epg_url)
-
-                if not xml_path:
-                    response.status = 404
-                    return {
-                        "error": f"EPG file not available from {self.epg_url}",
-                        "details": "Failed to download or cache EPG file.",
-                        "hint": "Check if the URL is accessible and contains valid XMLTV data."
-                    }
-
-                # Parse XML to get channel IDs and display names
-                import xml.etree.ElementTree as ET
-                import gzip
-                import os
-
-                if not os.path.exists(xml_path):
-                    response.status = 404
-                    return {"error": f"EPG file does not exist at path: {xml_path}"}
-
-                channel_ids = []
-                channel_map = {}  # Map of id -> display name
-
-                def open_xml_file(file_path):
-                    if file_path.endswith('.gz'):
-                        return gzip.open(file_path, 'rt', encoding='utf-8')
-                    else:
-                        return open(file_path, 'r', encoding='utf-8')
-
-                logger.info(f"Parsing EPG file: {xml_path}")
-                file_size = os.path.getsize(xml_path)
-                logger.info(f"EPG file size: {file_size} bytes")
-
-                with open_xml_file(xml_path) as xml_file:
-                    # Use iterparse for memory efficiency
-                    context = ET.iterparse(xml_file, events=('start', 'end'))
-
-                    current_channel_id = None
-                    current_display_names = []
-
-                    for event, elem in context:
-                        if event == 'start' and elem.tag == 'channel':
-                            current_channel_id = elem.get('id')
-                            current_display_names = []
-
-                        elif event == 'end' and elem.tag == 'display-name':
-                            if current_channel_id and elem.text:
-                                current_display_names.append(elem.text.strip())
-
-                        elif event == 'end' and elem.tag == 'channel':
-                            if current_channel_id:
-                                channel_ids.append(current_channel_id)
-                                # Use the first display name as the primary name
-                                if current_display_names:
-                                    channel_map[current_channel_id] = current_display_names[0]
-                                else:
-                                    channel_map[current_channel_id] = current_channel_id
-                                current_channel_id = None
-
-                        # Clear element to save memory
-                        if event == 'end':
-                            elem.clear()
-
-                logger.info(f"Found {len(channel_ids)} channels in EPG")
-
-                # Sort channels for consistent output
-                sorted_channels = sorted(channel_ids)
-
-                return {
-                    "channels": sorted_channels,
-                    "channel_map": channel_map,  # NEW: Map of id -> display name
-                    "count": len(sorted_channels),
-                    "source_url": self.epg_url,
-                    "cache_path": xml_path,
-                    "cache_size_bytes": file_size
-                }
-
-            except ET.ParseError as parse_err:
-                logger.error(f"XML parse error in EPG file: {parse_err}")
-                response.status = 500
-                return {
-                    "error": f"Failed to parse EPG XML file: {str(parse_err)}",
-                    "hint": "The EPG file may be malformed or not valid XMLTV format."
-                }
-            except Exception as e:
-                logger.error(f"Error getting EPG channels: {e}", exc_info=True)
-                response.status = 500
-                return {"error": f"Failed to process EPG file: {str(e)}"}
-
-        @self.app.route("/api/providers/<provider>/epg-mapping", method='GET')
-        def get_epg_mapping(provider):
-            """Get current EPG mapping for a provider"""
-            try:
-                from streaming_providers.base.utils.vfs import VFS
-            except ImportError:
-                # If VFS is not available, return empty mapping
-                return {
-                    "provider": provider,
-                    "mapping": {},
-                    "exists": False
-                }
-
-            try:
-                mapping_file = f"{provider}_epg_mapping.json"
-                vfs = VFS(addon_subdir="")
-
-                if vfs.exists(mapping_file):
-                    mapping_data = vfs.read_json(mapping_file)
-                    if mapping_data:
-                        # The file structure is:
-                        # {
-                        #   "_provider_name": "...",
-                        #   "channel_id": {"epg_id": "...", "name": "..."}
-                        # }
-
-                        # Extract mapping (skip internal fields starting with _)
-                        internal_fields = ['_provider_name', '_created_at', '_updated_at', '_version']
-                        actual_mapping = {
-                            k: v for k, v in mapping_data.items()
-                            if k not in internal_fields
-                        }
-
-                        logger.info(f"Loaded EPG mapping for {provider}: {len(actual_mapping)} channels")
-                        logger.debug(f"Sample mappings: {list(actual_mapping.items())[:3]}")
-
-                        return {
-                            "provider": provider,
-                            "mapping": actual_mapping,
-                            "exists": True
-                        }
-
-                # Return empty mapping if file doesn't exist
-                logger.info(f"No EPG mapping file found for {provider}")
-                return {
-                    "provider": provider,
-                    "mapping": {},
-                    "exists": False
-                }
-
-            except Exception as e:
-                logger.error(f"Error getting EPG mapping for {provider}: {e}", exc_info=True)
-                response.status = 500
-                return {"error": f"Failed to load mapping: {str(e)}"}
-
-        @self.app.route("/api/providers/<provider>/epg-mapping", method='POST')
-        def save_epg_mapping(provider):
-            """Save EPG mapping for a provider"""
-            try:
-                from streaming_providers.base.utils.vfs import VFS
-            except ImportError:
-                response.status = 500
-                return {"error": "VFS module not available"}
-
-            try:
-                # Get JSON data from request body using Bottle's request object
-                try:
-                    mapping_data = request.json.get("mapping", {}) if request.json else {}
-                except Exception as json_err:
-                    logger.error(f"Invalid JSON in request body: {json_err}")
-                    response.status = 400
-                    return {"error": "Invalid JSON in request body"}
-
-                # Get provider label if available
-                provider_label = provider
-                try:
-                    provider_instance = self.manager.get_provider(provider)
-                    if provider_instance:
-                        provider_label = getattr(provider_instance, 'provider_label', provider)
-                except:
-                    pass
-
-                # Build the file structure:
-                # {
-                #   "_provider_name": "Provider Label",
-                #   "channel_id": {"epg_id": "...", "name": "..."}
-                # }
-                full_mapping = {
-                    "_provider_name": provider_label
-                }
-
-                # Add each mapping entry
-                for channel_id, mapping_value in mapping_data.items():
-                    if isinstance(mapping_value, dict):
-                        # Already has structure {"epg_id": "...", "name": "..."}
-                        full_mapping[channel_id] = mapping_value
-                    elif isinstance(mapping_value, str):
-                        # Simple string, convert to object
-                        full_mapping[channel_id] = {
-                            "epg_id": mapping_value,
-                            "name": ""  # Name not provided
-                        }
-
-                # Save to file
-                vfs = VFS(addon_subdir="")
-                mapping_file = f"{provider}_epg_mapping.json"
-
-                success = vfs.write_json(mapping_file, full_mapping)
-
-                if success:
-                    logger.info(f"Saved EPG mapping for {provider}: {len(mapping_data)} channels")
-
-                    # Clear mapping cache if it exists
-                    try:
-                        from streaming_providers.base.epg.epg_mapping import EPGMapping
-                        mapping_manager = EPGMapping()
-                        mapping_manager.reload_mapping(provider)
-                        logger.info(f"Reloaded EPG mapping cache for {provider}")
-                    except ImportError:
-                        logger.debug("EPGMapping not available for cache reload")
-                        pass
-                    except Exception as reload_err:
-                        logger.warning(f"Could not reload mapping cache: {reload_err}")
-
-                    return {
-                        "success": True,
-                        "message": f"Mapping saved for {provider}",
-                        "channels_mapped": len(mapping_data)
-                    }
-                else:
-                    response.status = 500
-                    return {"error": "Failed to save mapping file"}
-
-            except Exception as e:
-                logger.error(f"Error saving EPG mapping for {provider}: {e}", exc_info=True)
-                response.status = 500
-                return {"error": f"Failed to save mapping: {str(e)}"}
-
-        @self.app.route('/')
+        @self.app.route("/")
         def serve_root():
             """Redirect root to config page"""
-            redirect('/config')
+            redirect("/config")
+
 
 def start_service(service_instance):
     """Start the Bottle server"""
@@ -2980,9 +1180,15 @@ def start_service(service_instance):
     logger.info(f"Starting server on port {port}")
 
     # Determine if we should run in debug mode
-    debug_mode = service_instance.env_manager.get_config('debug_mode', False)
+    debug_mode = service_instance.env_manager.get_config("debug_mode", False)
 
-    run(service_instance.app, host='0.0.0.0', port=port, quiet=not debug_mode, debug=debug_mode)
+    run(
+        service_instance.app,
+        host="0.0.0.0",
+        port=port,
+        quiet=not debug_mode,
+        debug=debug_mode,
+    )
 
 
 def run_kodi_service():
@@ -3006,9 +1212,7 @@ def run_kodi_service():
 
         # Start service in background thread
         service_thread = threading.Thread(
-            target=start_service,
-            args=(service,),
-            name="UltimateBackendService"
+            target=start_service, args=(service,), name="UltimateBackendService"
         )
         service_thread.daemon = True
         service_thread.start()
@@ -3059,15 +1263,19 @@ def run_standalone_service(config_dir: str = None):
         sys.exit(1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description='Ultimate Backend Streaming Service')
-    parser.add_argument('--port', type=int, help='Server port (overrides config)')
-    parser.add_argument('--config-dir', help='Configuration directory')
-    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
-    parser.add_argument('--kodi', action='store_true', help='Force Kodi mode (requires Kodi modules)')
-    parser.add_argument('--standalone', action='store_true', help='Force standalone mode')
+    parser = argparse.ArgumentParser(description="Ultimate Backend Streaming Service")
+    parser.add_argument("--port", type=int, help="Server port (overrides config)")
+    parser.add_argument("--config-dir", help="Configuration directory")
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
+    parser.add_argument(
+        "--kodi", action="store_true", help="Force Kodi mode (requires Kodi modules)"
+    )
+    parser.add_argument(
+        "--standalone", action="store_true", help="Force standalone mode"
+    )
 
     args = parser.parse_args()
 
@@ -3076,11 +1284,11 @@ if __name__ == '__main__':
 
     # Apply CLI overrides
     if args.port:
-        env_manager.set_config('server_port', args.port)
+        env_manager.set_config("server_port", args.port)
         logger.info(f"Port overridden via CLI: {args.port}")
 
     if args.debug:
-        env_manager.set_config('debug_mode', True)
+        env_manager.set_config("debug_mode", True)
         logger.info("Debug mode enabled via CLI")
 
     # Determine execution mode
