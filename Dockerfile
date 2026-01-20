@@ -15,7 +15,8 @@ ENV PYTHONUNBUFFERED=1 \
     ULTIMATE_COUNTRY=DE \
     ULTIMATE_DEBUG=false \
     ULTIMATE_EPG_URL="https://example.com/epg.xml.gz" \
-    PYTHONPATH=/app/lib \
+    # IMPORTANT: Set PYTHONPATH to include both lib and app directories
+    PYTHONPATH=/app/lib:/app \
     DRM_PLUGINS_PATH=/drm-plugins
 
 # Install system dependencies
