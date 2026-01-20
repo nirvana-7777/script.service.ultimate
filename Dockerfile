@@ -15,7 +15,6 @@ ENV PYTHONUNBUFFERED=1 \
     ULTIMATE_COUNTRY=DE \
     ULTIMATE_DEBUG=false \
     ULTIMATE_EPG_URL="https://example.com/epg.xml.gz" \
-    # IMPORTANT: Set PYTHONPATH to include both lib and app directories
     PYTHONPATH=/app/lib:/app \
     DRM_PLUGINS_PATH=/drm-plugins
 
@@ -49,25 +48,33 @@ RUN groupadd -g ${GROUP_ID} ${APP_USER} && \
     useradd -u ${USER_ID} -g ${APP_USER} -m -s /bin/bash ${APP_USER}
 
 # Create directories for new structure
-RUN mkdir -p /config /logs /cache /drm-plugins /app/routes && \
-    chown -R ${USER_ID}:${GROUP_ID} /config /logs /cache /drm-plugins /app/routes
+RUN mkdir -p /config /logs /cache /drm-plugins /app/routes /app/lib && \
+    chown -R ${USER_ID}:${GROUP_ID} /config /logs /cache /drm-plugins /app/routes /app/lib
+
+# CRITICAL FIX: Copy the lib directory containing streaming_providers
+COPY --chown=${USER_ID}:${GROUP_ID} lib/ /app/lib/
 
 # Copy application code with new structure
 COPY --chown=${USER_ID}:${GROUP_ID} service.py .
-# IMPORTANT: Copy the entire routes directory
+# Copy the entire routes directory
 COPY --chown=${USER_ID}:${GROUP_ID} routes/ /app/routes/
+
+# Copy resources directory (for web UI)
+COPY --chown=${USER_ID}:${GROUP_ID} resources/ /app/resources/
 
 # Create the directory structure for DRM plugins
 RUN mkdir -p /app/lib/streaming_providers/base/drm/plugins && \
     chown -R ${USER_ID}:${GROUP_ID} /app/lib/streaming_providers/base/drm
 
-# Quick directory check (for debugging)
+# Verify directory structure (for debugging)
 RUN echo "=== Directory structure ===" && \
     ls -la /app && \
-    echo "---" && \
+    echo "--- routes ---" && \
     ls -la /app/routes/ 2>/dev/null || echo "routes directory not found" && \
-    echo "---" && \
-    ls -la /app/lib/ 2>/dev/null || echo "lib directory not found"
+    echo "--- lib ---" && \
+    ls -la /app/lib/ 2>/dev/null || echo "lib directory not found" && \
+    echo "--- streaming_providers ---" && \
+    ls -la /app/lib/streaming_providers/ 2>/dev/null || echo "streaming_providers not found"
 
 # Copy updated entrypoint script
 COPY docker-entrypoint.sh /usr/local/bin/
