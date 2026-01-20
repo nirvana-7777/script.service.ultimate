@@ -35,16 +35,6 @@ except ImportError as import_err:
     )
     raise
 
-from routes.cache import setup_cache_routes
-from routes.config import setup_config_routes
-from routes.drm import setup_drm_routes
-from routes.epg import setup_epg_routes
-from routes.m3u import setup_m3u_routes
-
-# Import route handlers
-from routes.providers import setup_provider_routes
-from routes.streams import setup_stream_routes
-
 
 class UltimateService:
     def __init__(self, config_dir: str = None):
@@ -1152,6 +1142,15 @@ class UltimateService:
 
     def setup_routes(self):
         """Setup all routes from separate modules"""
+        # Import route handlers here
+        from routes.providers import setup_provider_routes
+        from routes.streams import setup_stream_routes
+        from routes.m3u import setup_m3u_routes
+        from routes.drm import setup_drm_routes
+        from routes.cache import setup_cache_routes
+        from routes.config import setup_config_routes
+        from routes.epg import setup_epg_routes
+
         # Setup routes from separate modules
         setup_provider_routes(self.app, self.manager, self)
         setup_stream_routes(self.app, self.manager, self)
