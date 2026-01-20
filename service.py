@@ -386,7 +386,7 @@ class UltimateService:
             if http_manager.config.proxy_config:
                 proxy_cfg = http_manager.config.proxy_config
                 provider_proxy_url = (
-                    f"{proxy_cfg.proxy_type}://{proxy_cfg.host}:{proxy_cfg.port}"
+                    f"{proxy_cfg.proxy_type.value.lower()}://{proxy_cfg.host}:{proxy_cfg.port}"
                 )
                 logger.debug(f"Provider has proxy configured: {provider_proxy_url}")
 
@@ -479,7 +479,7 @@ class UltimateService:
                 # Build proxy URL from config
                 proxy_cfg = http_manager.config.proxy_config
                 provider_proxy_url = (
-                    f"{proxy_cfg.proxy_type}://{proxy_cfg.host}:{proxy_cfg.port}"
+                    f"{proxy_cfg.proxy_type.value.lower()}://{proxy_cfg.host}:{proxy_cfg.port}"
                 )
                 logger.debug(f"Provider has proxy configured: {provider_proxy_url}")
 
@@ -684,7 +684,7 @@ class UltimateService:
                 if http_manager and http_manager.config.proxy_config:
                     proxy_cfg = http_manager.config.proxy_config
                     provider_proxy_url = (
-                        f"{proxy_cfg.proxy_type}://{proxy_cfg.host}:{proxy_cfg.port}"
+                        f"{proxy_cfg.proxy_type.value.lower()}://{proxy_cfg.host}:{proxy_cfg.port}"
                     )
 
                 # Process each channel
@@ -1092,7 +1092,7 @@ class UltimateService:
             if http_manager.config.proxy_config:
                 proxy_cfg = http_manager.config.proxy_config
                 provider_proxy_url = (
-                    f"{proxy_cfg.proxy_type}://{proxy_cfg.host}:{proxy_cfg.port}"
+                    f"{proxy_cfg.proxy_type.value.lower()}://{proxy_cfg.host}:{proxy_cfg.port}"
                 )
                 logger.debug(f"Provider has proxy configured: {provider_proxy_url}")
 
