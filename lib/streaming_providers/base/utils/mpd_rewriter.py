@@ -57,13 +57,15 @@ class MPDRewriter:
             encoded += "=" * padding
         return base64.urlsafe_b64decode(encoded.encode("utf-8")).decode("utf-8")
 
-    def build_proxy_url(self, original_url: str, template_pattern: Optional[str] = None) -> str:
+    def build_proxy_url(self, original_url: str, template_pattern: Optional[str] = None,
+                        segment_type: Optional[str] = None) -> str:
         """
         Build media proxy URL for an original media URL
 
         Args:
             original_url: Original URL to be proxied (base path for templates)
             template_pattern: Optional template pattern to append (e.g., "segment-$Number$.m4s")
+            segment_type: Optional segment type ('initialization' or 'media') for selective DRM params
 
         Returns:
             Media proxy URL
@@ -85,11 +87,20 @@ class MPDRewriter:
         # Build query parameters
         query_params = []
 
-        # Add clearkey parameters if present
+        # Add clearkey parameters if present (selective based on segment type)
         if self.clearkey_keyids:
             for kid, key in self.clearkey_keyids.items():
-                query_params.append(f"kid={kid}")
-                query_params.append(f"key={key}")
+                # Initialization segments: only add kid
+                # Media segments: only add key
+                # Unknown/unspecified: add both (backward compatible)
+                if segment_type == 'initialization':
+                    query_params.append(f"kid={kid}")
+                elif segment_type == 'media':
+                    query_params.append(f"key={key}")
+                else:
+                    # Default behavior: add both
+                    query_params.append(f"kid={kid}")
+                    query_params.append(f"key={key}")
 
         # Add provider proxy parameter if configured
         if self.provider_proxy_url:
@@ -246,21 +257,23 @@ class MPDRewriter:
             element: Current XML element
             base_url: Base URL for resolving relative URLs
         """
-        # Attributes that contain URLs
-        url_attributes = [
-            "media",  # SegmentTemplate
-            "initialization",  # SegmentTemplate
-            "sourceURL",  # Initialization, RepresentationIndex
-            "indexRange",  # SegmentBase (not a URL but can be affected)
-        ]
+        # Determine segment type based on attribute name
+        segment_type_map = {
+            'initialization': 'initialization',
+            'media': 'media',
+            'sourceURL': None,  # Could be either, keep default
+        }
 
         # Rewrite URL attributes in current element
-        for attr in url_attributes:
+        for attr in ['media', 'initialization', 'sourceURL']:
             if attr in element.attrib:
                 original_url = element.attrib[attr]
 
                 if not original_url:
                     continue
+
+                # Determine segment type for selective DRM params
+                segment_type = segment_type_map.get(attr)
 
                 # Resolve to absolute URL first
                 resolved = urljoin(base_url, original_url)
@@ -269,14 +282,14 @@ class MPDRewriter:
                 if "$" in resolved:
                     # Split into base path and template pattern
                     base_path, template_pattern = self.split_template_url(resolved)
-                    element.attrib[attr] = self.build_proxy_url(base_path, template_pattern)
+                    element.attrib[attr] = self.build_proxy_url(base_path, template_pattern, segment_type)
                     logger.debug(
-                        f"Rewrote template URL: {original_url} -> media proxy with template {template_pattern}"
+                        f"Rewrote template URL ({attr}): {original_url} -> media proxy with template {template_pattern}"
                     )
                 else:
                     # Regular URL without templates
-                    element.attrib[attr] = self.build_proxy_url(resolved)
-                    logger.debug(f"Rewrote URL: {original_url} -> media proxy")
+                    element.attrib[attr] = self.build_proxy_url(resolved, None, segment_type)
+                    logger.debug(f"Rewrote URL ({attr}): {original_url} -> media proxy")
 
         # Handle SegmentURL elements (used in SegmentList)
         if element.tag.endswith("SegmentURL"):
@@ -284,12 +297,12 @@ class MPDRewriter:
                 original_url = element.attrib["media"]
                 resolved = urljoin(base_url, original_url)
 
-                # SegmentURL typically doesn't have templates, but handle it just in case
+                # SegmentURL media is always a media segment
                 if "$" in resolved:
                     base_path, template_pattern = self.split_template_url(resolved)
-                    element.attrib["media"] = self.build_proxy_url(base_path, template_pattern)
+                    element.attrib["media"] = self.build_proxy_url(base_path, template_pattern, 'media')
                 else:
-                    element.attrib["media"] = self.build_proxy_url(resolved)
+                    element.attrib["media"] = self.build_proxy_url(resolved, None, 'media')
 
         # Recurse to child elements
         for child in element:
