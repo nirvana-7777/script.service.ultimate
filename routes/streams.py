@@ -346,32 +346,31 @@ def setup_stream_routes(app, manager, service):
 
             # Get DRM configs to extract ClearKey data
             drm_configs = manager.get_channel_drm_configs(
-                provider_name=provider,
-                channel_id=channel_id,
-                country=country,
-                is_catchup=False
+                provider_name=provider, channel_id=channel_id, country=country
             )
 
-            # DEBUG LOG
-            print(f"DEBUG: drm_configs returned: {drm_configs}")
-            print(f"DEBUG: Type: {type(drm_configs)}")
+            # Convert DRM configs to dictionary format (same as /drm endpoint)
+            drm_dict = {}
+            if isinstance(drm_configs, list):
+                for config in drm_configs:
+                    # Use the model's to_dict() method
+                    config_dict = config.to_dict()
+                    drm_dict.update(config_dict)
 
-            # Extract ClearKey data
+            # Now check for ClearKey in the dictionary format
             clearkey_data = None
-            if isinstance(drm_configs, dict) and "org.w3.clearkey" in drm_configs:
-                clearkey_data = drm_configs["org.w3.clearkey"]
+            if "org.w3.clearkey" in drm_dict:
+                clearkey_data = drm_dict["org.w3.clearkey"]
 
             if not clearkey_data:
                 response.status = 400
                 return {"error": f'Channel "{channel_id}" does not have ClearKey DRM'}
 
-            # Extract KID:Key pairs
-            license_info = clearkey_data.get("license", {})
-            keyids = license_info.get("keyids", {})
-
+            # Extract the key information
+            keyids = clearkey_data.get("license", {}).get("keyids", {})
             if not keyids:
                 response.status = 400
-                return {"error": f'No ClearKey keyids found for channel "{channel_id}"'}
+                return {"error": "ClearKey DRM found but no key IDs available"}
 
             # Get manifest (check if needs proxy)
             if manager.needs_proxy(provider):
