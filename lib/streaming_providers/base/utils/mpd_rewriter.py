@@ -1,7 +1,7 @@
 # streaming_providers/base/utils/mpd_rewriter.py
 import base64
 import xml.etree.ElementTree as ET
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Set
 from urllib.parse import urljoin, urlparse, quote
 
 from .logger import logger
@@ -16,6 +16,7 @@ class MPDRewriter:
     - Convert all relative URLs to absolute URLs
     - Rewrite all absolute URLs to media proxy endpoint
     - Keep template variables visible for client-side substitution
+    - When decrypting: Remove ContentProtection and only add keys to encrypted segments
     """
 
     # MPD namespace
@@ -34,6 +35,7 @@ class MPDRewriter:
         self.media_proxy_url = media_proxy_url.rstrip("/")
         self.provider_proxy_url = provider_proxy_url
         self.clearkey_keyids = clearkey_keyids or {}
+        self.encrypted_adaptation_sets: Set[str] = set()
 
     @staticmethod
     def encode_url(url: str) -> str:
@@ -58,7 +60,7 @@ class MPDRewriter:
         return base64.urlsafe_b64decode(encoded.encode("utf-8")).decode("utf-8")
 
     def build_proxy_url(self, original_url: str, template_pattern: Optional[str] = None,
-                        segment_type: Optional[str] = None) -> str:
+                        segment_type: Optional[str] = None, is_encrypted: bool = True) -> str:
         """
         Build media proxy URL for an original media URL
 
@@ -66,14 +68,15 @@ class MPDRewriter:
             original_url: Original URL to be proxied (base path for templates)
             template_pattern: Optional template pattern to append (e.g., "segment-$Number$.m4s")
             segment_type: Optional segment type ('initialization' or 'media') for selective DRM params
+            is_encrypted: Whether the segment is encrypted (has ContentProtection)
 
         Returns:
             Media proxy URL
         """
         encoded = self.encode_url(original_url)
 
-        # Choose endpoint based on whether we have clearkey data
-        if self.clearkey_keyids:
+        # Choose endpoint based on whether we have clearkey data AND segment is encrypted
+        if self.clearkey_keyids and is_encrypted:
             proxy_url = f"{self.media_proxy_url}/api/decrypt/{encoded}"
         else:
             proxy_url = f"{self.media_proxy_url}/api/proxy/{encoded}"
@@ -87,8 +90,8 @@ class MPDRewriter:
         # Build query parameters
         query_params = []
 
-        # Add clearkey parameters if present (selective based on segment type)
-        if self.clearkey_keyids:
+        # Add clearkey parameters ONLY if present AND segment is encrypted
+        if self.clearkey_keyids and is_encrypted:
             for kid, key in self.clearkey_keyids.items():
                 # Initialization segments: only add kid
                 # Media segments: only add key
@@ -102,7 +105,7 @@ class MPDRewriter:
                     query_params.append(f"kid={kid}")
                     query_params.append(f"key={key}")
 
-        # Add provider proxy parameter if configured
+        # Add provider proxy parameter if configured (always, for all segments)
         if self.provider_proxy_url:
             query_params.append(f"proxy={self.provider_proxy_url}")
 
@@ -132,9 +135,6 @@ class MPDRewriter:
         first_template_pos = url.find("$")
 
         # Find the last slash BEFORE the first template variable
-        # This handles cases like:
-        # - https://cdn.com/path/segment-$Number$.m4s
-        # - https://cdn.com/path/$RepresentationID$/init.mp4
         last_slash_before_template = url.rfind("/", 0, first_template_pos)
 
         if last_slash_before_template == -1:
@@ -142,7 +142,7 @@ class MPDRewriter:
             return "", url
 
         base_path = url[:last_slash_before_template]
-        template_pattern = url[last_slash_before_template + 1 :]
+        template_pattern = url[last_slash_before_template + 1:]
 
         return base_path, template_pattern
 
@@ -153,9 +153,11 @@ class MPDRewriter:
         Strategy:
         1. Parse MPD XML
         2. Extract and remove all BaseURL elements
-        3. Resolve all relative URLs to absolute using BaseURLs and manifest URL
-        4. Rewrite all absolute URLs to media proxy endpoints
-        5. Keep template variables visible for client substitution
+        3. If decrypting: Identify encrypted AdaptationSets before removing ContentProtection
+        4. If decrypting: Remove ContentProtection elements
+        5. Resolve all relative URLs to absolute using BaseURLs and manifest URL
+        6. Rewrite all absolute URLs to media proxy endpoints
+        7. Keep template variables visible for client substitution
 
         Args:
             mpd_content: Original MPD XML content
@@ -176,6 +178,15 @@ class MPDRewriter:
 
             # Remove all BaseURL elements
             self._remove_base_urls(root)
+
+            # If we're in decryption mode, identify encrypted AdaptationSets first
+            if self.clearkey_keyids:
+                self._identify_encrypted_adaptation_sets(root)
+                logger.debug(f"Identified {len(self.encrypted_adaptation_sets)} encrypted AdaptationSets")
+
+                # Then remove ContentProtection elements
+                self._remove_content_protection(root)
+                logger.debug("Removed ContentProtection elements for decrypted playback")
 
             # Rewrite all URLs in the MPD
             self._rewrite_urls_recursive(root, base_url)
@@ -249,14 +260,97 @@ class MPDRewriter:
                 parent.remove(base_url_elem)
                 logger.debug("Removed BaseURL element")
 
-    def _rewrite_urls_recursive(self, element: ET.Element, base_url: str) -> None:
+    def _identify_encrypted_adaptation_sets(self, root: ET.Element) -> None:
+        """
+        Identify and track which AdaptationSets have ContentProtection
+        Must be called BEFORE removing ContentProtection elements
+
+        Args:
+            root: MPD root element
+        """
+        # Find all AdaptationSet elements
+        for adaptation_set in root.findall(".//mpd:AdaptationSet", self.MPD_NAMESPACE):
+            # Check if this AdaptationSet has ContentProtection
+            if adaptation_set.findall("mpd:ContentProtection", self.MPD_NAMESPACE):
+                # Get AdaptationSet ID for tracking
+                as_id = adaptation_set.get("id", id(adaptation_set))  # Use object id as fallback
+                self.encrypted_adaptation_sets.add(str(as_id))
+                logger.debug(f"AdaptationSet id={as_id} is encrypted")
+
+    def _remove_content_protection(self, root: ET.Element) -> None:
+        """
+        Remove all ContentProtection elements from MPD
+        Called when serving decrypted content
+
+        Args:
+            root: MPD root element
+        """
+        # Find all ContentProtection elements at any level
+        for parent in root.findall(".//*"):
+            for cp_elem in list(parent.findall("mpd:ContentProtection", self.MPD_NAMESPACE)):
+                parent.remove(cp_elem)
+                logger.debug("Removed ContentProtection element")
+
+    def _is_element_in_encrypted_adaptation_set(self, element: ET.Element, root: ET.Element) -> bool:
+        """
+        Check if an element is within an encrypted AdaptationSet
+
+        Args:
+            element: Current element
+            root: MPD root element
+
+        Returns:
+            True if element is within an encrypted AdaptationSet
+        """
+        # Find the parent AdaptationSet
+        # We need to walk up the tree to find it
+        # Since ElementTree doesn't support parent traversal easily,
+        # we'll search from root to find the AdaptationSet containing this element
+
+        for adaptation_set in root.findall(".//mpd:AdaptationSet", self.MPD_NAMESPACE):
+            # Check if element is a descendant of this AdaptationSet
+            if self._is_descendant(adaptation_set, element):
+                as_id = adaptation_set.get("id", id(adaptation_set))
+                return str(as_id) in self.encrypted_adaptation_sets
+
+        # Not in any AdaptationSet (shouldn't happen in valid MPD)
+        return False
+
+    @staticmethod
+    def _is_descendant(parent: ET.Element, element: ET.Element) -> bool:
+        """
+        Check if element is a descendant of parent
+
+        Args:
+            parent: Potential parent element
+            element: Element to check
+
+        Returns:
+            True if element is a descendant of parent
+        """
+        for child in parent.iter():
+            if child is element:
+                return True
+        return False
+
+    def _rewrite_urls_recursive(self, element: ET.Element, base_url: str, root: Optional[ET.Element] = None) -> None:
         """
         Recursively rewrite all URLs in MPD element tree
 
         Args:
             element: Current XML element
             base_url: Base URL for resolving relative URLs
+            root: MPD root element (for checking encrypted AdaptationSets)
         """
+        # Store root on first call
+        if root is None:
+            root = element
+
+        # Determine if this element is in an encrypted AdaptationSet
+        is_encrypted = False
+        if self.clearkey_keyids:
+            is_encrypted = self._is_element_in_encrypted_adaptation_set(element, root)
+
         # Determine segment type based on attribute name
         segment_type_map = {
             'initialization': 'initialization',
@@ -282,14 +376,18 @@ class MPDRewriter:
                 if "$" in resolved:
                     # Split into base path and template pattern
                     base_path, template_pattern = self.split_template_url(resolved)
-                    element.attrib[attr] = self.build_proxy_url(base_path, template_pattern, segment_type)
+                    element.attrib[attr] = self.build_proxy_url(
+                        base_path, template_pattern, segment_type, is_encrypted
+                    )
                     logger.debug(
-                        f"Rewrote template URL ({attr}): {original_url} -> media proxy with template {template_pattern}"
+                        f"Rewrote template URL ({attr}, encrypted={is_encrypted}): {original_url} -> media proxy"
                     )
                 else:
                     # Regular URL without templates
-                    element.attrib[attr] = self.build_proxy_url(resolved, None, segment_type)
-                    logger.debug(f"Rewrote URL ({attr}): {original_url} -> media proxy")
+                    element.attrib[attr] = self.build_proxy_url(
+                        resolved, None, segment_type, is_encrypted
+                    )
+                    logger.debug(f"Rewrote URL ({attr}, encrypted={is_encrypted}): {original_url} -> media proxy")
 
         # Handle SegmentURL elements (used in SegmentList)
         if element.tag.endswith("SegmentURL"):
@@ -300,13 +398,17 @@ class MPDRewriter:
                 # SegmentURL media is always a media segment
                 if "$" in resolved:
                     base_path, template_pattern = self.split_template_url(resolved)
-                    element.attrib["media"] = self.build_proxy_url(base_path, template_pattern, 'media')
+                    element.attrib["media"] = self.build_proxy_url(
+                        base_path, template_pattern, 'media', is_encrypted
+                    )
                 else:
-                    element.attrib["media"] = self.build_proxy_url(resolved, None, 'media')
+                    element.attrib["media"] = self.build_proxy_url(
+                        resolved, None, 'media', is_encrypted
+                    )
 
         # Recurse to child elements
         for child in element:
-            self._rewrite_urls_recursive(child, base_url)
+            self._rewrite_urls_recursive(child, base_url, root)
 
     @staticmethod
     def extract_cache_ttl(headers: dict) -> int:
