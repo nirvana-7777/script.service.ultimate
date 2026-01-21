@@ -352,6 +352,10 @@ def setup_stream_routes(app, manager, service):
                 is_catchup=False
             )
 
+            # DEBUG LOG
+            print(f"DEBUG: drm_configs returned: {drm_configs}")
+            print(f"DEBUG: Type: {type(drm_configs)}")
+
             # Extract ClearKey data
             clearkey_data = None
             if isinstance(drm_configs, dict) and "org.w3.clearkey" in drm_configs:
