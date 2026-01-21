@@ -346,7 +346,10 @@ def setup_stream_routes(app, manager, service):
 
             # Get DRM configs to extract ClearKey data
             drm_configs = manager.get_channel_drm_configs(
-                provider_name=provider, channel_id=channel_id, country=country
+                provider_name=provider,
+                channel_id=channel_id,
+                country=country,
+                is_catchup=False
             )
 
             # Extract ClearKey data
