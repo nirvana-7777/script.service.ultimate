@@ -56,7 +56,9 @@ class TimestampConverter:
         # Create timezone-aware datetime from epoch
         if as_utc and timezone is None:
             # Use UTC timezone
-            dt = datetime.datetime.fromtimestamp(epoch_seconds, tz=TimestampConverter.UTC)
+            dt = datetime.datetime.fromtimestamp(
+                epoch_seconds, tz=TimestampConverter.UTC
+            )
         elif timezone is not None:
             # Use specified timezone
             dt = datetime.datetime.fromtimestamp(epoch_seconds, tz=timezone)
@@ -126,7 +128,9 @@ class TimestampConverter:
             return dt.replace(tzinfo=TimestampConverter.UTC).timestamp()
 
     @staticmethod
-    def _parse_custom_iso(iso_string: str, format_type: Optional[str] = None) -> datetime.datetime:
+    def _parse_custom_iso(
+        iso_string: str, format_type: Optional[str] = None
+    ) -> datetime.datetime:
         """
         Parse custom ISO formats not handled by fromisoformat.
 
@@ -168,14 +172,18 @@ class TimestampConverter:
         except ValueError:
             # Try without microseconds if microseconds format fails
             if format_type == "microseconds":
-                dt = datetime.datetime.strptime(iso_string, TimestampConverter.ISO_EXTENDED)
+                dt = datetime.datetime.strptime(
+                    iso_string, TimestampConverter.ISO_EXTENDED
+                )
             else:
                 raise
 
         return dt
 
     @staticmethod
-    def now_iso(format_type: str = "extended", timezone: Optional[datetime.tzinfo] = None) -> str:
+    def now_iso(
+        format_type: str = "extended", timezone: Optional[datetime.tzinfo] = None
+    ) -> str:
         """
         Get current time as ISO 8601 string.
 

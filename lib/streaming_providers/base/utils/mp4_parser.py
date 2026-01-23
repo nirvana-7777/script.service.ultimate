@@ -44,7 +44,7 @@ class MP4PSSHExtractor:
                 if offset + 4 > len(data):
                     break
 
-                box_size = struct.unpack(">I", data[offset: offset + 4])[0]
+                box_size = struct.unpack(">I", data[offset : offset + 4])[0]
                 if box_size == 0:
                     box_size = len(data) - offset  # Box extends to end of file
                 elif box_size == 1:
@@ -55,11 +55,13 @@ class MP4PSSHExtractor:
                     break
 
                 # Read box type (4 bytes)
-                box_type = data[offset + 4: offset + 8].decode("ascii", errors="ignore")
+                box_type = data[offset + 4 : offset + 8].decode(
+                    "ascii", errors="ignore"
+                )
 
                 if box_type == "moov":
                     # Look for PSSH in moov box
-                    moov_data = data[offset: offset + box_size]
+                    moov_data = data[offset : offset + box_size]
                     pssh_in_moov = MP4PSSHExtractor._extract_from_moov(moov_data)
 
                     # Enhance PSSH data with tenc KIDs if needed
@@ -70,7 +72,9 @@ class MP4PSSHExtractor:
 
                 elif box_type == "pssh":
                     # Found standalone PSSH box
-                    pssh_box = MP4PSSHExtractor._parse_pssh_box(data[offset: offset + box_size])
+                    pssh_box = MP4PSSHExtractor._parse_pssh_box(
+                        data[offset : offset + box_size]
+                    )
                     if pssh_box:
                         # Add tenc KIDs if PSSH doesn't have its own
                         if not pssh_box.key_ids and tenc_kids:
@@ -96,28 +100,40 @@ class MP4PSSHExtractor:
                 if offset + 8 > len(data):
                     break
 
-                box_size = struct.unpack(">I", data[offset:offset + 4])[0]
+                box_size = struct.unpack(">I", data[offset : offset + 4])[0]
                 if box_size < 8 or offset + box_size > len(data):
                     offset += 1
                     continue
 
-                box_type = data[offset + 4:offset + 8]
+                box_type = data[offset + 4 : offset + 8]
 
-                if box_type == b'tenc':
+                if box_type == b"tenc":
                     # Parse tenc box
-                    logger.debug(f"Found tenc box at offset {offset} (0x{offset:x}), size {box_size}")
-                    tenc_kid = MP4PSSHExtractor._parse_tenc_box(data[offset:offset + box_size])
+                    logger.debug(
+                        f"Found tenc box at offset {offset} (0x{offset:x}), size {box_size}"
+                    )
+                    tenc_kid = MP4PSSHExtractor._parse_tenc_box(
+                        data[offset : offset + box_size]
+                    )
                     if tenc_kid and tenc_kid not in kids:
                         kids.append(tenc_kid)
                 elif box_size > 8:
                     # Recursively search inside container boxes
                     container_boxes = {
-                        b'moov', b'trak', b'mdia', b'minf', b'stbl',
-                        b'stsd', b'encv', b'sinf', b'schi', b'udta'
+                        b"moov",
+                        b"trak",
+                        b"mdia",
+                        b"minf",
+                        b"stbl",
+                        b"stsd",
+                        b"encv",
+                        b"sinf",
+                        b"schi",
+                        b"udta",
                     }
                     if box_type in container_boxes:
                         # Recursively search inside the container
-                        inner_data = data[offset + 8:offset + box_size]
+                        inner_data = data[offset + 8 : offset + box_size]
                         inner_kids = MP4PSSHExtractor._extract_all_tenc_kids(inner_data)
                         for kid in inner_kids:
                             if kid not in kids:
@@ -136,14 +152,16 @@ class MP4PSSHExtractor:
         try:
             # tenc box should be at least 32 bytes for version 0 with KID
             if len(tenc_bytes) < 32:
-                logger.debug(f"tenc box too small: {len(tenc_bytes)} bytes, need at least 32")
+                logger.debug(
+                    f"tenc box too small: {len(tenc_bytes)} bytes, need at least 32"
+                )
                 return None
 
             # Parse box header
             box_size = struct.unpack(">I", tenc_bytes[0:4])[0]
             box_type = tenc_bytes[4:8]
 
-            if box_type != b'tenc':
+            if box_type != b"tenc":
                 logger.debug(f"Not a tenc box, type: {box_type.hex()}")
                 return None
 
@@ -174,7 +192,8 @@ class MP4PSSHExtractor:
                 kid_offset = 16
 
                 logger.debug(
-                    f"tenc v0: is_encrypted={is_encrypted}, default_iv_size={default_iv_size}, kid_offset={kid_offset}")
+                    f"tenc v0: is_encrypted={is_encrypted}, default_iv_size={default_iv_size}, kid_offset={kid_offset}"
+                )
 
             elif version == 1:
                 # Version 1 has different structure
@@ -185,11 +204,13 @@ class MP4PSSHExtractor:
                 return None
 
             if kid_offset + 16 > len(tenc_bytes):
-                logger.debug(f"tenc box too small for KID: {len(tenc_bytes)} bytes, need {kid_offset + 16}")
+                logger.debug(
+                    f"tenc box too small for KID: {len(tenc_bytes)} bytes, need {kid_offset + 16}"
+                )
                 return None
 
             # Extract KID bytes
-            kid_bytes = tenc_bytes[kid_offset:kid_offset + 16]
+            kid_bytes = tenc_bytes[kid_offset : kid_offset + 16]
             hex_kid = kid_bytes.hex()
 
             logger.debug(f"KID bytes at offset {kid_offset}: {hex_kid}")
@@ -219,19 +240,21 @@ class MP4PSSHExtractor:
 
         while offset < len(moov_data):
             try:
-                box_size = struct.unpack(">I", moov_data[offset: offset + 4])[0]
-                box_type = moov_data[offset + 4: offset + 8].decode("ascii", errors="ignore")
+                box_size = struct.unpack(">I", moov_data[offset : offset + 4])[0]
+                box_type = moov_data[offset + 4 : offset + 8].decode(
+                    "ascii", errors="ignore"
+                )
 
                 if box_type == "trak":
                     # Parse track for PSSH
-                    trak_data = moov_data[offset: offset + box_size]
+                    trak_data = moov_data[offset : offset + box_size]
                     pssh_in_trak = MP4PSSHExtractor._extract_from_trak(trak_data)
                     pssh_list.extend(pssh_in_trak)
 
                 elif box_type == "pssh":
                     # PSSH directly in moov
                     pssh_box = MP4PSSHExtractor._parse_pssh_box(
-                        moov_data[offset: offset + box_size]
+                        moov_data[offset : offset + box_size]
                     )
                     if pssh_box:
                         pssh_list.append(pssh_box)
@@ -251,11 +274,13 @@ class MP4PSSHExtractor:
 
         while offset < len(trak_data):
             try:
-                box_size = struct.unpack(">I", trak_data[offset: offset + 4])[0]
-                box_type = trak_data[offset + 4: offset + 8].decode("ascii", errors="ignore")
+                box_size = struct.unpack(">I", trak_data[offset : offset + 4])[0]
+                box_type = trak_data[offset + 4 : offset + 8].decode(
+                    "ascii", errors="ignore"
+                )
 
                 if box_type == "mdia":
-                    mdia_data = trak_data[offset: offset + box_size]
+                    mdia_data = trak_data[offset : offset + box_size]
                     pssh_in_mdia = MP4PSSHExtractor._extract_from_mdia(mdia_data)
                     pssh_list.extend(pssh_in_mdia)
 
@@ -274,11 +299,13 @@ class MP4PSSHExtractor:
 
         while offset < len(mdia_data):
             try:
-                box_size = struct.unpack(">I", mdia_data[offset: offset + 4])[0]
-                box_type = mdia_data[offset + 4: offset + 8].decode("ascii", errors="ignore")
+                box_size = struct.unpack(">I", mdia_data[offset : offset + 4])[0]
+                box_type = mdia_data[offset + 4 : offset + 8].decode(
+                    "ascii", errors="ignore"
+                )
 
                 if box_type == "minf":
-                    minf_data = mdia_data[offset: offset + box_size]
+                    minf_data = mdia_data[offset : offset + box_size]
                     pssh_in_minf = MP4PSSHExtractor._extract_from_minf(minf_data)
                     pssh_list.extend(pssh_in_minf)
 
@@ -297,11 +324,13 @@ class MP4PSSHExtractor:
 
         while offset < len(minf_data):
             try:
-                box_size = struct.unpack(">I", minf_data[offset: offset + 4])[0]
-                box_type = minf_data[offset + 4: offset + 8].decode("ascii", errors="ignore")
+                box_size = struct.unpack(">I", minf_data[offset : offset + 4])[0]
+                box_type = minf_data[offset + 4 : offset + 8].decode(
+                    "ascii", errors="ignore"
+                )
 
                 if box_type == "stbl":
-                    stbl_data = minf_data[offset: offset + box_size]
+                    stbl_data = minf_data[offset : offset + box_size]
                     pssh_in_stbl = MP4PSSHExtractor._extract_from_stbl(stbl_data)
                     pssh_list.extend(pssh_in_stbl)
 
@@ -320,11 +349,13 @@ class MP4PSSHExtractor:
 
         while offset < len(stbl_data):
             try:
-                box_size = struct.unpack(">I", stbl_data[offset: offset + 4])[0]
-                box_type = stbl_data[offset + 4: offset + 8].decode("ascii", errors="ignore")
+                box_size = struct.unpack(">I", stbl_data[offset : offset + 4])[0]
+                box_type = stbl_data[offset + 4 : offset + 8].decode(
+                    "ascii", errors="ignore"
+                )
 
                 if box_type == "sinf":
-                    sinf_data = stbl_data[offset: offset + box_size]
+                    sinf_data = stbl_data[offset : offset + box_size]
                     pssh_in_sinf = MP4PSSHExtractor._extract_from_sinf(sinf_data)
                     pssh_list.extend(pssh_in_sinf)
 
@@ -343,11 +374,13 @@ class MP4PSSHExtractor:
 
         while offset < len(sinf_data):
             try:
-                box_size = struct.unpack(">I", sinf_data[offset: offset + 4])[0]
-                box_type = sinf_data[offset + 4: offset + 8].decode("ascii", errors="ignore")
+                box_size = struct.unpack(">I", sinf_data[offset : offset + 4])[0]
+                box_type = sinf_data[offset + 4 : offset + 8].decode(
+                    "ascii", errors="ignore"
+                )
 
                 if box_type == "schi":
-                    schi_data = sinf_data[offset: offset + box_size]
+                    schi_data = sinf_data[offset : offset + box_size]
                     pssh_in_schi = MP4PSSHExtractor._extract_from_schi(schi_data)
                     pssh_list.extend(pssh_in_schi)
 
@@ -366,12 +399,14 @@ class MP4PSSHExtractor:
 
         while offset < len(schi_data):
             try:
-                box_size = struct.unpack(">I", schi_data[offset: offset + 4])[0]
-                box_type = schi_data[offset + 4: offset + 8].decode("ascii", errors="ignore")
+                box_size = struct.unpack(">I", schi_data[offset : offset + 4])[0]
+                box_type = schi_data[offset + 4 : offset + 8].decode(
+                    "ascii", errors="ignore"
+                )
 
                 if box_type == "pssh":
                     pssh_box = MP4PSSHExtractor._parse_pssh_box(
-                        schi_data[offset: offset + box_size]
+                        schi_data[offset : offset + box_size]
                     )
                     if pssh_box:
                         pssh_list.append(pssh_box)
@@ -413,7 +448,9 @@ class MP4PSSHExtractor:
                 if current_offset + 4 > len(pssh_bytes):
                     return None
 
-                kid_count = struct.unpack(">I", pssh_bytes[current_offset: current_offset + 4])[0]
+                kid_count = struct.unpack(
+                    ">I", pssh_bytes[current_offset : current_offset + 4]
+                )[0]
                 current_offset += 4
 
                 # Read each KID
@@ -421,12 +458,14 @@ class MP4PSSHExtractor:
                     if current_offset + 16 > len(pssh_bytes):
                         break
 
-                    kid_bytes = pssh_bytes[current_offset: current_offset + 16]
+                    kid_bytes = pssh_bytes[current_offset : current_offset + 16]
                     kid_uuid = str(uuid.UUID(bytes=kid_bytes))
                     key_ids.append(kid_uuid.replace("-", "").lower())
                     current_offset += 16
             else:
-                logger.debug(f"Version 0 PSSH for system {system_id}, will look for KIDs in tenc box")
+                logger.debug(
+                    f"Version 0 PSSH for system {system_id}, will look for KIDs in tenc box"
+                )
 
             # Encode entire PSSH box as base64
             pssh_b64 = base64.b64encode(pssh_bytes[:box_size]).decode("ascii")

@@ -83,16 +83,22 @@ class EnvironmentManager:
 
             # Get settings
             default_country = self._addon.getSetting("default_country")
-            self._config["default_country"] = str(default_country) if default_country else "DE"
+            self._config["default_country"] = (
+                str(default_country) if default_country else "DE"
+            )
 
             server_port = self._addon.getSetting("server_port")
             try:
-                self._config["server_port"] = int(str(server_port)) if server_port else 7777
+                self._config["server_port"] = (
+                    int(str(server_port)) if server_port else 7777
+                )
             except ValueError:
                 self._config["server_port"] = 7777
 
         except Exception as init_error:  # noqa: B902
-            print(f"DEBUG: Exception type: {type(init_error).__name__}", file=sys.stderr)
+            print(
+                f"DEBUG: Exception type: {type(init_error).__name__}", file=sys.stderr
+            )
             print(f"DEBUG: Exception message: {str(init_error)}", file=sys.stderr)
             # Log the error and fallback to standalone
             self._log_init_error("Kodi initialization failed", init_error)
@@ -114,7 +120,9 @@ class EnvironmentManager:
         self._config["addon_path"] = os.path.dirname(os.path.abspath(__file__))
 
         # Default configuration paths
-        config_home = os.environ.get("XDG_CONFIG_HOME") or os.path.join(str(Path.home()), ".config")
+        config_home = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+            str(Path.home()), ".config"
+        )
         self._config["config_dir"] = os.path.join(config_home, "ultimate-backend")
         self._config["profile_path"] = self._config["config_dir"]
 
@@ -240,7 +248,9 @@ class EnvironmentManager:
                 else:
                     raise ImportError("get_configured_manager is not callable")
             else:
-                raise ImportError("get_configured_manager not found in streaming_providers module")
+                raise ImportError(
+                    "get_configured_manager not found in streaming_providers module"
+                )
         except ImportError as manager_error:
             # Log error using the logger once we have it
             logger_instance = self.get_logger()

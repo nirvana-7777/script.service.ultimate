@@ -50,7 +50,9 @@ class BaseLogger:
             log_message += f" - {details}"
         self.info(log_message)
 
-    def log_credential_event(self, provider: str, event: str, details: str = "") -> None:
+    def log_credential_event(
+        self, provider: str, event: str, details: str = ""
+    ) -> None:
         """Log credential event"""
         log_message = f"CRED [{provider}] {event}"
         if details:

@@ -53,7 +53,10 @@ class ManifestParser:
             system_id = match.group(1).lower()
 
             # Skip mp4protection scheme
-            if "mp4protection" in manifest_content[max(0, match.start() - 100) : match.start()]:
+            if (
+                "mp4protection"
+                in manifest_content[max(0, match.start() - 100) : match.start()]
+            ):
                 continue
 
             drm_system = DRMSystem.from_uuid(system_id)
@@ -83,7 +86,9 @@ class ManifestParser:
 
             # Filter for expected DRM systems if provided
             if expected_system_ids:
-                filtered_pssh = [p for p in pssh_from_segment if p.system_id in expected_system_ids]
+                filtered_pssh = [
+                    p for p in pssh_from_segment if p.system_id in expected_system_ids
+                ]
                 if filtered_pssh:
                     logger.debug(f"Found {len(filtered_pssh)} PSSH boxes in segment")
                     return filtered_pssh
@@ -127,7 +132,9 @@ class ManifestParser:
 
         # Compile patterns once
         pssh_pattern = re.compile(r"<(?:cenc:)?pssh[^>]*>([^<]+)</(?:cenc:)?pssh>")
-        default_kid_pattern = re.compile(r'(?:cenc:)?default_KID="([^"]+)"', re.IGNORECASE)
+        default_kid_pattern = re.compile(
+            r'(?:cenc:)?default_KID="([^"]+)"', re.IGNORECASE
+        )
         system_id_pattern = re.compile(r'schemeIdUri="urn:uuid:([^"]+)"', re.IGNORECASE)
 
         # Find ContentProtection blocks efficiently
@@ -191,14 +198,18 @@ class ManifestParser:
         return list(pssh_dict.values())
 
     @staticmethod
-    def extract_single_init_segment_url(manifest_content: str, manifest_url: str) -> Optional[str]:
+    def extract_single_init_segment_url(
+        manifest_content: str, manifest_url: str
+    ) -> Optional[str]:
         """
         Extract ONE init segment URL from DASH manifest.
         Prioritizes video representations as they typically have the same DRM as audio.
         """
         # Parse manifest base URL
         parsed = urlparse(manifest_url)
-        manifest_base = f"{parsed.scheme}://{parsed.netloc}{'/'.join(parsed.path.split('/')[:-1])}"
+        manifest_base = (
+            f"{parsed.scheme}://{parsed.netloc}{'/'.join(parsed.path.split('/')[:-1])}"
+        )
         if not manifest_base.endswith("/"):
             manifest_base += "/"
 
@@ -288,17 +299,25 @@ class ManifestParser:
         DEPRECATED: Use extract_single_init_segment_url instead.
         This extracts ALL segments which is inefficient.
         """
-        logger.warning("extract_segment_urls is deprecated, use extract_single_init_segment_url")
-        init_url = ManifestParser.extract_single_init_segment_url(manifest_content, manifest_url)
+        logger.warning(
+            "extract_segment_urls is deprecated, use extract_single_init_segment_url"
+        )
+        init_url = ManifestParser.extract_single_init_segment_url(
+            manifest_content, manifest_url
+        )
         return [init_url] if init_url else []
 
     @staticmethod
-    def extract_init_segment_urls(manifest_content: str, manifest_url: str) -> List[str]:
+    def extract_init_segment_urls(
+        manifest_content: str, manifest_url: str
+    ) -> List[str]:
         """
         DEPRECATED: Use extract_single_init_segment_url instead.
         """
         logger.warning(
             "extract_init_segment_urls is deprecated, use extract_single_init_segment_url"
         )
-        init_url = ManifestParser.extract_single_init_segment_url(manifest_content, manifest_url)
+        init_url = ManifestParser.extract_single_init_segment_url(
+            manifest_content, manifest_url
+        )
         return [init_url] if init_url else []
