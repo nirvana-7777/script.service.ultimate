@@ -57,7 +57,9 @@ class AuthStatus:
 
         result = {
             "provider": (
-                f"{self.provider_name}_{self.country}" if self.country else self.provider_name
+                f"{self.provider_name}_{self.country}"
+                if self.country
+                else self.provider_name
             ),
             "provider_name": self.provider_name,
             "provider_label": self.provider_label,
@@ -99,7 +101,9 @@ class AuthStatus:
             result["refresh_token_expires_at"] = self.refresh_token_expires_at
 
         if self.refresh_token_expires_in_seconds is not None:
-            result["refresh_token_expires_in_seconds"] = self.refresh_token_expires_in_seconds
+            result["refresh_token_expires_in_seconds"] = (
+                self.refresh_token_expires_in_seconds
+            )
 
         return result
 

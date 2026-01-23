@@ -12,6 +12,7 @@ class DRMSystem(str, Enum):
     CLEARKEY = "org.w3.clearkey"
     FAIRPLAY = "com.apple.fps"
     GENERIC = "generic"
+    NONE = "none"
 
     @property
     def system_uuid(self) -> str:
@@ -23,6 +24,7 @@ class DRMSystem(str, Enum):
             self.WISEPLAY: "3d5e6d35-9b9a-41e8-b843-dd3c6e72c42c",
             self.FAIRPLAY: "94ce86fb-07ff-4f43-adb8-93d2fa968ca2",
             self.GENERIC: "",  # No UUID for generic plugins
+            self.NONE: "",  # No UUID for unencrypted
         }
         return uuid_mapping.get(self, "")
 
@@ -137,7 +139,9 @@ class LicenseConfig:
         """Helper to ensure req_data is base64 encoded"""
         import base64
 
-        req_data_encoded = base64.b64encode(req_data_template.encode("utf-8")).decode("utf-8")
+        req_data_encoded = base64.b64encode(req_data_template.encode("utf-8")).decode(
+            "utf-8"
+        )
         return cls(req_data=req_data_encoded, **kwargs)
 
 
@@ -180,7 +184,9 @@ class DRMConfig:
                 license_dict["unwrapper"] = self.license.unwrapper
             if self.license.unwrapper_params:
                 license_dict["unwrapper_params"] = {
-                    k: v for k, v in vars(self.license.unwrapper_params).items() if v is not None
+                    k: v
+                    for k, v in vars(self.license.unwrapper_params).items()
+                    if v is not None
                 }
             if self.license.keyids:
                 license_dict["keyids"] = self.license.keyids

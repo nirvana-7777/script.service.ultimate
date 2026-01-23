@@ -400,10 +400,16 @@ class EPGEntry:
         """
         if not text:
             return []
-        return [item.strip() for item in text.split(EPG_STRING_TOKEN_SEPARATOR) if item.strip()]
+        return [
+            item.strip()
+            for item in text.split(EPG_STRING_TOKEN_SEPARATOR)
+            if item.strip()
+        ]
 
     @staticmethod
-    def encode_broadcast_id(provider_name: str, channel_id: str, start_time: int) -> int:
+    def encode_broadcast_id(
+        provider_name: str, channel_id: str, start_time: int
+    ) -> int:
         """
         Generate deterministic broadcast ID with encoded provider information.
 
@@ -520,12 +526,18 @@ class EPGEntry:
             raise ValueError("end time must be after start time")
 
         # Validate episode numbers if set
-        if self.season_number is not None and self.season_number < EPG_TAG_INVALID_SERIES_EPISODE:
+        if (
+            self.season_number is not None
+            and self.season_number < EPG_TAG_INVALID_SERIES_EPISODE
+        ):
             raise ValueError(
                 f"season_number must be >= EPG_TAG_INVALID_SERIES_EPISODE ({EPG_TAG_INVALID_SERIES_EPISODE})"
             )
 
-        if self.episode_number is not None and self.episode_number < EPG_TAG_INVALID_SERIES_EPISODE:
+        if (
+            self.episode_number is not None
+            and self.episode_number < EPG_TAG_INVALID_SERIES_EPISODE
+        ):
             raise ValueError(
                 f"episode_number must be >= EPG_TAG_INVALID_SERIES_EPISODE ({EPG_TAG_INVALID_SERIES_EPISODE})"
             )

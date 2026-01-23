@@ -699,25 +699,17 @@ class UltimateService:
                             provider_name=provider_name, channel_id=channel_id
                         )
 
-                        # Check if channel has ClearKey DRM
+                        # Check if channel has ClearKey DRM or is unencrypted
                         has_clearkey = False
+                        is_unencrypted = False
                         clearkey_data = None
 
-                        if (
-                            isinstance(drm_configs, dict)
-                            and "org.w3.clearkey" in drm_configs
-                        ):
-                            clearkey_data = drm_configs["org.w3.clearkey"]
-                            has_clearkey = True
-                        elif isinstance(drm_configs, list):
-                            # Legacy format - convert to dict
-                            for config in drm_configs:
-                                if hasattr(config, "to_dict"):
-                                    config_dict = config.to_dict()
-                                    if "org.w3.clearkey" in config_dict:
-                                        clearkey_data = config_dict["org.w3.clearkey"]
-                                        has_clearkey = True
-                                        break
+                        if isinstance(drm_configs, dict):
+                            if "org.w3.clearkey" in drm_configs:
+                                clearkey_data = drm_configs["org.w3.clearkey"]
+                                has_clearkey = True
+                            elif "none" in drm_configs:
+                                is_unencrypted = True
 
                         if has_clearkey and clearkey_data:
                             # Channel has ClearKey - generate decrypted entry
@@ -731,19 +723,17 @@ class UltimateService:
                             )
                             m3u_content += entry_content
                             channels_included += 1
-                        elif not drm_configs or (
-                            isinstance(drm_configs, dict) and len(drm_configs) == 0
-                        ):
-                            # Unencrypted channel - include with direct stream URL
+                        elif is_unencrypted:
+                            # Explicitly unencrypted channel - include with direct stream URL
                             stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream"
                             m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
                             m3u_content += f"{stream_url}\n"
                             channels_included += 1
                         else:
-                            # Channel has other DRM (not ClearKey) - skip
+                            # Channel has other DRM, is inaccessible, or unknown - skip
                             channels_skipped += 1
                             logger.debug(
-                                f"Skipping {provider_name}/{channel_id} - no ClearKey DRM"
+                                f"Skipping {provider_name}/{channel_id} - unsupported DRM or no access"
                             )
 
                     except Exception as drm_err:

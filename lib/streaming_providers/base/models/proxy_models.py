@@ -144,7 +144,9 @@ class ProxyConfig:
         """Create ProxyConfig from dictionary"""
         auth = None
         if "auth" in data and data["auth"]:
-            auth = ProxyAuth(username=data["auth"]["username"], password=data["auth"]["password"])
+            auth = ProxyAuth(
+                username=data["auth"]["username"], password=data["auth"]["password"]
+            )
 
         scope_data = data.get("scope", {})
         scope = ProxyScope(
@@ -167,7 +169,9 @@ class ProxyConfig:
         )
 
     @classmethod
-    def from_url(cls, proxy_url: str, scope: Optional[ProxyScope] = None) -> "ProxyConfig":
+    def from_url(
+        cls, proxy_url: str, scope: Optional[ProxyScope] = None
+    ) -> "ProxyConfig":
         """
         Create ProxyConfig from proxy URL string
 
@@ -248,7 +252,9 @@ class RequestConfig:
         }
 
         # Add proxy if configured and enabled for this operation
-        if self.proxy_config and self.proxy_config.scope.should_use_proxy_for(operation):
+        if self.proxy_config and self.proxy_config.scope.should_use_proxy_for(
+            operation
+        ):
             kwargs["proxies"] = self.proxy_config.to_proxy_dict()
 
         return kwargs
