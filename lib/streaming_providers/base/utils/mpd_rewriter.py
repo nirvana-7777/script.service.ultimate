@@ -2,7 +2,7 @@
 import base64
 import xml.etree.ElementTree as ET
 from typing import Optional, Tuple, Set
-from urllib.parse import urljoin, urlparse, quote
+from urllib.parse import urljoin, urlparse, quote, urlencode
 
 from .logger import logger
 
@@ -76,22 +76,26 @@ class MPDRewriter:
         Format: url={original}&key={key}&kid={kid}&proxy={proxy}
         Then base64 encode the entire string
         """
-        # Start with the original URL
-        param_string = f"url={original_url}"
+        # Build parameters dict
+        params = {"url": original_url}
 
         # Add clearkey parameters if needed
         if self.clearkey_keyids and is_encrypted:
             for kid, key in self.clearkey_keyids.items():
                 if segment_type == "initialization":
-                    param_string += f"&kid={kid}"
+                    params["kid"] = kid
                 elif segment_type == "media":
-                    param_string += f"&key={key}"
+                    params["key"] = key
                 else:
-                    param_string += f"&kid={kid}&key={key}"
+                    params["kid"] = kid
+                    params["key"] = key
 
         # Add provider proxy parameter
         if self.provider_proxy_url:
-            param_string += f"&proxy={self.provider_proxy_url}"
+            params["proxy"] = self.provider_proxy_url
+
+        # Encode as query string (properly URL-encodes all values)
+        param_string = urlencode(params)
 
         # Encode the complete parameter string
         encoded = self.encode_url(param_string)
