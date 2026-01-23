@@ -47,6 +47,34 @@ class PSSHCache:
             logger.debug("Cache CLEARED")
 
 
+class DRMConfigCache:
+    """Thread-safe cache for DRM configurations (ClearKey only, no expiry)"""
+
+    def __init__(self):
+        self.cache: Dict[str, List] = {}
+        self.lock = Lock()
+
+    def get(self, key: str) -> Optional[List]:
+        """Get cached DRM configs"""
+        with self.lock:
+            if key in self.cache:
+                logger.debug(f"DRM Config Cache HIT for {key}")
+                return self.cache[key]
+        return None
+
+    def set(self, key: str, drm_configs: List):
+        """Cache DRM configs (only if contains ClearKey)"""
+        with self.lock:
+            self.cache[key] = drm_configs
+            logger.debug(f"DRM Config Cache SET for {key}")
+
+    def clear(self):
+        """Clear all cache entries"""
+        with self.lock:
+            self.cache.clear()
+            logger.debug("DRM Config Cache CLEARED")
+
+
 class DRMOperations:
     """Handles all DRM-related operations."""
 
@@ -54,10 +82,20 @@ class DRMOperations:
         self.registry = registry
         self.drm_plugin_manager = DRMPluginManager()
         self.pssh_cache = PSSHCache(ttl_seconds=cache_ttl)
+        self.drm_config_cache = DRMConfigCache()  # New: ClearKey config cache
         logger.debug("DRMOperations: Initialized with caching")
 
     def get_channel_drm_configs(self, provider_name: str, channel_id: str, **kwargs) -> List:
         """Get DRM configurations for a channel."""
+        cache_key = f"{provider_name}:{channel_id}"
+
+        # Check DRM config cache first (ClearKey configs)
+        cached_configs = self.drm_config_cache.get(cache_key)
+        if cached_configs is not None:
+            logger.info(f"Using cached DRM configs for '{channel_id}'")
+            return cached_configs
+
+        # Cache miss - get from provider
         provider = self.registry.get_provider(provider_name)
         if not provider:
             raise ValueError(f"Provider '{provider_name}' not found or disabled")
@@ -68,13 +106,12 @@ class DRMOperations:
         pssh_data_list = []
         if drm_configs and self.drm_plugin_manager.plugins:
             if self._needs_pssh_extraction(drm_configs):
-                # Try cache FIRST before fetching manifest
-                cache_key = f"{provider_name}:{channel_id}"
+                # Try PSSH cache FIRST before fetching manifest
                 pssh_data_list = self.pssh_cache.get(cache_key)
 
                 if pssh_data_list is None:
                     # Cache miss - now fetch manifest and extract
-                    logger.debug(f"Cache miss for {cache_key}, fetching manifest")
+                    logger.debug(f"PSSH cache miss for {cache_key}, fetching manifest")
                     manifest_url = provider.get_manifest(channel_id, **kwargs)
                     if manifest_url:
                         pssh_data_list = self._extract_pssh_from_manifest(manifest_url)
@@ -88,8 +125,18 @@ class DRMOperations:
             drm_configs, pssh_data_list, **kwargs
         )
 
+        # Cache if contains ClearKey config
+        if self._has_clearkey_config(processed):
+            logger.info(f"Caching ClearKey DRM configs for '{channel_id}'")
+            self.drm_config_cache.set(cache_key, processed)
+
         logger.info(f"Processed DRM for '{channel_id}': {len(processed)} configs")
         return processed
+
+    @staticmethod
+    def _has_clearkey_config(drm_configs: List) -> bool:
+        """Check if any config is a ClearKey config"""
+        return any(config.system == DRMSystem.CLEARKEY for config in drm_configs)
 
     def _needs_pssh_extraction(self, drm_configs) -> bool:
         """Check if PSSH extraction is needed."""
@@ -157,3 +204,7 @@ class DRMOperations:
     def clear_pssh_cache(self):
         """Clear PSSH cache."""
         self.pssh_cache.clear()
+
+    def clear_drm_config_cache(self):
+        """Clear DRM config cache."""
+        self.drm_config_cache.clear()
