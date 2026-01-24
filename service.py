@@ -743,17 +743,28 @@ class UltimateService:
                             provider_name=provider_name, channel_id=channel_id
                         )
 
+                        # Convert list of DRM configs to dict
+                        drm_dict = {}
+                        if isinstance(drm_configs, list):
+                            for config in drm_configs:
+                                if hasattr(config, "to_dict"):
+                                    config_dict = config.to_dict()
+                                    drm_dict.update(config_dict)
+                                elif isinstance(config, dict):
+                                    drm_dict.update(config)
+                        elif isinstance(drm_configs, dict):
+                            drm_dict = drm_configs
+
                         # Check if channel has ClearKey DRM or is unencrypted
                         has_clearkey = False
                         is_unencrypted = False
                         clearkey_data = None
 
-                        if isinstance(drm_configs, dict):
-                            if "org.w3.clearkey" in drm_configs:
-                                clearkey_data = drm_configs["org.w3.clearkey"]
-                                has_clearkey = True
-                            elif "none" in drm_configs:
-                                is_unencrypted = True
+                        if "org.w3.clearkey" in drm_dict:
+                            clearkey_data = drm_dict["org.w3.clearkey"]
+                            has_clearkey = True
+                        elif "none" in drm_dict:
+                            is_unencrypted = True
 
                         if has_clearkey and clearkey_data:
                             # Channel has ClearKey - generate decrypted entry
@@ -769,7 +780,7 @@ class UltimateService:
                             channels_included += 1
                         elif is_unencrypted:
                             # Explicitly unencrypted channel - include with direct stream URL
-                            stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream"
+                            stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/index.mpd"
                             m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
                             m3u_content += f"{stream_url}\n"
                             channels_included += 1
