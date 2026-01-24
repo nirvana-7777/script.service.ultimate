@@ -289,8 +289,8 @@ def setup_m3u_routes(app, manager, service):
                         except:
                             provider_label = provider_name
 
-                        # Build stream URL
-                        stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream"
+                        # Build stream URL with /index.mpd
+                        stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/index.mpd"
 
                         # Add M3U entry
                         m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'

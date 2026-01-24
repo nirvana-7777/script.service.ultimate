@@ -585,9 +585,9 @@ class UltimateService:
         channel_name = channel.name
         channel_logo = channel.logo_url or ""
 
-        # Build stream URL
+        # Build stream URL with /index.mpd
         stream_url = (
-            f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream"
+            f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/index.mpd"
         )
 
         # Get provider instance to access provider_label
@@ -615,6 +615,50 @@ class UltimateService:
             logger.debug(
                 f"Could not get DRM for {provider_name}/{channel_id}: {str(drm_err)}"
             )
+
+        # Add stream URL
+        entry_content += f"{stream_url}\n"
+
+        return entry_content
+
+    @staticmethod
+    def _generate_m3u_decrypted_channel_entry(
+        base_url,
+        provider_name,
+        provider_label,
+        channel,
+        clearkey_data,
+        provider_proxy_url,
+    ):
+        """
+        Generate M3U entry for a ClearKey encrypted channel with decryption URL.
+
+        Args:
+            base_url: Base URL for stream endpoints
+            provider_name: Name of the provider
+            provider_label: Display label for the provider
+            channel: StreamingChannel object
+            clearkey_data: ClearKey DRM data
+            provider_proxy_url: Optional provider proxy URL
+
+        Returns:
+            M3U entry as string
+        """
+        entry_content = ""
+
+        channel_id = channel.channel_id
+        channel_name = channel.name
+        channel_logo = channel.logo_url or ""
+
+        # Build decrypted stream URL via media proxy with /index.mpd
+        # Format: /api/providers/{provider}/channels/{channel_id}/stream/decrypted/index.mpd
+        stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/decrypted/index.mpd"
+
+        # Add M3U entry with extended info
+        entry_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
+
+        # Add KODIPROP for inputstream.adaptive (still needed for DASH playback)
+        entry_content += "#KODIPROP:inputstream=inputstream.adaptive\n"
 
         # Add stream URL
         entry_content += f"{stream_url}\n"
@@ -764,50 +808,6 @@ class UltimateService:
                 )
 
         return m3u_content
-
-    def _generate_m3u_decrypted_channel_entry(
-        self,
-        base_url,
-        provider_name,
-        provider_label,
-        channel,
-        clearkey_data,
-        provider_proxy_url,
-    ):
-        """
-        Generate M3U entry for a ClearKey encrypted channel with decryption URL.
-
-        Args:
-            base_url: Base URL for stream endpoints
-            provider_name: Name of the provider
-            provider_label: Display label for the provider
-            channel: StreamingChannel object
-            clearkey_data: ClearKey DRM data
-            provider_proxy_url: Optional provider proxy URL
-
-        Returns:
-            M3U entry as string
-        """
-        entry_content = ""
-
-        channel_id = channel.channel_id
-        channel_name = channel.name
-        channel_logo = channel.logo_url or ""
-
-        # Build decrypted stream URL via media proxy
-        # Format: /api/providers/{provider}/channels/{channel_id}/stream/decrypted
-        stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/decrypted"
-
-        # Add M3U entry with extended info
-        entry_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
-
-        # Add KODIPROP for inputstream.adaptive (still needed for DASH playback)
-        entry_content += "#KODIPROP:inputstream=inputstream.adaptive\n"
-
-        # Add stream URL
-        entry_content += f"{stream_url}\n"
-
-        return entry_content
 
     def _generate_m3u_decrypted_all(self, save_to_cache: bool = False) -> str:
         """Internal method to generate decrypted M3U for all providers."""

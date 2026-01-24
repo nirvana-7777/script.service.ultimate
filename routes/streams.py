@@ -20,9 +20,7 @@ def setup_stream_routes(app, manager, service):
         try:
             # Build the stream URL (which will handle both proxy and non-proxy)
             base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
-            stream_url = (
-                f"{base_url}/api/providers/{provider}/channels/{channel_id}/stream"
-            )
+            stream_url = f"{base_url}/api/providers/{provider}/channels/{channel_id}/stream/index.mpd"
 
             # Add country parameter if provided
             country = request.query.get("country")
@@ -32,7 +30,7 @@ def setup_stream_routes(app, manager, service):
             return {
                 "provider": provider,
                 "channel_id": channel_id,
-                "manifest_url": stream_url,  # Always point to /stream endpoint
+                "manifest_url": stream_url,  # Now points to /stream/index.mpd endpoint
             }
 
         except ValueError as val_err:
@@ -48,7 +46,7 @@ def setup_stream_routes(app, manager, service):
             response.status = 500
             return {"error": f"Internal server error: {str(api_err)}"}
 
-    @app.route("/api/providers/<provider>/channels/<channel_id>/stream")
+    @app.route("/api/providers/<provider>/channels/<channel_id>/stream/index.mpd")
     def get_channel_stream(provider, channel_id):
         """
         Returns HTTP 302 redirect to the actual manifest or rewritten manifest endpoint.
@@ -330,7 +328,9 @@ def setup_stream_routes(app, manager, service):
             response.status = 500
             return {"error": f"Internal server error: {str(api_err)}"}
 
-    @app.route("/api/providers/<provider>/channels/<channel_id>/stream/decrypted")
+    @app.route(
+        "/api/providers/<provider>/channels/<channel_id>/stream/decrypted/index.mpd"
+    )
     def get_channel_stream_decrypted(provider, channel_id):
         """
         Returns rewritten manifest for decrypted playback via media proxy.
