@@ -566,6 +566,298 @@ class UltimateService:
 
         return m3u_content
 
+    def _generate_m3u_decrypted_fast(self, providers=None):
+        """
+        Fast generation of decrypted M3U content for specified providers.
+        Includes ALL channels with decrypted stream URLs.
+        No DRM filtering, no caching - maximum speed.
+
+        Args:
+            providers: List of provider names, or None for all providers
+
+        Returns:
+            M3U content as string
+        """
+        # Check if media proxy is configured
+        if not self.media_proxy_url:
+            logger.error("Cannot generate decrypted M3U: MEDIA_PROXY_URL not set")
+            response.status = 503
+            response.content_type = "application/json"
+            return json.dumps(
+                {"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"}
+            )
+
+        # Get base URL for absolute stream URLs
+        base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
+
+        # Start M3U content
+        m3u_content = "#EXTM3U\n"
+
+        # Determine which providers to process
+        if providers is None:
+            providers_to_process = self.manager.list_providers()
+        else:
+            providers_to_process = (
+                [providers] if isinstance(providers, str) else providers
+            )
+
+        channels_included = 0
+
+        for provider_name in providers_to_process:
+            try:
+                # Get channels for this provider
+                channels = self.manager.get_channels(
+                    provider_name=provider_name, fetch_manifests=False
+                )
+
+                # Get provider label
+                try:
+                    provider_instance = self.manager.get_provider(provider_name)
+                    provider_label = provider_instance.provider_label
+                except (AttributeError, KeyError, ValueError):
+                    provider_label = provider_name
+
+                # Process each channel - no DRM checks
+                for channel in channels:
+                    channel_id = channel.channel_id
+                    channel_name = channel.name
+                    channel_logo = channel.logo_url or ""
+
+                    # Build decrypted stream URL
+                    stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/decrypted/index.mpd"
+
+                    # Add M3U entry
+                    m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
+                    m3u_content += "#KODIPROP:inputstream=inputstream.adaptive\n"
+                    m3u_content += f"{stream_url}\n"
+
+                    channels_included += 1
+
+            except Exception as provider_err:
+                logger.warning(
+                    f"Failed to process provider '{provider_name}': {str(provider_err)}"
+                )
+                continue
+
+        logger.info(f"Fast decrypted M3U: included {channels_included} channels")
+
+        # Set appropriate headers
+        response.content_type = "audio/x-mpegurl; charset=utf-8"
+
+        if providers and isinstance(providers, str):
+            # Single provider
+            response.headers["Content-Disposition"] = (
+                f'attachment; filename="{providers}_decrypted_playlist.m3u8"'
+            )
+        else:
+            # All providers
+            response.headers["Content-Disposition"] = (
+                'attachment; filename="playlist_decrypted.m3u8"'
+            )
+
+        return m3u_content
+
+    def _generate_m3u_decrypted_filtered_content(
+            self, providers=None, save_to_cache=True, cache_filename=None
+    ):
+        """
+        Internal method to generate filtered decrypted M3U content for specified providers.
+        Only includes channels with ClearKey DRM or unencrypted channels.
+
+        Args:
+            providers: List of provider names, or None for all providers
+            save_to_cache: Whether to save to cache
+            cache_filename: Cache filename to use
+
+        Returns:
+            M3U content as string
+        """
+        # Check if media proxy is configured
+        if not self.media_proxy_url:
+            logger.error("Cannot generate decrypted M3U: MEDIA_PROXY_URL not set")
+            return None
+
+        # Get base URL for absolute stream URLs
+        base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
+
+        # Start M3U content
+        m3u_content = "#EXTM3U\n"
+
+        # Determine which providers to process
+        if providers is None:
+            # All providers
+            providers_to_process = self.manager.list_providers()
+            cache_filename = cache_filename or "playlist_decrypted_filtered.m3u"
+        else:
+            # Specific provider(s)
+            providers_to_process = (
+                [providers] if isinstance(providers, str) else providers
+            )
+            cache_filename = (
+                    cache_filename or f"{providers_to_process[0]}_decrypted_filtered.m3u"
+            )
+
+        channels_included = 0
+        channels_skipped = 0
+
+        for provider_name in providers_to_process:
+            try:
+                # Get channels for this provider
+                channels = self.manager.get_channels(
+                    provider_name=provider_name, fetch_manifests=False
+                )
+
+                # Get provider instance for label and proxy config
+                try:
+                    provider_instance = self.manager.get_provider(provider_name)
+                    provider_label = provider_instance.provider_label
+                except (AttributeError, KeyError, ValueError):
+                    provider_label = provider_name
+
+                # Get provider proxy URL if configured
+                http_manager = self.manager.get_provider_http_manager(provider_name)
+                provider_proxy_url = None
+                if http_manager and http_manager.config.proxy_config:
+                    proxy_cfg = http_manager.config.proxy_config
+                    provider_proxy_url = (
+                        f"{proxy_cfg.proxy_type.value.lower()}://{proxy_cfg.host}:{proxy_cfg.port}"
+                    )
+
+                # Process each channel
+                for channel in channels:
+                    channel_id = channel.channel_id
+                    channel_name = channel.name
+                    channel_logo = channel.logo_url or ""
+
+                    # Try to get DRM configs
+                    try:
+                        drm_configs = self.manager.get_channel_drm_configs(
+                            provider_name=provider_name, channel_id=channel_id
+                        )
+
+                        # Convert list of DRM configs to dict
+                        drm_dict = {}
+                        if isinstance(drm_configs, list):
+                            for config in drm_configs:
+                                if hasattr(config, "to_dict"):
+                                    config_dict = config.to_dict()
+                                    drm_dict.update(config_dict)
+                                elif isinstance(config, dict):
+                                    drm_dict.update(config)
+                        elif isinstance(drm_configs, dict):
+                            drm_dict = drm_configs
+
+                        # Check if channel has ClearKey DRM or is unencrypted
+                        has_clearkey = False
+                        is_unencrypted = False
+                        clearkey_data = None
+
+                        if "org.w3.clearkey" in drm_dict:
+                            clearkey_data = drm_dict["org.w3.clearkey"]
+                            has_clearkey = True
+                        elif "none" in drm_dict:
+                            is_unencrypted = True
+
+                        if has_clearkey and clearkey_data:
+                            # Channel has ClearKey - generate decrypted entry
+                            entry_content = self._generate_m3u_decrypted_channel_entry(
+                                base_url=base_url,
+                                provider_name=provider_name,
+                                provider_label=provider_label,
+                                channel=channel,
+                                clearkey_data=clearkey_data,
+                                provider_proxy_url=provider_proxy_url,
+                            )
+                            m3u_content += entry_content
+                            channels_included += 1
+                        elif is_unencrypted:
+                            # Explicitly unencrypted channel - include with direct stream URL
+                            stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/index.mpd"
+                            m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
+                            m3u_content += f"{stream_url}\n"
+                            channels_included += 1
+                        else:
+                            # Channel has other DRM, is inaccessible, or unknown - skip
+                            channels_skipped += 1
+                            logger.debug(
+                                f"Skipping {provider_name}/{channel_id} - unsupported DRM or no access"
+                            )
+
+                    except Exception as drm_err:
+                        # Could not get DRM info - skip channel
+                        logger.warning(
+                            f"Could not get DRM for {provider_name}/{channel_id}: {drm_err}"
+                        )
+                        channels_skipped += 1
+                        continue
+
+            except Exception as provider_err:
+                logger.warning(
+                    f"Failed to process provider '{provider_name}': {str(provider_err)}"
+                )
+                continue
+
+        logger.info(
+            f"Filtered decrypted M3U: included {channels_included} channels, skipped {channels_skipped}"
+        )
+
+        # Save to cache if requested
+        if save_to_cache and cache_filename:
+            if self.vfs.write_text(cache_filename, m3u_content):
+                logger.info(f"Filtered decrypted M3U playlist cached to {cache_filename}")
+            else:
+                logger.warning(
+                    f"Failed to cache filtered decrypted M3U playlist to {cache_filename}"
+                )
+
+        return m3u_content
+
+    def _generate_m3u_decrypted_filtered_all(self, save_to_cache: bool = False) -> str:
+        """Internal method to generate filtered decrypted M3U for all providers."""
+        logger.info("Generating filtered decrypted M3U playlist for all providers")
+        m3u_content = self._generate_m3u_decrypted_filtered_content(
+            providers=None, save_to_cache=save_to_cache
+        )
+
+        if m3u_content is None:
+            response.status = 503
+            response.content_type = "application/json"
+            return json.dumps(
+                {"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"}
+            )
+
+        # Set appropriate headers for M3U
+        response.content_type = "audio/x-mpegurl; charset=utf-8"
+        response.headers["Content-Disposition"] = (
+            'attachment; filename="playlist_decrypted_filtered.m3u8"'
+        )
+
+        return m3u_content
+
+    def _generate_m3u_decrypted_filtered_provider(
+            self, provider: str, save_to_cache: bool = False
+    ) -> str:
+        """Internal method to generate filtered decrypted M3U for a specific provider."""
+        logger.info(f"Generating filtered decrypted M3U playlist for provider '{provider}'")
+        m3u_content = self._generate_m3u_decrypted_filtered_content(
+            providers=provider, save_to_cache=save_to_cache
+        )
+
+        if m3u_content is None:
+            response.status = 503
+            response.content_type = "application/json"
+            return json.dumps(
+                {"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"}
+            )
+
+        # Set appropriate headers for M3U
+        response.content_type = "audio/x-mpegurl; charset=utf-8"
+        response.headers["Content-Disposition"] = (
+            f'attachment; filename="{provider}_decrypted_filtered_playlist.m3u8"'
+        )
+
+        return m3u_content
+
     def _generate_m3u_channel_entry(self, base_url, provider_name, channel):
         """
         Generate M3U entry for a single channel.
