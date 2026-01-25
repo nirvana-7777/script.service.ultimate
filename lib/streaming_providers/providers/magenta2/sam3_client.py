@@ -110,7 +110,7 @@ class Sam3Client:
     # ========================================================================
 
     def _make_token_request(
-        self, operation: str, payload: Dict[str, Any], endpoint_override: str = None
+            self, operation: str, payload: Dict[str, Any], endpoint_override: str = None
     ) -> Dict[str, Any]:
         """
         Common method for all token requests
@@ -139,6 +139,20 @@ class Sam3Client:
             data=payload,
             timeout=DEFAULT_REQUEST_TIMEOUT,
         )
+
+        # DEBUG: Log the response body for 400 errors
+        if response.status_code == 400:
+            logger.error(f"HTTP 400 Error for {operation}")
+            logger.error(f"Request to: {endpoint}")
+            logger.error(f"Payload: {payload}")
+            logger.error(f"Response headers: {dict(response.headers)}")
+            logger.error(f"Response body (raw): {response.text}")
+            try:
+                error_json = response.json()
+                logger.error(f"Response JSON: {json.dumps(error_json, indent=2)}")
+            except:
+                logger.error(f"Could not parse response as JSON: {response.text}")
+
         response.raise_for_status()
         data = response.json()
 
