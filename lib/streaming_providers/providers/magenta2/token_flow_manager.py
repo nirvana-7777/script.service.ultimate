@@ -466,6 +466,10 @@ class TokenFlowManager:
             # Save taa token
             self._save_taa_token(taa_token)
 
+            if self.sam3_client.refresh_token:
+                logger.debug("Updating session-level refresh_token after taa exchange")
+                self._save_refresh_token(self.sam3_client.refresh_token)
+
             # Now get yo_digital tokens using taa
             logger.debug("Getting yo_digital tokens from exchanged taa token")
             yo_digital_result = self.taa_client.get_yo_digital_tokens(
@@ -573,6 +577,10 @@ class TokenFlowManager:
             # Save taa token
             self._save_taa_token(taa_token)
 
+            if self.sam3_client.refresh_token:
+                logger.debug("Updating session-level refresh_token after line_auth taa exchange")
+                self._save_refresh_token(self.sam3_client.refresh_token)
+
             # Finally get yo_digital
             logger.debug("Getting yo_digital tokens from line_auth taa token")
             yo_digital_result = self.taa_client.get_yo_digital_tokens(
@@ -674,6 +682,10 @@ class TokenFlowManager:
 
             # Save taa token
             self._save_taa_token(taa_token)
+
+            if self.sam3_client.refresh_token:
+                logger.debug("Updating session-level refresh_token after remote_login taa exchange")
+                self._save_refresh_token(self.sam3_client.refresh_token)
 
             # Finally get yo_digital
             logger.debug("Getting yo_digital tokens from remote_login taa token")
