@@ -524,7 +524,8 @@ class Sam3Client:
             # Add credentials based on grant type
             if grant_type == GRANT_TYPES["REFRESH_TOKEN"]:
                 payload["refresh_token"] = credential1
-                payload["scope"] = f"{scope} offline_access"
+#                payload["scope"] = f"{scope} offline_access"
+                payload["scope"] = scope
             elif grant_type == GRANT_TYPES["REMOTE_LOGIN"]:
                 payload["auth_req_id"] = credential1
                 payload["auth_req_sec"] = credential2
