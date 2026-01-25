@@ -525,7 +525,7 @@ class Sam3Client:
             if grant_type == GRANT_TYPES["REFRESH_TOKEN"]:
                 payload["refresh_token"] = credential1
 #                payload["scope"] = f"{scope} offline_access"
-                payload["scope"] = scope
+                payload["scope"] = "tvhubs offline_access"
             elif grant_type == GRANT_TYPES["REMOTE_LOGIN"]:
                 payload["auth_req_id"] = credential1
                 payload["auth_req_sec"] = credential2
