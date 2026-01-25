@@ -132,6 +132,23 @@ class Sam3Client:
             "User-Agent": SSO_USER_AGENT,
         }
 
+        # ✅ LOG REFRESH TOKEN DETAILS BEFORE REQUEST
+        if "refresh_token" in payload:
+            rt = payload["refresh_token"]
+            logger.debug(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            logger.debug(f"🔄 REFRESH TOKEN DETAILS FOR {operation}")
+            logger.debug(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            logger.debug(f"  Full refresh_token: {rt}")
+            logger.debug(f"  Length: {len(rt)} characters")
+            logger.debug(f"  First 30 chars: {rt[:30]}...")
+            logger.debug(f"  Format check: {'RT2:' if rt.startswith('RT2:') else 'Other format'}")
+            if ":" in rt:
+                parts = rt.split(":")
+                logger.debug(f"  Parts (split by ':'): {len(parts)} parts")
+                for i, part in enumerate(parts):
+                    logger.debug(f"    Part {i}: {part}")
+            logger.debug(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
         response = self.http_manager.post(
             endpoint,
             operation=operation,
@@ -140,26 +157,72 @@ class Sam3Client:
             timeout=DEFAULT_REQUEST_TIMEOUT,
         )
 
-        # DEBUG: Log the response body for 400 errors
+        # ✅ ENHANCED 400 ERROR LOGGING
         if response.status_code == 400:
-            logger.error(f"HTTP 400 Error for {operation}")
-            logger.error(f"Request to: {endpoint}")
-            logger.error(f"Payload: {payload}")
-            logger.error(f"Response headers: {dict(response.headers)}")
-            logger.error(f"Response body (raw): {response.text}")
+            logger.error(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            logger.error(f"❌ HTTP 400 Error for {operation}")
+            logger.error(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            logger.error(f"Request endpoint: {endpoint}")
+            logger.error(f"Request payload:")
+            for key, value in payload.items():
+                if key == "refresh_token":
+                    # Show full refresh token in error case
+                    logger.error(f"  {key}: {value}")
+                    logger.error(f"    Length: {len(value)} chars")
+                elif key in ["token", "access_token"]:
+                    logger.error(f"  {key}: {value[:20]}... ({len(value)} chars)")
+                else:
+                    logger.error(f"  {key}: {value}")
+            logger.error(f"Response status: {response.status_code}")
+            logger.error(f"Response size: {len(response.text)} bytes")
+            logger.error(f"Response headers:")
+            for header, value in response.headers.items():
+                logger.error(f"  {header}: {value}")
+            logger.error(f"Response body (raw):")
+            logger.error(f"  '{response.text}'")
+
+            # Try to parse as JSON for structured error
             try:
                 error_json = response.json()
-                logger.error(f"Response JSON: {json.dumps(error_json, indent=2)}")
-            except:
-                logger.error(f"Could not parse response as JSON: {response.text}")
+                logger.error(f"Response JSON (parsed):")
+                import json
+                logger.error(json.dumps(error_json, indent=2))
+
+                # Highlight specific error fields
+                if "error" in error_json:
+                    logger.error(f"❌ Error type: {error_json['error']}")
+                if "error_description" in error_json:
+                    logger.error(f"❌ Error description: {error_json['error_description']}")
+                if "message" in error_json:
+                    logger.error(f"❌ Error message: {error_json['message']}")
+                if "error_uri" in error_json:
+                    logger.error(f"❌ Error URI: {error_json['error_uri']}")
+
+            except Exception as parse_err:
+                logger.error(f"⚠️  Could not parse response as JSON: {parse_err}")
+
+            logger.error(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
         response.raise_for_status()
         data = response.json()
 
         # Store refresh token if provided
         if "refresh_token" in data:
-            self.refresh_token = data["refresh_token"]
-            logger.debug(f"Refresh token stored/updated from {operation}")
+            new_rt = data["refresh_token"]
+            logger.debug(f"✅ Refresh token received from {operation}")
+            logger.debug(f"   New refresh_token: {new_rt}")
+            logger.debug(f"   Length: {len(new_rt)} chars")
+
+            # Compare with old refresh token if we had one
+            if hasattr(self, 'refresh_token') and self.refresh_token:
+                if self.refresh_token == new_rt:
+                    logger.debug(f"   ℹ️  Same as previous refresh_token")
+                else:
+                    logger.debug(f"   🔄 Different from previous refresh_token")
+                    logger.debug(f"   Old: {self.refresh_token[:30]}...")
+                    logger.debug(f"   New: {new_rt[:30]}...")
+
+            self.refresh_token = new_rt
 
         return data
 
