@@ -138,7 +138,7 @@ class DRMOperations:
                     logger.debug(f"Phase 2: PSSH cache miss for {cache_key}, fetching manifest")
                     manifest_url = provider.get_manifest(channel_id, **kwargs)
                     if manifest_url:
-                        pssh_data_list = self._extract_pssh_from_manifest(manifest_url)
+                        pssh_data_list = self._extract_pssh_from_manifest(manifest_url, provider_name)
                         if pssh_data_list:
                             self.pssh_cache.set(cache_key, pssh_data_list)
                 else:
@@ -180,7 +180,7 @@ class DRMOperations:
 
             manifest_url = provider.get_manifest(channel_id, **kwargs)
             if manifest_url:
-                pssh_data_list = self._extract_pssh_from_manifest(manifest_url)
+                pssh_data_list = self._extract_pssh_from_manifest(manifest_url, provider_name)
                 if pssh_data_list:
                     self.pssh_cache.set(cache_key, pssh_data_list)
 
@@ -215,18 +215,36 @@ class DRMOperations:
         return bool(config_systems & plugin_systems)
 
     @staticmethod
-    def _extract_pssh_from_manifest(manifest_url: str) -> List:
-        """Extract PSSH data from manifest with single segment fallback."""
-        import requests
+    def _extract_pssh_from_manifest(self, manifest_url: str, provider_name: Optional[str] = None) -> List:
+        """
+        Extract PSSH data from manifest using the provider's HTTPManager.
 
+        Args:
+            manifest_url: The URL of the manifest
+            provider_name: Optional name of the provider to use its specific HTTP settings
+        """
         from .utils.manifest_parser import ManifestParser
 
         try:
-            response = requests.get(manifest_url, timeout=10)
-            response.raise_for_status()
+            # 1. Determine which HTTP manager to use
+            if provider_name:
+                provider = self.registry.get_provider(provider_name)
+                if provider:
+                    # Use the provider-specific manager (handles proxies and redirects)
+                    http = provider.http_manager
+                else:
+                    from .network import HTTPManager
+                    http = HTTPManager()
+            else:
+                # Fallback to default manager if no provider is specified
+                from .network import HTTPManager
+                http = HTTPManager()
+
+            # 2. Perform the request using the manager (follows redirects like curl -L)
+            response = http.get(manifest_url, timeout=10)
             manifest_content = response.text
 
-            # Extract from manifest content
+            # 3. Extract from manifest content
             pssh_list = ManifestParser._extract_from_manifest_content(manifest_content)
 
             # Check if we need segment extraction
@@ -243,15 +261,15 @@ class DRMOperations:
                 )
 
                 if init_segment_url:
-                    # Get expected system IDs
-                    expected_system_ids = [p.system_id for p in pssh_list] if pssh_list else []
-
+                    # Use the same HTTP manager for segment extraction
+                    # Note: You may need to update ManifestParser._extract_from_single_segment
+                    # to accept an http_manager instance if it performs its own network calls.
                     segment_pssh = ManifestParser._extract_from_single_segment(
-                        init_segment_url, expected_system_ids
+                        init_segment_url,
+                        [p.system_id for p in pssh_list] if pssh_list else []
                     )
 
                     if segment_pssh:
-                        # Merge or replace
                         return ManifestParser._merge_pssh_data(pssh_list, segment_pssh)
                 else:
                     logger.warning("Could not extract init segment URL from manifest")
