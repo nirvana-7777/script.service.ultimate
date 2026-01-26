@@ -1,4 +1,9 @@
 # streaming_providers/base/drm/plugin_manager.py
+"""
+Manager for DRM configuration plugins with two-phase processing.
+Handles plugin registration, discovery, and processing of DRM configs with PSSH data.
+"""
+
 import traceback
 from typing import Dict, List, Optional
 
@@ -11,7 +16,9 @@ class DRMPluginManager:
     """
     Manager for DRM configuration plugins.
 
-    Handles plugin registration, discovery, and processing of DRM configs with PSSH data.
+    Supports two-phase processing:
+    - Phase 1: GENERIC plugins (config generators, run before provider)
+    - Phase 2: System-specific plugins (config transformers, run after provider)
     """
 
     def __init__(self, auto_discover: bool = True):
@@ -51,15 +58,15 @@ class DRMPluginManager:
         if drm_system in self.plugins:
             existing_plugin = self.plugins[drm_system].plugin_name
             logger.warning(
-                f"DRMPluginManager: Registration failed - DRM system {drm_system} already has plugin '{existing_plugin}' registered"
-            )
-            raise ValueError(
-                f"DRM system {drm_system} already has plugin '{existing_plugin}' registered"
+                f"DRMPluginManager: Overwriting existing plugin '{existing_plugin}' "
+                f"with '{plugin_name}' for DRM system {drm_system}"
             )
 
         self.plugins[drm_system] = plugin
-        logger.debug(
-            f"DRMPluginManager: Successfully registered plugin '{plugin_name}' for DRM system {drm_system}"
+        phase = "1-GENERIC" if drm_system == DRMSystem.GENERIC else "2-System-specific"
+        logger.info(
+            f"DRMPluginManager: Successfully registered plugin '{plugin_name}' "
+            f"for DRM system {drm_system} (Phase: {phase})"
         )
 
     def discover_plugins(self) -> List[str]:
@@ -105,9 +112,9 @@ class DRMPluginManager:
 
             # Only process Python files (not directories or other files)
             if (
-                filename.endswith(".py")
-                and not filename.startswith("__")
-                and os.path.isfile(file_path)
+                    filename.endswith(".py")
+                    and not filename.startswith("__")
+                    and os.path.isfile(file_path)
             ):
 
                 scanned_files.append(filename)
@@ -134,9 +141,9 @@ class DRMPluginManager:
                     for name, obj in inspect.getmembers(module, inspect.isclass):
                         # Check if it's a DRMPlugin subclass (but not DRMPlugin itself)
                         if (
-                            issubclass(obj, DRMPlugin)
-                            and obj is not DRMPlugin
-                            and obj.__module__ == module.__name__
+                                issubclass(obj, DRMPlugin)
+                                and obj is not DRMPlugin
+                                and obj.__module__ == module.__name__
                         ):
                             plugin_classes.append((name, obj))
 
@@ -193,8 +200,8 @@ class DRMPluginManager:
 
         # Log final discovery results
         if registered:
-            logger.debug(
-                f"DRMPluginManager: Filesystem autodiscovery completed successfully - {len(registered)} plugins registered: {registered}"
+            logger.info(
+                f"DRMPluginManager: Filesystem autodiscovery completed - {len(registered)} plugins registered: {registered}"
             )
         else:
             logger.debug(
@@ -208,13 +215,221 @@ class DRMPluginManager:
 
         return registered
 
-    def process_drm_configs(
-        self, drm_configs: List[DRMConfig], pssh_data_list: List[PSSHData], **kwargs
+    def has_generic_plugins(self) -> bool:
+        """Check if any GENERIC plugins are registered"""
+        return DRMSystem.GENERIC in self.plugins
+
+    def has_system_specific_plugins(self) -> bool:
+        """Check if any system-specific (non-GENERIC) plugins are registered"""
+        return any(sys != DRMSystem.GENERIC for sys in self.plugins.keys())
+
+    def process_generic_plugins(
+            self,
+            dummy_configs: List[DRMConfig],
+            pssh_data_list: List[PSSHData],
+            **kwargs
     ) -> List[DRMConfig]:
         """
-        Process a list of DRM configs through registered plugins using PSSH data.
-        Generic plugins are processed first, and if any ClearKey config is found,
-        only that config is returned.
+        PHASE 1: Process through GENERIC plugins only.
+
+        GENERIC plugins can CREATE configs from PSSH data.
+        They receive a dummy config (DRMSystem.NONE) and PSSH data,
+        and should return valid DRM configs or None.
+
+        Args:
+            dummy_configs: List with dummy config [DRMConfig(system=DRMSystem.NONE)]
+            pssh_data_list: PSSH data extracted from manifest
+            **kwargs: Additional context
+
+        Returns:
+            List of generated DRM configs, or empty list if generation failed
+        """
+        if not self.has_generic_plugins():
+            logger.debug("Phase 1: No GENERIC plugins registered")
+            return []
+
+        if not pssh_data_list:
+            logger.debug("Phase 1: No PSSH data available for GENERIC plugins")
+            return []
+
+        plugin = self.plugins[DRMSystem.GENERIC]
+        logger.debug(f"Phase 1: Processing with GENERIC plugin '{plugin.plugin_name}'")
+
+        generated_configs = []
+
+        try:
+            # Process each PSSH data entry
+            for pssh_data in pssh_data_list:
+                logger.debug(
+                    f"Phase 1: Processing PSSH for system {pssh_data.system_id} "
+                    f"with plugin '{plugin.plugin_name}'"
+                )
+
+                # Pass dummy config - plugin should return real config(s) or None
+                result = plugin.process_drm_config(
+                    dummy_configs[0],  # Dummy config
+                    pssh_data,
+                    **kwargs
+                )
+
+                if result:
+                    generated_configs.append(result)
+                    logger.debug(
+                        f"Phase 1: Plugin '{plugin.plugin_name}' generated "
+                        f"{result.system.value} config"
+                    )
+
+                    # If ClearKey found, return immediately
+                    if result.system == DRMSystem.CLEARKEY:
+                        logger.info(
+                            f"Phase 1: ClearKey config found from GENERIC plugin, "
+                            f"returning immediately"
+                        )
+                        return [result]
+
+        except Exception as e:
+            logger.error(
+                f"Phase 1: GENERIC plugin '{plugin.plugin_name}' failed: {e}",
+                exc_info=True
+            )
+            return []
+
+        if generated_configs:
+            logger.info(
+                f"Phase 1: GENERIC plugin generated {len(generated_configs)} configs"
+            )
+        else:
+            logger.debug("Phase 1: GENERIC plugin generated no configs")
+
+        return generated_configs
+
+    def process_system_specific_plugins(
+            self,
+            drm_configs: List[DRMConfig],
+            pssh_data_list: List[PSSHData],
+            **kwargs
+    ) -> List[DRMConfig]:
+        """
+        PHASE 2: Process through system-specific plugins (EXCLUDE GENERIC).
+
+        System-specific plugins TRANSFORM existing configs from the provider.
+        GENERIC plugins are explicitly excluded from this phase.
+
+        Args:
+            drm_configs: DRM configs from the provider
+            pssh_data_list: PSSH data extracted from manifest
+            **kwargs: Additional context
+
+        Returns:
+            List of transformed DRM configs
+        """
+        if not drm_configs:
+            logger.debug("Phase 2: No DRM configs to process")
+            return []
+
+        # Get system-specific plugins only (exclude GENERIC)
+        system_plugins = {
+            sys: plugin for sys, plugin in self.plugins.items()
+            if sys != DRMSystem.GENERIC
+        }
+
+        if not system_plugins:
+            logger.debug("Phase 2: No system-specific plugins registered, returning provider configs")
+            return drm_configs
+
+        logger.debug(
+            f"Phase 2: Processing {len(drm_configs)} configs through "
+            f"{len(system_plugins)} system-specific plugins"
+        )
+
+        # Create a mapping of DRM system to PSSH data for quick lookup
+        pssh_by_system = {}
+        for pssh_data in pssh_data_list:
+            if pssh_data.drm_system:
+                pssh_by_system[pssh_data.drm_system] = pssh_data
+                logger.debug(
+                    f"Phase 2: Mapped PSSH data for DRM system: {pssh_data.drm_system}"
+                )
+
+        processed_configs = []
+
+        # Process each config through matching plugin
+        for config in drm_configs:
+            logger.debug(f"Phase 2: Processing DRM config for system: {config.system}")
+
+            if config.system in system_plugins:
+                plugin = system_plugins[config.system]
+                pssh_data = pssh_by_system.get(config.system)
+
+                if pssh_data:
+                    logger.debug(
+                        f"Phase 2: Using PSSH data for DRM system {config.system}"
+                    )
+                else:
+                    logger.debug(
+                        f"Phase 2: No PSSH data available for DRM system {config.system}"
+                    )
+
+                try:
+                    logger.debug(
+                        f"Phase 2: Processing with plugin '{plugin.plugin_name}'"
+                    )
+
+                    result = plugin.process_drm_config(config, pssh_data, **kwargs)
+
+                    if result is not None:
+                        # Check for ClearKey and return immediately if found
+                        if result.system == DRMSystem.CLEARKEY:
+                            logger.info(
+                                f"Phase 2: ClearKey config found from plugin "
+                                f"'{plugin.plugin_name}', returning immediately"
+                            )
+                            return [result]
+
+                        processed_configs.append(result)
+                        logger.debug(
+                            f"Phase 2: Plugin '{plugin.plugin_name}' successfully "
+                            f"processed config"
+                        )
+                    else:
+                        logger.debug(
+                            f"Phase 2: Plugin '{plugin.plugin_name}' filtered out config "
+                            f"(returned None)"
+                        )
+
+                except Exception as e:
+                    logger.warning(
+                        f"Phase 2: Plugin '{plugin.plugin_name}' failed to process "
+                        f"config: {str(e)}"
+                    )
+                    # On error, keep original config
+                    processed_configs.append(config)
+                    logger.debug(f"Phase 2: Using original config as fallback")
+            else:
+                # No plugin for this system, keep original
+                logger.debug(
+                    f"Phase 2: No plugin registered for DRM system {config.system}, "
+                    f"passing through unchanged"
+                )
+                processed_configs.append(config)
+
+        logger.info(
+            f"Phase 2: Processed {len(drm_configs)} configs → {len(processed_configs)} configs"
+        )
+        return processed_configs
+
+    def process_drm_configs(
+            self,
+            drm_configs: List[DRMConfig],
+            pssh_data_list: List[PSSHData],
+            **kwargs
+    ) -> List[DRMConfig]:
+        """
+        Legacy method: Process configs through all plugins (generic first, then specific).
+
+        This maintains backward compatibility but uses single-phase processing.
+        For new code using two-phase flow, use process_generic_plugins() and
+        process_system_specific_plugins() separately via DRMOperations.
 
         Args:
             drm_configs: List of DRM configs to process
@@ -229,7 +444,8 @@ class DRMPluginManager:
             return drm_configs
 
         logger.debug(
-            f"DRMPluginManager: Processing {len(drm_configs)} DRM configs with {len(pssh_data_list)} PSSH data entries"
+            f"DRMPluginManager: Processing {len(drm_configs)} DRM configs with "
+            f"{len(pssh_data_list)} PSSH data entries (legacy single-phase mode)"
         )
 
         # Create a mapping of DRM system to PSSH data for quick lookup
@@ -271,8 +487,9 @@ class DRMPluginManager:
                 # Check for ClearKey and return immediately if found
                 for config in temp_configs:
                     if config.system == DRMSystem.CLEARKEY:
-                        logger.debug(
-                            f"DRMPluginManager: ClearKey config found, returning immediately"
+                        logger.info(
+                            f"DRMPluginManager: ClearKey config found from generic plugin, "
+                            f"returning immediately"
                         )
                         return [config]
 
@@ -292,9 +509,10 @@ class DRMPluginManager:
             # Find specific plugin for this DRM system
             plugin = self.plugins.get(config.system)
 
-            if plugin:
+            if plugin and plugin.supported_drm_system != DRMSystem.GENERIC:
                 logger.debug(
-                    f"DRMPluginManager: Found plugin '{plugin.plugin_name}' for DRM system {config.system}"
+                    f"DRMPluginManager: Found plugin '{plugin.plugin_name}' for "
+                    f"DRM system {config.system}"
                 )
 
                 try:
@@ -305,36 +523,42 @@ class DRMPluginManager:
                         )
                     else:
                         logger.debug(
-                            f"DRMPluginManager: No PSSH data available for DRM system {config.system}"
+                            f"DRMPluginManager: No PSSH data available for "
+                            f"DRM system {config.system}"
                         )
 
                     processed_config = plugin.process_drm_config(config, pssh_data, **kwargs)
                     if processed_config is not None:
                         # Check for ClearKey and return immediately if found
                         if processed_config.system == DRMSystem.CLEARKEY:
-                            logger.debug(
-                                f"DRMPluginManager: ClearKey config found, returning immediately"
+                            logger.info(
+                                f"DRMPluginManager: ClearKey config found from plugin "
+                                f"'{plugin.plugin_name}', returning immediately"
                             )
                             return [processed_config]
 
                         final_configs.append(processed_config)
                         logger.debug(
-                            f"DRMPluginManager: Plugin '{plugin.plugin_name}' successfully processed config"
+                            f"DRMPluginManager: Plugin '{plugin.plugin_name}' successfully "
+                            f"processed config"
                         )
                     else:
                         logger.debug(
-                            f"DRMPluginManager: Plugin '{plugin.plugin_name}' filtered out config (returned None)"
+                            f"DRMPluginManager: Plugin '{plugin.plugin_name}' filtered out "
+                            f"config (returned None)"
                         )
 
                 except Exception as e:
                     logger.warning(
-                        f"DRMPluginManager: Plugin '{plugin.plugin_name}' failed to process config: {str(e)}"
+                        f"DRMPluginManager: Plugin '{plugin.plugin_name}' failed to process "
+                        f"config: {str(e)}"
                     )
                     final_configs.append(config)
                     logger.debug(f"DRMPluginManager: Using original config as fallback")
             else:
                 logger.debug(
-                    f"DRMPluginManager: No plugin registered for DRM system {config.system}, passing through unchanged"
+                    f"DRMPluginManager: No plugin registered for DRM system {config.system}, "
+                    f"passing through unchanged"
                 )
                 final_configs.append(config)
 
@@ -356,21 +580,27 @@ class DRMPluginManager:
         plugin = self.plugins.get(drm_system)
         if plugin:
             logger.debug(
-                f"DRMPluginManager: Retrieved plugin '{plugin.plugin_name}' for DRM system {drm_system}"
+                f"DRMPluginManager: Retrieved plugin '{plugin.plugin_name}' for "
+                f"DRM system {drm_system}"
             )
         else:
             logger.debug(f"DRMPluginManager: No plugin found for DRM system {drm_system}")
         return plugin
 
-    def list_plugins(self) -> Dict[DRMSystem, str]:
+    def list_plugins(self) -> Dict:
         """
-        List all registered plugins.
+        List all registered plugins with phase information.
 
         Returns:
-            Dictionary mapping DRM systems to plugin names
+            Dictionary mapping DRM system values to plugin info
         """
         plugin_list = {
-            drm_system: plugin.plugin_name for drm_system, plugin in self.plugins.items()
+            drm_system.value: {
+                "name": plugin.plugin_name,
+                "system": drm_system.value,
+                "phase": "1-GENERIC" if drm_system == DRMSystem.GENERIC else "2-System-specific"
+            }
+            for drm_system, plugin in self.plugins.items()
         }
         logger.debug(f"DRMPluginManager: Currently registered plugins: {plugin_list}")
         return plugin_list
@@ -379,4 +609,4 @@ class DRMPluginManager:
         """Clear all registered plugins"""
         plugin_count = len(self.plugins)
         self.plugins.clear()
-        logger.debug(f"DRMPluginManager: Cleared {plugin_count} registered plugins")
+        logger.info(f"DRMPluginManager: Cleared {plugin_count} registered plugins")

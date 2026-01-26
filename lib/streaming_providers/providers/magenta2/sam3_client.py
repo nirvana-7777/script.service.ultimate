@@ -209,18 +209,18 @@ class Sam3Client:
         # Store refresh token if provided
         if "refresh_token" in data:
             new_rt = data["refresh_token"]
-            logger.debug(f"✅ Refresh token received from {operation}")
-            logger.debug(f"   New refresh_token: {new_rt}")
-            logger.debug(f"   Length: {len(new_rt)} chars")
+        #    logger.debug(f"✅ Refresh token received from {operation}")
+        #    logger.debug(f"   New refresh_token: {new_rt}")
+        #    logger.debug(f"   Length: {len(new_rt)} chars")
 
             # Compare with old refresh token if we had one
-            if hasattr(self, 'refresh_token') and self.refresh_token:
-                if self.refresh_token == new_rt:
-                    logger.debug(f"   ℹ️  Same as previous refresh_token")
-                else:
-                    logger.debug(f"   🔄 Different from previous refresh_token")
-                    logger.debug(f"   Old: {self.refresh_token[:30]}...")
-                    logger.debug(f"   New: {new_rt[:30]}...")
+         #   if hasattr(self, 'refresh_token') and self.refresh_token:
+         #       if self.refresh_token == new_rt:
+         #           logger.debug(f"   ℹ️  Same as previous refresh_token")
+         #       else:
+         #           logger.debug(f"   🔄 Different from previous refresh_token")
+         #           logger.debug(f"   Old: {self.refresh_token[:30]}...")
+         #           logger.debug(f"   New: {new_rt[:30]}...")
 
             self.refresh_token = new_rt
 
