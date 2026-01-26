@@ -214,37 +214,39 @@ class DRMOperations:
 
         return bool(config_systems & plugin_systems)
 
-    @staticmethod
     def _extract_pssh_from_manifest(self, manifest_url: str, provider_name: Optional[str] = None) -> List:
-        """
-        Extract PSSH data from manifest using the provider's HTTPManager.
-
-        Args:
-            manifest_url: The URL of the manifest
-            provider_name: Optional name of the provider to use its specific HTTP settings
-        """
+        """Extract PSSH data from manifest using the provider's HTTPManager."""
         from .utils.manifest_parser import ManifestParser
+        from .network import HTTPManager
+
+        # 1. Validate the URL before attempting the request
+        if not manifest_url or not manifest_url.startswith(('http://', 'https://')):
+            logger.error(f"Invalid manifest URL provided: '{manifest_url}'. Cannot extract PSSH.")
+            return []
 
         try:
-            # 1. Determine which HTTP manager to use
+            # 2. Resolve the correct HTTP manager
+            http = None
             if provider_name:
+                # Use the registry passed during __init__ to get the provider instance
                 provider = self.registry.get_provider(provider_name)
                 if provider:
-                    # Use the provider-specific manager (handles proxies and redirects)
+                    # Access the pre-configured http_manager property of the provider
                     http = provider.http_manager
-                else:
-                    from .network import HTTPManager
-                    http = HTTPManager()
-            else:
-                # Fallback to default manager if no provider is specified
-                from .network import HTTPManager
+                    logger.debug(f"Using configured HTTPManager for provider: {provider_name}")
+
+            # Fallback to default if no provider-specific manager is found
+            if not http:
+                logger.debug("No provider manager found; using default HTTPManager")
                 http = HTTPManager()
 
-            # 2. Perform the request using the manager (follows redirects like curl -L)
-            response = http.get(manifest_url, timeout=10)
+            # 3. Perform the request (HTTPManager follows redirects by default)
+            # The 'operation' parameter helps the manager choose the right proxy settings
+            response = http.get(manifest_url, timeout=10, operation="api")
+            response.raise_for_status()
             manifest_content = response.text
 
-            # 3. Extract from manifest content
+            # 4. Standard PSSH extraction logic
             pssh_list = ManifestParser._extract_from_manifest_content(manifest_content)
 
             # Check if we need segment extraction
@@ -254,16 +256,12 @@ class DRMOperations:
 
             if needs_segment_extraction:
                 logger.debug("PSSH incomplete in manifest, extracting from init segment")
-
-                # Extract ONE init segment URL
                 init_segment_url = ManifestParser.extract_single_init_segment_url(
                     manifest_content, manifest_url
                 )
 
                 if init_segment_url:
-                    # Use the same HTTP manager for segment extraction
-                    # Note: You may need to update ManifestParser._extract_from_single_segment
-                    # to accept an http_manager instance if it performs its own network calls.
+                    # Reuse the same configured http manager for the segment download
                     segment_pssh = ManifestParser._extract_from_single_segment(
                         init_segment_url,
                         [p.system_id for p in pssh_list] if pssh_list else []
@@ -271,8 +269,6 @@ class DRMOperations:
 
                     if segment_pssh:
                         return ManifestParser._merge_pssh_data(pssh_list, segment_pssh)
-                else:
-                    logger.warning("Could not extract init segment URL from manifest")
 
             return pssh_list
 
