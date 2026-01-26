@@ -172,13 +172,14 @@ class DRMOperations:
         pssh_data_list = self.pssh_cache.get(cache_key)
 
         if pssh_data_list is None:
-            logger.debug(f"GENERIC plugin: Fetching PSSH for '{channel_id}'")
+            logger.debug(f"GENERIC plugin: Fetching PSSH for '{provider_name}' / {channel_id}'")
             provider = self.registry.get_provider(provider_name)
             if not provider:
                 logger.warning(f"Provider '{provider_name}' not found for GENERIC plugin")
                 return None
 
             manifest_url = provider.get_manifest(channel_id, **kwargs)
+            logger.debug(f" GENERIC plugin: pssh from '{manifest_url}'")
             if manifest_url:
                 pssh_data_list = self._extract_pssh_from_manifest(manifest_url, provider_name)
                 if pssh_data_list:
