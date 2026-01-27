@@ -179,7 +179,7 @@ class DRMOperations:
                 return None
 
             manifest_url = provider.get_manifest(channel_id, **kwargs)
-            logger.debug(f" GENERIC plugin: pssh from '{manifest_url}'")
+            logger.debug(f"GENERIC plugin: pssh from '{manifest_url}'")
             if manifest_url:
                 pssh_data_list = self._extract_pssh_from_manifest(manifest_url, provider_name)
                 if pssh_data_list:
