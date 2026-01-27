@@ -147,8 +147,11 @@ class MPDRewriter:
             root = ET.fromstring(mpd_content)
             ET.register_namespace("", self.MPD_NAMESPACE["mpd"])
 
-            # Single-pass tree preparation
-            encrypted_ids, as_id_to_kid = self._prepare_tree_and_extract_kids(root)
+            # Extract MPD-level base URL before any modifications
+            mpd_base_url = self._extract_mpd_base_url(root, manifest_url)
+
+            # Single-pass tree preparation with BaseURL extraction
+            encrypted_ids, as_id_to_kid, base_url_map = self._prepare_tree_and_extract_kids(root, mpd_base_url)
 
             # Filter out encrypted AdaptationSets without available keys
             if self.key_config.keys:
@@ -161,10 +164,8 @@ class MPDRewriter:
             if not remaining_sets:
                 raise ValueError("No AdaptationSets remain after key filtering - manifest would be empty")
 
-            base_url = self._extract_base_url(root, manifest_url)
-
-            # Rewrite URLs with appropriate keys
-            self._rewrite_node(root, base_url, encrypted_ids, as_id_to_kid, False, None, "")
+            # Rewrite URLs with appropriate keys and context-aware base URLs
+            self._rewrite_node(root, mpd_base_url, encrypted_ids, as_id_to_kid, base_url_map, False, None, "")
 
             rewritten = ET.tostring(root, encoding="unicode", method="xml")
             if not rewritten.startswith("<?xml"):
@@ -174,17 +175,26 @@ class MPDRewriter:
             logger.error(f"Failed to rewrite MPD: {e}")
             raise
 
-    def _prepare_tree_and_extract_kids(self, root: ET.Element) -> Tuple[Set[str], Dict[str, str]]:
+    def _prepare_tree_and_extract_kids(self, root: ET.Element, mpd_base_url: str) -> Tuple[Set[str], Dict[str, str], Dict[str, str]]:
         """
-        Single-pass optimization: clean tree, identify encrypted sets, extract KIDs.
-        Returns: (encrypted_adaptation_set_ids, as_id_to_kid_mapping)
+        Single-pass optimization: clean tree, identify encrypted sets, extract KIDs and BaseURLs.
+        Returns: (encrypted_adaptation_set_ids, as_id_to_kid_mapping, base_url_mapping)
         """
         encrypted_ids = set()
         as_id_to_kid = {}
+        base_url_map = {}  # Maps period_id:as_id -> resolved base URL
 
         # Process all Periods (handles multi-period manifests correctly)
         for period in root.findall(".//mpd:Period", self.MPD_NAMESPACE):
             period_id = period.get("id", "")
+
+            # Extract Period-level BaseURL BEFORE removing it
+            period_base_url = mpd_base_url
+            period_base_elem = period.find("mpd:BaseURL", self.MPD_NAMESPACE)
+            if period_base_elem is not None and period_base_elem.text:
+                period_base_text = period_base_elem.text.strip()
+                period_base_url = urljoin(mpd_base_url, period_base_text)
+                logger.debug(f"Period {period_id} BaseURL: {period_base_url}")
 
             # Remove Period-level BaseURL elements
             for bu in list(period.findall("mpd:BaseURL", self.MPD_NAMESPACE)):
@@ -195,151 +205,94 @@ class MPDRewriter:
                 if not as_id:
                     as_id = str(id(adaptation_set))
 
-                # Make ID unique across periods
                 unique_id = f"{period_id}_{as_id}" if period_id else as_id
+
+                # Extract AdaptationSet-level BaseURL BEFORE removing it
+                as_base_url = period_base_url
+                as_base_elem = adaptation_set.find("mpd:BaseURL", self.MPD_NAMESPACE)
+                if as_base_elem is not None and as_base_elem.text:
+                    as_base_text = as_base_elem.text.strip()
+                    as_base_url = urljoin(period_base_url, as_base_text)
+                    logger.debug(f"AdaptationSet {unique_id} BaseURL: {as_base_url}")
+
+                # Store the resolved base URL for this AdaptationSet
+                base_url_map[unique_id] = as_base_url
 
                 # Remove AdaptationSet-level BaseURL elements
                 for bu in list(adaptation_set.findall("mpd:BaseURL", self.MPD_NAMESPACE)):
                     adaptation_set.remove(bu)
 
-                # Process ContentProtection
-                cp_elements = list(adaptation_set.findall("mpd:ContentProtection", self.MPD_NAMESPACE))
+                # Check if encrypted
+                cp_elements = adaptation_set.findall("mpd:ContentProtection", self.MPD_NAMESPACE)
+                has_content_protection = len(cp_elements) > 0
 
-                if cp_elements:
+                # Also check Representation-level ContentProtection
+                for representation in adaptation_set.findall("mpd:Representation", self.MPD_NAMESPACE):
+                    rep_cp = representation.findall("mpd:ContentProtection", self.MPD_NAMESPACE)
+                    if rep_cp:
+                        has_content_protection = True
+                        break
+
+                if has_content_protection:
                     encrypted_ids.add(unique_id)
 
-                    # Extract KID only in multi-key mode
-                    if not self.key_config.single_key_mode and self.key_config.keys:
-                        kid = self._extract_kid_from_contentprotection(cp_elements, adaptation_set)
-                        if kid:
-                            normalized_kid = kid.replace("-", "").lower()
-                            as_id_to_kid[unique_id] = normalized_kid
-                            logger.debug(f"AdaptationSet {unique_id} KID: {normalized_kid[:8]}...")
-                        else:
-                            logger.debug(f"AdaptationSet {unique_id} encrypted but no KID found")
+                    # Extract KID
+                    extracted_kid = self._extract_kid_from_adaptationset(adaptation_set)
+                    if extracted_kid:
+                        as_id_to_kid[unique_id] = extracted_kid
+                        logger.debug(f"AdaptationSet {unique_id} KID: {extracted_kid[:8]}...")
 
-                    # Remove ContentProtection elements
-                    for cp in cp_elements:
-                        adaptation_set.remove(cp)
+                # Remove ContentProtection elements (we've already extracted what we need)
+                for cp in list(adaptation_set.findall("mpd:ContentProtection", self.MPD_NAMESPACE)):
+                    adaptation_set.remove(cp)
 
-        return encrypted_ids, as_id_to_kid
+                for representation in adaptation_set.findall("mpd:Representation", self.MPD_NAMESPACE):
+                    for cp in list(representation.findall("mpd:ContentProtection", self.MPD_NAMESPACE)):
+                        representation.remove(cp)
 
-    def _extract_kid_from_contentprotection(
-            self,
-            cp_elements: list,
-            adaptation_set: ET.Element
-    ) -> Optional[str]:
-        """
-        Extract KID from ContentProtection elements.
-        Tries multiple methods per DASH specification.
-        """
-        # Method 1: default_KID attribute (most common)
-        for cp in cp_elements:
-            default_kid = (
-                    cp.get("default_KID") or
-                    cp.get("{urn:mpeg:cenc:2013}default_KID") or
-                    cp.get("cenc:default_KID")
-            )
-            if default_kid:
-                return default_kid
+        return encrypted_ids, as_id_to_kid, base_url_map
 
-        # Method 2: Parse PSSH box
-        for cp in cp_elements:
-            # Try standard cenc:pssh
-            pssh_elem = cp.find("cenc:pssh", self.CENC_NAMESPACE)
-            if pssh_elem is None:
-                # Try without namespace
-                pssh_elem = cp.find("pssh")
+    def _extract_kid_from_adaptationset(self, adaptation_set: ET.Element) -> Optional[str]:
+        """Extract KID from ContentProtection elements."""
+        # Check AdaptationSet-level ContentProtection
+        for cp in adaptation_set.findall("mpd:ContentProtection", self.MPD_NAMESPACE):
+            kid = self._extract_kid_from_cp_element(cp)
+            if kid:
+                return kid
 
-            if pssh_elem is not None and pssh_elem.text:
-                try:
-                    kid = self._extract_kid_from_pssh(pssh_elem.text.strip())
-                    if kid:
-                        logger.debug("Extracted KID from PSSH box")
-                        return kid
-                except Exception as e:
-                    logger.debug(f"Failed to parse PSSH: {e}")
-
-        # Method 3: Check Representation-level (fallback)
-        rep = adaptation_set.find("mpd:Representation", self.MPD_NAMESPACE)
-        if rep is not None:
-            rep_cp = rep.findall("mpd:ContentProtection", self.MPD_NAMESPACE)
-            if rep_cp:
-                for cp in rep_cp:
-                    default_kid = (
-                            cp.get("default_KID") or
-                            cp.get("{urn:mpeg:cenc:2013}default_KID")
-                    )
-                    if default_kid:
-                        logger.debug("Found KID at Representation level")
-                        return default_kid
+        # Check Representation-level ContentProtection
+        for representation in adaptation_set.findall("mpd:Representation", self.MPD_NAMESPACE):
+            for cp in representation.findall("mpd:ContentProtection", self.MPD_NAMESPACE):
+                kid = self._extract_kid_from_cp_element(cp)
+                if kid:
+                    return kid
 
         return None
 
-    @staticmethod
-    def _extract_kid_from_pssh(pssh_b64: str) -> Optional[str]:
-        """
-        Extract first KID from PSSH box (CENC specification).
+    def _extract_kid_from_cp_element(self, cp: ET.Element) -> Optional[str]:
+        """Extract KID from a single ContentProtection element."""
+        # Check default_KID attribute
+        kid_attr = cp.get("{urn:mpeg:cenc:2013}default_KID")
+        if kid_attr:
+            return kid_attr.replace("-", "").lower()
 
-        PSSH structure (version 1):
-        - box_size: 4 bytes
-        - box_type: 4 bytes ('pssh')
-        - version: 1 byte (0 or 1)
-        - flags: 3 bytes
-        - system_id: 16 bytes
-        - [version 1 only] kid_count: 4 bytes
-        - [version 1 only] kids: 16 bytes each
-        - data_size: 4 bytes
-        - data: variable
-        """
-        try:
-            pssh_data = base64.b64decode(pssh_b64)
+        # Check cenc:pssh
+        for pssh in cp.findall("cenc:pssh", self.CENC_NAMESPACE):
+            if pssh.text:
+                try:
+                    pssh_data = base64.b64decode(pssh.text)
+                    if len(pssh_data) >= 36:
+                        kid_bytes = pssh_data[32:48]
+                        return kid_bytes.hex()
+                except Exception:
+                    continue
 
-            if len(pssh_data) < 32:
-                return None
+        return None
 
-            # Check version (byte 8)
-            version = pssh_data[8]
-
-            if version == 1:
-                # Version 1 includes KID list
-                if len(pssh_data) < 36:
-                    return None
-
-                # KID count at bytes 28-31 (big-endian)
-                kid_count = int.from_bytes(pssh_data[28:32], 'big')
-
-                if kid_count > 0 and len(pssh_data) >= 48:
-                    # First KID starts at byte 32 (16 bytes)
-                    kid_bytes = pssh_data[32:48]
-
-                    # Format as UUID string with hyphens
-                    kid_hex = kid_bytes.hex()
-                    kid_uuid = f"{kid_hex[0:8]}-{kid_hex[8:12]}-{kid_hex[12:16]}-{kid_hex[16:20]}-{kid_hex[20:32]}"
-                    return kid_uuid
-
-            return None
-
-        except Exception as e:
-            logger.debug(f"Error extracting KID from PSSH: {e}")
-            return None
-
-    def _remove_adaptationsets_without_keys(
-            self,
-            root: ET.Element,
-            as_id_to_kid: Dict[str, str]
-    ):
-        """
-        Remove encrypted AdaptationSets for which we don't have decryption keys.
-        Optimized to avoid repeated getparent() calls.
-        """
-        if self.key_config.single_key_mode:
-            # In single key mode, we can decrypt everything
-            return
-
+    def _remove_adaptationsets_without_keys(self, root: ET.Element, as_id_to_kid: Dict[str, str]):
+        """Remove encrypted AdaptationSets that require keys we don't have."""
         removal_count = 0
 
-        # Process each period separately to avoid expensive getparent() calls
         for period in root.findall(".//mpd:Period", self.MPD_NAMESPACE):
             period_id = period.get("id", "")
             adaptationsets_to_remove = []
@@ -397,21 +350,28 @@ class MPDRewriter:
             base_url: str,
             encrypted_ids: Set[str],
             as_id_to_kid: Dict[str, str],
+            base_url_map: Dict[str, str],
             current_encrypted: bool,
             current_kid: Optional[str] = None,
             current_period_id: str = "",
     ):
-        """Recursive node rewriter with KID-aware key selection."""
+        """Recursive node rewriter with KID-aware key selection and context-aware base URLs."""
         # Track period ID as we traverse
         if element.tag.endswith("Period"):
             current_period_id = element.get("id", "")
 
         # Update state when entering an AdaptationSet
+        current_as_id = None
         if element.tag.endswith("AdaptationSet"):
             as_id = element.get("id", str(id(element)))
+            current_as_id = as_id
             # Use same unique ID logic as _prepare_tree_and_extract_kids
             unique_id = f"{current_period_id}_{as_id}" if current_period_id else as_id
             current_encrypted = unique_id in encrypted_ids
+
+            # Update base_url to the AdaptationSet-specific base URL
+            if unique_id in base_url_map:
+                base_url = base_url_map[unique_id]
 
             # Get specific KID for this AdaptationSet (multi-key mode only)
             if current_encrypted and not self.key_config.single_key_mode:
@@ -456,12 +416,13 @@ class MPDRewriter:
         # Recurse to children
         for child in element:
             self._rewrite_node(
-                child, base_url, encrypted_ids, as_id_to_kid,
+                child, base_url, encrypted_ids, as_id_to_kid, base_url_map,
                 current_encrypted, current_kid, current_period_id
             )
 
-    def _extract_base_url(self, root: ET.Element, manifest_url: str) -> str:
-        base_url_elem = root.find(".//mpd:BaseURL", self.MPD_NAMESPACE)
+    def _extract_mpd_base_url(self, root: ET.Element, manifest_url: str) -> str:
+        """Extract and resolve MPD-level BaseURL."""
+        base_url_elem = root.find("mpd:BaseURL", self.MPD_NAMESPACE)
 
         # Check if this is one of the special services
         SPECIAL_PREFIXES = [
