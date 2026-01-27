@@ -462,16 +462,30 @@ class MPDRewriter:
 
     def _extract_base_url(self, root: ET.Element, manifest_url: str) -> str:
         base_url_elem = root.find(".//mpd:BaseURL", self.MPD_NAMESPACE)
+
+        # Check if this is one of the special services
+        SPECIAL_PREFIXES = [
+            "https://bpcdnmanprod.nexttv.ht.hr/bpk-tv/",
+            "https://lineartv-cdn.t-mobile.pl/bpk-tv/"
+        ]
+
+        # Determine manifest directory based on service type
+        if any(manifest_url.startswith(prefix) for prefix in SPECIAL_PREFIXES):
+            # Special service: KEEP index.mpd
+            manifest_dir = manifest_url if manifest_url.endswith('/') else f"{manifest_url}/"
+        else:
+            # Normal service: remove index.mpd
+            parsed_manifest = urlparse(manifest_url)
+            manifest_dir = f"{parsed_manifest.scheme}://{parsed_manifest.netloc}{parsed_manifest.path.rsplit('/', 1)[0]}/"
+
         if base_url_elem is not None and base_url_elem.text:
             base_url_text = base_url_elem.text.strip()
             if not base_url_text.startswith(("http://", "https://")):
-                parsed_manifest = urlparse(manifest_url)
-                manifest_dir = f"{parsed_manifest.scheme}://{parsed_manifest.netloc}{parsed_manifest.path.rsplit('/', 1)[0]}/"
                 return urljoin(manifest_dir, base_url_text)
             return base_url_text
 
-        parsed = urlparse(manifest_url)
-        return f"{parsed.scheme}://{parsed.netloc}{parsed.path.rsplit('/', 1)[0]}/"
+        # No BaseURL element
+        return manifest_dir
 
     @staticmethod
     def extract_cache_ttl(headers: dict) -> int:
