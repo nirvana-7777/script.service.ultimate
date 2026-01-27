@@ -277,7 +277,7 @@ class MPDRewriter:
         return None
 
     @staticmethod
-    def _extract_kid_from_pssh(self, pssh_b64: str) -> Optional[str]:
+    def _extract_kid_from_pssh(pssh_b64: str) -> Optional[str]:
         """
         Extract first KID from PSSH box (CENC specification).
 
