@@ -288,15 +288,42 @@ class MagentaEUProvider(StreamingProvider):
             logger.warning(f"Error enriching channel data for {channel.name}: {e}")
             return None
 
+    def _ensure_channels_cache(self, force_refresh: bool = False) -> bool:
+        """Ensure channels cache is populated, fetch if empty or forced"""
+        current_time = time.time()
+
+        # Check if cache needs refresh
+        if (force_refresh or
+                not self._channels_cache or
+                (current_time - self._channels_cache_timestamp) > self._cache_ttl):
+
+            try:
+                self._channels_cache = self.get_channels()
+                self._channels_cache_timestamp = current_time
+                return True
+            except Exception as e:
+                logger.error(f"Failed to refresh channels cache: {e}")
+                return False
+
+        return True
+
     def get_manifest(self, channel_id: str, **kwargs) -> Optional[str]:
-        if self._channels_cache:
-            for channel in self._channels_cache:
-                if channel.channel_id == channel_id:
-                    return channel.manifest
+        """Get manifest URL for a channel by ID"""
+
+        # Ensure cache is populated
+        if not self._ensure_channels_cache():
+            return None
+
+        # Look for the channel
+        for channel in self._channels_cache:
+            if channel.channel_id == channel_id:
+                return channel.manifest
+
+        logger.warning(f"Channel {channel_id} not found in available channels")
         return None
 
     def get_catchup_manifest(
-        self, channel_id: str, start_time: int, end_time: int, **kwargs
+            self, channel_id: str, start_time: int, end_time: int, **kwargs
     ) -> Optional[str]:
         """
         Get catchup manifest URL for Magenta TV.
@@ -314,6 +341,11 @@ class MagentaEUProvider(StreamingProvider):
             Manifest URL with catchup time parameters, or None if channel not found
         """
         from ...base.utils.timestamp_converter import TimestampConverter
+
+        # Ensure cache is populated first
+        if not self._ensure_channels_cache():
+            logger.warning(f"Cannot get catchup manifest for {channel_id}, channels cache unavailable")
+            return None
 
         # First get the base manifest URL
         base_manifest = self.get_manifest(channel_id, **kwargs)
@@ -347,13 +379,17 @@ class MagentaEUProvider(StreamingProvider):
         """Get DRM configurations for channel by ID"""
         logger.info(f"=== get_drm_configs_by_id CALLED for channel_id: {channel_id} ===")
 
+        # Ensure cache is populated
+        if not self._ensure_channels_cache():
+            logger.warning(f"Cannot get DRM for {channel_id}, channels cache unavailable")
+            return []
+
         # Find channel in cache
         channel = None
-        if self._channels_cache:
-            for cached_channel in self._channels_cache:
-                if cached_channel.channel_id == channel_id:
-                    channel = cached_channel
-                    break
+        for cached_channel in self._channels_cache:
+            if cached_channel.channel_id == channel_id:
+                channel = cached_channel
+                break
 
         if not channel:
             logger.warning(f"Channel with ID {channel_id} not found in cache")
