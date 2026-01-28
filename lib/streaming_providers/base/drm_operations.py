@@ -86,14 +86,59 @@ class DRMOperations:
         self.drm_config_cache = DRMConfigCache()
         logger.debug("DRMOperations: Initialized with two-phase plugin processing")
 
+    @staticmethod
+    def _is_manifest_encrypted(manifest_content: str) -> bool:
+        """
+        Check if manifest contains any DRM/encryption markers.
+        Returns True if encrypted, False if unencrypted.
+        """
+        from .utils.manifest_parser import ManifestParser
+
+        # Reuse the existing parser to check for any DRM systems
+        pssh_list = ManifestParser._extract_from_manifest_content(manifest_content)
+
+        # If we found any DRM systems or PSSH data, it's encrypted
+        return len(pssh_list) > 0
+
     def get_channel_drm_configs(self, provider_name: str, channel_id: str, **kwargs) -> List:
         """
         Get DRM configurations for a channel with two-phase plugin processing.
 
+        Phase 0: Check if stream is encrypted (by examining manifest)
         Phase 1: GENERIC plugins (pre-provider) - can generate configs from PSSH
         Phase 2: System-specific plugins (post-provider) - transform provider configs
         """
         cache_key = f"{provider_name}:{channel_id}"
+        manifest_content = None  # Store to avoid redundant fetches
+
+        # Step 0: Get provider instance
+        provider = self.registry.get_provider(provider_name)
+        if not provider:
+            raise ValueError(f"Provider '{provider_name}' not found or disabled")
+
+        # Step 0a: Fetch manifest and check if it's encrypted
+        manifest_url = provider.get_manifest(channel_id, **kwargs)
+        if manifest_url and manifest_url.startswith(('http://', 'https://')):
+            try:
+                from .network import HTTPManager
+
+                # Use provider's HTTP manager if available
+                http = provider.http_manager if hasattr(provider, 'http_manager') else HTTPManager()
+                response = http.get(manifest_url, timeout=10, operation="api")
+                response.raise_for_status()
+                manifest_content = response.text
+
+                # Check if manifest is encrypted
+                if not self._is_manifest_encrypted(manifest_content):
+                    logger.info(f"Stream '{channel_id}' is unencrypted (no DRM in manifest)")
+                    return [DRMConfig(system=DRMSystem.NONE, priority=0)]
+
+                logger.debug(f"Stream '{channel_id}' is encrypted, proceeding with DRM processing")
+
+            except Exception as e:
+                logger.warning(f"Failed to check manifest encryption for '{channel_id}': {e}")
+                # Continue to provider DRM config on error
+                manifest_content = None
 
         # Step 1: Check DRM config cache (ClearKey configs)
         cached_configs = self.drm_config_cache.get(cache_key)
@@ -105,7 +150,9 @@ class DRMOperations:
         if DRMSystem.GENERIC in self.drm_plugin_manager.plugins:
             logger.debug(f"Phase 1: Attempting GENERIC plugin processing for '{channel_id}'")
 
-            generic_configs = self._try_generic_plugins(provider_name, channel_id, cache_key, **kwargs)
+            generic_configs = self._try_generic_plugins(
+                provider_name, channel_id, cache_key, manifest_content, **kwargs
+            )
 
             if generic_configs:  # Plugin successfully generated configs
                 logger.info(f"Phase 1: GENERIC plugin generated {len(generic_configs)} configs for '{channel_id}'")
@@ -120,11 +167,13 @@ class DRMOperations:
                 logger.debug(f"Phase 1: GENERIC plugin returned no configs, proceeding to provider")
 
         # Step 3: Get configs from provider (GENERIC plugins didn't provide configs)
-        provider = self.registry.get_provider(provider_name)
-        if not provider:
-            raise ValueError(f"Provider '{provider_name}' not found or disabled")
-
         drm_configs = provider.get_drm(channel_id, **kwargs)
+
+        # Step 3a: Check for unencrypted streams (provider returned empty configs)
+        # This is a secondary check if manifest check failed or was skipped
+        if not drm_configs:
+            logger.info(f"Stream '{channel_id}' is unencrypted (no DRM configs from provider)")
+            return [DRMConfig(system=DRMSystem.NONE, priority=0)]
 
         # Step 4: PHASE 2 - Extract PSSH if needed for system-specific plugins
         pssh_data_list = []
@@ -134,13 +183,23 @@ class DRMOperations:
                 pssh_data_list = self.pssh_cache.get(cache_key)
 
                 if pssh_data_list is None:
-                    # Cache miss - fetch manifest and extract
-                    logger.debug(f"Phase 2: PSSH cache miss for {cache_key}, fetching manifest")
-                    manifest_url = provider.get_manifest(channel_id, **kwargs)
-                    if manifest_url:
-                        pssh_data_list = self._extract_pssh_from_manifest(manifest_url, provider_name)
+                    # Try to extract from manifest_content if we already have it
+                    if manifest_content:
+                        logger.debug(f"Phase 2: Using cached manifest_content for PSSH extraction")
+                        from .utils.manifest_parser import ManifestParser
+                        pssh_data_list = ManifestParser._extract_from_manifest_content(manifest_content)
+
                         if pssh_data_list:
                             self.pssh_cache.set(cache_key, pssh_data_list)
+
+                    # If still no PSSH, fetch manifest and extract
+                    if not pssh_data_list:
+                        logger.debug(f"Phase 2: PSSH cache miss for {cache_key}, fetching manifest")
+                        manifest_url = provider.get_manifest(channel_id, **kwargs)
+                        if manifest_url:
+                            pssh_data_list = self._extract_pssh_from_manifest(manifest_url, provider_name)
+                            if pssh_data_list:
+                                self.pssh_cache.set(cache_key, pssh_data_list)
                 else:
                     logger.debug(f"Phase 2: Using cached PSSH for {cache_key}")
 
@@ -162,6 +221,7 @@ class DRMOperations:
             provider_name: str,
             channel_id: str,
             cache_key: str,
+            manifest_content: Optional[str] = None,
             **kwargs
     ) -> Optional[List[DRMConfig]]:
         """
@@ -172,18 +232,28 @@ class DRMOperations:
         pssh_data_list = self.pssh_cache.get(cache_key)
 
         if pssh_data_list is None:
-            logger.debug(f"GENERIC plugin: Fetching PSSH for '{provider_name}' / {channel_id}'")
-            provider = self.registry.get_provider(provider_name)
-            if not provider:
-                logger.warning(f"Provider '{provider_name}' not found for GENERIC plugin")
-                return None
+            # Try to extract from provided manifest_content first
+            if manifest_content:
+                logger.debug(f"GENERIC plugin: Using cached manifest_content for '{channel_id}'")
+                from .utils.manifest_parser import ManifestParser
+                pssh_data_list = ManifestParser._extract_from_manifest_content(manifest_content)
 
-            manifest_url = provider.get_manifest(channel_id, **kwargs)
-            logger.debug(f"GENERIC plugin: pssh from '{manifest_url}'")
-            if manifest_url:
-                pssh_data_list = self._extract_pssh_from_manifest(manifest_url, provider_name)
                 if pssh_data_list:
                     self.pssh_cache.set(cache_key, pssh_data_list)
+
+            # If still no PSSH, fetch manifest
+            if not pssh_data_list:
+                logger.debug(f"GENERIC plugin: Fetching PSSH for '{provider_name}' / '{channel_id}'")
+                provider = self.registry.get_provider(provider_name)
+                if not provider:
+                    logger.warning(f"Provider '{provider_name}' not found for GENERIC plugin")
+                    return None
+
+                manifest_url = provider.get_manifest(channel_id, **kwargs)
+                if manifest_url:
+                    pssh_data_list = self._extract_pssh_from_manifest(manifest_url, provider_name)
+                    if pssh_data_list:
+                        self.pssh_cache.set(cache_key, pssh_data_list)
 
         if not pssh_data_list:
             logger.debug(f"GENERIC plugin: No PSSH data available for '{channel_id}'")
