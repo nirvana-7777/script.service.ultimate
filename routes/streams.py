@@ -334,54 +334,57 @@ def setup_stream_routes(app, manager, service):
     def get_channel_stream_decrypted(provider, channel_id):
         """
         Returns rewritten manifest for decrypted playback via media proxy.
-        This endpoint is used by the decrypted M3U playlists.
+        Supports both ClearKey encrypted and unencrypted streams.
         """
         try:
-            # Check if media proxy is configured
-            if not service.media_proxy_url:
-                response.status = 503
-                return {"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"}
-
             country = request.query.get("country")
 
-            # Get DRM configs to extract ClearKey data
+            # Get DRM configs
             drm_configs = manager.get_channel_drm_configs(
                 provider_name=provider, channel_id=channel_id, country=country
             )
 
-            # Convert DRM configs to dictionary format (same as /drm endpoint)
+            # Convert DRM configs to dictionary format
             drm_dict = {}
             if isinstance(drm_configs, list):
                 for config in drm_configs:
-                    # Use the model's to_dict() method
                     config_dict = config.to_dict()
                     drm_dict.update(config_dict)
 
-            # Now check for ClearKey in the dictionary format
-            clearkey_data = None
-            if "org.w3.clearkey" in drm_dict:
+            # Check what type of stream we have
+            has_clearkey = "org.w3.clearkey" in drm_dict
+            is_unencrypted = "none" in drm_dict
+
+            # Handle ClearKey encrypted streams
+            if has_clearkey:
+                if not service.media_proxy_url:
+                    response.status = 503
+                    return {"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"}
+
                 clearkey_data = drm_dict["org.w3.clearkey"]
+                keyids = clearkey_data.get("license", {}).get("keyids", {})
 
-            if not clearkey_data:
-                response.status = 400
-                return {"error": f'Channel "{channel_id}" does not have ClearKey DRM'}
+                if not keyids:
+                    response.status = 400
+                    return {"error": "ClearKey DRM found but no key IDs available"}
 
-            # Extract the key information
-            keyids = clearkey_data.get("license", {}).get("keyids", {})
-            if not keyids:
-                response.status = 400
-                return {"error": "ClearKey DRM found but no key IDs available"}
-
-            # Get manifest (check if needs proxy)
-            if manager.needs_proxy(provider):
-                # Get rewritten manifest with media proxy URLs + decrypt params
+                # Return decrypted manifest via proxy
                 return service._get_decrypted_manifest(provider, channel_id, keyids)
+
+            # Handle unencrypted streams
+            elif is_unencrypted:
+                # If proxy needed and configured, rewrite manifest
+                if manager.needs_proxy(provider) and service.media_proxy_url:
+                    return service._get_proxied_manifest(provider, channel_id)
+                else:
+                    # No proxy needed/configured - passthrough original manifest
+                    return service._get_original_manifest(provider, channel_id, country)
+
+            # Other DRM systems not supported
             else:
-                # No proxy needed - return error (decryption requires media proxy)
                 response.status = 400
                 return {
-                    "error": "Decrypted playback requires provider proxy configuration"
-                }
+                    "error": f'Channel "{channel_id}" does not support decrypted playback (requires ClearKey or unencrypted)'}
 
         except ValueError as val_err:
             logger.error(f"API Error in decrypted stream: {str(val_err)}")
