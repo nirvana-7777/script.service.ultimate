@@ -214,6 +214,33 @@ def setup_m3u_routes(app, manager, service):
             response.status = 500
             return {"error": f"Internal server error: {str(api_err)}"}
 
+    @app.route("/api/providers/<provider>/m3u/decrypted/ffmpeg")
+    def get_m3u_decrypted_ffmpeg_provider(provider):
+        """
+        Generates decrypted M3U playlist for a specific provider with ffmpeg piping.
+        Fast generation - includes ALL channels with ffmpeg-piped decrypted stream URLs.
+        Streams are highest quality video only with all audio tracks copied.
+        No filtering, no caching (very fast).
+
+        Example: http://localhost:7777/api/providers/rtlplus/m3u/decrypted/ffmpeg
+        """
+        try:
+            logger.info(f"Generating fast decrypted ffmpeg M3U playlist for provider '{provider}'")
+            return service._generate_m3u_decrypted_ffmpeg_fast(providers=provider)
+
+        except ValueError as val_err:
+            logger.error(
+                f"API Error in /api/providers/{provider}/m3u/decrypted/ffmpeg: {str(val_err)}"
+            )
+            response.status = 404
+            return {"error": str(val_err)}
+        except Exception as api_err:
+            logger.error(
+                f"API Error in /api/providers/{provider}/m3u/decrypted/ffmpeg: {str(api_err)}"
+            )
+            response.status = 500
+            return {"error": f"Internal server error: {str(api_err)}"}
+
     @app.route("/api/providers/<provider>/m3u/decrypted/filtered")
     def get_m3u_decrypted_filtered_provider(provider):
         """

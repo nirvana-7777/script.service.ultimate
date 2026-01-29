@@ -7,6 +7,7 @@ import time
 from urllib.parse import parse_qsl, urlencode
 
 from bottle import Bottle, redirect, request, response, run
+from typing import Optional
 
 # Add lib path for imports
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -670,6 +671,75 @@ class UltimateService:
             )
 
         return m3u_content
+
+    def _generate_m3u_decrypted_ffmpeg_fast(self, providers: Optional[str] = None) -> str:
+        """
+        Generate M3U playlist with ffmpeg-piped decrypted streams (highest quality video only).
+        Similar to _generate_m3u_decrypted_fast but wraps streams in ffmpeg pipe commands.
+
+        Args:
+            providers: Optional comma-separated list of provider names to filter
+
+        Returns:
+            M3U playlist content as string
+        """
+        lines = ["#EXTM3U"]
+
+        # Parse providers filter
+        provider_filter = None
+        if providers:
+            provider_filter = [p.strip() for p in providers.split(",")]
+
+        # Get all channels from all providers
+        all_channels = []
+        for provider_name in self.manager.list_providers():
+            if provider_filter and provider_name not in provider_filter:
+                continue
+
+            try:
+                channels = self.manager.list_channels(provider_name)
+                for channel in channels:
+                    all_channels.append((provider_name, channel))
+            except Exception as e:
+                logger.warning(f"Failed to list channels for provider {provider_name}: {e}")
+                continue
+
+        # Generate M3U entries for each channel
+        for provider_name, channel in all_channels:
+            try:
+                # Get channel metadata
+                channel_id = channel.get("id")
+                channel_name = channel.get("name", channel_id)
+
+                # Get base URL for the stream
+                base_url = request.url.rsplit("/", 4)[0]  # Remove /api/providers/<provider>/m3u/decrypted/ffmpeg
+                stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/decrypted/ffmpeg/index.mpd"
+
+                # Build ffmpeg pipe command
+                # Map all video (will be just one due to highest_quality_only), all audio, and optional subtitles
+                ffmpeg_cmd = (
+                    f'pipe://ffmpeg -loglevel fatal '
+                    f'-i "{stream_url}" '
+                    f'-map 0:v -map 0:a -map 0:s? '  # Map video, all audio, optional subtitles
+                    f'-c:v copy -c:a copy '  # Copy all codecs
+                    f'-f mpegts '  # MPEG-TS output format
+                    f'-metadata service_name="{channel_name}" '  # Set service name
+                    f'pipe:1'
+                )
+
+                # Add M3U entry
+                lines.append(f'#EXTINF:-1,{channel_name}')
+                lines.append(ffmpeg_cmd)
+
+            except Exception as e:
+                logger.warning(
+                    f"Failed to generate ffmpeg M3U entry for {provider_name}/{channel.get('id')}: {e}"
+                )
+                continue
+
+        playlist = "\n".join(lines)
+        response.content_type = "audio/x-mpegurl; charset=utf-8"
+        return playlist
 
     def _generate_m3u_decrypted_filtered_content(
             self, providers=None, save_to_cache=True, cache_filename=None
