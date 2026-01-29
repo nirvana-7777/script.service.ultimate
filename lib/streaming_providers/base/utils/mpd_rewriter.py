@@ -2,7 +2,7 @@
 import base64
 import xml.etree.ElementTree as ET
 import re
-from typing import Optional, Tuple, Set, Dict
+from typing import Optional, Tuple, Set, Dict, List
 from urllib.parse import urljoin, urlparse, quote, urlencode
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -51,6 +51,30 @@ class KeyConfiguration:
             logger.debug(f"Multi-key mode: {len(self.keys)} keys available")
 
 
+@dataclass
+class VideoRepresentation:
+    """Represents a video representation with its quality metrics."""
+    element: ET.Element
+    adaptation_set: ET.Element
+    period: ET.Element
+    bandwidth: int
+    width: Optional[int] = None
+    height: Optional[int] = None
+    frame_rate: Optional[float] = None
+    representation_id: str = ""
+    period_id: str = ""
+    as_id: str = ""
+
+    def get_quality_score(self) -> Tuple[int, int, int]:
+        """
+        Returns a tuple for comparison: (resolution_pixels, bandwidth, frame_rate_score)
+        Higher values = better quality
+        """
+        resolution = (self.width or 0) * (self.height or 0)
+        frame_rate_score = int((self.frame_rate or 0) * 100)
+        return resolution, self.bandwidth, frame_rate_score
+
+
 class MPDRewriter:
     MPD_NAMESPACE = {"mpd": "urn:mpeg:dash:schema:mpd:2011"}
     CENC_NAMESPACE = {"cenc": "urn:mpeg:cenc:2013"}
@@ -60,10 +84,12 @@ class MPDRewriter:
             media_proxy_url: str,
             provider_proxy_url: Optional[str] = None,
             clearkey_keyids: Optional[dict] = None,
+            highest_quality_video_only: bool = False,  # NEW: Enable highest quality filtering
     ):
         self.media_proxy_url = media_proxy_url.rstrip("/")
         self.provider_proxy_url = provider_proxy_url
         self.key_config = KeyConfiguration(clearkey_keyids or {})
+        self.highest_quality_video_only = highest_quality_video_only
 
         # Pre-calculate query params that don't change to save cycles during rewrite
         self._static_params = {}
@@ -88,6 +114,7 @@ class MPDRewriter:
             segment_type: Optional[str] = None,
             is_encrypted: bool = False,
             kid: Optional[str] = None,  # Specific KID for this AdaptationSet
+            representation_id: Optional[str] = None,  # NEW: For template substitution
     ) -> str:
         params = {"url": original_url, **self._static_params}
 
@@ -128,6 +155,10 @@ class MPDRewriter:
         proxy_url = f"{self.media_proxy_url}/api/{endpoint}/{encoded}"
 
         if template_pattern:
+            # NEW: Substitute $RepresentationID$ if we have it and highest_quality_video_only is enabled
+            if self.highest_quality_video_only and representation_id and "$RepresentationID$" in template_pattern:
+                template_pattern = template_pattern.replace("$RepresentationID$", representation_id)
+
             proxy_url += f"/{quote(template_pattern, safe='.-_$')}"
 
         return proxy_url
@@ -153,11 +184,22 @@ class MPDRewriter:
             # Single-pass tree preparation with BaseURL extraction
             encrypted_ids, as_id_to_kid, base_url_map = self._prepare_tree_and_extract_kids(root, mpd_base_url)
 
-            # Filter out encrypted AdaptationSets without available keys
+            # FIRST: Filter out encrypted AdaptationSets without available keys
+            # This ensures we only consider decryptable content for quality selection
             if self.key_config.keys:
                 self._remove_adaptationsets_without_keys(root, as_id_to_kid)
             else:
                 self._remove_all_encrypted_adaptationsets(root)
+
+            # THEN: Filter to highest quality video from remaining decryptable content
+            best_video_info = None
+            if self.highest_quality_video_only:
+                best_video_info = self._filter_to_highest_quality_video(root)
+                if best_video_info:
+                    logger.info(
+                        f"Filtered to highest quality video: {best_video_info.width}x{best_video_info.height} "
+                        f"@ {best_video_info.bandwidth}bps, RepID={best_video_info.representation_id}"
+                    )
 
             # Verify we have playable content remaining
             remaining_sets = root.findall(".//mpd:AdaptationSet", self.MPD_NAMESPACE)
@@ -165,7 +207,8 @@ class MPDRewriter:
                 raise ValueError("No AdaptationSets remain after key filtering - manifest would be empty")
 
             # Rewrite URLs with appropriate keys and context-aware base URLs
-            self._rewrite_node(root, mpd_base_url, encrypted_ids, as_id_to_kid, base_url_map, False, None, "")
+            self._rewrite_node(root, mpd_base_url, encrypted_ids, as_id_to_kid, base_url_map,
+                               False, None, "", best_video_info)
 
             rewritten = ET.tostring(root, encoding="unicode", method="xml")
             if not rewritten.startswith("<?xml"):
@@ -175,7 +218,157 @@ class MPDRewriter:
             logger.error(f"Failed to rewrite MPD: {e}")
             raise
 
-    def _prepare_tree_and_extract_kids(self, root: ET.Element, mpd_base_url: str) -> Tuple[Set[str], Dict[str, str], Dict[str, str]]:
+    def _filter_to_highest_quality_video(self, root: ET.Element) -> Optional[VideoRepresentation]:
+        """
+        Find the absolute highest quality video representation across all periods and adaptation sets.
+        Remove all other video representations, keep audio/subtitles unchanged.
+        Returns information about the best video representation found.
+        """
+        all_video_reps: List[VideoRepresentation] = []
+
+        # Scan all periods and adaptation sets to find video representations
+        for period in root.findall(".//mpd:Period", self.MPD_NAMESPACE):
+            period_id = period.get("id", "")
+
+            for adaptation_set in period.findall("mpd:AdaptationSet", self.MPD_NAMESPACE):
+                # Check if this is a video adaptation set
+                if not self._is_video_adaptation_set(adaptation_set):
+                    continue
+
+                as_id = adaptation_set.get("id", str(id(adaptation_set)))
+
+                # Collect all representations from this video adaptation set
+                for representation in adaptation_set.findall("mpd:Representation", self.MPD_NAMESPACE):
+                    video_rep = self._parse_video_representation(
+                        representation, adaptation_set, period, period_id, as_id
+                    )
+                    if video_rep:
+                        all_video_reps.append(video_rep)
+
+        if not all_video_reps:
+            logger.warning("No video representations found for filtering")
+            return None
+
+        # Find the best video representation
+        best_video = max(all_video_reps, key=lambda v: v.get_quality_score())
+        logger.debug(
+            f"Found {len(all_video_reps)} video representations, "
+            f"best: {best_video.width}x{best_video.height} @ {best_video.bandwidth}bps"
+        )
+
+        # Now remove all video representations EXCEPT the best one
+        removal_count = 0
+        for period in root.findall(".//mpd:Period", self.MPD_NAMESPACE):
+            period_id = period.get("id", "")
+            adaptation_sets_to_remove = []
+
+            for adaptation_set in period.findall("mpd:AdaptationSet", self.MPD_NAMESPACE):
+                if not self._is_video_adaptation_set(adaptation_set):
+                    continue
+
+                as_id = adaptation_set.get("id", str(id(adaptation_set)))
+
+                # Check if this adaptation set contains the best representation
+                representations_to_remove = []
+                contains_best = False
+
+                for representation in adaptation_set.findall("mpd:Representation", self.MPD_NAMESPACE):
+                    rep_id = representation.get("id", "")
+
+                    # Is this the best representation?
+                    if (period_id == best_video.period_id and
+                            as_id == best_video.as_id and
+                            rep_id == best_video.representation_id):
+                        contains_best = True
+                    else:
+                        representations_to_remove.append(representation)
+
+                # Remove non-best representations
+                for rep in representations_to_remove:
+                    adaptation_set.remove(rep)
+                    removal_count += 1
+
+                # If this adaptation set no longer has any representations, mark for removal
+                if not contains_best:
+                    adaptation_sets_to_remove.append(adaptation_set)
+
+            # Remove empty video adaptation sets
+            for adaptation_set in adaptation_sets_to_remove:
+                period.remove(adaptation_set)
+
+        logger.info(f"Removed {removal_count} video representation(s), kept highest quality only")
+        return best_video
+
+    def _is_video_adaptation_set(self, adaptation_set: ET.Element) -> bool:
+        """Determine if an AdaptationSet is video based on mimeType or contentType."""
+        mime_type = adaptation_set.get("mimeType", "")
+        content_type = adaptation_set.get("contentType", "")
+
+        # Check AdaptationSet level
+        if mime_type.startswith("video/") or content_type == "video":
+            return True
+
+        # Check Representation level if not specified at AdaptationSet level
+        for representation in adaptation_set.findall("mpd:Representation", self.MPD_NAMESPACE):
+            rep_mime = representation.get("mimeType", "")
+            if rep_mime.startswith("video/"):
+                return True
+
+        return False
+
+    def _parse_video_representation(
+            self,
+            representation: ET.Element,
+            adaptation_set: ET.Element,
+            period: ET.Element,
+            period_id: str,
+            as_id: str
+    ) -> Optional[VideoRepresentation]:
+        """Parse a Representation element and extract video quality information."""
+        try:
+            # Bandwidth is required
+            bandwidth = int(representation.get("bandwidth", "0"))
+            if bandwidth == 0:
+                return None
+
+            # Width and height (can be on Representation or AdaptationSet)
+            width = representation.get("width") or adaptation_set.get("width")
+            height = representation.get("height") or adaptation_set.get("height")
+
+            width = int(width) if width else None
+            height = int(height) if height else None
+
+            # Frame rate (can be on Representation or AdaptationSet)
+            frame_rate_str = representation.get("frameRate") or adaptation_set.get("frameRate")
+            frame_rate = None
+            if frame_rate_str:
+                # Handle both "30" and "30000/1001" formats
+                if "/" in frame_rate_str:
+                    num, denom = frame_rate_str.split("/")
+                    frame_rate = float(num) / float(denom)
+                else:
+                    frame_rate = float(frame_rate_str)
+
+            representation_id = representation.get("id", "")
+
+            return VideoRepresentation(
+                element=representation,
+                adaptation_set=adaptation_set,
+                period=period,
+                bandwidth=bandwidth,
+                width=width,
+                height=height,
+                frame_rate=frame_rate,
+                representation_id=representation_id,
+                period_id=period_id,
+                as_id=as_id
+            )
+        except (ValueError, AttributeError) as e:
+            logger.warning(f"Failed to parse video representation: {e}")
+            return None
+
+    def _prepare_tree_and_extract_kids(self, root: ET.Element, mpd_base_url: str) -> Tuple[
+        Set[str], Dict[str, str], Dict[str, str]]:
         """
         Single-pass optimization: clean tree, identify encrypted sets, extract KIDs and BaseURLs.
         Returns: (encrypted_adaptation_set_ids, as_id_to_kid_mapping, base_url_mapping)
@@ -354,6 +547,7 @@ class MPDRewriter:
             current_encrypted: bool,
             current_kid: Optional[str] = None,
             current_period_id: str = "",
+            best_video_info: Optional[VideoRepresentation] = None,  # NEW
     ):
         """Recursive node rewriter with KID-aware key selection and context-aware base URLs."""
         # Track period ID as we traverse
@@ -362,6 +556,7 @@ class MPDRewriter:
 
         # Update state when entering an AdaptationSet
         current_as_id = None
+        current_rep_id = None  # NEW: Track current representation ID
         if element.tag.endswith("AdaptationSet"):
             as_id = element.get("id", str(id(element)))
             current_as_id = as_id
@@ -376,6 +571,10 @@ class MPDRewriter:
             # Get specific KID for this AdaptationSet (multi-key mode only)
             if current_encrypted and not self.key_config.single_key_mode:
                 current_kid = as_id_to_kid.get(unique_id)
+
+        # NEW: Track representation ID for template substitution
+        if element.tag.endswith("Representation"):
+            current_rep_id = element.get("id", "")
 
         # Rewrite URL attributes
         attr_map = {
@@ -394,11 +593,13 @@ class MPDRewriter:
                 if "$" in resolved:
                     path, pattern = self.split_template_url(resolved)
                     element.attrib[attr] = self.build_proxy_url(
-                        path, pattern, seg_type, current_encrypted, current_kid
+                        path, pattern, seg_type, current_encrypted, current_kid,
+                        representation_id=current_rep_id  # NEW
                     )
                 else:
                     element.attrib[attr] = self.build_proxy_url(
-                        resolved, None, seg_type, current_encrypted, current_kid
+                        resolved, None, seg_type, current_encrypted, current_kid,
+                        representation_id=current_rep_id  # NEW
                     )
 
         # Handle SegmentURL (always 'media' type)
@@ -410,14 +611,15 @@ class MPDRewriter:
                 else (resolved, None)
             )
             element.attrib["media"] = self.build_proxy_url(
-                path, pattern, "media", current_encrypted, current_kid
+                path, pattern, "media", current_encrypted, current_kid,
+                representation_id=current_rep_id  # NEW
             )
 
         # Recurse to children
         for child in element:
             self._rewrite_node(
                 child, base_url, encrypted_ids, as_id_to_kid, base_url_map,
-                current_encrypted, current_kid, current_period_id
+                current_encrypted, current_kid, current_period_id, best_video_info  # NEW
             )
 
     def _extract_mpd_base_url(self, root: ET.Element, manifest_url: str) -> str:
