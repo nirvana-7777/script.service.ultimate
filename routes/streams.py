@@ -328,13 +328,17 @@ def setup_stream_routes(app, manager, service):
             response.status = 500
             return {"error": f"Internal server error: {str(api_err)}"}
 
-    @app.route(
-        "/api/providers/<provider>/channels/<channel_id>/stream/decrypted/index.mpd"
-    )
-    def get_channel_stream_decrypted(provider, channel_id):
+    def _get_decrypted_stream_handler(provider, channel_id, highest_quality_only=False):
         """
-        Returns rewritten manifest for decrypted playback via media proxy.
-        Supports both ClearKey encrypted and unencrypted streams.
+        Helper function for decrypted stream handling.
+
+        Args:
+            provider: Provider name
+            channel_id: Channel ID
+            highest_quality_only: If True, filter to highest quality video only
+
+        Returns:
+            Rewritten manifest or error response
         """
         try:
             country = request.query.get("country")
@@ -369,22 +373,28 @@ def setup_stream_routes(app, manager, service):
                     return {"error": "ClearKey DRM found but no key IDs available"}
 
                 # Return decrypted manifest via proxy
-                return service._get_decrypted_manifest(provider, channel_id, keyids)
+                return service._get_decrypted_manifest(
+                    provider, channel_id, keyids, highest_quality_only=highest_quality_only
+                )
 
             # Handle unencrypted streams
             elif is_unencrypted:
                 # If proxy needed and configured, rewrite manifest
                 if manager.needs_proxy(provider) and service.media_proxy_url:
-                    return service._get_proxied_manifest(provider, channel_id)
+                    return service._get_proxied_manifest(
+                        provider, channel_id, highest_quality_only=highest_quality_only
+                    )
                 else:
                     # No proxy needed/configured - passthrough original manifest
+                    # Note: highest_quality_only has no effect on passthrough
                     return service._get_original_manifest(provider, channel_id, country)
 
             # Other DRM systems not supported
             else:
                 response.status = 400
                 return {
-                    "error": f'Channel "{channel_id}" does not support decrypted playback (requires ClearKey or unencrypted)'}
+                    "error": f'Channel "{channel_id}" does not support decrypted playback (requires ClearKey or unencrypted)'
+                }
 
         except ValueError as val_err:
             logger.error(f"API Error in decrypted stream: {str(val_err)}")
@@ -394,3 +404,34 @@ def setup_stream_routes(app, manager, service):
             logger.error(f"API Error in decrypted stream: {str(api_err)}")
             response.status = 500
             return {"error": f"Internal server error: {str(api_err)}"}
+
+    @app.route(
+        "/api/providers/<provider>/channels/<channel_id>/stream/decrypted/index.mpd"
+    )
+    def get_channel_stream_decrypted(provider, channel_id):
+        """
+        Returns rewritten manifest for decrypted playback via media proxy.
+        Supports both ClearKey encrypted and unencrypted streams.
+        Includes all available video quality representations.
+        """
+        return _get_decrypted_stream_handler(
+            provider=provider,
+            channel_id=channel_id,
+            highest_quality_only=False
+        )
+
+    @app.route(
+        "/api/providers/<provider>/channels/<channel_id>/stream/decrypted/ffmpeg/index.mpd"
+    )
+    def get_channel_stream_decrypted_ffmpeg(provider, channel_id):
+        """
+        Returns rewritten manifest for decrypted playback via media proxy.
+        Supports both ClearKey encrypted and unencrypted streams.
+        Filters to highest quality video representation only (optimized for ffmpeg).
+        Audio and subtitle tracks remain unchanged.
+        """
+        return _get_decrypted_stream_handler(
+            provider=provider,
+            channel_id=channel_id,
+            highest_quality_only=True
+        )
