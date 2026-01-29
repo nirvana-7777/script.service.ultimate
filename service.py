@@ -333,7 +333,7 @@ class UltimateService:
         return self.env_manager.get_config(setting_id, default)
 
     def _get_decrypted_manifest(
-        self, provider: str, channel_id: str, keyids: dict
+        self, provider: str, channel_id: str, keyids: dict, highest_quality_only: bool = False
     ) -> str:
         """
         Get rewritten MPD manifest for decrypted playback via media proxy.
@@ -343,6 +343,7 @@ class UltimateService:
             provider: Provider name
             channel_id: Channel ID
             keyids: Dictionary of kid:key pairs
+            highest_quality_only: If True, keep only highest quality video representation
 
         Returns:
             Rewritten MPD content as string
@@ -350,7 +351,7 @@ class UltimateService:
         country = request.query.get("country")
 
         # Note: We don't cache decrypted manifests as they contain keys
-        logger.info(f"Generating decrypted manifest for {provider}/{channel_id}")
+        logger.info(f"Generating decrypted manifest for {provider}/{channel_id} (highest_quality_only={highest_quality_only})")
 
         # Get original manifest URL
         manifest_url = self.manager.get_channel_manifest(
@@ -391,7 +392,12 @@ class UltimateService:
                 logger.debug(f"Provider has proxy configured: {provider_proxy_url}")
 
             # Rewrite MPD URLs to point to media proxy decrypt endpoint with keys
-            rewriter = MPDRewriter(self.media_proxy_url, provider_proxy_url, keyids)
+            rewriter = MPDRewriter(
+                self.media_proxy_url,
+                provider_proxy_url,
+                keyids,
+                highest_quality_only  # ADDED
+            )
             rewritten_mpd = rewriter.rewrite_mpd(manifest_response.text, manifest_url)
 
             # Return rewritten MPD
@@ -404,7 +410,7 @@ class UltimateService:
             response.content_type = "application/json"
             return json.dumps({"error": f"Failed to fetch manifest: {str(fetch_err)}"})
 
-    def _get_proxied_manifest(self, provider: str, channel_id: str) -> str:
+    def _get_proxied_manifest(self, provider: str, channel_id: str, highest_quality_only: bool = False) -> str:
         """
         Get proxied and rewritten MPD manifest for a channel using media proxy.
         Uses cache when available and valid.
@@ -412,20 +418,22 @@ class UltimateService:
         Args:
             provider: Provider name
             channel_id: Channel ID
+            highest_quality_only: If True, keep only highest quality video representation
 
         Returns:
             Rewritten MPD content as string
         """
         country = request.query.get("country")
 
-        # Try cache first
-        cached_mpd = self.mpd_cache.get(provider, channel_id)
-        if cached_mpd:
-            response.content_type = "application/dash+xml; charset=utf-8"
-            return cached_mpd
+        # Try cache first (only if not using highest_quality_only, as that changes output)
+        if not highest_quality_only:
+            cached_mpd = self.mpd_cache.get(provider, channel_id)
+            if cached_mpd:
+                response.content_type = "application/dash+xml; charset=utf-8"
+                return cached_mpd
 
-        # Cache miss - fetch and rewrite
-        logger.info(f"Cache miss for {provider}/{channel_id}, fetching manifest")
+        # Cache miss or highest_quality_only enabled - fetch and rewrite
+        logger.info(f"Cache miss for {provider}/{channel_id}, fetching manifest (highest_quality_only={highest_quality_only})")
 
         # Check if media proxy is configured
         if not self.media_proxy_url:
@@ -484,17 +492,23 @@ class UltimateService:
                 logger.debug(f"Provider has proxy configured: {provider_proxy_url}")
 
             # Rewrite MPD URLs to point to media proxy
-            rewriter = MPDRewriter(self.media_proxy_url, provider_proxy_url)
+            rewriter = MPDRewriter(
+                self.media_proxy_url,
+                provider_proxy_url,
+                None,  # No keyids for proxied (unencrypted) streams
+                highest_quality_only  # ADDED
+            )
             rewritten_mpd = rewriter.rewrite_mpd(manifest_response.text, manifest_url)
 
-            # Cache the rewritten MPD
-            self.mpd_cache.set(
-                provider=provider,
-                channel_id=channel_id,
-                mpd_content=rewritten_mpd,
-                ttl=ttl,
-                original_url=manifest_url,
-            )
+            # Cache the rewritten MPD (only if not using highest_quality_only)
+            if not highest_quality_only:
+                self.mpd_cache.set(
+                    provider=provider,
+                    channel_id=channel_id,
+                    mpd_content=rewritten_mpd,
+                    ttl=ttl,
+                    original_url=manifest_url,
+                )
 
             # Return rewritten MPD
             response.content_type = "application/dash+xml; charset=utf-8"
