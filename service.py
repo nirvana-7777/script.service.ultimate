@@ -734,7 +734,7 @@ class UltimateService:
                     # Build ffmpeg pipe command
                     # Map all video (will be just one due to highest_quality_only), all audio, and optional subtitles
                     ffmpeg_cmd = (
-                        f'ffmpeg -loglevel fatal '
+                        f'pipe://ffmpeg -loglevel fatal '
                         f'-fflags +genpts+igndts+discardcorrupt '
                         f'-err_detect ignore_err '
                         f'-i "{stream_url}" '
