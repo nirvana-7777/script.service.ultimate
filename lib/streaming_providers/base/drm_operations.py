@@ -91,14 +91,51 @@ class DRMOperations:
         """
         Check if manifest contains any DRM/encryption markers.
         Returns True if encrypted, False if unencrypted.
+
+        Detection approach:
+        1. Look for ContentProtection elements with known DRM UUIDs
+        2. Check for cenc:default_KID attributes
+        3. Check for embedded PSSH boxes
         """
-        from .utils.manifest_parser import ManifestParser
+        import re
 
-        # Reuse the existing parser to check for any DRM systems
-        pssh_list = ManifestParser._extract_from_manifest_content(manifest_content)
+        # Get known DRM UUIDs from DRMSystem enum (normalized to lowercase with hyphens)
+        known_drm_uuids = set()
+        for drm_system in DRMSystem:
+            uuid = drm_system.system_uuid
+            if uuid:  # Skip GENERIC and NONE which have empty UUIDs
+                known_drm_uuids.add(uuid.lower())
 
-        # If we found any DRM systems or PSSH data, it's encrypted
-        return len(pssh_list) > 0
+        # Find all ContentProtection elements with schemeIdUri
+        cp_pattern = re.compile(
+            r'<ContentProtection[^>]*schemeIdUri="urn:uuid:([^"]+)"[^>]*>',
+            re.IGNORECASE
+        )
+
+        for match in cp_pattern.finditer(manifest_content):
+            uuid = match.group(1).lower()
+
+            # Check if this is a known DRM system UUID
+            if uuid in known_drm_uuids:
+                drm_system = DRMSystem.from_uuid(uuid)
+                if drm_system:
+                    logger.debug(f"Detected DRM system: {drm_system.value} (UUID: {uuid})")
+                else:
+                    logger.debug(f"Detected known DRM UUID: {uuid}")
+                return True
+
+        # Also check for cenc:default_KID (indicates encryption even without DRM system)
+        if re.search(r'(?:cenc:)?default_KID\s*=', manifest_content, re.IGNORECASE):
+            logger.debug("Detected cenc:default_KID attribute (encrypted)")
+            return True
+
+        # Check for PSSH boxes
+        if re.search(r'<(?:cenc:)?pssh[^>]*>', manifest_content, re.IGNORECASE):
+            logger.debug("Detected PSSH box (encrypted)")
+            return True
+
+        logger.debug("No DRM/encryption markers found (unencrypted)")
+        return False
 
     def get_channel_drm_configs(self, provider_name: str, channel_id: str, **kwargs) -> List:
         """
