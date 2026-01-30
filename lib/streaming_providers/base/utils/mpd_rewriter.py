@@ -9,6 +9,7 @@ from email.utils import parsedate_to_datetime
 from dataclasses import dataclass, field
 
 from .logger import logger
+from .vfs import get_vfs
 
 # Pre-compile regex for ISO duration parsing at module level
 ISO_8601_PERIOD_RE = re.compile(
@@ -51,6 +52,94 @@ class KeyConfiguration:
             logger.debug(f"Multi-key mode: {len(self.keys)} keys available")
 
 
+class RepresentationBlocklist:
+    """
+    Manages blocklist of problematic Representation IDs that cause 500 errors.
+
+    Blocklist format (JSON):
+    {
+        "provider_name": {
+            "channel_name": ["rep_id_1", "rep_id_2"],
+            "another_channel": ["rep_id_3"]
+        }
+    }
+    """
+
+    def __init__(self, blocklist_path: str = "representation_blocklist.json"):
+        """
+        Initialize blocklist manager.
+
+        Args:
+            blocklist_path: Path to JSON file containing blocklist configuration
+        """
+        self.blocklist_path = blocklist_path
+        self.blocklist: Dict[str, Dict[str, List[str]]] = {}
+        self._load_blocklist()
+
+    def _load_blocklist(self):
+        """Load blocklist from JSON file using VFS."""
+        try:
+            vfs = get_vfs()
+            data = vfs.read_json(self.blocklist_path)
+
+            if data:
+                self.blocklist = data
+                total_blocked = sum(
+                    len(rep_ids)
+                    for provider in self.blocklist.values()
+                    for rep_ids in provider.values()
+                )
+                logger.info(
+                    f"Loaded representation blocklist: "
+                    f"{len(self.blocklist)} providers, {total_blocked} total blocked representations"
+                )
+            else:
+                logger.info(f"No blocklist found at {self.blocklist_path}, starting with empty blocklist")
+
+        except Exception as e:
+            logger.warning(f"Failed to load representation blocklist from {self.blocklist_path}: {e}")
+            self.blocklist = {}
+
+    def is_blocked(self, provider: str, channel: str, representation_id: str) -> bool:
+        """
+        Check if a representation ID is blocked for a given provider/channel.
+
+        Args:
+            provider: Provider name (e.g., "magenta_tv", "ht_iptv")
+            channel: Channel name/ID
+            representation_id: Representation ID to check
+
+        Returns:
+            True if blocked, False otherwise
+        """
+        if not provider or not channel:
+            return False
+
+        provider_data = self.blocklist.get(provider, {})
+        channel_data = provider_data.get(channel, [])
+
+        return representation_id in channel_data
+
+    def get_blocked_ids(self, provider: str, channel: str) -> Set[str]:
+        """
+        Get set of all blocked representation IDs for a provider/channel.
+
+        Args:
+            provider: Provider name
+            channel: Channel name/ID
+
+        Returns:
+            Set of blocked representation IDs
+        """
+        if not provider or not channel:
+            return set()
+
+        provider_data = self.blocklist.get(provider, {})
+        channel_data = provider_data.get(channel, [])
+
+        return set(channel_data)
+
+
 @dataclass
 class VideoRepresentation:
     """Represents a video representation with its quality metrics."""
@@ -85,11 +174,19 @@ class MPDRewriter:
             provider_proxy_url: Optional[str] = None,
             clearkey_keyids: Optional[dict] = None,
             highest_quality_video_only: bool = False,  # NEW: Enable highest quality filtering
+            provider: Optional[str] = None,  # NEW: Provider name for blocklist filtering
+            channel: Optional[str] = None,  # NEW: Channel name for blocklist filtering
+            blocklist_path: str = "representation_blocklist.json",  # NEW: Path to blocklist file
     ):
         self.media_proxy_url = media_proxy_url.rstrip("/")
         self.provider_proxy_url = provider_proxy_url
         self.key_config = KeyConfiguration(clearkey_keyids or {})
         self.highest_quality_video_only = highest_quality_video_only
+
+        # NEW: Blocklist configuration
+        self.provider = provider
+        self.channel = channel
+        self.blocklist = RepresentationBlocklist(blocklist_path)
 
         # Pre-calculate query params that don't change to save cycles during rewrite
         self._static_params = {}
@@ -190,6 +287,10 @@ class MPDRewriter:
                 self._remove_adaptationsets_without_keys(root, as_id_to_kid)
             else:
                 self._remove_all_encrypted_adaptationsets(root)
+
+            # SECOND: Filter out blocked representations that cause 500 errors
+            if self.provider and self.channel:
+                self._remove_blocked_representations(root)
 
             # THEN: Filter to highest quality video from remaining decryptable content
             best_video_info = None
@@ -536,6 +637,64 @@ class MPDRewriter:
 
         if removal_count > 0:
             logger.info(f"Removed {removal_count} encrypted AdaptationSet(s) (no keys available)")
+
+    def _remove_blocked_representations(self, root: ET.Element):
+        """
+        Remove Representation elements that are blocked for this provider/channel.
+        If an AdaptationSet has only one Representation and it's blocked, remove the entire AdaptationSet.
+        """
+        if not self.provider or not self.channel:
+            return
+
+        blocked_ids = self.blocklist.get_blocked_ids(self.provider, self.channel)
+        if not blocked_ids:
+            return
+
+        total_reps_removed = 0
+        total_as_removed = 0
+
+        for period in root.findall(".//mpd:Period", self.MPD_NAMESPACE):
+            adaptationsets_to_remove = []
+
+            for adaptation_set in period.findall("mpd:AdaptationSet", self.MPD_NAMESPACE):
+                representations = adaptation_set.findall("mpd:Representation", self.MPD_NAMESPACE)
+                representations_to_remove = []
+
+                # Check each representation in this AdaptationSet
+                for representation in representations:
+                    rep_id = representation.get("id", "")
+
+                    if rep_id in blocked_ids:
+                        logger.info(
+                            f"Blocking representation '{rep_id}' for {self.provider}/{self.channel} "
+                            f"(known to cause 500 errors)"
+                        )
+                        representations_to_remove.append(representation)
+
+                # If all representations are blocked, mark the entire AdaptationSet for removal
+                if representations_to_remove and len(representations_to_remove) == len(representations):
+                    as_id = adaptation_set.get("id", "unknown")
+                    logger.info(
+                        f"Removing entire AdaptationSet '{as_id}' - "
+                        f"all {len(representations)} representation(s) are blocked"
+                    )
+                    adaptationsets_to_remove.append(adaptation_set)
+                    total_as_removed += 1
+                else:
+                    # Remove only the blocked representations
+                    for representation in representations_to_remove:
+                        adaptation_set.remove(representation)
+                        total_reps_removed += 1
+
+            # Remove marked AdaptationSets
+            for adaptation_set in adaptationsets_to_remove:
+                period.remove(adaptation_set)
+
+        if total_reps_removed > 0 or total_as_removed > 0:
+            logger.info(
+                f"Blocklist filtering complete: removed {total_reps_removed} representation(s) "
+                f"and {total_as_removed} AdaptationSet(s) for {self.provider}/{self.channel}"
+            )
 
     def _rewrite_node(
             self,

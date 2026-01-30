@@ -333,7 +333,7 @@ class UltimateService:
         return self.env_manager.get_config(setting_id, default)
 
     def _get_decrypted_manifest(
-        self, provider: str, channel_id: str, keyids: dict, highest_quality_only: bool = False
+            self, provider: str, channel_id: str, keyids: dict, highest_quality_only: bool = False
     ) -> str:
         """
         Get rewritten MPD manifest for decrypted playback via media proxy.
@@ -351,7 +351,8 @@ class UltimateService:
         country = request.query.get("country")
 
         # Note: We don't cache decrypted manifests as they contain keys
-        logger.info(f"Generating decrypted manifest for {provider}/{channel_id} (highest_quality_only={highest_quality_only})")
+        logger.info(
+            f"Generating decrypted manifest for {provider}/{channel_id} (highest_quality_only={highest_quality_only})")
 
         # Get original manifest URL
         manifest_url = self.manager.get_channel_manifest(
@@ -392,11 +393,14 @@ class UltimateService:
                 logger.debug(f"Provider has proxy configured: {provider_proxy_url}")
 
             # Rewrite MPD URLs to point to media proxy decrypt endpoint with keys
+            # CHANGED: Added provider and channel_id parameters for blocklist filtering
             rewriter = MPDRewriter(
                 self.media_proxy_url,
                 provider_proxy_url,
                 keyids,
-                highest_quality_only  # ADDED
+                highest_quality_only,
+                provider=provider,  # NEW: Enable blocklist filtering
+                channel=channel_id  # NEW: Enable blocklist filtering
             )
             rewritten_mpd = rewriter.rewrite_mpd(manifest_response.text, manifest_url)
 
@@ -433,7 +437,8 @@ class UltimateService:
                 return cached_mpd
 
         # Cache miss or highest_quality_only enabled - fetch and rewrite
-        logger.info(f"Cache miss for {provider}/{channel_id}, fetching manifest (highest_quality_only={highest_quality_only})")
+        logger.info(
+            f"Cache miss for {provider}/{channel_id}, fetching manifest (highest_quality_only={highest_quality_only})")
 
         # Check if media proxy is configured
         if not self.media_proxy_url:
@@ -492,11 +497,14 @@ class UltimateService:
                 logger.debug(f"Provider has proxy configured: {provider_proxy_url}")
 
             # Rewrite MPD URLs to point to media proxy
+            # CHANGED: Added provider and channel_id parameters for blocklist filtering
             rewriter = MPDRewriter(
                 self.media_proxy_url,
                 provider_proxy_url,
                 None,  # No keyids for proxied (unencrypted) streams
-                highest_quality_only  # ADDED
+                highest_quality_only,
+                provider=provider,  # NEW: Enable blocklist filtering
+                channel=channel_id  # NEW: Enable blocklist filtering
             )
             rewritten_mpd = rewriter.rewrite_mpd(manifest_response.text, manifest_url)
 
@@ -1431,13 +1439,13 @@ class UltimateService:
         return m3u_content
 
     def _get_proxied_catchup_manifest(
-        self,
-        provider: str,
-        channel_id: str,
-        start_time: int,
-        end_time: int,
-        epg_id: str = None,
-        country: str = None,
+            self,
+            provider: str,
+            channel_id: str,
+            start_time: int,
+            end_time: int,
+            epg_id: str = None,
+            country: str = None,
     ) -> str:
         """
         Get proxied and rewritten MPD manifest for catchup content using media proxy.
@@ -1510,7 +1518,15 @@ class UltimateService:
                 logger.debug(f"Provider has proxy configured: {provider_proxy_url}")
 
             # Rewrite MPD URLs to point to media proxy
-            rewriter = MPDRewriter(self.media_proxy_url, provider_proxy_url)
+            # CHANGED: Added provider and channel_id parameters for blocklist filtering
+            rewriter = MPDRewriter(
+                self.media_proxy_url,
+                provider_proxy_url,
+                None,  # No keyids for catchup streams
+                False,  # highest_quality_only - usually not needed for catchup
+                provider=provider,  # NEW: Enable blocklist filtering
+                channel=channel_id  # NEW: Enable blocklist filtering
+            )
             rewritten_mpd = rewriter.rewrite_mpd(manifest_response.text, manifest_url)
 
             # Cache the rewritten MPD with catchup-specific key
