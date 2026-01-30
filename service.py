@@ -1425,7 +1425,7 @@ class UltimateService:
 
     def _generate_m3u_provider(self, provider: str, save_to_cache: bool = False) -> str:
         """Internal method to generate M3U for a specific provider."""
-        logger.info(f"Generating M3U playlist for provider: '{provider}'")
+        logger.info(f"Generating M3U playlist for provider '{provider}'")
         m3u_content = self._generate_m3u_content(
             providers=provider, save_to_cache=save_to_cache
         )
