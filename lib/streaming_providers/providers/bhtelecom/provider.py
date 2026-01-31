@@ -298,6 +298,8 @@ class BHTelecomProvider(StreamingProvider):
             provider=self.provider_name,
             logo_url=logo_url,
             manifest=manifest_url,
+            country=self.country,  # Use provider's country
+            language=DEFAULT_LANGUAGE,  # Use "bs" for Bosnian
             **DEFAULT_CHANNEL_CONFIG
         )
 
@@ -513,3 +515,31 @@ class BHTelecomProvider(StreamingProvider):
             logger.error(f"BH Telecom connection test failed: {e}")
 
         return result
+
+    def close(self) -> None:
+        """
+        Close HTTP manager and cleanup resources
+
+        Call this when you're done with the provider to avoid
+        connection cleanup messages appearing in output.
+        """
+        if hasattr(self, 'http_manager') and self.http_manager:
+            self.http_manager.close()
+
+    def __enter__(self):
+        """Context manager entry"""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - ensures cleanup"""
+        self.close()
+
+    def __del__(self):
+        """Destructor - silent cleanup"""
+        try:
+            if hasattr(self, 'http_manager') and self.http_manager:
+                # Close quietly without logging
+                if hasattr(self.http_manager, '_session') and self.http_manager._session:
+                    self.http_manager._session.close()
+        except:
+            pass  # Silent cleanup on deletion
