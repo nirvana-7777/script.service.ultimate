@@ -520,26 +520,17 @@ class BHTelecomProvider(StreamingProvider):
         """
         Close HTTP manager and cleanup resources
 
-        Call this when you're done with the provider to avoid
-        connection cleanup messages appearing in output.
+        Call this when you're done with the provider to ensure
+        proper cleanup of HTTP sessions and connections.
         """
         if hasattr(self, 'http_manager') and self.http_manager:
             self.http_manager.close()
 
     def __enter__(self):
-        """Context manager entry"""
+        """Context manager entry - enables 'with' statement usage"""
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit - ensures cleanup"""
+        """Context manager exit - ensures cleanup on context exit"""
         self.close()
-
-    def __del__(self):
-        """Destructor - silent cleanup"""
-        try:
-            if hasattr(self, 'http_manager') and self.http_manager:
-                # Close quietly without logging
-                if hasattr(self.http_manager, '_session') and self.http_manager._session:
-                    self.http_manager._session.close()
-        except:
-            pass  # Silent cleanup on deletion
+        return False  # Don't suppress exceptions

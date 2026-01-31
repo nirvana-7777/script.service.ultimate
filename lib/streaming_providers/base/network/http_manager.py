@@ -1,5 +1,6 @@
 # streaming_providers/base/network/http_manager.py
 import json
+import logging
 import time
 from typing import Any, Dict, Optional
 
@@ -9,6 +10,10 @@ from urllib3.util.retry import Retry
 
 from ..models.proxy_models import ProxyConfig, RequestConfig
 from ..utils.logger import logger
+
+# Suppress urllib3 connection pool logging to prevent "Closing connection" messages
+# This affects all providers using HTTPManager
+logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
 
 
 class HTTPManager:
