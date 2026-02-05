@@ -743,13 +743,14 @@ class UltimateService:
                     # Map all video (will be just one due to highest_quality_only), all audio, and optional subtitles
                     ffmpeg_cmd = (
                         f'pipe://ffmpeg -loglevel fatal '
-                        f'-fflags +genpts+igndts+discardcorrupt '
-                        f'-err_detect ignore_err '
+                        f'-fflags +genpts+discardcorrupt '
+                        f'-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 2 '
                         f'-i "{stream_url}" '
-                        f'-map 0:v -map 0:a? -map 0:s? '
-                        f'-c:v copy -c:a copy '
-                        f'-max_interleave_delta 0 '
+                        f'-map 0:v -map 0:a? '
+                        f'-c copy '
+                        f'-bsf:v h264_mp4toannexb '
                         f'-f mpegts '
+                        f'-mpegts_flags resend_headers '
                         f'-metadata service_name="{channel_name}" '
                         f'pipe:1'
                     )
