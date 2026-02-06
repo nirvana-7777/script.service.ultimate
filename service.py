@@ -748,7 +748,6 @@ class UltimateService:
                         f'-i "{stream_url}" '
                         f'-map 0:v -map 0:a? '
                         f'-c copy '
-                        f'-bsf:v h264_mp4toannexb '
                         f'-f mpegts '
                         f'-mpegts_flags resend_headers '
                         f'-metadata service_name="{channel_name}" '
