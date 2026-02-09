@@ -742,14 +742,16 @@ class UltimateService:
                     # Build ffmpeg pipe command
                     # Map all video (will be just one due to highest_quality_only), all audio, and optional subtitles
                     ffmpeg_cmd = (
-                        f'pipe://ffmpeg -loglevel fatal '
-                        f'-fflags +genpts+discardcorrupt '
-                        f'-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 2 '
+                        f'ffmpeg -loglevel fatal '
+                        f'-probesize 32 -analyzeduration 0 '
+                        f'-fflags +genpts+discardcorrupt+nobuffer '
+                        f'-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 1 '
                         f'-i "{stream_url}" '
                         f'-map 0:v -map 0:a? '
                         f'-c copy '
                         f'-avoid_negative_ts make_zero '
                         f'-f mpegts '
+                        f'-muxdelay 0 '
                         f'-flush_packets 1 '
                         f'-use_wallclock_as_timestamps 1 '
                         f'-mpegts_flags resend_headers '
