@@ -376,119 +376,211 @@ class M3UProvider(StreamingProvider):
         """
         Parse DRM configuration from attributes and properties
 
+        Handles:
+        - Widevine/PlayReady/FairPlay via license_url
+        - ClearKey via both JWK format and Kodi shorthand format
+        - Multi-key ClearKey (video/audio/subtitle tracks)
+        - Strict 128-bit hex validation (32 hex chars = 16 bytes)
+
         Returns:
             DRMConfig object if DRM detected, None otherwise
         """
+        keyids: Dict[str, str] = {}  # Unified storage for ALL ClearKey KID:key pairs
         server_url = None
         drm_system_str = None
-        clearkey = None
-        clearkey_data = {}  # Store full ClearKey JSON data
+        raw_license_json = None
 
-        # Check DRM attributes
+        # ============================================================================
+        # STEP 1: Extract DRM attributes from EXTINF line attributes
+        # ============================================================================
         for attr_key, attr_value in attributes.items():
             if attr_key in DRM_ATTRIBUTES:
                 mapped_key = DRM_ATTRIBUTES[attr_key]
                 if mapped_key == "license_url":
-                    server_url = attr_value
+                    server_url = attr_value.strip() if attr_value else None
                 elif mapped_key == "drm_system":
-                    drm_system_str = attr_value.lower()
-                elif mapped_key == "clearkey":
-                    clearkey = attr_value
-                    # Assume it's ClearKey if clearkey attribute is present
+                    drm_system_str = attr_value.lower().strip() if attr_value else None
+
+        # ============================================================================
+        # STEP 2: Extract DRM properties from KODIPROP/EXTVLCOPT
+        # ============================================================================
+        # Check license_type first (determines DRM system)
+        license_type_prop = (
+                properties.get("inputstream.adaptive.license_type") or
+                properties.get("inputstream.adaptive.licensetype")
+        )
+        if license_type_prop:
+            drm_system_str = license_type_prop.lower().strip()
+
+        # Check license_key (contains ClearKey JSON or license server URL)
+        license_key_prop = (
+                properties.get("inputstream.adaptive.license_key") or
+                properties.get("inputstream.adaptive.licensekey")
+        )
+        if license_key_prop:
+            license_key_prop = license_key_prop.strip()
+
+            # Handle pipe-delimited format: URL|headers|post_data|response_data
+            if "|" in license_key_prop and not (
+                    license_key_prop.startswith("{") and license_key_prop.endswith("}")
+            ):
+                parts = license_key_prop.split("|", 3)
+                server_url = parts[0].strip() if parts[0].strip() else None
+
+            # Handle JSON format (ClearKey only)
+            elif license_key_prop.startswith("{") and license_key_prop.endswith("}"):
+                try:
+                    import json, base64
+                    raw_license_json = json.loads(license_key_prop)
+
+                    # FORMAT 1: JWK format {"keys": [{"kid": "base64_kid", "k": "base64_key"}, ...]}
+                    if "keys" in raw_license_json and isinstance(raw_license_json["keys"], list):
+                        for entry in raw_license_json["keys"]:
+                            if not (isinstance(entry, dict) and "kid" in entry and "k" in entry):
+                                continue
+
+                            try:
+                                # Decode base64 KID → 128-bit hex (32 chars)
+                                kid_b64 = entry["kid"].replace("-", "+").replace("_", "/")
+                                kid_b64 += "=" * (-len(kid_b64) % 4)  # Pad for base64
+                                kid_bytes = base64.b64decode(kid_b64)
+                                if len(kid_bytes) != 16:
+                                    logger.warning(f"Invalid KID length: {len(kid_bytes)} bytes (expected 16)")
+                                    continue
+                                kid_hex = kid_bytes.hex().lower()
+
+                                # Decode base64 key → 128-bit hex (32 chars)
+                                key_b64 = entry["k"].replace("-", "+").replace("_", "/")
+                                key_b64 += "=" * (-len(key_b64) % 4)
+                                key_bytes = base64.b64decode(key_b64)
+                                if len(key_bytes) != 16:
+                                    logger.warning(f"Invalid KEY length: {len(key_bytes)} bytes (expected 16)")
+                                    continue
+                                key_hex = key_bytes.hex().lower()
+
+                                keyids[kid_hex] = key_hex
+                                logger.debug(f"Parsed JWK ClearKey: KID={kid_hex}, KEY=*** (128-bit)")
+
+                            except Exception as e:
+                                logger.warning(f"Failed to decode JWK entry: {e}")
+                                continue
+
+                    # FORMAT 2: Kodi shorthand {"kid_hex": "key_hex", ...} (raw 128-bit hex)
+                    elif isinstance(raw_license_json, dict):
+                        valid_hex = set("0123456789abcdefABCDEF")
+                        for kid, key in raw_license_json.items():
+                            # Validate 128-bit hex format (32 hex chars = 16 bytes)
+                            if (
+                                    isinstance(kid, str) and len(kid) == 32 and
+                                    all(c in valid_hex for c in kid) and
+                                    isinstance(key, str) and len(key) == 32 and
+                                    all(c in valid_hex for c in key)
+                            ):
+                                keyids[kid.lower()] = key.lower()
+                                logger.debug(f"Parsed Kodi ClearKey: KID={kid.lower()}, KEY=*** (128-bit)")
+                            else:
+                                logger.warning(
+                                    f"Invalid ClearKey hex format: KID='{kid}' ({len(kid)} chars), "
+                                    f"KEY='{key}' ({len(key)} chars) - skipping"
+                                )
+
+                    # Special case: single key without "keys" wrapper (rare)
+                    elif "kid" in raw_license_json and "k" in raw_license_json:
+                        try:
+                            kid_b64 = raw_license_json["kid"].replace("-", "+").replace("_", "/")
+                            kid_b64 += "=" * (-len(kid_b64) % 4)
+                            kid_bytes = base64.b64decode(kid_b64)
+                            if len(kid_bytes) == 16:
+                                kid_hex = kid_bytes.hex().lower()
+
+                                key_b64 = raw_license_json["k"].replace("-", "+").replace("_", "/")
+                                key_b64 += "=" * (-len(key_b64) % 4)
+                                key_bytes = base64.b64decode(key_b64)
+                                if len(key_bytes) == 16:
+                                    key_hex = key_bytes.hex().lower()
+                                    keyids[kid_hex] = key_hex
+                                    logger.debug(f"Parsed single-key ClearKey: KID={kid_hex}, KEY=***")
+                        except Exception as e:
+                            logger.warning(f"Failed to decode single-key JWK: {e}")
+
+                except json.JSONDecodeError as e:
+                    logger.debug(f"Invalid JSON in license_key (treating as URL): {e}")
+                    # Fallback: treat entire value as license server URL
+                    server_url = license_key_prop.split("|")[0].strip() if "|" in license_key_prop else license_key_prop
+
+        # ============================================================================
+        # STEP 3: Determine DRM system using centralized mapping
+        # ============================================================================
+        # Auto-detect if not explicitly set
+        if not drm_system_str:
+            if keyids:  # ClearKey detected via keyids
+                drm_system_str = "clearkey"
+            elif server_url:
+                url_lower = server_url.lower()
+                if "clearkey" in url_lower:
                     drm_system_str = "clearkey"
-
-        # Check Kodi/VLC properties
-        for prop_key, prop_value in properties.items():
-            if "license_key" in prop_key:
-                # Check if it's JSON format (either ClearKey format)
-                prop_value_stripped = prop_value.strip()
-                if prop_value_stripped.startswith("{") and prop_value_stripped.endswith("}"):
-                    try:
-                        import json
-                        license_json = json.loads(prop_value)
-
-                        # Check for ClearKey format 1: {"keys":[{"kty":"oct","kid":"...","k":"..."}]}
-                        if "keys" in license_json and isinstance(license_json["keys"], list):
-                            if len(license_json["keys"]) > 0:
-                                # Extract the key from the first entry
-                                first_key = license_json["keys"][0]
-                                if isinstance(first_key, dict) and "k" in first_key:
-                                    clearkey = first_key["k"]
-                                    clearkey_data = license_json
-
-                        # Check for ClearKey format 2: {"kid1":"key1", "kid2":"key2"}
-                        elif all(len(k) == 32 for k in license_json.keys()):  # 32 chars = 128 bits in hex
-                            # This is likely a ClearKey format with kid:key pairs
-                            # Use the first key-value pair
-                            for kid, key in license_json.items():
-                                clearkey = key
-                                clearkey_data = {"keys": [{"k": key, "kid": kid}]}
-                                break
-
-                        # If we found a ClearKey, mark as ClearKey system
-                        if clearkey:
-                            drm_system_str = "clearkey"
-
-                    except (json.JSONDecodeError, AttributeError) as e:
-                        logger.debug(f"M3U: Failed to parse license_key as JSON: {e}")
-                        # Not JSON, treat as URL/headers format
-                        server_url = prop_value.split("|")[0] if "|" in prop_value else prop_value
-                else:
-                    # Not JSON, treat as URL/headers format
-                    server_url = prop_value.split("|")[0] if "|" in prop_value else prop_value
-
-            elif "license_type" in prop_key:
-                drm_system_str = prop_value.lower()
-
-        # Create DRM config if we found DRM information
-        if server_url or clearkey:
-            # Determine DRM system (prioritize license_type if specified)
-            if not drm_system_str:
-                if clearkey:
-                    drm_system_str = "clearkey"
-                elif server_url and "clearkey" in server_url.lower():
-                    drm_system_str = "clearkey"
-                elif server_url and "widevine" in server_url.lower():
+                elif "widevine" in url_lower:
                     drm_system_str = "widevine"
+                elif "playready" in url_lower:
+                    drm_system_str = "playready"
+                elif "fairplay" in url_lower or "skd://" in url_lower:
+                    drm_system_str = "fairplay"
                 else:
                     drm_system_str = "widevine"  # Default assumption
 
-            # Map to DRMSystem enum
-            drm_system_mapping = {
-                "widevine": DRMSystem.WIDEVINE,
-                "com.widevine.alpha": DRMSystem.WIDEVINE,
-                "playready": DRMSystem.PLAYREADY,
-                "com.microsoft.playready": DRMSystem.PLAYREADY,
-                "clearkey": DRMSystem.CLEARKEY,
-                "org.w3.clearkey": DRMSystem.CLEARKEY,
-                "fairplay": DRMSystem.FAIRPLAY,
-                "com.apple.fps": DRMSystem.FAIRPLAY,
-                "wiseplay": DRMSystem.WISEPLAY,
-                "com.huawei.wiseplay": DRMSystem.WISEPLAY,
-            }
+        # Resolve alias → enum using centralized mapping
+        drm_system = DRMSystem.from_alias(drm_system_str) or DRMSystem.WIDEVINE
 
-            drm_system = drm_system_mapping.get(
-                drm_system_str, DRMSystem.WIDEVINE
+        # ============================================================================
+        # STEP 4: Create LicenseConfig with proper fields (NO 'clearkey' field!)
+        # ============================================================================
+        license_config = None
+
+        if drm_system == DRMSystem.CLEARKEY and keyids:
+            # Strict 128-bit hex validation before creating config
+            valid_keyids = {}
+            for kid, key in keyids.items():
+                if len(kid) != 32 or not all(c in "0123456789abcdef" for c in kid):
+                    logger.warning(f"Invalid KID format (not 128-bit hex): {kid}")
+                    continue
+                if len(key) != 32 or not all(c in "0123456789abcdef" for c in key):
+                    logger.warning(f"Invalid KEY format (not 128-bit hex): {key}")
+                    continue
+                valid_keyids[kid] = key
+
+            if not valid_keyids:
+                logger.warning("ClearKey DRM detected but no valid 128-bit hex keys found")
+                return None
+
+            license_config = LicenseConfig(
+                server_url=server_url,  # Optional fallback license server
+                keyids=valid_keyids,  # ← CORRECT FIELD (Dict[str, str] of 128-bit hex pairs)
+            )
+        else:
+            # Non-ClearKey DRM or ClearKey without keys (license server only)
+            license_config = LicenseConfig(
+                server_url=server_url,
             )
 
-            # Create LicenseConfig based on DRM system
-            if drm_system == DRMSystem.CLEARKEY:
-                license_config = LicenseConfig(
-                    clearkey=clearkey,
-                    server_url=server_url,
-                    additional_data=clearkey_data if clearkey_data else None
-                )
-            else:
-                license_config = LicenseConfig(
-                    server_url=server_url,
-                )
+        # ============================================================================
+        # STEP 5: Final validation and return
+        # ============================================================================
+        if not server_url and not (drm_system == DRMSystem.CLEARKEY and keyids):
+            # No usable DRM configuration
+            return None
 
-            return DRMConfig(
-                system=drm_system,
-                license=license_config,
-            )
+        try:
+            # Validate before returning (will raise on invalid hex formats)
+            if license_config:
+                license_config.validate()
+        except ValueError as e:
+            logger.warning(f"Invalid DRM configuration: {e}")
+            return None
 
-        return None
+        return DRMConfig(
+            system=drm_system,
+            license=license_config,
+        )
 
     def _parse_channel_entry(
             self,

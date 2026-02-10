@@ -40,6 +40,51 @@ class DRMSystem(str, Enum):
         }
         return uuid_mapping.get(uuid_lower)
 
+    @classmethod
+    def from_alias(cls, alias: str) -> Optional["DRMSystem"]:
+        """
+        Resolve DRM system from human-friendly alias or UUID
+
+        Handles:
+        - Short aliases: "clearkey", "widevine", "playready", "fairplay", "wiseplay"
+        - Full Android identifiers: "com.widevine.alpha", "org.w3.clearkey", etc.
+        - UUIDs (with or without hyphens): "edef8ba9-79d6-4ace-a3c8-27dcd51d21ed"
+
+        Returns:
+            DRMSystem enum value or None if unrecognized
+        """
+        alias_lower = alias.lower().strip().replace("-", "")
+
+        alias_mapping = {
+            # Widevine
+            "widevine": cls.WIDEVINE,
+            "com.widevine.alpha": cls.WIDEVINE,
+            "edef8ba979d64acea3c827dcd51d21ed": cls.WIDEVINE,
+            # PlayReady
+            "playready": cls.PLAYREADY,
+            "com.microsoft.playready": cls.PLAYREADY,
+            "9a04f07998404286ab92e65be0885f95": cls.PLAYREADY,
+            # ClearKey
+            "clearkey": cls.CLEARKEY,
+            "org.w3.clearkey": cls.CLEARKEY,
+            "e2719d58a985b3c9781ab030af78d30e": cls.CLEARKEY,
+            # FairPlay
+            "fairplay": cls.FAIRPLAY,
+            "com.apple.fps": cls.FAIRPLAY,
+            "skd": cls.FAIRPLAY,
+            "94ce86fb07ff4f43adb893d2fa968ca2": cls.FAIRPLAY,
+            # WisePlay
+            "wiseplay": cls.WISEPLAY,
+            "com.huawei.wiseplay": cls.WISEPLAY,
+            "3d5e6d359b9a41e8b843dd3c6e72c42c": cls.WISEPLAY,
+            # Generic/None
+            "generic": cls.GENERIC,
+            "none": cls.NONE,
+            "unencrypted": cls.NONE,
+        }
+
+        return alias_mapping.get(alias_lower)
+
 
 class WrapperType(str, Enum):
     BASE64 = "base64"
