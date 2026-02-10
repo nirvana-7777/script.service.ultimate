@@ -382,6 +382,7 @@ class M3UProvider(StreamingProvider):
         server_url = None
         drm_system_str = None
         clearkey = None
+        clearkey_data = {}  # Store full ClearKey JSON data
 
         # Check DRM attributes
         for attr_key, attr_value in attributes.items():
@@ -393,22 +394,61 @@ class M3UProvider(StreamingProvider):
                     drm_system_str = attr_value.lower()
                 elif mapped_key == "clearkey":
                     clearkey = attr_value
+                    # Assume it's ClearKey if clearkey attribute is present
+                    drm_system_str = "clearkey"
 
         # Check Kodi/VLC properties
         for prop_key, prop_value in properties.items():
-            if "license_key" in prop_key or "license_url" in prop_key:
-                # Kodi format: URL|Headers|R{SSM}|
-                server_url = prop_value.split("|")[0] if "|" in prop_value else prop_value
+            if "license_key" in prop_key:
+                # Check if it's JSON format (either ClearKey format)
+                prop_value_stripped = prop_value.strip()
+                if prop_value_stripped.startswith("{") and prop_value_stripped.endswith("}"):
+                    try:
+                        import json
+                        license_json = json.loads(prop_value)
+
+                        # Check for ClearKey format 1: {"keys":[{"kty":"oct","kid":"...","k":"..."}]}
+                        if "keys" in license_json and isinstance(license_json["keys"], list):
+                            if len(license_json["keys"]) > 0:
+                                # Extract the key from the first entry
+                                first_key = license_json["keys"][0]
+                                if isinstance(first_key, dict) and "k" in first_key:
+                                    clearkey = first_key["k"]
+                                    clearkey_data = license_json
+
+                        # Check for ClearKey format 2: {"kid1":"key1", "kid2":"key2"}
+                        elif all(len(k) == 32 for k in license_json.keys()):  # 32 chars = 128 bits in hex
+                            # This is likely a ClearKey format with kid:key pairs
+                            # Use the first key-value pair
+                            for kid, key in license_json.items():
+                                clearkey = key
+                                clearkey_data = {"keys": [{"k": key, "kid": kid}]}
+                                break
+
+                        # If we found a ClearKey, mark as ClearKey system
+                        if clearkey:
+                            drm_system_str = "clearkey"
+
+                    except (json.JSONDecodeError, AttributeError) as e:
+                        logger.debug(f"M3U: Failed to parse license_key as JSON: {e}")
+                        # Not JSON, treat as URL/headers format
+                        server_url = prop_value.split("|")[0] if "|" in prop_value else prop_value
+                else:
+                    # Not JSON, treat as URL/headers format
+                    server_url = prop_value.split("|")[0] if "|" in prop_value else prop_value
+
             elif "license_type" in prop_key:
                 drm_system_str = prop_value.lower()
 
-        # Create DRM config if license URL found
-        if server_url:
-            # Determine DRM system
+        # Create DRM config if we found DRM information
+        if server_url or clearkey:
+            # Determine DRM system (prioritize license_type if specified)
             if not drm_system_str:
-                if "clearkey" in server_url.lower():
+                if clearkey:
                     drm_system_str = "clearkey"
-                elif "widevine" in server_url.lower():
+                elif server_url and "clearkey" in server_url.lower():
+                    drm_system_str = "clearkey"
+                elif server_url and "widevine" in server_url.lower():
                     drm_system_str = "widevine"
                 else:
                     drm_system_str = "widevine"  # Default assumption
@@ -431,9 +471,17 @@ class M3UProvider(StreamingProvider):
                 drm_system_str, DRMSystem.WIDEVINE
             )
 
-            license_config = LicenseConfig(
-                server_url=server_url,
-            )
+            # Create LicenseConfig based on DRM system
+            if drm_system == DRMSystem.CLEARKEY:
+                license_config = LicenseConfig(
+                    clearkey=clearkey,
+                    server_url=server_url,
+                    additional_data=clearkey_data if clearkey_data else None
+                )
+            else:
+                license_config = LicenseConfig(
+                    server_url=server_url,
+                )
 
             return DRMConfig(
                 system=drm_system,
