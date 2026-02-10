@@ -732,9 +732,10 @@ class M3UProvider(StreamingProvider):
             # ============================================================================
             # STEP 1: Parse URL and extract headers if present (pipe-delimited format)
             # ============================================================================
+            # Split on pipe to separate URL from headers
             manifest_parts = manifest_url.strip().split("|", 1)
             clean_url = manifest_parts[0].strip()
-            url_headers = manifest_parts[1].strip() if len(manifest_parts) > 1 else None
+            url_headers_raw = manifest_parts[1].strip() if len(manifest_parts) > 1 else None
 
             # Parse attributes from EXTINF line
             attributes = self._parse_attributes(extinf_line)
@@ -745,16 +746,14 @@ class M3UProvider(StreamingProvider):
             # Build channel data
             channel_data = {
                 "name": channel_name,
-                "manifest": clean_url,  # Use cleaned URL without headers
+                "manifest": clean_url,  # Store clean URL without headers
                 "provider": self.provider_name,
                 "country": self.country,
                 "language": DEFAULT_LANGUAGE,
                 "description": f"Source: {source_file}",  # Track source file
             }
 
-            # ============================================================================
-            # STEP 2: Map TVG attributes
-            # ============================================================================
+            # Map TVG attributes
             for tvg_key, mapped_key in TVG_ATTRIBUTES.items():
                 if tvg_key in attributes:
                     value = attributes[tvg_key]
@@ -769,9 +768,7 @@ class M3UProvider(StreamingProvider):
 
                     channel_data[mapped_key] = value
 
-            # ============================================================================
-            # STEP 3: Map custom attributes
-            # ============================================================================
+            # Map custom attributes
             for custom_key, mapped_key in CUSTOM_ATTRIBUTES.items():
                 if custom_key in attributes and mapped_key not in channel_data:
                     channel_data[mapped_key] = attributes[custom_key]
@@ -804,50 +801,46 @@ class M3UProvider(StreamingProvider):
                 channel_data["quality"] = quality
 
             # ============================================================================
-            # STEP 4: Parse DRM configuration
+            # STEP 2: Parse DRM configuration
             # ============================================================================
             drm_config = self._parse_drm_config(attributes, properties)
+
+            # If URL has headers, add them to the DRM configuration
+            if drm_config and drm_config.license and url_headers_raw:
+                # Parse headers from format: header1="value1" header2="value2"
+                # Convert to standard format: header1: value1&header2: value2
+                header_lines = []
+
+                # Use regex to find all header="value" pairs
+                header_matches = re.findall(r'(\S+?)="([^"]*)"', url_headers_raw)
+
+                for header_name, header_value in header_matches:
+                    header_lines.append(f"{header_name}: {header_value}")
+
+                # Also handle any headers without quotes (unlikely but possible)
+                remaining = url_headers_raw
+                for match in header_matches:
+                    remaining = remaining.replace(f'{match[0]}="{match[1]}"', '')
+
+                # Split remaining by space and look for key=value pairs
+                for part in remaining.split():
+                    if part and '=' in part:
+                        key, value = part.split('=', 1)
+                        header_lines.append(f"{key}: {value}")
+
+                if header_lines:
+                    headers_str = "&".join(header_lines)
+                    if drm_config.license.req_headers:
+                        # Merge with existing headers
+                        drm_config.license.req_headers += "&" + headers_str
+                    else:
+                        drm_config.license.req_headers = headers_str
+
             if drm_config:
-                # If URL has headers, add them to the DRM configuration
-                if url_headers and drm_config.license:
-                    # Combine existing headers with URL headers
-                    existing_headers = drm_config.license.req_headers or ""
-                    if existing_headers and not existing_headers.endswith("&"):
-                        existing_headers += "&"
-
-                    # Parse URL headers (they're usually in format header="value")
-                    # Convert to standard HTTP header format: header: value
-                    header_parts = []
-                    # Parse quoted headers like user-agent="Mozilla/5.0..."
-                    header_matches = re.findall(r'(\S+?)="([^"]*)"', url_headers)
-                    for header_name, header_value in header_matches:
-                        header_parts.append(f"{header_name}: {header_value}")
-
-                    # Also handle unquoted values if any
-                    # Split by space and parse key=value pairs
-                    remaining_parts = url_headers
-                    for quoted_match in header_matches:
-                        remaining_parts = remaining_parts.replace(f'{quoted_match[0]}="{quoted_match[1]}"', '')
-
-                    unquoted_parts = [p for p in remaining_parts.split() if '=' in p]
-                    for part in unquoted_parts:
-                        if '=' in part:
-                            key, val = part.split('=', 1)
-                            header_parts.append(f"{key}: {val}")
-
-                    if header_parts:
-                        new_headers = "&".join(header_parts)
-                        if existing_headers:
-                            drm_config.license.req_headers = existing_headers + new_headers
-                        else:
-                            drm_config.license.req_headers = new_headers
-
                 channel_data["drm_config"] = drm_config
                 channel_data["use_cdm"] = True
 
-            # ============================================================================
-            # STEP 5: Apply default configuration
-            # ============================================================================
+            # Apply default configuration
             for key, value in DEFAULT_CHANNEL_CONFIG.items():
                 if key not in channel_data:
                     channel_data[key] = value
