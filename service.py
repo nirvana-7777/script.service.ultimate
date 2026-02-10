@@ -648,8 +648,18 @@ class UltimateService:
                     # Build decrypted stream URL
                     stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/decrypted/index.mpd"
 
-                    # Add M3U entry
-                    m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
+                    # Get catchup information
+                    catchup_window = getattr(channel, 'catchup_window', 0)
+                    catchup_source = getattr(channel, 'catchup_source', 'default')
+
+                    import math
+                    # Add M3U entry with catchup tags if available
+                    if catchup_window > 0:
+                        catchup_days = math.ceil(catchup_window / 24)
+                        m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}" catchup="{catchup_source}" catchup-days="{catchup_days}",{channel_name}\n'
+                    else:
+                        m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
+
                     m3u_content += "#KODIPROP:inputstream=inputstream.adaptive\n"
                     m3u_content += f"{stream_url}\n"
 
@@ -1024,8 +1034,18 @@ class UltimateService:
             # Fallback to provider_name if provider_label is not available
             provider_label = provider_name
 
-        # Add M3U entry with extended info first
-        entry_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
+        # Get catchup information from channel
+        catchup_window = getattr(channel, 'catchup_window', 0)  # in hours
+        catchup_source = getattr(channel, 'catchup_source', 'default')
+
+        # Build EXTINF line with catchup tags if available
+        import math
+        if catchup_window > 0:
+            # Convert hours to days (ceil to ensure full coverage)
+            catchup_days = math.ceil(catchup_window / 24)
+            entry_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}" catchup="{catchup_source}" catchup-days="{catchup_days}",{channel_name}\n'
+        else:
+            entry_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
 
         # Get DRM configs and add KODIPROP directives
         try:
@@ -1049,12 +1069,12 @@ class UltimateService:
 
     @staticmethod
     def _generate_m3u_decrypted_channel_entry(
-        base_url,
-        provider_name,
-        provider_label,
-        channel,
-        clearkey_data,
-        provider_proxy_url,
+            base_url,
+            provider_name,
+            provider_label,
+            channel,
+            clearkey_data,
+            provider_proxy_url,
     ):
         """
         Generate M3U entry for a ClearKey encrypted channel with decryption URL.
@@ -1080,8 +1100,18 @@ class UltimateService:
         # Format: /api/providers/{provider}/channels/{channel_id}/stream/decrypted/index.mpd
         stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/decrypted/index.mpd"
 
-        # Add M3U entry with extended info
-        entry_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
+        # Get catchup information from channel
+        catchup_window = getattr(channel, 'catchup_window', 0)  # in hours
+        catchup_source = getattr(channel, 'catchup_source', 'default')
+
+        import math
+        # Build EXTINF line with catchup tags if available
+        if catchup_window > 0:
+            # Convert hours to days (ceil to ensure full coverage)
+            catchup_days = math.ceil(catchup_window / 24)
+            entry_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}" catchup="{catchup_source}" catchup-days="{catchup_days}",{channel_name}\n'
+        else:
+            entry_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
 
         # Add KODIPROP for inputstream.adaptive (still needed for DASH playback)
         entry_content += "#KODIPROP:inputstream=inputstream.adaptive\n"
