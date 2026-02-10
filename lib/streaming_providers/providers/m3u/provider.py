@@ -1196,8 +1196,12 @@ class M3UProvider(StreamingProvider):
         channels = self.get_channels()
         for channel in channels:
             if channel.channel_id == channel_id:
-                if channel.drm_config:
+                if channel.drm_config is not None:
+                    # Return as a list for consistency
                     return [channel.drm_config]
+                break  # Found channel but no DRM config
+
+        # Return empty list if no config found
         return []
 
     def get_dynamic_manifest_params(
