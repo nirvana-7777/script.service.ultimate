@@ -663,8 +663,15 @@ class M3UProvider(StreamingProvider):
         for i, line in enumerate(lines):
             line = line.strip()
 
-            # Skip empty lines and comments (except directives)
-            if not line or (line.startswith("#") and not line.startswith("#EXT")):
+            # Replace the skip block with:
+            if not line:
+                continue
+            # Skip ONLY pure comment lines (not directives)
+            if line.startswith("#") and not (
+                    line.startswith("#EXT") or
+                    line.startswith("#KODIPROP:") or  # ← CRITICAL: colon required
+                    line.startswith("#EXTVLCOPT:")  # ← CRITICAL: colon required
+            ):
                 continue
 
             # Parse EXTINF line
