@@ -191,19 +191,18 @@ class DRMOperations:
                 provider_name, channel_id, cache_key, manifest_content, **kwargs
             )
 
-            if generic_configs:  # Plugin successfully generated configs
-                logger.info(f"Phase 1: GENERIC plugin generated {len(generic_configs)} configs for '{channel_id}'")
+            # Only use generic configs if they contain actual DRM systems (not just NONE)
+            if generic_configs and any(config.system != DRMSystem.NONE for config in generic_configs):
+                logger.info(f"Phase 1: Generated {len(generic_configs)} configs via GENERIC plugin")
 
-                # Cache if contains ClearKey
                 if self._has_clearkey_config(generic_configs):
-                    logger.info(f"Caching ClearKey DRM configs from GENERIC plugin for '{channel_id}'")
                     self.drm_config_cache.set(cache_key, generic_configs)
 
                 return generic_configs
             else:
-                logger.debug(f"Phase 1: GENERIC plugin returned no configs, proceeding to provider")
+                logger.debug(f"Phase 1: No actual DRM configs from GENERIC plugin, proceeding to provider")
 
-        # Step 3: Get configs from provider (GENERIC plugins didn't provide configs)
+        # Step 3: Get provider's DRM configs (PHASE 2 entry point)
         drm_configs = provider.get_drm(channel_id, **kwargs)
 
         # Step 3a: Check for unencrypted streams (provider returned empty configs)
