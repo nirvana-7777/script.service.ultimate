@@ -78,6 +78,7 @@ class M3UProvider(StreamingProvider):
             country: str = DEFAULT_COUNTRY,
             config_dir: Optional[str] = None,
             m3u_filename: Optional[str] = None,
+            group_filter: Optional[str] = None,
             proxy_config: Optional[ProxyConfig] = None,
             proxy_url: Optional[str] = None,
             cache_ttl: int = DEFAULT_CACHE_TTL,
@@ -91,6 +92,7 @@ class M3UProvider(StreamingProvider):
             country: Country code (default: XX for international)
             config_dir: Configuration directory path
             m3u_filename: Specific M3U filename (if None, auto-discovers all *.m3u files)
+            group_filter: Filter to specific group-title (becomes provider name/label)
             proxy_config: Proxy configuration object
             proxy_url: Proxy URL string
             cache_ttl: Cache time-to-live in seconds
@@ -101,6 +103,9 @@ class M3UProvider(StreamingProvider):
             M3U_PLAYLISTS_PATH: Directory containing M3U files (overrides config_dir)
         """
         super().__init__(country=country)
+
+        # Store group filter - this determines provider name/label
+        self.group_filter = group_filter
 
         # Determine playlist directory from environment or config_dir
         playlists_path = os.environ.get(ENV_M3U_PLAYLISTS_PATH)
@@ -127,7 +132,7 @@ class M3UProvider(StreamingProvider):
 
         # Setup HTTP manager for potential future use
         self.http_manager = self._setup_http_manager(
-            provider_name="m3u",
+            provider_name=self._get_base_provider_name(),  # Use base name for http manager
             proxy_config=proxy_config,
             proxy_url=proxy_url,
             config_dir=config_dir,
@@ -156,21 +161,52 @@ class M3UProvider(StreamingProvider):
         self._discovered_files = self._discover_m3u_files()
         if self._discovered_files:
             logger.info(
-                f"M3U: Discovered {len(self._discovered_files)} playlist file(s): "
+                f"M3U ({self.provider_label}): Discovered {len(self._discovered_files)} playlist file(s): "
                 f"{', '.join(self._discovered_files)}"
             )
         else:
             logger.warning(
-                f"M3U: No playlist files found in {self.playlists_dir}. "
+                f"M3U ({self.provider_label}): No playlist files found in {self.playlists_dir}. "
                 f"Provider initialized but get_channels() will return empty list."
             )
 
+    @staticmethod
+    def _get_base_provider_name() -> str:
+        """Get base provider name (always 'm3u') for internal use"""
+        return "m3u"
+
     @property
     def provider_name(self) -> str:
+        """
+        Provider name is the cleaned group-title if filtering, otherwise 'm3u'
+
+        This allows each group to be a separate provider instance.
+        Examples:
+            - "News" -> "news"
+            - "Sports & Entertainment" -> "sports_entertainment"
+            - "Radio Stations" -> "radio_stations"
+        """
+        if self.group_filter:
+            # Clean group name for provider identifier
+            # Remove special characters, lowercase, replace spaces with underscores
+            clean_name = re.sub(r'[^a-z0-9\s]+', '', self.group_filter.lower())
+            clean_name = re.sub(r'\s+', '_', clean_name).strip('_')
+            return clean_name if clean_name else "m3u"
         return "m3u"
 
     @property
     def provider_label(self) -> str:
+        """
+        Provider label is the group-title as-is if filtering
+
+        This is what users see in the UI.
+        Examples:
+            - "News"
+            - "Sports & Entertainment"
+            - "Radio Stations"
+        """
+        if self.group_filter:
+            return self.group_filter  # Use group title directly
         return self.PROVIDER_LABEL
 
     @property
@@ -235,6 +271,94 @@ class M3UProvider(StreamingProvider):
             )
 
         return discovered
+
+    @staticmethod
+    def discover_groups(config_dir: Optional[str] = None) -> List[str]:
+        """
+        Discover all unique group-titles across all M3U files
+
+        This is used for dynamic provider registration - each group becomes a provider.
+
+        Args:
+            config_dir: Configuration directory path
+
+        Returns:
+            List of unique group names found across all M3U files
+        """
+        try:
+            # Determine playlists directory
+            playlists_path = os.environ.get(ENV_M3U_PLAYLISTS_PATH)
+            if playlists_path:
+                playlists_dir = playlists_path
+            elif config_dir:
+                playlists_dir = config_dir
+            else:
+                playlists_dir = "."
+
+            # Initialize VFS
+            vfs = get_vfs(config_dir=playlists_dir)
+
+            # Discover M3U files
+            discovered_files = []
+            for ext in ["*.m3u", "*.m3u8"]:
+                files = vfs.list_files("", pattern=ext)
+                discovered_files.extend(files)
+
+            discovered_files = sorted(set(discovered_files))
+
+            if not discovered_files:
+                logger.info(f"M3U: No playlist files found in {playlists_dir} for group discovery")
+                return []
+
+            # Parse all files and extract unique groups
+            groups = set()
+            encodings_to_try = [DEFAULT_ENCODING] + FALLBACK_ENCODINGS
+
+            for filename in discovered_files:
+                try:
+                    # Read file with encoding fallback
+                    content = None
+                    for enc in encodings_to_try:
+                        try:
+                            content = vfs.read_text(filename, encoding=enc)
+                            if content:
+                                break
+                        except UnicodeDecodeError:
+                            continue
+
+                    if not content:
+                        logger.warning(f"M3U: Could not read {filename} for group discovery")
+                        continue
+
+                    lines = content.splitlines()
+
+                    # Extract group-title attributes
+                    for line in lines:
+                        if line.strip().startswith(EXTINF_PREFIX):
+                            # Parse group-title attribute
+                            match = re.search(r'group-title="([^"]+)"', line, re.IGNORECASE)
+                            if match:
+                                group = match.group(1).strip()
+                                if group:
+                                    groups.add(group)
+                            else:
+                                # Try without quotes
+                                match = re.search(r'group-title=([^\s,]+)', line, re.IGNORECASE)
+                                if match:
+                                    group = match.group(1).strip()
+                                    if group:
+                                        groups.add(group)
+
+                except Exception as e:
+                    logger.warning(f"M3U: Error reading {filename} for group discovery: {e}")
+
+            groups_list = sorted(groups)
+            logger.info(f"M3U: Discovered {len(groups_list)} unique groups: {', '.join(groups_list)}")
+            return groups_list
+
+        except Exception as e:
+            logger.error(f"M3U: Error during group discovery: {e}")
+            return []
 
     # ============================================================================
     # M3U PARSING
@@ -370,8 +494,9 @@ class M3UProvider(StreamingProvider):
 
         return DEFAULT_QUALITY
 
+    @staticmethod
     def _parse_drm_config(
-            self, attributes: Dict[str, str], properties: Dict[str, str]
+            attributes: Dict[str, str], properties: Dict[str, str]
     ) -> Optional[DRMConfig]:
         """
         Parse DRM configuration from attributes and properties
@@ -886,23 +1011,25 @@ class M3UProvider(StreamingProvider):
         """
         Get channels from all M3U files with caching support
 
+        Filters to group_filter if specified (for group-based provider instances)
+
         Args:
             fetch_manifests: Not used (manifests are in M3U)
             populate_streaming_data: Not used (data is in M3U)
             force_refresh: Force re-parsing of M3U files
 
         Returns:
-            List of StreamingChannel objects from all M3U files
+            List of StreamingChannel objects from all M3U files (filtered by group if set)
         """
         # Check if refresh needed
         should_refresh = force_refresh or self._should_refresh_cache()
 
         # Return cached channels if valid
         if not should_refresh and self._channels_cache:
-            logger.debug("M3U: Returning channels from cache")
+            logger.debug(f"M3U ({self.provider_label}): Returning channels from cache")
             return self._channels_cache
 
-        logger.info("M3U: Cache expired or force refresh requested. Parsing M3U files...")
+        logger.info(f"M3U ({self.provider_label}): Cache expired or force refresh requested. Parsing M3U files...")
 
         try:
             # Reset aggregate statistics
@@ -931,15 +1058,27 @@ class M3UProvider(StreamingProvider):
                         self._file_mtimes[filename] = time.time()
 
                 except Exception as e:
-                    logger.error(f"M3U: Error parsing {filename}: {e}")
+                    logger.error(f"M3U ({self.provider_label}): Error parsing {filename}: {e}")
                     self._stats["errors"] += 1
+
+            # Filter by group if group_filter is set
+            if self.group_filter:
+                filtered_channels = [
+                    ch for ch in all_channels
+                    if ch.genre and ch.genre.strip().lower() == self.group_filter.strip().lower()
+                ]
+                logger.info(
+                    f"M3U ({self.provider_label}): Filtered {len(all_channels)} channels to "
+                    f"{len(filtered_channels)} matching group '{self.group_filter}'"
+                )
+                all_channels = filtered_channels
 
             # Update cache
             self._channels_cache = all_channels
             self._cache_timestamp = time.time()
 
             logger.info(
-                f"M3U: Parsed {self._stats['files_parsed']} file(s), "
+                f"M3U ({self.provider_label}): Parsed {self._stats['files_parsed']} file(s), "
                 f"loaded {len(all_channels)} total channels"
             )
 
@@ -948,7 +1087,7 @@ class M3UProvider(StreamingProvider):
         except Exception as e:
             # If parsing fails and we have cached data, return it
             if self._channels_cache:
-                logger.error(f"M3U: Failed to parse files: {e}. Serving stale cache.")
+                logger.error(f"M3U ({self.provider_label}): Failed to parse files: {e}. Serving stale cache.")
                 return self._channels_cache
             raise
 

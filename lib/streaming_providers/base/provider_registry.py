@@ -102,6 +102,89 @@ class ProviderMetadata:
         }
 
 
+class M3UGroupMetadata:
+    """
+    Specialized metadata for M3U group-based providers.
+
+    Unlike regular ProviderMetadata, this wraps an already-created instance
+    since M3U providers are instantiated with group_filter parameter.
+    """
+
+    def __init__(self, provider_instance, group: str, country: str, enabled: bool = False):
+        self.instance = provider_instance if enabled else None
+        self.group = group
+        self.country = country.lower()
+        self.enabled = enabled
+
+        # Extract metadata from the instance
+        self.name = provider_instance.provider_name
+        self.label = provider_instance.provider_label
+        self.plugin_name = "m3u"
+        self.is_multi_country = False
+
+        # Copy from provider class
+        self.supported_auth_types = provider_instance.supported_auth_types
+        self.logo = provider_instance.provider_logo
+        self.supported_countries = ["*"]  # M3U supports all countries
+        self.requires_credentials = False
+
+        # Store provider class for recreation
+        self.plugin_class = type(provider_instance)
+        self._provider_instance = provider_instance
+
+    def create_instance(self):
+        """Return existing instance or create new one"""
+        if not self.enabled:
+            return None
+
+        if self.instance is None:
+            try:
+                logger.info(f"Creating M3U group instance: {self.name} (group: {self.group})")
+                self.instance = self.plugin_class(
+                    country=self.country,
+                    group_filter=self.group
+                )
+                logger.debug(f"Successfully created instance for M3U group: {self.name}")
+            except Exception as e:
+                logger.error(f"Failed to create M3U group instance {self.name}: {e}")
+                self.instance = None
+
+        return self.instance
+
+    def destroy_instance(self):
+        """Clean up provider instance"""
+        if self.instance:
+            logger.debug(f"Destroying M3U group instance: {self.name}")
+            self.instance = None
+
+    def set_enabled(self, enabled: bool):
+        """Update enabled status and manage instance accordingly"""
+        self.enabled = enabled
+        if enabled and self.instance is None:
+            self.create_instance()
+        elif not enabled and self.instance is not None:
+            self.destroy_instance()
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert metadata to dictionary for API response"""
+        return {
+            "name": self.name,
+            "label": self.label,
+            "plugin": self.plugin_name,
+            "country": self.country.upper(),
+            "enabled": self.enabled,
+            "instance_ready": self.instance is not None,
+            "requires_credentials": self.requires_credentials,
+            "supported_auth_types": self.supported_auth_types,
+            "logo": self.logo,
+            "is_multi_country": self.is_multi_country,
+            "supported_countries": self.supported_countries,
+            # M3U-specific fields
+            "group": self.group,
+            "type": "m3u_group",
+        }
+
+
 class ProviderRegistry:
     """
     Core registry for provider discovery, metadata, and lifecycle management.
@@ -135,6 +218,12 @@ class ProviderRegistry:
         discovered = []
 
         for plugin_name, plugin_class in AVAILABLE_PROVIDERS.items():
+            # Special handling for M3U provider - discover groups
+            if plugin_name == "m3u":
+                discovered_groups = self._discover_m3u_groups(plugin_class, default_country)
+                discovered.extend(discovered_groups)
+                continue
+
             if plugin_class.supports_multiple_countries():
                 for country in plugin_class.get_static_supported_countries():
                     instance_name = f"{plugin_name}_{country}"
@@ -162,6 +251,80 @@ class ProviderRegistry:
                         self.providers[instance_name] = instance
 
         logger.info(f"ProviderRegistry: Discovered {len(discovered)} provider instances")
+        return discovered
+
+    def _discover_m3u_groups(self, plugin_class, default_country: str) -> List[str]:
+        """
+        Discover M3U groups and register each as a separate provider instance.
+
+        Each group-title in M3U files becomes an independent provider.
+
+        Args:
+            plugin_class: M3UProvider class
+            default_country: Default country code
+
+        Returns:
+            List of discovered provider instance names
+        """
+        discovered = []
+
+        try:
+            # Import M3UProvider to call static discovery method
+            from streaming_providers.providers.m3u import M3UProvider
+
+            # Discover all unique groups from M3U files
+            groups = M3UProvider.discover_groups(config_dir=None)
+
+            if not groups:
+                logger.info("M3U: No groups found in M3U files")
+                return discovered
+
+            logger.info(f"M3U: Discovered {len(groups)} groups: {', '.join(groups)}")
+
+            # Register each group as a separate provider
+            for group in groups:
+                # Create provider instance with group filter
+                try:
+                    provider_instance = M3UProvider(
+                        country=default_country,
+                        group_filter=group
+                    )
+
+                    # Use the provider's own name (which is based on cleaned group)
+                    instance_name = provider_instance.provider_name
+
+                    # Check if this group provider is enabled
+                    # Use base "m3u" for enable check (all groups share same enable status)
+                    enabled = self._is_provider_enabled("m3u", None)
+
+                    # Create custom metadata for M3U group provider
+                    metadata = M3UGroupMetadata(
+                        provider_instance,
+                        group,
+                        default_country,
+                        enabled
+                    )
+
+                    self.provider_metadata[instance_name] = metadata
+                    discovered.append(instance_name)
+
+                    # Create instance if enabled
+                    if enabled:
+                        self.providers[instance_name] = provider_instance
+
+                    logger.debug(f"M3U: Registered group provider '{instance_name}' (label: {group})")
+
+                except Exception as e:
+                    logger.error(f"M3U: Failed to create provider for group '{group}': {e}")
+                    continue
+
+            logger.info(f"M3U: Successfully registered {len(discovered)} group providers")
+
+        except ImportError:
+            logger.warning("M3U: M3UProvider not available for group discovery")
+        except Exception as e:
+            logger.error(f"M3U: Error during group discovery: {e}")
+
         return discovered
 
     def get_provider(self, provider_name: str) -> Optional[StreamingProvider]:
