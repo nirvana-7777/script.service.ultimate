@@ -720,7 +720,7 @@ class M3UProvider(StreamingProvider):
 
         Args:
             extinf_line: The #EXTINF line
-            manifest_url: The manifest/stream URL
+            manifest_url: The manifest/stream URL (may contain | separated headers)
             properties: Accumulated properties (KODIPROP, EXTVLCOPT)
             channel_number: Sequential channel number
             source_file: Source M3U filename
@@ -729,6 +729,13 @@ class M3UProvider(StreamingProvider):
             StreamingChannel object or None if parsing fails
         """
         try:
+            # ============================================================================
+            # STEP 1: Parse URL and extract headers if present (pipe-delimited format)
+            # ============================================================================
+            manifest_parts = manifest_url.strip().split("|", 1)
+            clean_url = manifest_parts[0].strip()
+            url_headers = manifest_parts[1].strip() if len(manifest_parts) > 1 else None
+
             # Parse attributes from EXTINF line
             attributes = self._parse_attributes(extinf_line)
 
@@ -738,14 +745,16 @@ class M3UProvider(StreamingProvider):
             # Build channel data
             channel_data = {
                 "name": channel_name,
-                "manifest": manifest_url.strip(),
+                "manifest": clean_url,  # Use cleaned URL without headers
                 "provider": self.provider_name,
                 "country": self.country,
                 "language": DEFAULT_LANGUAGE,
                 "description": f"Source: {source_file}",  # Track source file
             }
 
-            # Map TVG attributes
+            # ============================================================================
+            # STEP 2: Map TVG attributes
+            # ============================================================================
             for tvg_key, mapped_key in TVG_ATTRIBUTES.items():
                 if tvg_key in attributes:
                     value = attributes[tvg_key]
@@ -760,7 +769,9 @@ class M3UProvider(StreamingProvider):
 
                     channel_data[mapped_key] = value
 
-            # Map custom attributes
+            # ============================================================================
+            # STEP 3: Map custom attributes
+            # ============================================================================
             for custom_key, mapped_key in CUSTOM_ATTRIBUTES.items():
                 if custom_key in attributes and mapped_key not in channel_data:
                     channel_data[mapped_key] = attributes[custom_key]
@@ -778,7 +789,7 @@ class M3UProvider(StreamingProvider):
                 channel_data["channel_number"] = channel_number
 
             # Detect streaming format
-            streaming_format = self._detect_streaming_format(manifest_url)
+            streaming_format = self._detect_streaming_format(clean_url)
             channel_data["streaming_format"] = streaming_format
 
             # Detect content type
@@ -792,13 +803,51 @@ class M3UProvider(StreamingProvider):
             if quality:
                 channel_data["quality"] = quality
 
-            # Parse DRM configuration
+            # ============================================================================
+            # STEP 4: Parse DRM configuration
+            # ============================================================================
             drm_config = self._parse_drm_config(attributes, properties)
             if drm_config:
+                # If URL has headers, add them to the DRM configuration
+                if url_headers and drm_config.license:
+                    # Combine existing headers with URL headers
+                    existing_headers = drm_config.license.req_headers or ""
+                    if existing_headers and not existing_headers.endswith("&"):
+                        existing_headers += "&"
+
+                    # Parse URL headers (they're usually in format header="value")
+                    # Convert to standard HTTP header format: header: value
+                    header_parts = []
+                    # Parse quoted headers like user-agent="Mozilla/5.0..."
+                    header_matches = re.findall(r'(\S+?)="([^"]*)"', url_headers)
+                    for header_name, header_value in header_matches:
+                        header_parts.append(f"{header_name}: {header_value}")
+
+                    # Also handle unquoted values if any
+                    # Split by space and parse key=value pairs
+                    remaining_parts = url_headers
+                    for quoted_match in header_matches:
+                        remaining_parts = remaining_parts.replace(f'{quoted_match[0]}="{quoted_match[1]}"', '')
+
+                    unquoted_parts = [p for p in remaining_parts.split() if '=' in p]
+                    for part in unquoted_parts:
+                        if '=' in part:
+                            key, val = part.split('=', 1)
+                            header_parts.append(f"{key}: {val}")
+
+                    if header_parts:
+                        new_headers = "&".join(header_parts)
+                        if existing_headers:
+                            drm_config.license.req_headers = existing_headers + new_headers
+                        else:
+                            drm_config.license.req_headers = new_headers
+
                 channel_data["drm_config"] = drm_config
                 channel_data["use_cdm"] = True
 
-            # Apply default configuration
+            # ============================================================================
+            # STEP 5: Apply default configuration
+            # ============================================================================
             for key, value in DEFAULT_CHANNEL_CONFIG.items():
                 if key not in channel_data:
                     channel_data[key] = value
