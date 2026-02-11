@@ -137,6 +137,82 @@ class DRMOperations:
         logger.debug("No DRM/encryption markers found (unencrypted)")
         return False
 
+    @staticmethod
+    def _validate_clearkey_configs(
+            drm_configs: List[DRMConfig],
+            pssh_data_list: List
+    ) -> List[DRMConfig]:
+        """
+        Validate that ClearKey configs contain at least one key for required key_ids.
+        Returns configs if at least one valid key exists, empty list if no valid keys.
+
+        Having a subset of valid keys is acceptable (e.g., only lower resolutions),
+        but having NO valid keys means decryption will fail entirely.
+        """
+        if not pssh_data_list:
+            logger.warning("No PSSH data available for ClearKey validation")
+            return drm_configs
+
+        # Extract all required key_ids from PSSH
+        required_key_ids = set()
+        for pssh_data in pssh_data_list:
+            if pssh_data.key_ids:
+                # Normalize key_ids to lowercase without hyphens for comparison
+                required_key_ids.update(kid.lower().replace("-", "") for kid in pssh_data.key_ids)
+
+        if not required_key_ids:
+            logger.warning("No key_ids found in PSSH data")
+            return drm_configs
+
+        validated_configs = []
+        has_valid_clearkey = False
+
+        for config in drm_configs:
+            if config.system != DRMSystem.CLEARKEY:
+                validated_configs.append(config)
+                continue
+
+            # Validate ClearKey config
+            if not config.license or not config.license.keyids:
+                logger.warning(f"ClearKey config missing license.keyids")
+                continue
+
+            # Check if config provides keys for any required key_ids
+            # Normalize provided KIDs to lowercase without hyphens for comparison
+            provided_kids = {kid.lower().replace("-", "") for kid in config.license.keyids.keys()}
+
+            # Find intersection - keys that are both required and provided
+            valid_keys = required_key_ids & provided_kids
+
+            if valid_keys:
+                has_valid_clearkey = True
+                if len(valid_keys) == len(required_key_ids):
+                    logger.info(
+                        f"ClearKey config validated: all {len(required_key_ids)} required keys present"
+                    )
+                else:
+                    logger.info(
+                        f"ClearKey config validated: {len(valid_keys)}/{len(required_key_ids)} keys present "
+                        f"(may limit available resolutions/tracks)"
+                    )
+                validated_configs.append(config)
+            else:
+                logger.error(
+                    f"ClearKey config INVALID: no valid keys found. "
+                    f"Required {len(required_key_ids)} key_ids but none match provided keys."
+                )
+
+        # If we have ClearKey configs but NONE are valid, return empty list
+        # This prevents returning DRMSystem.NONE which would indicate unencrypted stream
+        if any(c.system == DRMSystem.CLEARKEY for c in drm_configs) and not has_valid_clearkey:
+            logger.error(
+                "All ClearKey configs failed validation. Returning empty list "
+                "(stream is encrypted but no valid keys available)."
+            )
+            return []
+
+        return validated_configs
+
     def get_channel_drm_configs(self, provider_name: str, channel_id: str, **kwargs) -> List:
         """
         Get DRM configurations for a channel with two-phase plugin processing.
@@ -184,10 +260,12 @@ class DRMOperations:
             return cached_configs
 
         # Step 2: PHASE 1 - Try GENERIC plugins first (if registered)
+        pssh_data_list = None  # Will be populated if PSSH extraction occurs
+
         if DRMSystem.GENERIC in self.drm_plugin_manager.plugins:
             logger.debug(f"Phase 1: Attempting GENERIC plugin processing for '{channel_id}'")
 
-            generic_configs = self._try_generic_plugins(
+            generic_configs, pssh_data_list = self._try_generic_plugins(
                 provider_name, channel_id, cache_key, manifest_content, **kwargs
             )
 
@@ -195,10 +273,27 @@ class DRMOperations:
             if generic_configs and any(config.system != DRMSystem.NONE for config in generic_configs):
                 logger.info(f"Phase 1: Generated {len(generic_configs)} configs via GENERIC plugin")
 
-                if self._has_clearkey_config(generic_configs):
-                    self.drm_config_cache.set(cache_key, generic_configs)
+                # Validate ClearKey configs if PSSH data is available
+                if pssh_data_list and self._has_clearkey_config(generic_configs):
+                    validated = self._validate_clearkey_configs(generic_configs, pssh_data_list)
 
-                return generic_configs
+                    # If validation returned empty list, it means encrypted stream with no valid keys
+                    # Don't cache and don't return - proceed to provider DRM (Phase 2)
+                    if not validated:
+                        logger.warning(
+                            f"Phase 1: GENERIC plugins produced invalid ClearKey configs for '{channel_id}', "
+                            f"falling back to provider DRM"
+                        )
+                    else:
+                        logger.info(f"Phase 1: Validated {len(validated)} ClearKey configs")
+                        if self._has_clearkey_config(validated):
+                            self.drm_config_cache.set(cache_key, validated)
+                        return validated
+                else:
+                    # No ClearKey configs to validate, return as-is
+                    if self._has_clearkey_config(generic_configs):
+                        self.drm_config_cache.set(cache_key, generic_configs)
+                    return generic_configs
             else:
                 logger.debug(f"Phase 1: No actual DRM configs from GENERIC plugin, proceeding to provider")
 
@@ -212,10 +307,10 @@ class DRMOperations:
             return [DRMConfig(system=DRMSystem.NONE, priority=0)]
 
         # Step 4: PHASE 2 - Extract PSSH if needed for system-specific plugins
-        pssh_data_list = []
-        if drm_configs and self.drm_plugin_manager.has_system_specific_plugins():
+        # Reuse pssh_data_list from Phase 1 if already extracted
+        if pssh_data_list is None and drm_configs and self.drm_plugin_manager.has_system_specific_plugins():
             if self._needs_pssh_extraction(drm_configs):
-                # Try PSSH cache first (might have been fetched in Phase 1)
+                # Try PSSH cache first
                 pssh_data_list = self.pssh_cache.get(cache_key)
 
                 if pssh_data_list is None:
@@ -241,15 +336,27 @@ class DRMOperations:
 
         # Step 5: PHASE 2 - Process through system-specific plugins (EXCLUDE GENERIC)
         processed = self.drm_plugin_manager.process_system_specific_plugins(
-            drm_configs, pssh_data_list, **kwargs
+            drm_configs, pssh_data_list if pssh_data_list else [], **kwargs
         )
 
-        # Step 6: Cache if contains ClearKey config
+        # Step 6: Validate ClearKey configs if PSSH data is available
+        if pssh_data_list and self._has_clearkey_config(processed):
+            processed = self._validate_clearkey_configs(processed, pssh_data_list)
+
+        # If validation returned empty list, return it (encrypted stream with no valid keys)
+        if not processed:
+            logger.error(
+                f"DRM processing failed for '{channel_id}': "
+                f"stream is encrypted but no valid DRM configs available"
+            )
+            return []
+
+        # Step 7: Cache if contains ClearKey config
         if self._has_clearkey_config(processed):
-            logger.info(f"Caching ClearKey DRM configs from provider for '{channel_id}'")
+            logger.info(f"Caching validated ClearKey DRM configs for '{channel_id}'")
             self.drm_config_cache.set(cache_key, processed)
 
-        logger.info(f"Processed DRM for '{channel_id}': {len(processed)} configs")
+        logger.info(f"Processed DRM for '{channel_id}': {len(processed)} validated configs")
         return processed
 
     def _try_generic_plugins(
@@ -259,10 +366,10 @@ class DRMOperations:
             cache_key: str,
             manifest_content: Optional[str] = None,
             **kwargs
-    ) -> Optional[List[DRMConfig]]:
+    ) -> Tuple[Optional[List[DRMConfig]], Optional[List]]:
         """
         Try to generate configs using GENERIC plugins.
-        Returns configs if successful, None otherwise.
+        Returns (configs, pssh_data_list) tuple. Both can be None.
         """
         # Get PSSH data (from cache or manifest)
         pssh_data_list = self.pssh_cache.get(cache_key)
@@ -283,7 +390,7 @@ class DRMOperations:
                 provider = self.registry.get_provider(provider_name)
                 if not provider:
                     logger.warning(f"Provider '{provider_name}' not found for GENERIC plugin")
-                    return None
+                    return None, None
 
                 manifest_url = provider.get_manifest(channel_id, **kwargs)
                 if manifest_url:
@@ -293,7 +400,7 @@ class DRMOperations:
 
         if not pssh_data_list:
             logger.debug(f"GENERIC plugin: No PSSH data available for '{channel_id}'")
-            return None
+            return None, None
 
         # Create a dummy config to pass to GENERIC plugin
         dummy_configs = [DRMConfig(system=DRMSystem.NONE, priority=0)]
@@ -303,7 +410,7 @@ class DRMOperations:
             dummy_configs, pssh_data_list, **kwargs
         )
 
-        return generic_configs if generic_configs else None
+        return generic_configs if generic_configs else None, pssh_data_list
 
     @staticmethod
     def _has_clearkey_config(drm_configs: List) -> bool:
