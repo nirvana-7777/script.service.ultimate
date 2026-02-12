@@ -459,8 +459,9 @@ class MP4PSSHExtractor:
                         break
 
                     kid_bytes = pssh_bytes[current_offset : current_offset + 16]
-                    kid_uuid = str(uuid.UUID(bytes=kid_bytes))
-                    key_ids.append(kid_uuid.replace("-", "").lower())
+          #          kid_uuid = str(uuid.UUID(bytes=kid_bytes))
+          #          key_ids.append(kid_uuid.replace("-", "").lower())
+                    key_ids.append(kid_bytes.hex().lower())
                     current_offset += 16
             else:
                 logger.debug(

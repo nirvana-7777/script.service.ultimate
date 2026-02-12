@@ -17,7 +17,8 @@ ENV PYTHONUNBUFFERED=1 \
     ULTIMATE_EPG_URL="https://example.com/epg.xml.gz" \
     PYTHONPATH=/app/lib:/app \
     DRM_PLUGINS_PATH=/drm-plugins \
-    M3U_PLAYLISTS_PATH=/playlists
+    M3U_PLAYLISTS_PATH=/playlists \
+    SCRIPTS_PROVIDERS_PATH=/playlists
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -49,8 +50,8 @@ RUN groupadd -g ${GROUP_ID} ${APP_USER} && \
     useradd -u ${USER_ID} -g ${APP_USER} -m -s /bin/bash ${APP_USER}
 
 # Create directories for new structure
-RUN mkdir -p /config /logs /cache /drm-plugins /playlists /app/routes /app/lib && \
-    chown -R ${USER_ID}:${GROUP_ID} /config /logs /cache /drm-plugins /playlists /app/routes /app/lib
+RUN mkdir -p /config /logs /cache /drm-plugins /playlists /scripts /app/routes /app/lib && \
+    chown -R ${USER_ID}:${GROUP_ID} /config /logs /cache /drm-plugins /playlists /scripts /app/routes /app/lib
 
 # CRITICAL FIX: Copy the lib directory containing streaming_providers
 COPY --chown=${USER_ID}:${GROUP_ID} lib/ /app/lib/
