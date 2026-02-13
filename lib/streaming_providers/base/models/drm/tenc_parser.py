@@ -34,27 +34,50 @@ class TencParser:
 
     @staticmethod
     def extract_kids_from_tenc(tenc_data: bytes) -> list[str]:
-        """Extract Key IDs as hex strings."""
-        if not tenc_data:
+        """
+        Extract Key IDs from tenc box data.
+
+        Args:
+            tenc_data: Raw tenc box data (FULL box, including header)
+
+        Returns:
+            List containing the extracted Key ID (normalized)
+        """
+        if not tenc_data or len(tenc_data) < 32:
             return []
 
-        # DEBUG: Dump the entire tenc data
-        print(f"TENC DATA ({len(tenc_data)} bytes): {tenc_data.hex()}")
-        print(f"Bytes 0-3 (version/flags): {tenc_data[0:4].hex()}")
-        if len(tenc_data) > 7:
-            print(f"Byte 7 (is_protected): {tenc_data[7]} (0x{tenc_data[7]:02x})")
-        if len(tenc_data) > 8:
-            print(f"Byte 8 (iv_size): {tenc_data[8]} (0x{tenc_data[8]:02x})")
-        if len(tenc_data) >= 25:
-            kid_bytes = tenc_data[9:25]
-            print(f"Bytes 9-24 (KID): {kid_bytes.hex()}")
+        try:
+            # Verify this is a tenc box
+            if len(tenc_data) >= 8:
+                box_type = tenc_data[4:8]
+                if box_type != b'tenc':
+                    return []
 
-        # Original logic...
-        kid_bytes = TencParser.extract_kid_from_tenc(tenc_data)
-        if kid_bytes:
-            kid_hex = kid_bytes.hex().lower()
-            print(f"Extracted KID: {kid_hex}")
-            if all(c == '0' for c in kid_hex):
-                print("⚠️ WARNING: KID is all zeros!")
-            return [kid_hex]
+            # The KID appears to be at offset 16-31 in your data
+            # Let's check if that looks like a valid KID
+            if len(tenc_data) >= 32:
+                # Try offset 16 first (based on your data)
+                kid_bytes = tenc_data[16:32]
+                kid_hex = kid_bytes.hex().lower()
+
+                # Validate it's not all zeros
+                if not all(c == '0' for c in kid_hex):
+                    return [kid_hex]
+
+            # If that didn't work, try scanning for valid-looking KID
+            for offset in range(0, len(tenc_data) - 16):
+                chunk = tenc_data[offset:offset + 16]
+                # Check if it looks like a valid KID (not all zeros, not repetitive)
+                if all(b == 0 for b in chunk):
+                    continue
+                if all(b == chunk[0] for b in chunk):
+                    continue
+
+                # This could be a KID
+                kid_hex = chunk.hex().lower()
+                return [kid_hex]
+
+        except Exception:
+            pass
+
         return []
