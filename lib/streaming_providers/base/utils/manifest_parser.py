@@ -3,7 +3,7 @@ import re
 from typing import List, Optional
 from urllib.parse import quote, urljoin, urlparse
 
-from ..models.drm_models import DRMSystem, PSSHData
+from ..models.drm import PSSHData
 from .logger import logger
 
 
@@ -34,7 +34,7 @@ class ManifestParser:
     @staticmethod
     def _extract_from_manifest_content(manifest_content: str) -> List[PSSHData]:
         """Extract PSSH and DRM systems from manifest content"""
-        # Try regex extraction first (handles PSSH boxes with KIDs)
+        # Try regex extraction first
         pssh_list = ManifestParser._extract_with_regex(manifest_content)
         if pssh_list:
             return pssh_list
@@ -43,7 +43,6 @@ class ManifestParser:
         drm_systems_found = set()
         result = []
 
-        # More efficient: compile regex once
         cp_pattern = re.compile(
             r'<ContentProtection[^>]*schemeIdUri="urn:uuid:([^"]+)"[^>]*>',
             re.IGNORECASE,
@@ -52,49 +51,48 @@ class ManifestParser:
         for match in cp_pattern.finditer(manifest_content):
             system_id = match.group(1).lower()
 
-            # Skip mp4protection scheme
-            if (
-                "mp4protection"
-                in manifest_content[max(0, match.start() - 100) : match.start()]
-            ):
+            # Skip mp4protection
+            if "mp4protection" in manifest_content[max(0, match.start() - 100):match.start()]:
                 continue
 
-            drm_system = DRMSystem.from_uuid(system_id)
-            if drm_system and system_id not in drm_systems_found:
-                drm_systems_found.add(system_id)
-                result.append(
-                    PSSHData(
-                        system_id=system_id,
-                        pssh_box="",  # Empty - PSSH in segments
-                        key_ids=[],
-                        source="manifest_scheme_only",
-                    )
-                )
-                logger.debug(f"Found DRM system from schemeIdUri: {drm_system.value}")
+            # Let PSSHData handle normalization!
+            pssh_data = PSSHData(
+                system_id=system_id,
+                pssh_box="",
+                key_ids=[],
+                source="manifest_scheme_only",
+            )
+
+            if pssh_data.drm_system and system_id not in drm_systems_found:
+                drm_systems_found.add(pssh_data.system_id)  # Use normalized ID
+                result.append(pssh_data)
+                logger.debug(f"Found DRM system: {pssh_data.drm_system.value}")
 
         return result
 
     @staticmethod
     def _extract_from_single_segment(
-        segment_url: str, expected_system_ids: List[str] = None
+            segment_url: str, expected_system_ids: List[str] = None
     ) -> List[PSSHData]:
-        """Extract PSSH from a single MP4 segment"""
-        from .mp4_parser import MP4PSSHExtractor
+        from .mp4_pssh_extractor import MP4PSSHExtractor
 
         try:
             pssh_from_segment = MP4PSSHExtractor.extract_from_url(segment_url)
 
-            # Filter for expected DRM systems if provided
             if expected_system_ids:
+                # Normalize expected IDs using the model!
+                normalized_expected = []
+                for sys_id in expected_system_ids:
+                    # Create temporary PSSHData to leverage its normalization
+                    temp = PSSHData(system_id=sys_id, source="filter")
+                    normalized_expected.append(temp.system_id)
+
                 filtered_pssh = [
-                    p for p in pssh_from_segment if p.system_id in expected_system_ids
+                    p for p in pssh_from_segment
+                    if p.system_id in normalized_expected
                 ]
                 if filtered_pssh:
-                    logger.debug(f"Found {len(filtered_pssh)} PSSH boxes in segment")
                     return filtered_pssh
-            elif pssh_from_segment:
-                logger.debug(f"Found {len(pssh_from_segment)} PSSH boxes in segment")
-                return pssh_from_segment
 
         except Exception as e:
             logger.warning(f"Failed to extract PSSH from segment: {e}")

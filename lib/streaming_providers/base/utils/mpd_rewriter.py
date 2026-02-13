@@ -1,5 +1,6 @@
 # streaming_providers/base/utils/mpd_rewriter.py
 import base64
+import struct
 import xml.etree.ElementTree as ET
 import re
 from typing import Optional, Tuple, Set, Dict, List
@@ -417,8 +418,8 @@ class MPDRewriter:
 
         return False
 
+    @staticmethod
     def _parse_video_representation(
-            self,
             representation: ET.Element,
             adaptation_set: ET.Element,
             period: ET.Element,
@@ -568,7 +569,8 @@ class MPDRewriter:
         # Check default_KID attribute
         kid_attr = cp.get("{urn:mpeg:cenc:2013}default_KID")
         if kid_attr:
-            return kid_attr.replace("-", "").lower()
+            # Let the model normalize it later - just return raw
+            return kid_attr
 
         # Check cenc:pssh
         for pssh in cp.findall("cenc:pssh", self.CENC_NAMESPACE):
@@ -576,8 +578,13 @@ class MPDRewriter:
                 try:
                     pssh_data = base64.b64decode(pssh.text)
                     if len(pssh_data) >= 36:
-                        kid_bytes = pssh_data[32:48]
-                        return kid_bytes.hex()
+                        version = pssh_data[8] if len(pssh_data) > 8 else 0
+                        if version > 0:
+                            kid_count = struct.unpack(">I", pssh_data[28:32])[0]
+                            if kid_count > 0 and len(pssh_data) >= 48:
+                                kid_bytes = pssh_data[32:48]
+                                # Return raw hex - KeyConfiguration will normalize!
+                                return kid_bytes.hex()
                 except Exception:
                     continue
 

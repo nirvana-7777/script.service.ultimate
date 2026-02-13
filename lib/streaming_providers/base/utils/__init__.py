@@ -5,6 +5,7 @@ from .manifest_parser import ManifestParser
 from .mpd_cache import MPDCacheManager
 from .mpd_rewriter import MPDRewriter
 from .timestamp_converter import TimestampConverter
+from .mp4_pssh_extractor import MP4PSSHExtractor
 from .vfs import VFS
 
 __all__ = [
@@ -14,5 +15,6 @@ __all__ = [
     "VFS",
     "MPDRewriter",
     "MPDCacheManager",
+    "MP4PSSHExtractor",
     "TimestampConverter",
 ]
