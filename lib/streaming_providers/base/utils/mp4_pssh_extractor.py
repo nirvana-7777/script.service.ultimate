@@ -52,9 +52,9 @@ class MP4PSSHExtractor:
         """
         Extract PSSH boxes and encryption info from MP4 binary data.
 
-        Process:
-        1. Extract all tenc boxes to get default KIDs
-        2. Extract all PSSH boxes
+        Optimized Process:
+        1. Extract all PSSH boxes and parse them
+        2. Only extract tenc KIDs if any PSSH needs fallback
         3. Merge tenc KIDs with PSSH data where needed
 
         Args:
@@ -66,12 +66,7 @@ class MP4PSSHExtractor:
         pssh_data_list = []
         offset = 0
 
-        # First pass: Extract all tenc boxes to get default KIDs
-        tenc_kids = MP4PSSHExtractor._extract_all_tenc_kids(data)
-        if tenc_kids:
-            logger.debug(f"Extracted {len(tenc_kids)} KIDs from tenc boxes")
-
-        # Second pass: Extract PSSH boxes
+        # First pass: Extract PSSH boxes
         while offset < len(data):
             try:
                 # Read box size (4 bytes, big-endian)
@@ -113,18 +108,29 @@ class MP4PSSHExtractor:
                 logger.debug(f"Error parsing MP4 box at offset {offset}: {e}")
                 offset += 1  # Try to recover
 
-        # Third pass: Enhance PSSH data with tenc KIDs if needed
-        for pssh_data in pssh_data_list:
-            if pssh_data.needs_tenc_fallback() and tenc_kids:
-                logger.debug(
-                    f"Adding {len(tenc_kids)} tenc KIDs to {pssh_data.drm_system} PSSH (fallback)"
-                )
-                pssh_data.add_key_ids(tenc_kids)
-            elif pssh_data.key_ids and tenc_kids:
-                # PSSH already has KIDs - tenc not needed
-                logger.debug(
-                    f"PSSH already has {len(pssh_data.key_ids)} KIDs from payload - skipping tenc fallback"
-                )
+        # Second pass: Only extract tenc if any PSSH needs fallback
+        needs_tenc = any(pssh_data.needs_tenc_fallback() for pssh_data in pssh_data_list)
+
+        if needs_tenc:
+            logger.debug("PSSH missing KIDs - extracting from tenc boxes as fallback")
+            tenc_kids = MP4PSSHExtractor._extract_all_tenc_kids(data)
+
+            if tenc_kids:
+                logger.debug(f"Extracted {len(tenc_kids)} KIDs from tenc boxes")
+
+                # Add tenc KIDs to PSSH boxes that need them
+                for pssh_data in pssh_data_list:
+                    if pssh_data.needs_tenc_fallback():
+                        logger.debug(
+                            f"Adding {len(tenc_kids)} tenc KIDs to {pssh_data.drm_system} PSSH"
+                        )
+                        pssh_data.add_key_ids(tenc_kids)
+            else:
+                logger.warning("PSSH needs KIDs but no tenc boxes found")
+        else:
+            logger.debug(
+                f"All {len(pssh_data_list)} PSSH box(es) have KIDs from payload - skipping tenc extraction"
+            )
 
         return pssh_data_list
 
