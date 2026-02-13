@@ -174,6 +174,17 @@ class LicenseConfig:
         req_data_encoded = safe_base64_encode(req_data_template.encode("utf-8"))
         return cls(req_data=req_data_encoded, **kwargs)
 
+    @classmethod
+    def create_with_base64_req_data(cls, req_data_template: str, **kwargs) -> "LicenseConfig":
+        """Deprecated: Use create_with_req_data() instead."""
+        import warnings
+        warnings.warn(
+            "create_with_base64_req_data is deprecated, use create_with_req_data instead",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        return cls.create_with_req_data(req_data_template, **kwargs)
+
     def to_dict(self) -> dict:
         """
         Convert to dictionary, excluding None/empty values.
