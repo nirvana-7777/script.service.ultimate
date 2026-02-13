@@ -15,7 +15,7 @@ from enum import Enum
 from typing import Any, Callable, ClassVar, Dict, List, Optional
 
 from ..providers.auth import AuthContext, AuthStatus
-from .models.drm_models import DRMConfig
+from .models.drm import DRMConfig
 from .models.proxy_models import ProxyConfig
 from .models.streaming_channel import StreamingChannel
 from .models.subscription import SubscriptionPackage, UserSubscription
