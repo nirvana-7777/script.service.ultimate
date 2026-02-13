@@ -70,38 +70,26 @@ class PSSHOffsets:
 
 class TencOffsets:
     """
-    Track Encryption Box (tenc) Binary Structure Offsets
+    tenc Box Structure (based on real-world implementation)
 
-    tenc Box Format (ISO/IEC 23001-7):
-    [0-3]   Box size (uint32)
-    [4-7]   Box type ('tenc')
-    [8]     Version (uint8)
-    [9-11]  Flags (uint24)
-    [12-15] Reserved (uint24) + default_crypt_byte_block (uint8)
-
-    Version 0:
-    [16]    Reserved (uint8)
-    [17]    default_is_protected (uint8)
-    [18]    default_per_sample_IV_size (uint8)
-    [19-34] default_KID (16 bytes)
-
-    Version 1:
-    [16]    default_constant_IV_size (uint8)
-    [17+]   default_constant_IV (if size > 0)
-    [...]   default_KID (16 bytes, after IV)
+    Data section (after 8-byte header):
+    [0-3]   version + flags (uint32)
+    [4-6]   reserved (3 bytes)
+    [7]     default_is_protected (uint8)
+    [8]     default_per_sample_IV_size (uint8)
+    [9-24]  default_KID (16 bytes)
     """
-    BOX_SIZE = 0
-    BOX_TYPE = 4
-    BOX_TYPE_END = 8
-    VERSION = 8
+    # Data section offsets
+    VERSION_FLAGS = 0
+    VERSION_FLAGS_END = 4
+    IS_PROTECTED = 7
+    IV_SIZE = 8
+    KID_START = 9
+    KID_END = 25  # 9 + 16 = 25
 
-    # Version 0 specific
-    V0_IS_PROTECTED = 17
-    V0_IV_SIZE = 18
-    V0_KID_START = 19
-    V0_KID_END = 35
-
-    MIN_TENC_V0_SIZE = 35  # Minimum valid V0 tenc box
+    # Minimum data size (not including 8-byte header)
+    MIN_TENC_DATA_SIZE = 24  # Up to byte 23, but KID needs byte 24
+    MIN_TENC_TOTAL_SIZE = 32  # 8 header + 24 data
 
 
 # DRM System UUID Mappings (normalized, no hyphens)
