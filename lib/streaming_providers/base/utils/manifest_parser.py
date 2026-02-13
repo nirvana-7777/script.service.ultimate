@@ -10,10 +10,10 @@ from .logger import logger
 class ManifestParser:
     @staticmethod
     def extract_pssh_from_manifest(
-        manifest_content: str,
-        manifest_url: str = "",
-        fallback_to_segments: bool = True,
-        segment_urls: List[str] = None,
+            manifest_content: str,
+            manifest_url: str = "",
+            fallback_to_segments: bool = True,
+            segment_urls: List[str] = None,
     ) -> List[PSSHData]:
         """
         DEPRECATED: Use extract_single_init_segment_url instead.
@@ -93,6 +93,17 @@ class ManifestParser:
                 ]
                 if filtered_pssh:
                     return filtered_pssh
+                else:
+                    # If filtering produced no matches, return all segment PSSH
+                    # This can happen if the manifest had incomplete system IDs
+                    logger.debug(
+                        f"Filtering by expected_system_ids produced no matches, "
+                        f"returning all {len(pssh_from_segment)} PSSH from segment"
+                    )
+                    return pssh_from_segment
+
+            # No filtering requested, return all segment PSSH
+            return pssh_from_segment
 
         except Exception as e:
             logger.warning(f"Failed to extract PSSH from segment: {e}")
@@ -101,7 +112,7 @@ class ManifestParser:
 
     @staticmethod
     def _merge_pssh_data(
-        manifest_pssh: List[PSSHData], segment_pssh: List[PSSHData]
+            manifest_pssh: List[PSSHData], segment_pssh: List[PSSHData]
     ) -> List[PSSHData]:
         """Merge manifest and segment PSSH data"""
         if not manifest_pssh:
@@ -197,7 +208,7 @@ class ManifestParser:
 
     @staticmethod
     def extract_single_init_segment_url(
-        manifest_content: str, manifest_url: str
+            manifest_content: str, manifest_url: str
     ) -> Optional[str]:
         """
         Extract ONE init segment URL from DASH manifest.
@@ -307,7 +318,7 @@ class ManifestParser:
 
     @staticmethod
     def extract_init_segment_urls(
-        manifest_content: str, manifest_url: str
+            manifest_content: str, manifest_url: str
     ) -> List[str]:
         """
         DEPRECATED: Use extract_single_init_segment_url instead.
