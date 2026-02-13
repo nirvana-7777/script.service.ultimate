@@ -629,7 +629,7 @@ class JoynProvider(StreamingProvider):
             drm_config = DRMConfig(
                 system=DRMSystem.WIDEVINE,
                 priority=1,
-                license=LicenseConfig.create_with_base64_req_data(
+                license=LicenseConfig.create_with_req_data(
                     req_data_template="{CHA-RAW}",
                     server_url=license_url,
                     server_certificate=playlist_data.get("certificateUrl"),

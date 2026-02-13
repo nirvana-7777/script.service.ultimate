@@ -18,7 +18,7 @@ import sys
 import time
 from typing import ClassVar, Dict, List, Optional, Any
 
-from ...base.models.drm_models import DRMConfig, DRMSystem, LicenseConfig
+from ...base.models.drm import DRMConfig, DRMSystem, LicenseConfig
 from ...base.models.proxy_models import ProxyConfig
 from ...base.models.streaming_channel import StreamingChannel
 from ...base.provider import StreamingProvider
