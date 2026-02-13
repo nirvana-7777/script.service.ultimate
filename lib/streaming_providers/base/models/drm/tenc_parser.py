@@ -31,14 +31,30 @@ class TencParser:
             pass
         
         return None
-    
+
     @staticmethod
     def extract_kids_from_tenc(tenc_data: bytes) -> list[str]:
-        """
-        Extract Key IDs as hex strings.
-        This matches the interface expected by other code.
-        """
+        """Extract Key IDs as hex strings."""
+        if not tenc_data:
+            return []
+
+        # DEBUG: Dump the entire tenc data
+        print(f"TENC DATA ({len(tenc_data)} bytes): {tenc_data.hex()}")
+        print(f"Bytes 0-3 (version/flags): {tenc_data[0:4].hex()}")
+        if len(tenc_data) > 7:
+            print(f"Byte 7 (is_protected): {tenc_data[7]} (0x{tenc_data[7]:02x})")
+        if len(tenc_data) > 8:
+            print(f"Byte 8 (iv_size): {tenc_data[8]} (0x{tenc_data[8]:02x})")
+        if len(tenc_data) >= 25:
+            kid_bytes = tenc_data[9:25]
+            print(f"Bytes 9-24 (KID): {kid_bytes.hex()}")
+
+        # Original logic...
         kid_bytes = TencParser.extract_kid_from_tenc(tenc_data)
         if kid_bytes:
-            return [kid_bytes.hex().lower()]
+            kid_hex = kid_bytes.hex().lower()
+            print(f"Extracted KID: {kid_hex}")
+            if all(c == '0' for c in kid_hex):
+                print("⚠️ WARNING: KID is all zeros!")
+            return [kid_hex]
         return []
