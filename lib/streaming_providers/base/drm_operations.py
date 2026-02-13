@@ -92,21 +92,24 @@ class DRMOperations:
         Check if manifest contains any DRM/encryption markers.
         Returns True if encrypted, False if unencrypted.
 
-        Detection approach:
-        1. Look for ContentProtection elements with known DRM UUIDs
-        2. Check for cenc:default_KID attributes
-        3. Check for embedded PSSH boxes
+        Uses the new DRM models for consistent detection.
         """
         import re
+        from ..base.models.drm import DRMSystem
 
-        # Get known DRM UUIDs from DRMSystem enum (normalized to lowercase with hyphens)
-        known_drm_uuids = set()
-        for drm_system in DRMSystem:
-            uuid = drm_system.system_uuid
-            if uuid:  # Skip GENERIC and NONE which have empty UUIDs
-                known_drm_uuids.add(uuid.lower())
+        # First, try to extract PSSH data using ManifestParser
+        from .utils.manifest_parser import ManifestParser
+        pssh_list = ManifestParser._extract_from_manifest_content(manifest_content)
 
-        # Find all ContentProtection elements with schemeIdUri
+        if pssh_list:
+            # If we got PSSHData objects with valid DRM systems, it's encrypted!
+            for pssh in pssh_list:
+                if pssh.drm_system and pssh.drm_system != DRMSystem.NONE:
+                    logger.debug(f"Detected DRM system: {pssh.drm_system.value} from PSSH data")
+                    return True
+
+        # Fallback: Check for ContentProtection elements with known DRM UUIDs
+        # But now use DRMSystem.from_uuid() for detection!
         cp_pattern = re.compile(
             r'<ContentProtection[^>]*schemeIdUri="urn:uuid:([^"]+)"[^>]*>',
             re.IGNORECASE
@@ -115,13 +118,10 @@ class DRMOperations:
         for match in cp_pattern.finditer(manifest_content):
             uuid = match.group(1).lower()
 
-            # Check if this is a known DRM system UUID
-            if uuid in known_drm_uuids:
-                drm_system = DRMSystem.from_uuid(uuid)
-                if drm_system:
-                    logger.debug(f"Detected DRM system: {drm_system.value} (UUID: {uuid})")
-                else:
-                    logger.debug(f"Detected known DRM UUID: {uuid}")
+            # Use DRMSystem.from_uuid() - it handles normalization!
+            drm_system = DRMSystem.from_uuid(uuid)
+            if drm_system:
+                logger.debug(f"Detected DRM system: {drm_system.value} (UUID: {uuid})")
                 return True
 
         # Also check for cenc:default_KID (indicates encryption even without DRM system)
@@ -129,7 +129,7 @@ class DRMOperations:
             logger.debug("Detected cenc:default_KID attribute (encrypted)")
             return True
 
-        # Check for PSSH boxes
+        # Check for PSSH boxes directly
         if re.search(r'<(?:cenc:)?pssh[^>]*>', manifest_content, re.IGNORECASE):
             logger.debug("Detected PSSH box (encrypted)")
             return True
