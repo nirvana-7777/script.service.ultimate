@@ -2,7 +2,7 @@
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from ..models.drm_models import DRMConfig, DRMSystem, PSSHData
+from ..models.drm import DRMConfig, DRMSystem, PSSHData
 
 
 class DRMPlugin(ABC):

@@ -7,7 +7,7 @@ Handles plugin registration, discovery, and processing of DRM configs with PSSH 
 import traceback
 from typing import Dict, List, Optional
 
-from ..models.drm_models import DRMConfig, DRMSystem, PSSHData
+from ..models.drm import DRMConfig, DRMSystem, PSSHData
 from ..utils.logger import logger
 from .drm_plugin import DRMPlugin
 
@@ -311,24 +311,15 @@ class DRMPluginManager:
     ) -> List[DRMConfig]:
         """
         PHASE 2: Process through system-specific plugins (EXCLUDE GENERIC).
-
-        System-specific plugins TRANSFORM existing configs from the provider.
-        GENERIC plugins are explicitly excluded from this phase.
-
-        Args:
-            drm_configs: DRM configs from the provider
-            pssh_data_list: PSSH data extracted from manifest
-            **kwargs: Additional context
-
-        Returns:
-            List of transformed DRM configs
         """
         if not drm_configs:
             logger.debug("Phase 2: No DRM configs to process")
             return []
 
         # Get system-specific plugins only (exclude GENERIC)
-        system_plugins = {
+        # ✅ Add explicit type annotation
+        from typing import Any  # or import your DRMPlugin type
+        system_plugins: dict[DRMSystem, Any] = {
             sys: plugin for sys, plugin in self.plugins.items()
             if sys != DRMSystem.GENERIC
         }
@@ -343,12 +334,14 @@ class DRMPluginManager:
         )
 
         # Create a mapping of DRM system to PSSH data for quick lookup
-        pssh_by_system = {}
+        # ✅ Add explicit type annotation
+        pssh_by_system: dict[DRMSystem, PSSHData] = {}
         for pssh_data in pssh_data_list:
-            if pssh_data.drm_system:
-                pssh_by_system[pssh_data.drm_system] = pssh_data
+            drm_sys = pssh_data.drm_system
+            if drm_sys is not None:
+                pssh_by_system[drm_sys] = pssh_data
                 logger.debug(
-                    f"Phase 2: Mapped PSSH data for DRM system: {pssh_data.drm_system}"
+                    f"Phase 2: Mapped PSSH data for DRM system: {drm_sys}"
                 )
 
         processed_configs = []

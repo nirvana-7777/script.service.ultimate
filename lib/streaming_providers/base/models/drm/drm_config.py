@@ -45,7 +45,7 @@ class DRMConfig:
         if self.license:
             self.license.validate()
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, dict]:
         """
         Convert to dictionary format expected by players.
 
@@ -58,7 +58,7 @@ class DRMConfig:
                 }
             }
         """
-        result = {
+        result: dict[str, dict] = {
             self.system.value: {
                 "priority": self.priority
             }
@@ -73,10 +73,10 @@ class DRMConfig:
 
     @classmethod
     def create_widevine(
-            cls,
-            server_url: str,
-            priority: int = 1,
-            **license_kwargs
+        cls,
+        server_url: str,
+        priority: int = 1,
+        **license_kwargs
     ) -> "DRMConfig":
         """
         Helper to create Widevine DRM configuration.
@@ -94,10 +94,10 @@ class DRMConfig:
 
     @classmethod
     def create_playready(
-            cls,
-            server_url: str,
-            priority: int = 1,
-            **license_kwargs
+        cls,
+        server_url: str,
+        priority: int = 1,
+        **license_kwargs
     ) -> "DRMConfig":
         """
         Helper to create PlayReady DRM configuration.
@@ -115,10 +115,10 @@ class DRMConfig:
 
     @classmethod
     def create_clearkey(
-            cls,
-            keyids: dict[str, str],
-            priority: int = 0,
-            **license_kwargs
+        cls,
+        keyids: dict[str, str],
+        priority: int = 0,
+        **license_kwargs
     ) -> "DRMConfig":
         """
         Helper to create ClearKey DRM configuration.
@@ -136,11 +136,11 @@ class DRMConfig:
 
     @classmethod
     def create_fairplay(
-            cls,
-            server_url: str,
-            server_certificate: str,
-            priority: int = 1,
-            **license_kwargs
+        cls,
+        server_url: str,
+        server_certificate: str,
+        priority: int = 1,
+        **license_kwargs
     ) -> "DRMConfig":
         """
         Helper to create FairPlay DRM configuration.
