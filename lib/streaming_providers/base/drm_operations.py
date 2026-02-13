@@ -256,8 +256,45 @@ class DRMOperations:
         # Step 1: Check DRM config cache (ClearKey configs)
         cached_configs = self.drm_config_cache.get(cache_key)
         if cached_configs is not None:
-            logger.info(f"Using cached DRM configs for '{channel_id}'")
-            return cached_configs
+            logger.debug(f"Found cached DRM configs for '{channel_id}', validating against current KIDs")
+
+            # Get current PSSH to verify KIDs haven't changed
+            current_pssh = self.pssh_cache.get(cache_key)
+
+            if current_pssh is None:
+                # Need to fetch PSSH to validate
+                if manifest_content:
+                    from .utils.manifest_parser import ManifestParser
+                    current_pssh = ManifestParser._extract_from_manifest_content(manifest_content)
+                    if current_pssh:
+                        self.pssh_cache.set(cache_key, current_pssh)
+
+                # If still no PSSH or stub, fetch from manifest
+                if not current_pssh or self._has_stub_pssh(current_pssh):
+                    logger.debug(f"Cached config validation: PSSH incomplete, extracting from init segment")
+                    manifest_url = provider.get_manifest(channel_id, **kwargs)
+                    if manifest_url:
+                        current_pssh = self._extract_pssh_from_manifest(manifest_url, provider_name)
+                        if current_pssh:
+                            self.pssh_cache.set(cache_key, current_pssh)
+
+            # Validate cached configs against current PSSH
+            if current_pssh and not self._has_stub_pssh(current_pssh):
+                if self._validate_cached_clearkey(cached_configs, current_pssh):
+                    logger.info(
+                        f"Cached ClearKey configs validated: all current KIDs have keys - "
+                        f"returning {len(cached_configs)} configs (skipping plugin processing)"
+                    )
+                    return cached_configs
+                else:
+                    logger.warning(
+                        f"Cached ClearKey configs INVALID: KIDs changed or keys missing - "
+                        f"clearing cache and regenerating"
+                    )
+                    self.drm_config_cache.cache.pop(cache_key, None)
+            else:
+                logger.warning(f"Cannot validate cached configs: PSSH data incomplete - clearing cache")
+                self.drm_config_cache.cache.pop(cache_key, None)
 
         # Step 2: PHASE 1 - Try GENERIC plugins first (if registered)
         pssh_data_list = None  # Will be populated if PSSH extraction occurs
@@ -370,6 +407,8 @@ class DRMOperations:
         """
         Try to generate configs using GENERIC plugins.
         Returns (configs, pssh_data_list) tuple. Both can be None.
+
+        IMPORTANT: Ensures PSSH data is complete (with KIDs) before calling plugins.
         """
         # Get PSSH data (from cache or manifest)
         pssh_data_list = self.pssh_cache.get(cache_key)
@@ -402,6 +441,49 @@ class DRMOperations:
             logger.debug(f"GENERIC plugin: No PSSH data available for '{channel_id}'")
             return None, None
 
+        # CRITICAL: Check if PSSH is stub (no real data)
+        if self._has_stub_pssh(pssh_data_list):
+            logger.warning(
+                f"GENERIC plugin: PSSH data is incomplete (no KIDs) - extracting from init segment"
+            )
+
+            provider = self.registry.get_provider(provider_name)
+            if not provider:
+                logger.error(f"Cannot extract real PSSH: provider '{provider_name}' not found")
+                return None, pssh_data_list
+
+            manifest_url = provider.get_manifest(channel_id, **kwargs)
+            if manifest_url:
+                real_pssh = self._extract_pssh_from_manifest(manifest_url, provider_name)
+
+                if real_pssh and not self._has_stub_pssh(real_pssh):
+                    logger.info(
+                        f"GENERIC plugin: Successfully extracted complete PSSH with "
+                        f"{sum(len(p.key_ids) for p in real_pssh)} KIDs from init segment"
+                    )
+                    pssh_data_list = real_pssh
+                    self.pssh_cache.set(cache_key, pssh_data_list)
+                else:
+                    logger.error(
+                        f"GENERIC plugin: Failed to extract complete PSSH - "
+                        f"Kid-Key plugin will not be called"
+                    )
+                    return None, pssh_data_list
+            else:
+                logger.error(f"GENERIC plugin: Cannot get manifest URL for init segment extraction")
+                return None, pssh_data_list
+
+        # Verify we now have complete PSSH
+        total_kids = sum(len(p.key_ids) for p in pssh_data_list)
+        if total_kids == 0:
+            logger.warning(
+                f"GENERIC plugin: PSSH has no KIDs even after extraction - "
+                f"Kid-Key plugin will not be called"
+            )
+            return None, pssh_data_list
+
+        logger.debug(f"GENERIC plugin: Processing with complete PSSH ({total_kids} KIDs)")
+
         # Create a dummy config to pass to GENERIC plugin
         dummy_configs = [DRMConfig(system=DRMSystem.NONE, priority=0)]
 
@@ -416,6 +498,71 @@ class DRMOperations:
     def _has_clearkey_config(drm_configs: List) -> bool:
         """Check if any config is a ClearKey config"""
         return any(config.system == DRMSystem.CLEARKEY for config in drm_configs)
+
+    @staticmethod
+    def _has_stub_pssh(pssh_data_list: List) -> bool:
+        """
+        Check if PSSH data is incomplete (stub).
+
+        Stub PSSH occurs when manifest has ContentProtection tags but no actual PSSH boxes.
+        Returns True if any PSSH is missing pssh_box or has no key_ids.
+        """
+        if not pssh_data_list:
+            return True
+
+        for pssh in pssh_data_list:
+            # Check if PSSH box is missing or empty
+            if not pssh.pssh_box or not pssh.key_ids:
+                return True
+
+        return False
+
+    @staticmethod
+    def _validate_cached_clearkey(cached_configs: List, current_pssh: List) -> bool:
+        """
+        Validate that cached ClearKey configs have keys for ALL current KIDs.
+
+        Returns True if all current KIDs are covered by cached configs.
+        Returns False if any KID is missing or configs are invalid.
+        """
+        # Extract all ClearKey configs
+        clearkey_configs = [c for c in cached_configs if c.system == DRMSystem.CLEARKEY]
+        if not clearkey_configs:
+            logger.debug("No ClearKey configs in cache")
+            return False
+
+        # Extract all current KIDs from PSSH
+        current_kids = set()
+        for pssh in current_pssh:
+            if pssh.key_ids:
+                current_kids.update(kid.lower().replace("-", "") for kid in pssh.key_ids)
+
+        if not current_kids:
+            logger.debug("No KIDs in current PSSH")
+            return False
+
+        # Check if cached configs have keys for ALL current KIDs
+        for config in clearkey_configs:
+            if not config.license or not config.license.keyids:
+                continue
+
+            # Get provided KIDs from config
+            provided_kids = {kid.lower().replace("-", "") for kid in config.license.keyids.keys()}
+
+            # Check if this config covers all current KIDs
+            if current_kids.issubset(provided_kids):
+                logger.debug(
+                    f"Cached config has keys for all {len(current_kids)} current KIDs"
+                )
+                return True
+
+        # No config covers all KIDs
+        missing_kids = current_kids - provided_kids if clearkey_configs else current_kids
+        logger.debug(
+            f"Cached configs missing keys for {len(missing_kids)} KIDs: "
+            f"{list(missing_kids)[:3]}{'...' if len(missing_kids) > 3 else ''}"
+        )
+        return False
 
     def _needs_pssh_extraction(self, drm_configs) -> bool:
         """Check if PSSH extraction is needed for system-specific plugins."""
