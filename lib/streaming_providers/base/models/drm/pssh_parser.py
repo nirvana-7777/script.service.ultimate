@@ -269,8 +269,10 @@ class PSSHParser:
 
                 pos += length
 
-        except (struct.error, IndexError, ValueError):
-            # Silently handle protobuf parsing errors
+        except (struct.error, IndexError, ValueError) as e:
+            # Log protobuf parsing errors for debugging
+            import logging
+            logging.debug(f"Widevine protobuf parsing failed: {type(e).__name__}: {e}")
             return []
 
         return key_ids

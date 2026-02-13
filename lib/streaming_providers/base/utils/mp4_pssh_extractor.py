@@ -117,9 +117,14 @@ class MP4PSSHExtractor:
         for pssh_data in pssh_data_list:
             if pssh_data.needs_tenc_fallback() and tenc_kids:
                 logger.debug(
-                    f"Adding {len(tenc_kids)} tenc KIDs to {pssh_data.drm_system} PSSH"
+                    f"Adding {len(tenc_kids)} tenc KIDs to {pssh_data.drm_system} PSSH (fallback)"
                 )
                 pssh_data.add_key_ids(tenc_kids)
+            elif pssh_data.key_ids and tenc_kids:
+                # PSSH already has KIDs - tenc not needed
+                logger.debug(
+                    f"PSSH already has {len(pssh_data.key_ids)} KIDs from payload - skipping tenc fallback"
+                )
 
         return pssh_data_list
 
@@ -454,13 +459,21 @@ class MP4PSSHExtractor:
                 source="mp4_segment",
             )
 
-            # Log what we found
+            # Log what we found with source information
             drm_name = pssh_data.drm_system.name if pssh_data.drm_system else "UNKNOWN"
             kid_count = len(pssh_data.key_ids)
             version = metadata["version"]
 
+            # Determine source of KIDs
+            if version > 0 and kid_count > 0:
+                source = "v1+ header"
+            elif version == 0 and kid_count > 0:
+                source = "v0 payload"
+            else:
+                source = "none (will need tenc)"
+
             logger.debug(
-                f"Parsed PSSH: {drm_name} v{version} with {kid_count} KIDs"
+                f"Parsed PSSH: {drm_name} v{version} with {kid_count} KIDs from {source}"
             )
 
             return pssh_data
