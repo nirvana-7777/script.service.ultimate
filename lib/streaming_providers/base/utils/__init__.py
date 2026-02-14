@@ -7,6 +7,9 @@ from .mpd_rewriter import MPDRewriter
 from .timestamp_converter import TimestampConverter
 from .mp4_pssh_extractor import MP4PSSHExtractor
 from .vfs import VFS
+from .drm_extractor import DRMExtractor
+from .url_resolver import URLResolver
+from .manifest_utils import ManifestUtils
 
 __all__ = [
     "logger",
@@ -17,4 +20,7 @@ __all__ = [
     "MPDCacheManager",
     "MP4PSSHExtractor",
     "TimestampConverter",
+    "DRMExtractor",
+    "URLResolver",
+    "ManifestUtils",
 ]

@@ -1,16 +1,22 @@
 # streaming_providers/base/utils/mpd_rewriter.py
+"""
+MPD rewriter for DASH manifests.
+Handles URL proxying, DRM key injection, quality filtering, and representation blocklisting.
+"""
+
 import base64
 import struct
 import xml.etree.ElementTree as ET
 import re
 from typing import Optional, Tuple, Set, Dict, List
-from urllib.parse import urljoin, urlparse, quote, urlencode
+from urllib.parse import urljoin, quote, urlencode
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from dataclasses import dataclass, field
 
 from .logger import logger
 from .vfs import get_vfs
+from .url_resolver import URLResolver
 
 # Pre-compile regex for ISO duration parsing at module level
 ISO_8601_PERIOD_RE = re.compile(
@@ -174,17 +180,17 @@ class MPDRewriter:
             media_proxy_url: str,
             provider_proxy_url: Optional[str] = None,
             clearkey_keyids: Optional[dict] = None,
-            highest_quality_video_only: bool = False,  # NEW: Enable highest quality filtering
-            provider: Optional[str] = None,  # NEW: Provider name for blocklist filtering
-            channel: Optional[str] = None,  # NEW: Channel name for blocklist filtering
-            blocklist_path: str = "representation_blocklist.json",  # NEW: Path to blocklist file
+            highest_quality_video_only: bool = False,
+            provider: Optional[str] = None,
+            channel: Optional[str] = None,
+            blocklist_path: str = "representation_blocklist.json",
     ):
         self.media_proxy_url = media_proxy_url.rstrip("/")
         self.provider_proxy_url = provider_proxy_url
         self.key_config = KeyConfiguration(clearkey_keyids or {})
         self.highest_quality_video_only = highest_quality_video_only
 
-        # NEW: Blocklist configuration
+        # Blocklist configuration
         self.provider = provider
         self.channel = channel
         self.blocklist = RepresentationBlocklist(blocklist_path)
@@ -211,8 +217,8 @@ class MPDRewriter:
             template_pattern: Optional[str] = None,
             segment_type: Optional[str] = None,
             is_encrypted: bool = False,
-            kid: Optional[str] = None,  # Specific KID for this AdaptationSet
-            representation_id: Optional[str] = None,  # NEW: For template substitution
+            kid: Optional[str] = None,
+            representation_id: Optional[str] = None,
     ) -> str:
         params = {"url": original_url, **self._static_params}
 
@@ -238,7 +244,7 @@ class MPDRewriter:
                         params["kid"] = kid
                         params["key"] = key
                 else:
-                    # Fallback to first key (should only happen if we couldn't extract KID)
+                    # Fallback to first key
                     if segment_type == "initialization":
                         params["kid"] = self.key_config.default_kid
                     elif segment_type == "media":
@@ -253,7 +259,7 @@ class MPDRewriter:
         proxy_url = f"{self.media_proxy_url}/api/{endpoint}/{encoded}"
 
         if template_pattern:
-            # NEW: Substitute $RepresentationID$ if we have it and highest_quality_video_only is enabled
+            # Substitute $RepresentationID$ if we have it and highest_quality_video_only is enabled
             if self.highest_quality_video_only and representation_id and "$RepresentationID$" in template_pattern:
                 template_pattern = template_pattern.replace("$RepresentationID$", representation_id)
 
@@ -261,29 +267,18 @@ class MPDRewriter:
 
         return proxy_url
 
-    @staticmethod
-    def split_template_url(url: str) -> Tuple[str, Optional[str]]:
-        if "$" not in url:
-            return url, None
-        first_template_pos = url.find("$")
-        last_slash_before_template = url.rfind("/", 0, first_template_pos)
-        if last_slash_before_template == -1:
-            return "", url
-        return url[:last_slash_before_template], url[last_slash_before_template + 1:]
-
     def rewrite_mpd(self, mpd_content: str, manifest_url: str) -> str:
         try:
             root = ET.fromstring(mpd_content)
             ET.register_namespace("", self.MPD_NAMESPACE["mpd"])
 
-            # Extract MPD-level base URL before any modifications
+            # Extract MPD-level base URL using shared utility
             mpd_base_url = self._extract_mpd_base_url(root, manifest_url)
 
             # Single-pass tree preparation with BaseURL extraction
             encrypted_ids, as_id_to_kid, base_url_map = self._prepare_tree_and_extract_kids(root, mpd_base_url)
 
             # FIRST: Filter out encrypted AdaptationSets without available keys
-            # This ensures we only consider decryptable content for quality selection
             if self.key_config.keys:
                 self._remove_adaptationsets_without_keys(root, as_id_to_kid)
             else:
@@ -548,130 +543,101 @@ class MPDRewriter:
         return encrypted_ids, as_id_to_kid, base_url_map
 
     def _extract_kid_from_adaptationset(self, adaptation_set: ET.Element) -> Optional[str]:
-        """Extract KID from ContentProtection elements."""
-        # Check AdaptationSet-level ContentProtection
+        """Extract KID from ContentProtection elements in an AdaptationSet."""
+        # Try cenc:default_KID first
         for cp in adaptation_set.findall("mpd:ContentProtection", self.MPD_NAMESPACE):
-            kid = self._extract_kid_from_cp_element(cp)
-            if kid:
-                return kid
+            default_kid = cp.get("{urn:mpeg:cenc:2013}default_KID")
+            if default_kid:
+                return default_kid.replace("-", "").lower()
 
-        # Check Representation-level ContentProtection
-        for representation in adaptation_set.findall("mpd:Representation", self.MPD_NAMESPACE):
-            for cp in representation.findall("mpd:ContentProtection", self.MPD_NAMESPACE):
-                kid = self._extract_kid_from_cp_element(cp)
-                if kid:
-                    return kid
-
-        return None
-
-    def _extract_kid_from_cp_element(self, cp: ET.Element) -> Optional[str]:
-        """Extract KID from a single ContentProtection element."""
-        # Check default_KID attribute
-        kid_attr = cp.get("{urn:mpeg:cenc:2013}default_KID")
-        if kid_attr:
-            # Normalize immediately! Remove hyphens and lowercase
-            normalized = kid_attr.replace("-", "").lower()
-            logger.debug(f"Extracted KID from default_KID attribute: {normalized}")
-            return normalized
-
-        # Check cenc:pssh
-        for pssh in cp.findall("cenc:pssh", self.CENC_NAMESPACE):
-            if pssh.text:
+        # Try PSSH box
+        for cp in adaptation_set.findall("mpd:ContentProtection", self.MPD_NAMESPACE):
+            pssh_elem = cp.find("cenc:pssh", self.CENC_NAMESPACE)
+            if pssh_elem is not None and pssh_elem.text:
                 try:
-                    pssh_data = base64.b64decode(pssh.text)
-                    logger.debug(f"PSSH box size: {len(pssh_data)} bytes")
-
-                    if len(pssh_data) >= 36:
-                        version = pssh_data[8] if len(pssh_data) > 8 else 0
-                        system_id = pssh_data[12:28].hex() if len(pssh_data) >= 28 else "unknown"
-                        logger.debug(f"PSSH version: {version}, System ID: {system_id}")
-
-                        if version > 0:
+                    pssh_data = base64.b64decode(pssh_elem.text)
+                    if len(pssh_data) >= 32:
+                        version = pssh_data[8]
+                        if version == 1:
                             kid_count = struct.unpack(">I", pssh_data[28:32])[0]
-                            logger.debug(f"KID count from header: {kid_count}")
-
-                            if kid_count > 0 and len(pssh_data) >= 48:
-                                kid_bytes = pssh_data[32:48]
-                                kid_hex = kid_bytes.hex().lower()
-                                logger.debug(f"Extracted KID from PSSH header: {kid_hex}")
-                                return kid_hex
-
-                            # Try to extract from payload if header extraction failed
-                            # This is where we'd use the new Widevine payload parsing
+                            if kid_count > 0 and len(pssh_data) >= 32 + 16:
+                                kid = pssh_data[32:48].hex()
+                                return kid
                 except Exception as e:
-                    logger.debug(f"Error extracting KID from PSSH: {e}")
+                    logger.debug(f"Failed to extract KID from PSSH: {e}")
 
         return None
 
     def _remove_adaptationsets_without_keys(self, root: ET.Element, as_id_to_kid: Dict[str, str]):
-        """Remove encrypted AdaptationSets that require keys we don't have."""
-        removal_count = 0
-
-        # Debug: Log what keys we have
-        logger.debug(f"Available keys: {list(self.key_config.keys.keys())}")
+        """Remove encrypted AdaptationSets for which we don't have keys."""
+        removed_count = 0
 
         for period in root.findall(".//mpd:Period", self.MPD_NAMESPACE):
             period_id = period.get("id", "")
             adaptationsets_to_remove = []
 
             for adaptation_set in period.findall("mpd:AdaptationSet", self.MPD_NAMESPACE):
-                as_id = adaptation_set.get("id")
-                if not as_id:
-                    as_id = str(id(adaptation_set))
-
+                as_id = adaptation_set.get("id", str(id(adaptation_set)))
                 unique_id = f"{period_id}_{as_id}" if period_id else as_id
 
-                # Check if this AdaptationSet requires a key we don't have
                 if unique_id in as_id_to_kid:
-                    required_kid = as_id_to_kid[unique_id]
-
-                    if required_kid not in self.key_config.keys:
-                        logger.warning(
-                            f"Removing AdaptationSet {unique_id} - "
-                            f"missing key for KID: {required_kid[:8]}..."
+                    kid = as_id_to_kid[unique_id]
+                    if kid not in self.key_config.keys:
+                        logger.info(
+                            f"Removing AdaptationSet {unique_id} - no key available for KID {kid[:8]}..."
                         )
                         adaptationsets_to_remove.append(adaptation_set)
+                        removed_count += 1
 
-            # Remove all marked AdaptationSets from this period
             for adaptation_set in adaptationsets_to_remove:
                 period.remove(adaptation_set)
-                removal_count += 1
 
-        if removal_count > 0:
-            logger.info(f"Removed {removal_count} AdaptationSet(s) due to missing keys")
+        if removed_count > 0:
+            logger.info(f"Removed {removed_count} AdaptationSet(s) without available keys")
 
     def _remove_all_encrypted_adaptationsets(self, root: ET.Element):
-        """Remove all encrypted AdaptationSets when we have no keys."""
-        removal_count = 0
+        """Remove all encrypted AdaptationSets when no keys are available."""
+        removed_count = 0
 
         for period in root.findall(".//mpd:Period", self.MPD_NAMESPACE):
             adaptationsets_to_remove = []
 
             for adaptation_set in period.findall("mpd:AdaptationSet", self.MPD_NAMESPACE):
-                # Check if AdaptationSet has ContentProtection
+                # Check for ContentProtection
                 cp_elements = adaptation_set.findall("mpd:ContentProtection", self.MPD_NAMESPACE)
-                if cp_elements:
-                    adaptationsets_to_remove.append(adaptation_set)
+                has_cp = len(cp_elements) > 0
 
-            # Remove all encrypted AdaptationSets from this period
+                # Also check Representation level
+                if not has_cp:
+                    for representation in adaptation_set.findall("mpd:Representation", self.MPD_NAMESPACE):
+                        rep_cp = representation.findall("mpd:ContentProtection", self.MPD_NAMESPACE)
+                        if rep_cp:
+                            has_cp = True
+                            break
+
+                if has_cp:
+                    as_id = adaptation_set.get("id", "unknown")
+                    logger.info(f"Removing encrypted AdaptationSet {as_id} - no keys available")
+                    adaptationsets_to_remove.append(adaptation_set)
+                    removed_count += 1
+
             for adaptation_set in adaptationsets_to_remove:
                 period.remove(adaptation_set)
-                removal_count += 1
 
-        if removal_count > 0:
-            logger.info(f"Removed {removal_count} encrypted AdaptationSet(s) (no keys available)")
+        if removed_count > 0:
+            logger.info(f"Removed {removed_count} encrypted AdaptationSet(s)")
 
     def _remove_blocked_representations(self, root: ET.Element):
-        """
-        Remove Representation elements that are blocked for this provider/channel.
-        If an AdaptationSet has only one Representation and it's blocked, remove the entire AdaptationSet.
-        """
-        if not self.provider or not self.channel:
-            return
-
+        """Remove representations that are blocklisted for this provider/channel."""
         blocked_ids = self.blocklist.get_blocked_ids(self.provider, self.channel)
+
         if not blocked_ids:
             return
+
+        logger.info(
+            f"Applying representation blocklist for {self.provider}/{self.channel}: "
+            f"{len(blocked_ids)} representation(s) blocked"
+        )
 
         total_reps_removed = 0
         total_as_removed = 0
@@ -729,7 +695,7 @@ class MPDRewriter:
             current_encrypted: bool,
             current_kid: Optional[str] = None,
             current_period_id: str = "",
-            best_video_info: Optional[VideoRepresentation] = None,  # NEW
+            best_video_info: Optional[VideoRepresentation] = None,
     ):
         """Recursive node rewriter with KID-aware key selection and context-aware base URLs."""
         # Track period ID as we traverse
@@ -738,7 +704,7 @@ class MPDRewriter:
 
         # Update state when entering an AdaptationSet
         current_as_id = None
-        current_rep_id = None  # NEW: Track current representation ID
+        current_rep_id = None
         if element.tag.endswith("AdaptationSet"):
             as_id = element.get("id", str(id(element)))
             current_as_id = as_id
@@ -754,7 +720,7 @@ class MPDRewriter:
             if current_encrypted and not self.key_config.single_key_mode:
                 current_kid = as_id_to_kid.get(unique_id)
 
-        # NEW: Track representation ID for template substitution
+        # Track representation ID for template substitution
         if element.tag.endswith("Representation"):
             current_rep_id = element.get("id", "")
 
@@ -773,64 +739,51 @@ class MPDRewriter:
 
                 resolved = urljoin(base_url, val)
                 if "$" in resolved:
-                    path, pattern = self.split_template_url(resolved)
+                    # Use shared utility for splitting template URLs
+                    path, pattern = URLResolver.split_template_url(resolved)
                     element.attrib[attr] = self.build_proxy_url(
                         path, pattern, seg_type, current_encrypted, current_kid,
-                        representation_id=current_rep_id  # NEW
+                        representation_id=current_rep_id
                     )
                 else:
                     element.attrib[attr] = self.build_proxy_url(
                         resolved, None, seg_type, current_encrypted, current_kid,
-                        representation_id=current_rep_id  # NEW
+                        representation_id=current_rep_id
                     )
 
         # Handle SegmentURL (always 'media' type)
         if element.tag.endswith("SegmentURL") and "media" in element.attrib:
             resolved = urljoin(base_url, element.attrib["media"])
             path, pattern = (
-                self.split_template_url(resolved)
+                URLResolver.split_template_url(resolved)
                 if "$" in resolved
                 else (resolved, None)
             )
             element.attrib["media"] = self.build_proxy_url(
                 path, pattern, "media", current_encrypted, current_kid,
-                representation_id=current_rep_id  # NEW
+                representation_id=current_rep_id
             )
 
         # Recurse to children
         for child in element:
             self._rewrite_node(
                 child, base_url, encrypted_ids, as_id_to_kid, base_url_map,
-                current_encrypted, current_kid, current_period_id, best_video_info  # NEW
+                current_encrypted, current_kid, current_period_id, best_video_info
             )
 
     def _extract_mpd_base_url(self, root: ET.Element, manifest_url: str) -> str:
-        """Extract and resolve MPD-level BaseURL."""
+        """
+        Extract and resolve MPD-level BaseURL.
+        Uses shared URLResolver utility.
+        """
         base_url_elem = root.find("mpd:BaseURL", self.MPD_NAMESPACE)
-
-        # Check if this is one of the special services
-        SPECIAL_PREFIXES = [
-            "https://bpcdnmanprod.nexttv.ht.hr/bpk-tv/",
-            "https://lineartv-cdn.t-mobile.pl/bpk-tv/"
-        ]
-
-        # Determine manifest directory based on service type
-        if any(manifest_url.startswith(prefix) for prefix in SPECIAL_PREFIXES):
-            # Special service: KEEP index.mpd
-            manifest_dir = manifest_url if manifest_url.endswith('/') else f"{manifest_url}/"
-        else:
-            # Normal service: remove index.mpd
-            parsed_manifest = urlparse(manifest_url)
-            manifest_dir = f"{parsed_manifest.scheme}://{parsed_manifest.netloc}{parsed_manifest.path.rsplit('/', 1)[0]}/"
+        base_url_text = None
 
         if base_url_elem is not None and base_url_elem.text:
             base_url_text = base_url_elem.text.strip()
-            if not base_url_text.startswith(("http://", "https://")):
-                return urljoin(manifest_dir, base_url_text)
-            return base_url_text
 
-        # No BaseURL element
-        return manifest_dir
+        # Use shared utility - it handles special service prefixes
+        return URLResolver.resolve_base_url_with_element(manifest_url, base_url_text)
 
     @staticmethod
     def extract_cache_ttl(headers: dict) -> int:
