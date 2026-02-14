@@ -4,7 +4,7 @@ DASH manifest parser for extracting init segment URLs.
 For PSSH/DRM extraction, use drm_extractor module.
 """
 
-from typing import Optional
+from typing import Optional, List
 
 from .logger import logger
 from .url_resolver import URLResolver
@@ -13,6 +13,44 @@ from .manifest_utils import ManifestUtils
 
 class ManifestParser:
     """Parser for DASH manifests focused on segment URL extraction."""
+
+    # ========================================================================
+    # Backwards Compatibility: DRM Methods (Delegate to DRMExtractor)
+    # ========================================================================
+    # These methods are kept for backwards compatibility with code that calls
+    # ManifestParser._extract_from_manifest_content() etc.
+    # They simply delegate to DRMExtractor.
+
+    @staticmethod
+    def _extract_from_manifest_content(manifest_content: str):
+        """
+        DEPRECATED: Use DRMExtractor._extract_from_manifest_content() instead.
+        Kept for backwards compatibility.
+        """
+        from .drm_extractor import DRMExtractor
+        return DRMExtractor._extract_from_manifest_content(manifest_content)
+
+    @staticmethod
+    def _extract_from_single_segment(segment_url: str, expected_system_ids: List[str] = None):
+        """
+        DEPRECATED: Use DRMExtractor._extract_from_single_segment() instead.
+        Kept for backwards compatibility.
+        """
+        from .drm_extractor import DRMExtractor
+        return DRMExtractor._extract_from_single_segment(segment_url, expected_system_ids)
+
+    @staticmethod
+    def _merge_pssh_data(manifest_pssh: List, segment_pssh: List):
+        """
+        DEPRECATED: Use DRMExtractor._merge_pssh_data() instead.
+        Kept for backwards compatibility.
+        """
+        from .drm_extractor import DRMExtractor
+        return DRMExtractor._merge_pssh_data(manifest_pssh, segment_pssh)
+
+    # ========================================================================
+    # Segment URL Extraction (Primary Purpose)
+    # ========================================================================
 
     @staticmethod
     def extract_single_init_segment_url(
@@ -86,7 +124,7 @@ class ManifestParser:
         return None
 
     @staticmethod
-    def extract_segment_urls(manifest_content: str, manifest_url: str) -> list[str]:
+    def extract_segment_urls(manifest_content: str, manifest_url: str) -> List[str]:
         """
         DEPRECATED: Use extract_single_init_segment_url instead.
         This extracts ALL segments which is inefficient.
@@ -102,7 +140,7 @@ class ManifestParser:
         return [init_url] if init_url else []
 
     @staticmethod
-    def extract_init_segment_urls(manifest_content: str, manifest_url: str) -> list[str]:
+    def extract_init_segment_urls(manifest_content: str, manifest_url: str) -> List[str]:
         """
         DEPRECATED: Use extract_single_init_segment_url instead.
 

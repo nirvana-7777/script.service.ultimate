@@ -98,8 +98,8 @@ class DRMOperations:
         from ..base.models.drm import DRMSystem
 
         # First, try to extract PSSH data using ManifestParser
-        from .utils.manifest_parser import ManifestParser
-        pssh_list = ManifestParser._extract_from_manifest_content(manifest_content)
+        from .utils.drm_extractor import DRMExtractor
+        pssh_list = DRMExtractor._extract_from_manifest_content(manifest_content)
 
         if pssh_list:
             # If we got PSSHData objects with valid DRM systems, it's encrypted!
@@ -354,8 +354,8 @@ class DRMOperations:
                     # Try to extract from manifest_content if we already have it
                     if manifest_content:
                         logger.debug(f"Phase 2: Using cached manifest_content for PSSH extraction")
-                        from .utils.manifest_parser import ManifestParser
-                        pssh_data_list = ManifestParser._extract_from_manifest_content(manifest_content)
+                        from .utils.drm_extractor import DRMExtractor
+                        pssh_data_list = DRMExtractor._extract_from_manifest_content(manifest_content)
 
                         if pssh_data_list:
                             self.pssh_cache.set(cache_key, pssh_data_list)
@@ -417,8 +417,8 @@ class DRMOperations:
             # Try to extract from provided manifest_content first
             if manifest_content:
                 logger.debug(f"GENERIC plugin: Using cached manifest_content for '{channel_id}'")
-                from .utils.manifest_parser import ManifestParser
-                pssh_data_list = ManifestParser._extract_from_manifest_content(manifest_content)
+                from .utils.drm_extractor import DRMExtractor
+                pssh_data_list = DRMExtractor._extract_from_manifest_content(manifest_content)
 
                 if pssh_data_list:
                     self.pssh_cache.set(cache_key, pssh_data_list)
@@ -577,7 +577,7 @@ class DRMOperations:
 
     def _extract_pssh_from_manifest(self, manifest_url: str, provider_name: Optional[str] = None) -> List:
         """Extract PSSH data from manifest using the provider's HTTPManager."""
-        from .utils.manifest_parser import ManifestParser
+        from .utils.drm_extractor import DRMExtractor
         from .network import HTTPManager
 
         # 1. Validate the URL before attempting the request
@@ -608,7 +608,7 @@ class DRMOperations:
             manifest_content = response.text
 
             # 4. Standard PSSH extraction logic
-            pssh_list = ManifestParser._extract_from_manifest_content(manifest_content)
+            pssh_list = DRMExtractor._extract_from_manifest_content(manifest_content)
 
             # Check if we need segment extraction
             needs_segment_extraction = not pssh_list or any(
@@ -617,19 +617,20 @@ class DRMOperations:
 
             if needs_segment_extraction:
                 logger.debug("PSSH incomplete in manifest, extracting from init segment")
+                from .utils import ManifestParser
                 init_segment_url = ManifestParser.extract_single_init_segment_url(
                     manifest_content, manifest_url
                 )
 
                 if init_segment_url:
                     # Reuse the same configured http manager for the segment download
-                    segment_pssh = ManifestParser._extract_from_single_segment(
+                    segment_pssh = DRMExtractor._extract_from_single_segment(
                         init_segment_url,
                         [p.system_id for p in pssh_list] if pssh_list else []
                     )
 
                     if segment_pssh:
-                        return ManifestParser._merge_pssh_data(pssh_list, segment_pssh)
+                        return DRMExtractor._merge_pssh_data(pssh_list, segment_pssh)
 
             return pssh_list
 
