@@ -132,7 +132,7 @@ class M3UProvider(StreamingProvider):
 
         # Setup HTTP manager for potential future use
         self.http_manager = self._setup_http_manager(
-            provider_name=self._get_base_provider_name(),  # Use base name for http manager
+            provider_name=self.provider_name,
             proxy_config=proxy_config,
             proxy_url=proxy_url,
             config_dir=config_dir,
