@@ -569,24 +569,37 @@ class MPDRewriter:
         # Check default_KID attribute
         kid_attr = cp.get("{urn:mpeg:cenc:2013}default_KID")
         if kid_attr:
-            # Let the model normalize it later - just return raw
-            return kid_attr
+            # Normalize immediately! Remove hyphens and lowercase
+            normalized = kid_attr.replace("-", "").lower()
+            logger.debug(f"Extracted KID from default_KID attribute: {normalized}")
+            return normalized
 
         # Check cenc:pssh
         for pssh in cp.findall("cenc:pssh", self.CENC_NAMESPACE):
             if pssh.text:
                 try:
                     pssh_data = base64.b64decode(pssh.text)
+                    logger.debug(f"PSSH box size: {len(pssh_data)} bytes")
+
                     if len(pssh_data) >= 36:
                         version = pssh_data[8] if len(pssh_data) > 8 else 0
+                        system_id = pssh_data[12:28].hex() if len(pssh_data) >= 28 else "unknown"
+                        logger.debug(f"PSSH version: {version}, System ID: {system_id}")
+
                         if version > 0:
                             kid_count = struct.unpack(">I", pssh_data[28:32])[0]
+                            logger.debug(f"KID count from header: {kid_count}")
+
                             if kid_count > 0 and len(pssh_data) >= 48:
                                 kid_bytes = pssh_data[32:48]
-                                # Return raw hex - KeyConfiguration will normalize!
-                                return kid_bytes.hex()
-                except Exception:
-                    continue
+                                kid_hex = kid_bytes.hex().lower()
+                                logger.debug(f"Extracted KID from PSSH header: {kid_hex}")
+                                return kid_hex
+
+                            # Try to extract from payload if header extraction failed
+                            # This is where we'd use the new Widevine payload parsing
+                except Exception as e:
+                    logger.debug(f"Error extracting KID from PSSH: {e}")
 
         return None
 
