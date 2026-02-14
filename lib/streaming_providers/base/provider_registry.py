@@ -134,11 +134,14 @@ class M3UGroupMetadata:
         self.plugin_name = "m3u"
 
         # Create name from sanitized group title
-        # This matches what M3UProvider does in __init__
+        # IMPORTANT: This MUST match what M3UProvider.provider_name property returns!
+        # See M3UProvider lines 189-194:
+        # clean_name = re.sub(r'[^a-z0-9\s]+', '', self.group_filter.lower())
+        # clean_name = re.sub(r'\s+', '_', clean_name).strip('_')
         import re
-        sanitized_group = re.sub(r'[^\w\s-]', '', self.group.lower())
-        sanitized_group = re.sub(r'[-\s]+', '_', sanitized_group)
-        self.name = f"m3u_{sanitized_group}"
+        clean_name = re.sub(r'[^a-z0-9\s]+', '', self.group.lower())
+        clean_name = re.sub(r'\s+', '_', clean_name).strip('_')
+        self.name = clean_name if clean_name else "m3u"
 
         # Static metadata
         self.label = self.group  # Use original group as display label
