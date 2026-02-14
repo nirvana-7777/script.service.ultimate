@@ -9,7 +9,7 @@ import struct
 import xml.etree.ElementTree as ET
 import re
 from typing import Optional, Tuple, Set, Dict, List
-from urllib.parse import urljoin, urlparse, quote, urlencode
+from urllib.parse import urljoin, quote, urlencode
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from dataclasses import dataclass, field

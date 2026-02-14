@@ -49,24 +49,30 @@ class PSSHCache:
 
 
 class DRMConfigCache:
-    """Thread-safe cache for DRM configurations (ClearKey only, no expiry)"""
+    """Thread-safe cache for DRM configurations (ClearKey only)"""
 
-    def __init__(self):
-        self.cache: Dict[str, List] = {}
+    def __init__(self, ttl_seconds: int = 3600):
+        self.cache: Dict[str, Tuple[List, float]] = {}
+        self.ttl = ttl_seconds
         self.lock = Lock()
 
     def get(self, key: str) -> Optional[List]:
-        """Get cached DRM configs"""
+        """Get cached DRM configs if not expired"""
         with self.lock:
             if key in self.cache:
-                logger.debug(f"DRM Config Cache HIT for {key}")
-                return self.cache[key]
+                drm_configs, timestamp = self.cache[key]
+                if time.time() - timestamp < self.ttl:
+                    logger.debug(f"DRM Config Cache HIT for {key}")
+                    return drm_configs
+                else:
+                    logger.debug(f"DRM Config Cache EXPIRED for {key}")
+                    del self.cache[key]
         return None
 
     def set(self, key: str, drm_configs: List):
         """Cache DRM configs (only if contains ClearKey)"""
         with self.lock:
-            self.cache[key] = drm_configs
+            self.cache[key] = (drm_configs, time.time())
             logger.debug(f"DRM Config Cache SET for {key}")
 
     def clear(self):
@@ -83,7 +89,7 @@ class DRMOperations:
         self.registry = registry
         self.drm_plugin_manager = DRMPluginManager()
         self.pssh_cache = PSSHCache(ttl_seconds=cache_ttl)
-        self.drm_config_cache = DRMConfigCache()
+        self.drm_config_cache = DRMConfigCache(ttl_seconds=cache_ttl)
         logger.debug("DRMOperations: Initialized with two-phase plugin processing")
 
     @staticmethod
