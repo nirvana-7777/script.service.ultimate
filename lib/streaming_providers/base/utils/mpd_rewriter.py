@@ -9,7 +9,7 @@ import struct
 import xml.etree.ElementTree as ET
 import re
 from typing import Optional, Tuple, Set, Dict, List
-from urllib.parse import urljoin, quote, urlencode
+from urllib.parse import urljoin, urlparse, quote, urlencode
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from dataclasses import dataclass, field
@@ -548,7 +548,9 @@ class MPDRewriter:
         for cp in adaptation_set.findall("mpd:ContentProtection", self.MPD_NAMESPACE):
             default_kid = cp.get("{urn:mpeg:cenc:2013}default_KID")
             if default_kid:
-                return default_kid.replace("-", "").lower()
+                normalized = default_kid.replace("-", "").lower()
+                logger.debug(f"Extracted KID from default_KID attribute: {normalized}")
+                return normalized
 
         # Try PSSH box
         for cp in adaptation_set.findall("mpd:ContentProtection", self.MPD_NAMESPACE):
@@ -556,21 +558,33 @@ class MPDRewriter:
             if pssh_elem is not None and pssh_elem.text:
                 try:
                     pssh_data = base64.b64decode(pssh_elem.text)
-                    if len(pssh_data) >= 32:
-                        version = pssh_data[8]
-                        if version == 1:
+                    logger.debug(f"PSSH box size: {len(pssh_data)} bytes")
+
+                    if len(pssh_data) >= 36:
+                        version = pssh_data[8] if len(pssh_data) > 8 else 0
+                        system_id = pssh_data[12:28].hex() if len(pssh_data) >= 28 else "unknown"
+                        logger.debug(f"PSSH version: {version}, System ID: {system_id}")
+
+                        if version > 0:
                             kid_count = struct.unpack(">I", pssh_data[28:32])[0]
-                            if kid_count > 0 and len(pssh_data) >= 32 + 16:
-                                kid = pssh_data[32:48].hex()
-                                return kid
+                            logger.debug(f"KID count from header: {kid_count}")
+
+                            if kid_count > 0 and len(pssh_data) >= 48:
+                                kid_bytes = pssh_data[32:48]
+                                kid_hex = kid_bytes.hex().lower()
+                                logger.debug(f"Extracted KID from PSSH header: {kid_hex}")
+                                return kid_hex
                 except Exception as e:
-                    logger.debug(f"Failed to extract KID from PSSH: {e}")
+                    logger.debug(f"Error extracting KID from PSSH: {e}")
 
         return None
 
     def _remove_adaptationsets_without_keys(self, root: ET.Element, as_id_to_kid: Dict[str, str]):
         """Remove encrypted AdaptationSets for which we don't have keys."""
         removed_count = 0
+
+        # Debug: Log what keys we have
+        logger.debug(f"Available keys: {list(self.key_config.keys.keys())}")
 
         for period in root.findall(".//mpd:Period", self.MPD_NAMESPACE):
             period_id = period.get("id", "")
@@ -583,8 +597,9 @@ class MPDRewriter:
                 if unique_id in as_id_to_kid:
                     kid = as_id_to_kid[unique_id]
                     if kid not in self.key_config.keys:
-                        logger.info(
-                            f"Removing AdaptationSet {unique_id} - no key available for KID {kid[:8]}..."
+                        logger.warning(
+                            f"Removing AdaptationSet {unique_id} - "
+                            f"missing key for KID: {kid[:8]}..."
                         )
                         adaptationsets_to_remove.append(adaptation_set)
                         removed_count += 1
