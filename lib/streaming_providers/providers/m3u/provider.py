@@ -303,7 +303,12 @@ class M3UProvider(StreamingProvider):
             return []
 
         # Parse each file to extract group-title attributes
+        # Track which files have no groups for fallback
+        files_without_groups = []
+
         for filename in m3u_files:
+            file_has_groups = False
+
             try:
                 # Read file with encoding fallback
                 content = None
@@ -329,15 +334,28 @@ class M3UProvider(StreamingProvider):
                         match = re.search(r'group-title="([^"]+)"', line, re.IGNORECASE)
                         if match:
                             groups.add(match.group(1).strip())
+                            file_has_groups = True
                         else:
                             # Try unquoted format
                             match = re.search(r'group-title=([^\s,]+)', line, re.IGNORECASE)
                             if match:
                                 groups.add(match.group(1).strip())
+                                file_has_groups = True
+
+                # If this file has no groups, track it for fallback
+                if not file_has_groups:
+                    files_without_groups.append(filename)
 
             except Exception as e:
                 logger.error(f"M3U: Error reading {filename} for group discovery: {e}")
                 continue
+
+        # Fallback: Use filename as group for files without group-title
+        for filename in files_without_groups:
+            # Extract filename without extension and format nicely
+            fallback_group = filename.rsplit(".", 1)[0].replace("_", " ").replace("-", " ").title()
+            groups.add(fallback_group)
+            logger.info(f"M3U: No group-title found in '{filename}', using filename as group: '{fallback_group}'")
 
         logger.debug(f"M3U: Discovered {len(groups)} unique groups")
         return sorted(groups)

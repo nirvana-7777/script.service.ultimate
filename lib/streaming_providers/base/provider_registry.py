@@ -303,10 +303,11 @@ class ProviderRegistry:
             from streaming_providers.providers.m3u import M3UProvider
 
             # Discover all unique groups from M3U files
+            # Now includes filename-based fallback for files without group-title
             groups = M3UProvider.discover_groups(config_dir=None)
 
             if not groups:
-                logger.info("M3U: No groups found in M3U files")
+                logger.warning("M3U: No M3U files found or all files are unreadable")
                 return discovered
 
             logger.info(f"M3U: Discovered {len(groups)} groups: {', '.join(groups)}")
