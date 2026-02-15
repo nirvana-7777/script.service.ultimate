@@ -264,18 +264,63 @@ class M3UProvider(StreamingProvider):
 
         return discovered
 
-    def discover_groups(self) -> List[str]:
+    @staticmethod
+    def discover_groups(config_dir: Optional[str] = None, encoding: str = DEFAULT_ENCODING) -> List[str]:
         """
-        Discover all unique group-titles across all M3U files
+        Discover all unique group-titles across all M3U files (static method for registry)
+
+        Args:
+            config_dir: Directory containing M3U files (optional, uses env or current dir)
+            encoding: File encoding (default: utf-8)
 
         Returns:
             Sorted list of unique group titles
         """
         groups = set()
 
-        for filename in self._discovered_files:
+        # Determine playlist directory
+        playlists_path = os.environ.get(ENV_M3U_PLAYLISTS_PATH)
+        if playlists_path:
+            playlists_dir = playlists_path
+        elif config_dir:
+            playlists_dir = config_dir
+        else:
+            playlists_dir = "."
+
+        # Initialize VFS for file operations
+        vfs = get_vfs(config_dir=playlists_dir)
+
+        # Discover M3U files
+        try:
+            files = vfs.list_files("")
+            m3u_files = [f for f in files if any(f.lower().endswith(ext) for ext in SUPPORTED_EXTENSIONS)]
+        except Exception as e:
+            logger.error(f"M3U: Error discovering files: {e}")
+            return []
+
+        if not m3u_files:
+            logger.debug("M3U: No M3U files found for group discovery")
+            return []
+
+        # Parse each file to extract group-title attributes
+        for filename in m3u_files:
             try:
-                lines = self._read_m3u_file(filename)
+                # Read file with encoding fallback
+                content = None
+                encodings_to_try = [encoding] + FALLBACK_ENCODINGS
+
+                for enc in encodings_to_try:
+                    try:
+                        content = vfs.read_text(filename, encoding=enc)
+                        break
+                    except (UnicodeDecodeError, UnicodeError):
+                        continue
+
+                if not content:
+                    logger.warning(f"M3U: Could not read {filename} with any encoding")
+                    continue
+
+                lines = content.split("\n")
 
                 for line in lines:
                     if line.startswith(EXTINF_PREFIX):
@@ -292,7 +337,9 @@ class M3UProvider(StreamingProvider):
 
             except Exception as e:
                 logger.error(f"M3U: Error reading {filename} for group discovery: {e}")
+                continue
 
+        logger.debug(f"M3U: Discovered {len(groups)} unique groups")
         return sorted(groups)
 
     # ============================================================================
