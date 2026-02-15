@@ -246,156 +246,88 @@ class M3UProvider(StreamingProvider):
             List of M3U filenames found
         """
         if self.m3u_filename:
-            # Specific file requested
+            # Use specific file if provided
             if self.vfs.exists(self.m3u_filename):
                 return [self.m3u_filename]
-            else:
-                logger.warning(
-                    f"M3U: Specified file not found: {self.m3u_filename}"
-                )
-                return []
+            logger.warning(f"M3U: Specified file not found: {self.m3u_filename}")
+            return []
 
-        # Auto-discover all *.m3u and *.m3u8 files
+        # Auto-discover all M3U files
         discovered = []
-        for ext in ["*.m3u", "*.m3u8"]:
-            files = self.vfs.list_files("", pattern=ext)
-            discovered.extend(files)
-
-        # Remove duplicates and sort
-        discovered = sorted(set(discovered))
-
-        if not discovered:
-            logger.debug(
-                f"M3U: No playlist files found in {self.playlists_dir} "
-                f"(searched for *.m3u and *.m3u8)"
-            )
+        try:
+            files = self.vfs.list_files("")
+            for file in files:
+                if any(file.lower().endswith(ext) for ext in SUPPORTED_EXTENSIONS):
+                    discovered.append(file)
+        except Exception as e:
+            logger.error(f"M3U: Error discovering files: {e}")
 
         return discovered
 
-    @staticmethod
-    def discover_groups(config_dir: Optional[str] = None) -> List[str]:
+    def discover_groups(self) -> List[str]:
         """
         Discover all unique group-titles across all M3U files
 
-        This is used for dynamic provider registration - each group becomes a provider.
-
-        Args:
-            config_dir: Configuration directory path
-
         Returns:
-            List of unique group names found across all M3U files
+            Sorted list of unique group titles
         """
-        try:
-            # Determine playlists directory
-            playlists_path = os.environ.get(ENV_M3U_PLAYLISTS_PATH)
-            if playlists_path:
-                playlists_dir = playlists_path
-            elif config_dir:
-                playlists_dir = config_dir
-            else:
-                playlists_dir = "."
+        groups = set()
 
-            # Initialize VFS
-            vfs = get_vfs(config_dir=playlists_dir)
+        for filename in self._discovered_files:
+            try:
+                lines = self._read_m3u_file(filename)
 
-            # Discover M3U files
-            discovered_files = []
-            for ext in ["*.m3u", "*.m3u8"]:
-                files = vfs.list_files("", pattern=ext)
-                discovered_files.extend(files)
-
-            discovered_files = sorted(set(discovered_files))
-
-            if not discovered_files:
-                logger.info(f"M3U: No playlist files found in {playlists_dir} for group discovery")
-                return []
-
-            # Parse all files and extract unique groups
-            groups = set()
-            encodings_to_try = [DEFAULT_ENCODING] + FALLBACK_ENCODINGS
-
-            for filename in discovered_files:
-                try:
-                    # Read file with encoding fallback
-                    content = None
-                    for enc in encodings_to_try:
-                        try:
-                            content = vfs.read_text(filename, encoding=enc)
-                            if content:
-                                break
-                        except UnicodeDecodeError:
-                            continue
-
-                    if not content:
-                        logger.warning(f"M3U: Could not read {filename} for group discovery")
-                        continue
-
-                    lines = content.splitlines()
-
-                    # Extract group-title attributes
-                    for line in lines:
-                        if line.strip().startswith(EXTINF_PREFIX):
-                            # Parse group-title attribute
-                            match = re.search(r'group-title="([^"]+)"', line, re.IGNORECASE)
+                for line in lines:
+                    if line.startswith(EXTINF_PREFIX):
+                        # Extract group-title attributes
+                        # Try quoted format first
+                        match = re.search(r'group-title="([^"]+)"', line, re.IGNORECASE)
+                        if match:
+                            groups.add(match.group(1).strip())
+                        else:
+                            # Try unquoted format
+                            match = re.search(r'group-title=([^\s,]+)', line, re.IGNORECASE)
                             if match:
-                                group = match.group(1).strip()
-                                if group:
-                                    groups.add(group)
-                            else:
-                                # Try without quotes
-                                match = re.search(r'group-title=([^\s,]+)', line, re.IGNORECASE)
-                                if match:
-                                    group = match.group(1).strip()
-                                    if group:
-                                        groups.add(group)
+                                groups.add(match.group(1).strip())
 
-                except Exception as e:
-                    logger.warning(f"M3U: Error reading {filename} for group discovery: {e}")
+            except Exception as e:
+                logger.error(f"M3U: Error reading {filename} for group discovery: {e}")
 
-            groups_list = sorted(groups)
-            logger.info(f"M3U: Discovered {len(groups_list)} unique groups: {', '.join(groups_list)}")
-            return groups_list
-
-        except Exception as e:
-            logger.error(f"M3U: Error during group discovery: {e}")
-            return []
+        return sorted(groups)
 
     # ============================================================================
-    # M3U PARSING
+    # M3U FILE READING & PARSING
     # ============================================================================
 
     def _read_m3u_file(self, filename: str) -> List[str]:
         """
-        Read M3U file with encoding fallback support using VFS
+        Read M3U file with proper encoding handling
 
         Args:
-            filename: M3U filename
+            filename: M3U filename to read
 
         Returns:
-            List of lines from the M3U file
+            List of lines from the file
+
+        Raises:
+            ValueError: If file cannot be read with any encoding
         """
         encodings_to_try = [self.encoding] + FALLBACK_ENCODINGS
 
-        for enc in encodings_to_try:
+        for encoding in encodings_to_try:
             try:
-                content = self.vfs.read_text(filename, encoding=enc)
-                if content is None:
-                    raise FileNotFoundError(
-                        f"M3U file not found: {filename}. "
-                        f"Please ensure the file exists in {self.playlists_dir}"
-                    )
-                lines = content.splitlines()
+                content = self.vfs.read_text(filename, encoding=encoding)
+                lines = content.split("\n")
                 logger.debug(
-                    f"M3U: Successfully read {filename} with encoding: {enc}"
+                    f"M3U: Successfully read {filename} using {encoding} encoding "
+                    f"({len(lines)} lines)"
                 )
                 return lines
-            except UnicodeDecodeError:
-                logger.debug(f"M3U: Failed to read {filename} with encoding: {enc}")
+            except (UnicodeDecodeError, UnicodeError):
+                logger.debug(f"M3U: Failed to read {filename} with {encoding} encoding")
                 continue
-            except FileNotFoundError:
-                raise
             except Exception as e:
-                logger.error(f"M3U: Error reading {filename}: {e}")
+                logger.error(f"M3U: Unexpected error reading {filename}: {e}")
                 raise
 
         raise ValueError(
@@ -503,7 +435,7 @@ class M3UProvider(StreamingProvider):
 
         Handles:
         - Widevine/PlayReady/FairPlay via license_url
-        - ClearKey via both JWK format and Kodi shorthand format
+        - ClearKey via JWK format, Kodi shorthand format, AND kid:key format
         - Multi-key ClearKey (video/audio/subtitle tracks)
         - Strict 128-bit hex validation (32 hex chars = 16 bytes)
 
@@ -537,7 +469,7 @@ class M3UProvider(StreamingProvider):
         if license_type_prop:
             drm_system_str = license_type_prop.lower().strip()
 
-        # Check license_key (contains ClearKey JSON or license server URL)
+        # Check license_key (contains ClearKey JSON, kid:key format, or license server URL)
         license_key_prop = (
                 properties.get("inputstream.adaptive.license_key") or
                 properties.get("inputstream.adaptive.licensekey")
@@ -545,8 +477,37 @@ class M3UProvider(StreamingProvider):
         if license_key_prop:
             license_key_prop = license_key_prop.strip()
 
+            # ========================================================================
+            # NEW: Handle kid:key format (colon-separated 128-bit hex)
+            # Example: d3c6cfa92bee2619a805911a14fe3827:d724545e509457efa94c57689eb68d4a
+            # ========================================================================
+            if ":" in license_key_prop and not (
+                    license_key_prop.startswith("{") or
+                    license_key_prop.startswith("http") or
+                    "|" in license_key_prop
+            ):
+                parts = license_key_prop.split(":", 1)
+                if len(parts) == 2:
+                    kid_hex = parts[0].strip().lower()
+                    key_hex = parts[1].strip().lower()
+
+                    # Validate 128-bit hex format (32 hex chars = 16 bytes)
+                    valid_hex = set("0123456789abcdef")
+                    if (
+                            len(kid_hex) == 32 and all(c in valid_hex for c in kid_hex) and
+                            len(key_hex) == 32 and all(c in valid_hex for c in key_hex)
+                    ):
+                        keyids[kid_hex] = key_hex
+                        drm_system_str = "clearkey"
+                        logger.debug(f"Parsed kid:key ClearKey format: KID={kid_hex}, KEY=*** (128-bit)")
+                    else:
+                        logger.warning(
+                            f"Invalid kid:key format: KID='{kid_hex}' ({len(kid_hex)} chars), "
+                            f"KEY='{key_hex}' ({len(key_hex)} chars) - skipping"
+                        )
+
             # Handle pipe-delimited format: URL|headers|post_data|response_data
-            if "|" in license_key_prop and not (
+            elif "|" in license_key_prop and not (
                     license_key_prop.startswith("{") and license_key_prop.endswith("}")
             ):
                 parts = license_key_prop.split("|", 3)
@@ -773,17 +734,32 @@ class M3UProvider(StreamingProvider):
                 if custom_key in attributes and mapped_key not in channel_data:
                     channel_data[mapped_key] = attributes[custom_key]
 
-            # Generate channel_id if not present
+            # ========================================================================
+            # IMPROVEMENT 1: Enhanced channel_id fallback chain
+            # tvg-id → tvg-name → generated_id
+            # ========================================================================
             if "channel_id" not in channel_data:
-                # Use tvg-id if available, otherwise generate from name
-                channel_id = attributes.get("tvg-id") or self._generate_channel_id(
-                    channel_name, channel_number, source_file
+                # Fallback chain: tvg-id → tvg-name → generated_id
+                channel_id = (
+                        attributes.get("tvg-id") or
+                        attributes.get("tvg-name") or
+                        self._generate_channel_id(channel_name, channel_number, source_file)
                 )
                 channel_data["channel_id"] = channel_id
 
             # Set channel number if not already set
             if "channel_number" not in channel_data:
                 channel_data["channel_number"] = channel_number
+
+            # ========================================================================
+            # IMPROVEMENT 2: Fallback group-title to M3U filename
+            # If no genre/group-title found, use the M3U filename as genre
+            # ========================================================================
+            if "genre" not in channel_data:
+                # Extract filename without extension and format nicely
+                fallback_genre = source_file.rsplit(".", 1)[0].replace("_", " ").replace("-", " ").title()
+                channel_data["genre"] = fallback_genre
+                logger.debug(f"No group-title found, using M3U filename as genre: {fallback_genre}")
 
             # Detect streaming format
             streaming_format = self._detect_streaming_format(clean_url)
@@ -999,82 +975,50 @@ class M3UProvider(StreamingProvider):
     # CHANNEL MANAGEMENT
     # ============================================================================
 
-    def _should_refresh_cache(self) -> bool:
-        """
-        Determine if cache should be refreshed
-
-        Checks:
-        - Cache TTL expiration
-        - File modification time for any discovered file
-        - New files discovered
-        """
-        current_time = time.time()
-
-        # Check cache TTL
-        if current_time - self._cache_timestamp >= self.cache_ttl:
-            logger.debug("M3U: Cache TTL expired")
-            return True
-
-        # Re-discover files to check for new files
-        current_files = self._discover_m3u_files()
-        if set(current_files) != set(self._discovered_files):
-            logger.debug("M3U: File list changed (new files added or removed)")
-            self._discovered_files = current_files
-            return True
-
-        # Check if any file has been modified
-        for filename in self._discovered_files:
-            filepath = self.vfs.join_path(filename)
-            # Get file modification time via VFS/filesystem
-            try:
-                if os.path.isabs(filepath):
-                    current_mtime = os.path.getmtime(filepath)
-                else:
-                    # VFS doesn't have direct mtime, so we read file size as proxy
-                    # In production, this could be enhanced
-                    current_mtime = time.time()
-
-                previous_mtime = self._file_mtimes.get(filename, 0)
-                if current_mtime > previous_mtime:
-                    logger.debug(f"M3U: File {filename} has been modified")
-                    return True
-            except Exception as e:
-                logger.warning(f"M3U: Could not check mtime for {filename}: {e}")
-
-        return False
-
     def get_channels(
             self,
-            fetch_manifests: bool = False,
-            populate_streaming_data: bool = True,
             force_refresh: bool = False,
             **kwargs,
     ) -> List[StreamingChannel]:
         """
-        Get channels from all M3U files with caching support
-
-        Filters to group_filter if specified (for group-based provider instances)
+        Get all channels from M3U files
 
         Args:
-            fetch_manifests: Not used (manifests are in M3U)
-            populate_streaming_data: Not used (data is in M3U)
             force_refresh: Force re-parsing of M3U files
 
         Returns:
-            List of StreamingChannel objects from all M3U files (filtered by group if set)
+            List of StreamingChannel objects
         """
-        # Check if refresh needed
-        should_refresh = force_refresh or self._should_refresh_cache()
-
-        # Return cached channels if valid
-        if not should_refresh and self._channels_cache:
-            logger.debug(f"M3U ({self.provider_label}): Returning channels from cache")
-            return self._channels_cache
-
-        logger.info(f"M3U ({self.provider_label}): Cache expired or force refresh requested. Parsing M3U files...")
-
         try:
-            # Reset aggregate statistics
+            # Check if cache is still valid
+            cache_valid = False
+            if not force_refresh and self._channels_cache:
+                cache_age = time.time() - self._cache_timestamp
+                cache_valid = cache_age < self.cache_ttl
+
+                # Also check if any files have been modified
+                if cache_valid:
+                    for filename in self._discovered_files:
+                        filepath = self.vfs.join_path(filename)
+                        if os.path.isabs(filepath):
+                            current_mtime = os.path.getmtime(filepath)
+                            if filename not in self._file_mtimes or self._file_mtimes[filename] < current_mtime:
+                                cache_valid = False
+                                logger.info(f"M3U: File {filename} has been modified, refreshing cache")
+                                break
+
+            # Return cached channels if valid
+            if cache_valid:
+                logger.debug(
+                    f"M3U ({self.provider_label}): Returning {len(self._channels_cache)} cached channels"
+                )
+                return self._channels_cache
+
+            # Re-discover files if auto_refresh is enabled
+            if self.auto_refresh:
+                self._discovered_files = self._discover_m3u_files()
+
+            # Reset stats for fresh parsing
             self._stats = {
                 "total_lines": 0,
                 "channels_parsed": 0,
