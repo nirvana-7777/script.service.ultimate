@@ -56,14 +56,29 @@ class DRMConfigCache:
         self.ttl = ttl_seconds
         self.lock = Lock()
 
-    def get(self, key: str) -> Optional[List]:
-        """Get cached DRM configs if not expired"""
+    def get(self, key: str, allow_expired: bool = False) -> Optional[Tuple[List, bool]]:
+        """
+        Get cached DRM configs.
+
+        Args:
+            key: Cache key
+            allow_expired: If True, return expired entries for validation
+
+        Returns:
+            Tuple of (drm_configs, is_expired) if found, None otherwise.
+            If allow_expired=False and entry is expired, returns None and deletes entry.
+        """
         with self.lock:
             if key in self.cache:
                 drm_configs, timestamp = self.cache[key]
-                if time.time() - timestamp < self.ttl:
+                is_expired = time.time() - timestamp >= self.ttl
+
+                if not is_expired:
                     logger.debug(f"DRM Config Cache HIT for {key}")
-                    return drm_configs
+                    return drm_configs, False
+                elif allow_expired:
+                    logger.debug(f"DRM Config Cache EXPIRED for {key} (returned for validation)")
+                    return drm_configs, True
                 else:
                     logger.debug(f"DRM Config Cache EXPIRED for {key}")
                     del self.cache[key]
@@ -259,48 +274,58 @@ class DRMOperations:
                 # Continue to provider DRM config on error
                 manifest_content = None
 
-        # Step 1: Check DRM config cache (ClearKey configs)
-        cached_configs = self.drm_config_cache.get(cache_key)
-        if cached_configs is not None:
-            logger.debug(f"Found cached DRM configs for '{channel_id}', validating against current KIDs")
+        # Step 1: Check DRM config cache (ClearKey configs) - allow expired for validation
+        cache_result = self.drm_config_cache.get(cache_key, allow_expired=True)
 
-            # Get current PSSH to verify KIDs haven't changed
-            current_pssh = self.pssh_cache.get(cache_key)
+        if cache_result is not None:
+            cached_configs, is_expired = cache_result
 
-            if current_pssh is None:
-                # Need to fetch PSSH to validate
-                if manifest_content:
-                    from .utils.manifest_parser import ManifestParser
-                    current_pssh = ManifestParser._extract_from_manifest_content(manifest_content)
-                    if current_pssh:
-                        self.pssh_cache.set(cache_key, current_pssh)
+            if self._has_clearkey_config(cached_configs):
+                # Only validate if TTL has expired
+                if is_expired:
+                    logger.info(f"Found expired DRM configs for '{cache_key}', validating against current KIDs")
 
-                # If still no PSSH or stub, fetch from manifest
-                if not current_pssh or self._has_stub_pssh(current_pssh):
-                    logger.debug(f"Cached config validation: PSSH incomplete, extracting from init segment")
-                    manifest_url = provider.get_manifest(channel_id, **kwargs)
-                    if manifest_url:
-                        current_pssh = self._extract_pssh_from_manifest(manifest_url, provider_name)
-                        if current_pssh:
-                            self.pssh_cache.set(cache_key, current_pssh)
+                    # Get current PSSH to verify KIDs haven't changed
+                    current_pssh = self.pssh_cache.get(cache_key)
 
-            # Validate cached configs against current PSSH
-            if current_pssh and not self._has_stub_pssh(current_pssh):
-                if self._validate_cached_clearkey(cached_configs, current_pssh):
-                    logger.info(
-                        f"Cached ClearKey configs validated: all current KIDs have keys - "
-                        f"returning {len(cached_configs)} configs (skipping plugin processing)"
-                    )
-                    return cached_configs
+                    if current_pssh is None:
+                        # Need to fetch PSSH to validate
+                        if manifest_content:
+                            from .utils.manifest_parser import ManifestParser
+                            current_pssh = ManifestParser._extract_from_manifest_content(manifest_content)
+                            if current_pssh:
+                                self.pssh_cache.set(cache_key, current_pssh)
+
+                        # If still no PSSH or stub, fetch from manifest
+                        if not current_pssh or self._has_stub_pssh(current_pssh):
+                            logger.debug(f"Expired config validation: PSSH incomplete, extracting from init segment")
+                            manifest_url = provider.get_manifest(channel_id, **kwargs)
+                            if manifest_url:
+                                current_pssh = self._extract_pssh_from_manifest(manifest_url, provider_name)
+                                if current_pssh:
+                                    self.pssh_cache.set(cache_key, current_pssh)
+
+                    # Validate expired configs against current PSSH
+                    if current_pssh and not self._has_stub_pssh(current_pssh):
+                        if self._validate_cached_clearkey(cached_configs, current_pssh):
+                            logger.info(
+                                f"Expired configs still valid for all current KIDs - refreshing TTL for '{cache_key}'"
+                            )
+                            # Refresh the cache with new TTL
+                            self.drm_config_cache.set(cache_key, cached_configs)
+                            return cached_configs
+                        else:
+                            logger.warning(
+                                f"Expired configs INVALID: KIDs changed or keys missing - regenerating for '{cache_key}'"
+                            )
+                            # Fall through to regenerate
+                    else:
+                        logger.warning(f"Cannot validate expired configs: PSSH data incomplete - regenerating")
+                        # Fall through to regenerate
                 else:
-                    logger.warning(
-                        f"Cached ClearKey configs INVALID: KIDs changed or keys missing - "
-                        f"clearing cache and regenerating"
-                    )
-                    self.drm_config_cache.cache.pop(cache_key, None)
-            else:
-                logger.warning(f"Cannot validate cached configs: PSSH data incomplete - clearing cache")
-                self.drm_config_cache.cache.pop(cache_key, None)
+                    # Still within TTL, use cached configs directly without validation
+                    logger.info(f"Using cached DRM configs for '{cache_key}' (within TTL)")
+                    return cached_configs
 
         # Step 2: PHASE 1 - Try GENERIC plugins first (if registered)
         pssh_data_list = None  # Will be populated if PSSH extraction occurs
