@@ -801,15 +801,23 @@ class M3UProvider(StreamingProvider):
 
             # ========================================================================
             # IMPROVEMENT 1: Enhanced channel_id fallback chain
-            # tvg-id → tvg-name → generated_id
+            # tvg-id → sanitized tvg-name → generated_id
             # ========================================================================
             if "channel_id" not in channel_data:
-                # Fallback chain: tvg-id → tvg-name → generated_id
-                channel_id = (
-                        attributes.get("tvg-id") or
-                        attributes.get("tvg-name") or
-                        self._generate_channel_id(channel_name, channel_number, source_file)
-                )
+                tvg_id = attributes.get("tvg-id")
+                tvg_name = attributes.get("tvg-name")
+
+                if tvg_id:
+                    # Use tvg-id as-is (already should be an ID)
+                    channel_id = tvg_id
+                elif tvg_name:
+                    # Sanitize tvg-name to make it URL-safe
+                    # "ARD TV" -> "ard_tv", "Das Erste" -> "das_erste"
+                    channel_id = self._sanitize_channel_id(tvg_name)
+                else:
+                    # Generate from channel name, number, and source file
+                    channel_id = self._generate_channel_id(channel_name, channel_number, source_file)
+
                 channel_data["channel_id"] = channel_id
 
             # Set channel number if not already set
@@ -907,6 +915,28 @@ class M3UProvider(StreamingProvider):
             logger.error(f"Error parsing channel entry from {source_file}: {e}")
             self._stats["errors"] += 1
             return None
+
+    @staticmethod
+    def _sanitize_channel_id(value: str) -> str:
+        """
+        Sanitize a string to be used as a channel ID (URL-safe)
+
+        Args:
+            value: String to sanitize
+
+        Returns:
+            Sanitized string suitable for use in URLs
+
+        Examples:
+            "ARD TV" -> "ard_tv"
+            "Channel 1 HD" -> "channel_1_hd"
+            "Das Erste" -> "das_erste"
+        """
+        # Lowercase and remove special chars, keep alphanumeric and spaces
+        clean = re.sub(r"[^a-z0-9\s]", "", value.lower())
+        # Replace spaces with underscores
+        clean = re.sub(r"\s+", "_", clean.strip())
+        return clean
 
     @staticmethod
     def _generate_channel_id(name: str, number: int, source_file: str) -> str:
