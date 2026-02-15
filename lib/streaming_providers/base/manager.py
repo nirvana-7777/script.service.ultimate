@@ -56,6 +56,21 @@ class ProviderManager:
             self.registry.discover_all_providers(country)
         return self.registry.get_enabled_providers()
 
+    def rediscover_providers(self, country: str = "DE") -> List[str]:
+        """
+        Re-scan for new providers, particularly useful for dynamically added M3U playlists.
+
+        Args:
+            country: Country code for provider discovery
+
+        Returns:
+            List of all discovered provider names
+        """
+        logger.info(f"ProviderManager: Re-discovering providers for country '{country}'...")
+        discovered = self.registry.discover_all_providers(country)
+        logger.info(f"ProviderManager: Re-discovery complete. Found {len(discovered)} providers")
+        return discovered
+
     def get_provider(self, provider_name: str):
         return self.registry.get_provider(provider_name)
 
@@ -103,7 +118,7 @@ class ProviderManager:
     # ==========================================================================
 
     def get_channels(
-        self, provider_name: str, fetch_manifests: bool = False, **kwargs
+            self, provider_name: str, fetch_manifests: bool = False, **kwargs
     ) -> List[StreamingChannel]:
         return self.channel_ops.get_channels(provider_name, fetch_manifests, **kwargs)
 
@@ -111,7 +126,7 @@ class ProviderManager:
         return self.channel_ops.get_channel_manifest(provider_name, channel_id, **kwargs)
 
     def get_all_channels(
-        self, fetch_manifests: bool = True, **kwargs
+            self, fetch_manifests: bool = True, **kwargs
     ) -> Dict[str, List[StreamingChannel]]:
         return self.channel_ops.get_all_channels(fetch_manifests, **kwargs)
 
@@ -158,26 +173,26 @@ class ProviderManager:
     # ==========================================================================
 
     def get_catchup_manifest(
-        self,
-        provider_name: str,
-        channel_id: str,
-        start_time: int,
-        end_time: int,
-        epg_id: Optional[str] = None,
-        country: Optional[str] = None,
+            self,
+            provider_name: str,
+            channel_id: str,
+            start_time: int,
+            end_time: int,
+            epg_id: Optional[str] = None,
+            country: Optional[str] = None,
     ) -> Optional[str]:
         return self.catchup_ops.get_catchup_manifest(
             provider_name, channel_id, start_time, end_time, epg_id, country
         )
 
     def get_catchup_drm_configs(
-        self,
-        provider_name: str,
-        channel_id: str,
-        start_time: int,
-        end_time: int,
-        epg_id: Optional[str] = None,
-        country: Optional[str] = None,
+            self,
+            provider_name: str,
+            channel_id: str,
+            start_time: int,
+            end_time: int,
+            epg_id: Optional[str] = None,
+            country: Optional[str] = None,
     ) -> List:
         return self.catchup_ops.get_catchup_drm_configs(
             provider_name, channel_id, start_time, end_time, epg_id, country

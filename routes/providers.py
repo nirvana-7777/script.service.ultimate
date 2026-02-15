@@ -36,7 +36,7 @@ def setup_provider_routes(app, manager, service):
                         # Check specific auth type needs
                         needs_user_creds = "user_credentials" in supported_auth_types
                         needs_client_creds = (
-                            "client_credentials" in supported_auth_types
+                                "client_credentials" in supported_auth_types
                         )
                         is_network_based = "network_based" in supported_auth_types
                         is_anonymous = "anonymous" in supported_auth_types
@@ -63,10 +63,10 @@ def setup_provider_routes(app, manager, service):
                                 # Derived summary for UI
                                 "needs_user_input": needs_user_creds or uses_device_reg,
                                 "needs_configuration": needs_user_creds
-                                or needs_client_creds,
+                                                       or needs_client_creds,
                                 "is_automatic": is_network_based
-                                or is_anonymous
-                                or uses_embedded,
+                                                or is_anonymous
+                                                or uses_embedded,
                             },
                             # Token properties
                             "primary_token_scope": getattr(
@@ -98,7 +98,7 @@ def setup_provider_routes(app, manager, service):
             channels = manager.get_channels(
                 provider_name=provider,
                 fetch_manifests=request.query.get("fetch_manifests", "false").lower()
-                == "true",
+                                == "true",
                 country=request.query.get("country"),
             )
 
@@ -342,8 +342,8 @@ def setup_provider_routes(app, manager, service):
                 if "not registered" in message.lower():
                     response.status = 404
                 elif (
-                    "invalid" in message.lower()
-                    or "validation failed" in message.lower()
+                        "invalid" in message.lower()
+                        or "validation failed" in message.lower()
                 ):
                     response.status = 400
                 else:
@@ -514,8 +514,8 @@ def setup_provider_routes(app, manager, service):
                 if "not registered" in message.lower():
                     response.status = 404
                 elif (
-                    "invalid" in message.lower()
-                    or "validation failed" in message.lower()
+                        "invalid" in message.lower()
+                        or "validation failed" in message.lower()
                 ):
                     response.status = 400
                 else:
@@ -810,3 +810,44 @@ def setup_provider_routes(app, manager, service):
             logger.error(f"Error setting enabled status for {provider}: {e}")
             response.status = 500
             return {"error": str(e)}
+
+    @app.route("/api/providers/rediscover", method="POST")
+    def rediscover_providers():
+        """
+        Re-scan for new providers (e.g., newly added M3U playlists).
+
+        Accepts optional query parameter:
+        - country: Country code for provider discovery (default: service default_country)
+
+        Example: POST /api/providers/rediscover
+        Example: POST /api/providers/rediscover?country=US
+
+        Returns:
+            JSON with list of all discovered providers and count
+        """
+        try:
+            # Get country from query param or use service default
+            country = request.query.get("country", service.default_country)
+
+            logger.info(f"API: Rediscovering providers for country '{country}'")
+
+            # Trigger provider rediscovery
+            discovered = manager.rediscover_providers(country)
+
+            # Get updated metadata
+            all_metadata = manager.get_all_providers_metadata()
+            enabled_count = sum(1 for m in all_metadata if m["enabled"])
+
+            return {
+                "success": True,
+                "message": f"Re-discovered {len(discovered)} providers ({enabled_count} enabled)",
+                "providers": discovered,
+                "count": len(discovered),
+                "enabled_count": enabled_count,
+                "country": country,
+            }
+
+        except Exception as api_err:
+            logger.error(f"API Error in POST /api/providers/rediscover: {str(api_err)}")
+            response.status = 500
+            return {"error": f"Failed to rediscover providers: {str(api_err)}"}
