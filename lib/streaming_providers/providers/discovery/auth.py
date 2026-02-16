@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 from ...base.auth.base_auth import BaseAuthenticator, BaseAuthToken, TokenAuthLevel
-from ...base.auth.credentials import ClientCredentials, UserPasswordCredentials
+from ...base.auth.credentials import BaseCredentials, UserPasswordCredentials
 from ...base.models.proxy_models import ProxyConfig
 from ...base.utils.logger import logger
 
@@ -31,7 +31,7 @@ from .exceptions import (
 
 
 @dataclass
-class DiscoveryAnonymousCredentials(ClientCredentials):
+class DiscoveryAnonymousCredentials(BaseCredentials):
     """Discovery+ anonymous credentials"""
 
     realm: str = DEFAULT_REALM
@@ -43,6 +43,13 @@ class DiscoveryAnonymousCredentials(ClientCredentials):
     @property
     def credential_type(self) -> str:
         return "discovery_anonymous"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for storage"""
+        return {
+            "type": self.credential_type,
+            "realm": self.realm,
+        }
 
 
 @dataclass
