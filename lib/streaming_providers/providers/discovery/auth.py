@@ -44,6 +44,16 @@ class DiscoveryAnonymousCredentials(BaseCredentials):
     def credential_type(self) -> str:
         return "discovery_anonymous"
 
+    def to_auth_payload(self) -> Dict[str, Any]:
+        """
+        Convert to authentication payload.
+
+        For anonymous auth, Discovery+ uses query parameters, not a payload.
+        Return empty dict as this method is required by BaseCredentials
+        but won't be used for GET requests.
+        """
+        return {}
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for storage"""
         return {
