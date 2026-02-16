@@ -8,6 +8,7 @@ Provides access to Discovery+ streaming content with support for:
 - DRM-protected streams
 - Multi-country support (EMEA)
 """
+from .provider import DiscoveryProvider
 
 from .auth import (
     DiscoveryAuthenticator,
@@ -46,7 +47,7 @@ from .models import DiscoveryChannel
 
 __all__ = [
     # Provider class (when available)
-    # "DiscoveryProvider",
+    "DiscoveryProvider",
 
     # Models
     "DiscoveryChannel",
