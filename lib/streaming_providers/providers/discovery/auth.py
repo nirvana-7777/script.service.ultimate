@@ -99,20 +99,34 @@ class DiscoveryAuthToken(BaseAuthToken):
     realm: Optional[str] = field(default=None)
     anonymous: bool = field(default=True)
     token_id: Optional[str] = field(default=None)
+    st_cookie: Optional[str] = field(default=None)  # long-lived session cookie
 
     @classmethod
-    def from_token_response(cls, response_data: Dict[str, Any]) -> "DiscoveryAuthToken":
+    def from_token_response(
+            cls,
+            response_data: Dict[str, Any],
+            response=None,
+    ) -> "DiscoveryAuthToken":
         """
         Create token from API response.
 
         Args:
-            response_data: Token response from Discovery+ API
+            response_data: Parsed JSON body from /token or /login response
+            response: Optional raw requests.Response — used to extract the
+                      st= session cookie which is the true session credential.
 
         Returns:
             Initialized DiscoveryAuthToken
         """
         data = response_data.get("data", {})
         attributes = data.get("attributes", {})
+
+        # Extract st= cookie from the response if available.
+        # This is the long-lived session cookie that allows re-deriving
+        # the access token on subsequent /token calls without re-login.
+        st_cookie = None
+        if response is not None:
+            st_cookie = response.cookies.get("st")
 
         token = cls(
             access_token=attributes.get("token", ""),
@@ -122,6 +136,7 @@ class DiscoveryAuthToken(BaseAuthToken):
             realm=attributes.get("realm"),
             anonymous=attributes.get("anonymous", True),
             token_id=data.get("id"),
+            st_cookie=st_cookie,
         )
 
         # Parse JWT for more accurate expiration
@@ -169,6 +184,7 @@ class DiscoveryAuthToken(BaseAuthToken):
             "realm": self.realm,
             "anonymous": self.anonymous,
             "token_id": self.token_id,
+            "st_cookie": self.st_cookie,
         }
 
 
@@ -545,21 +561,11 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         headers["Origin"] = "https://auth.discoveryplus.com"
         headers["Referer"] = "https://auth.discoveryplus.com/"
 
-        # Append the token segment to x-wbd-session-state.
-        # The session state is a semicolon-separated string of named segments
-        # e.g. "localization:eyJ...;profile:eyJ...;token:eyJ...".
-        # After authentication the server expects a "token:" segment carrying
-        # the encoded access token. We inject it here — replacing any existing
-        # token segment so re-auth / stored-token paths stay consistent.
-        if token.access_token:
-            session_state = headers.get("x-wbd-session-state", "")
-            # Strip any existing token segment
-            segments = [
-                seg for seg in session_state.split(";")
-                if seg and not seg.startswith("token:")
-            ]
-            segments.append(f"token:{token.access_token}")
-            headers["x-wbd-session-state"] = ";".join(segments)
+        # NOTE: x-wbd-session-state is a server-issued encrypted blob returned
+        # in the /token 400 response headers. It cannot be constructed from the
+        # access_token. On a stored-token path _session_state is None and
+        # _build_base_headers() will not add this header — that is correct.
+        # The Authorization: Bearer header is sufficient for bootstrap.
 
         return headers
 
@@ -586,18 +592,20 @@ class DiscoveryAuthenticator(BaseAuthenticator):
 
     def _create_token_from_response(
             self,
-            response_data: Dict[str, Any]
+            response_data: Dict[str, Any],
+            response=None,
     ) -> BaseAuthToken:
         """
         Create token object from API response.
 
         Args:
-            response_data: Response data from authentication API
+            response_data: Parsed JSON body from the auth response
+            response: Raw requests.Response for cookie extraction
 
         Returns:
             Initialized token with auth level classified
         """
-        token = DiscoveryAuthToken.from_token_response(response_data)
+        token = DiscoveryAuthToken.from_token_response(response_data, response=response)
         token.auth_level = self._classify_token(token)
         return token
 
@@ -712,7 +720,12 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             token_data = response.json()
 
             logger.info("Anonymous authentication successful")
-            token = self._create_token_from_response(token_data)
+            token = self._create_token_from_response(token_data, response=response)
+
+            if token.st_cookie:
+                logger.debug("Captured st= session cookie from /token response")
+            else:
+                logger.warning("No st= cookie in /token response — session may not persist")
 
             # Bootstrap with authenticated session to discover country-specific
             # endpoints. Must happen after token is obtained.
@@ -724,7 +737,7 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             # Fallback: server skipped header negotiation (uncommon)
             logger.debug("Received 200 directly without header negotiation")
             token_data = response.json()
-            token = self._create_token_from_response(token_data)
+            token = self._create_token_from_response(token_data, response=response)
             self._discover_endpoints(self._build_authenticated_headers(token))
             return token
 
@@ -800,7 +813,12 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         response.raise_for_status()
         token_data = response.json()
 
-        user_token = self._create_token_from_response(token_data)
+        user_token = self._create_token_from_response(token_data, response=response)
+
+        if user_token.st_cookie:
+            logger.debug("Captured st= session cookie from /login response")
+        else:
+            logger.warning("No st= cookie in /login response — user session may not persist")
 
         if getattr(user_token, "anonymous", True):
             # Login succeeded but token still anonymous — credentials were
@@ -848,14 +866,68 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             return TokenAuthLevel.USER_AUTHENTICATED
         return TokenAuthLevel.ANONYMOUS
 
+    def _establish_session(self) -> None:
+        """
+        Establish a live session (session headers + endpoints) using whatever
+        credentials are available, without replacing the currently stored token.
+
+        Called on the stored-token path when session headers are missing.
+        The st= cookie (if present in the jar) causes /token to return the
+        previously authenticated token rather than a fresh anonymous one.
+
+        Flow:
+          1. Run /token two-step → populates session headers + captures token
+          2. If result is anonymous but we have user credentials → re-login
+          3. Either way → bootstrap runs at the end of the auth method
+        """
+        if isinstance(self.credentials, DiscoveryUserCredentials):
+            # Run the full user flow: /token two-step + /login upgrade.
+            # If the st= cookie is still valid, /token already returns the user
+            # token and /login may be skipped by the server — but we still call
+            # it to be safe and to guarantee session headers are correct.
+            logger.debug(
+                "User credentials available — running full user auth to "
+                "establish session"
+            )
+            self._perform_user_auth()
+        else:
+            # Anonymous path — just the /token two-step
+            logger.debug(
+                "No user credentials — running anonymous /token negotiation "
+                "to establish session for bootstrap"
+            )
+            self._perform_anonymous_auth()
+
+    def _restore_session_cookie(self, st_cookie: str) -> None:
+        """
+        Inject a stored st= cookie back into the http_manager session.
+
+        The st= cookie is the true session credential for Discovery+. Without
+        it in the active cookie jar, /token returns a fresh anonymous token
+        regardless of what Authorization header we send.
+
+        Args:
+            st_cookie: The raw st= cookie value from storage
+        """
+        jar = self.http_manager._session.cookies
+        if jar.get("st"):
+            return  # Already present — nothing to do
+
+        jar.set("st", st_cookie, domain="api.discoveryplus.com", path="/")
+        logger.debug("Restored st= session cookie into http_manager cookie jar")
+
     def get_bearer_token(self, force_refresh: bool = False) -> str:
         """
         Get bearer token for API requests.
 
-        Also ensures endpoint discovery has run. When a valid token is loaded
-        from storage the normal auth flow is skipped entirely, so
-        _discover_endpoints would never be called. We detect that here and run
-        it on-demand while we already have a valid token in hand.
+        Handles three stored-token scenarios before returning:
+          1. Stored token is anonymous but we have user credentials → upgrade
+             via login so the caller always gets a user-level token.
+          2. Stored token is already a user token → use as-is.
+          3. Stored token is anonymous and no user credentials → use as-is.
+
+        Also ensures endpoint discovery (bootstrap) has run regardless of
+        whether the token came from storage or a fresh auth flow.
 
         Args:
             force_refresh: Force token refresh
@@ -865,16 +937,42 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         """
         token = self.authenticate(force_refresh=force_refresh)
 
-        # If endpoints are empty it means either:
-        #   a) token was loaded from storage (auth flow was bypassed), or
-        #   b) bootstrap failed during a fresh auth and left _endpoints empty.
-        # Either way, try bootstrap now while we have a valid token in hand.
-        if not self._endpoints:
-            logger.debug(
-                "Endpoints not yet discovered (token loaded from storage or "
-                "previous bootstrap failed) — running bootstrap now"
+        # Restore the st= cookie into the http_manager session if we have one
+        # stored but it's not yet in the active cookie jar. This must happen
+        # before any subsequent requests so the server recognises our session.
+        if isinstance(token, DiscoveryAuthToken) and token.st_cookie:
+            self._restore_session_cookie(token.st_cookie)
+
+        # Upgrade anonymous stored token when user credentials are available.
+        # The base class loads whatever was saved — if a previous run only got
+        # as far as anonymous auth, we should upgrade now rather than operate
+        # with restricted access.
+        is_anonymous_token = (
+            not isinstance(token, DiscoveryAuthToken) or
+            getattr(token, "anonymous", True)
+        )
+        has_user_credentials = isinstance(self.credentials, DiscoveryUserCredentials)
+
+        if is_anonymous_token and has_user_credentials:
+            logger.info(
+                "Stored token is anonymous but user credentials are available "
+                "— upgrading to user token"
             )
-            self._discover_endpoints(self._build_authenticated_headers(token))
+            token = self._perform_user_auth()
+        elif not self._endpoints:
+            # No upgrade needed, but bootstrap hasn't run yet.
+            # Happens when token was loaded from storage (auth flow bypassed)
+            # or when a previous bootstrap attempt failed.
+            logger.debug(
+                "Endpoints not yet discovered — establishing session for bootstrap"
+            )
+            if not self._session_state:
+                # No live session headers — need to run auth flow to get them.
+                # _establish_session routes to the right flow by credential type
+                # and always calls _discover_endpoints at the end.
+                self._establish_session()
+            else:
+                self._discover_endpoints(self._build_authenticated_headers(token))
 
         return token.bearer_token
 
@@ -893,10 +991,17 @@ class DiscoveryAuthenticator(BaseAuthenticator):
     def invalidate_token(self) -> None:
         """Invalidate current token and clear from storage"""
         self._current_token = None
-        # Also clear session headers so next auth starts fresh
+        # Clear session headers so next auth starts fresh
         self._disco_id = None
         self._session_state = None
         self._wbd_ace = None
+        # Clear the st= cookie from the session jar
+        try:
+            self.http_manager._session.cookies.clear(
+                domain="api.discoveryplus.com", path="/", name="st"
+            )
+        except Exception:
+            pass
         try:
             self.settings_manager.clear_token(self.provider_name, self.country)
         except (AttributeError, KeyError, IOError, OSError):
