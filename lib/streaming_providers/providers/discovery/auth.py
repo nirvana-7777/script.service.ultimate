@@ -176,9 +176,24 @@ class DiscoveryAuthenticator(BaseAuthenticator):
 
     Supports:
     - Anonymous authentication (two-step token negotiation)
-    - User credentials (username/password)
+    - User credentials (username/password upgrade from anonymous token)
     - Dynamic endpoint discovery from bootstrap
     - Session header persistence (x-disco-id, x-wbd-session-state, x-wbd-ace)
+
+    Auth flows:
+      Anonymous : GET /token (no headers) → 400 + session headers
+                  → GET /token (with session headers) → 200 + anon token
+                  → GET /bootstrap (with session headers + Bearer anon token)
+                    → 200 + full endpoint/routing map
+
+      User      : [same two-step /token negotiation]
+                  → POST /login (Authorization: Bearer <anon_token>) → 200 + user token
+                  → GET /bootstrap (with session headers + Bearer user token)
+                    → 200 + full endpoint/routing map
+
+    Bootstrap is always called AFTER a token is obtained so it receives proper
+    session headers and an Authorization header, allowing it to return the
+    correct country-specific endpoint routing rather than a generic/empty 400.
 
     Note: Discovery+ uses simple token-based auth, not OAuth2.
     """
@@ -209,7 +224,7 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         self.env = DEFAULT_ENV
         self.device_id = DEFAULT_DEVICE_ID
 
-        # Session headers storage (from 400 response)
+        # Session headers storage (from /token 400 response)
         self._session_state: Optional[str] = None
         self._disco_id: Optional[str] = None
         self._wbd_ace: Optional[str] = None
@@ -231,8 +246,10 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             enable_kodi_integration=True,
         )
 
-        # Discover endpoints after initialization
-        self._discover_endpoints()
+        # NOTE: _discover_endpoints() is NOT called here.
+        # Bootstrap requires an authenticated session to return correct routing,
+        # so it is called at the end of _perform_anonymous_auth /
+        # _perform_user_auth once a token and session headers are in hand.
 
     @property
     def http_manager(self):
@@ -269,12 +286,18 @@ class DiscoveryAuthenticator(BaseAuthenticator):
 
         return self._http_manager
 
-    def _discover_endpoints(self) -> None:
+    def _discover_endpoints(self, auth_headers: Dict[str, str]) -> None:
         """
-        Discover API endpoints from bootstrap.
+        Discover API endpoints from bootstrap using an authenticated session.
 
-        Raises:
-            EndpointDiscoveryError: If endpoint discovery fails
+        Must be called AFTER a token has been obtained so that the request
+        carries the correct session headers (x-disco-id, x-wbd-session-state,
+        x-wbd-ace) and an Authorization: Bearer header. Without these the
+        bootstrap returns a generic 400 with no useful routing data.
+
+        Args:
+            auth_headers: Headers including Authorization and session headers,
+                          as built by _build_authenticated_headers().
         """
         try:
             logger.debug(f"Discovering endpoints for Discovery+ ({self.country})")
@@ -282,10 +305,25 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             response = self.http_manager.get(
                 DISCOVERY_BOOTSTRAP_URL,
                 operation="bootstrap",
+                headers=auth_headers,
                 timeout=30,
             )
-            response.raise_for_status()
-            data = response.json()
+
+            if response.status_code != 200:
+                logger.warning(
+                    f"Bootstrap returned {response.status_code} — "
+                    "falling back to hardcoded endpoints"
+                )
+                return
+
+            try:
+                data = response.json()
+            except Exception as parse_err:
+                logger.warning(
+                    f"Could not parse bootstrap response: {parse_err}. "
+                    "Falling back to hardcoded endpoints."
+                )
+                return
 
             # Store routing info
             self._routing = data.get("routing", {})
@@ -301,14 +339,12 @@ class DiscoveryAuthenticator(BaseAuthenticator):
                     if base_url:
                         self._endpoints[path] = f"{base_url}{path}"
 
-            logger.debug(f"Discovered {len(self._endpoints)} endpoints")
+            logger.debug(
+                f"Discovered {len(self._endpoints)} endpoints from bootstrap"
+            )
 
         except Exception as e:
             logger.warning(f"Failed to discover endpoints: {e}")
-            # Initialize empty dicts for fallback
-            self._endpoints = {}
-            self._api_groups = {}
-            self._routing = {}
 
     def _build_api_url(self, api_group: str) -> Optional[str]:
         """
@@ -343,16 +379,14 @@ class DiscoveryAuthenticator(BaseAuthenticator):
 
     def get_endpoint(self, path: str) -> Optional[str]:
         """
-        Get full URL for an endpoint path.
+        Get full URL for an endpoint path discovered from bootstrap.
 
         Args:
             path: Endpoint path (e.g., '/token')
 
         Returns:
-            Full endpoint URL or None if not found
+            Full endpoint URL or None if not yet discovered (fallbacks apply)
         """
-        if not self._endpoints:
-            self._discover_endpoints()
         return self._endpoints.get(path)
 
     @property
@@ -366,7 +400,6 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         Returns:
             Authentication endpoint URL
         """
-        # Return login endpoint as the primary auth endpoint
         return self.login_endpoint
 
     @property
@@ -431,9 +464,7 @@ class DiscoveryAuthenticator(BaseAuthenticator):
 
         Format: dplus/6.14.0 (desktop/desktop; Linux/x86_64; device-id/session-id)
         """
-        # Use consistent device ID
         device_id = self.device_id or DEFAULT_DEVICE_ID
-        # Generate new session ID for each auth attempt
         session_id = str(uuid.uuid4())
         return f"dplus/6.14.0 (desktop/desktop; Linux/x86_64; {device_id}/{session_id})"
 
@@ -454,7 +485,7 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             "x-wbd-time-zone": "Europe/Berlin",
         }
 
-        # Add session headers if we have them (from 400 response)
+        # Add session headers if we have them (from /token 400 response)
         if self._disco_id:
             headers["x-disco-id"] = self._disco_id
         if self._session_state:
@@ -472,6 +503,23 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             Dictionary of HTTP headers
         """
         return self._build_base_headers()
+
+    def _build_authenticated_headers(self, token: BaseAuthToken) -> Dict[str, str]:
+        """
+        Build headers for post-auth requests (bootstrap, CMS, playback).
+
+        Combines session headers (populated during /token negotiation) with
+        the Authorization: Bearer header from the obtained token.
+
+        Args:
+            token: Successfully obtained authentication token
+
+        Returns:
+            Headers dict including Authorization and all session headers
+        """
+        headers = self._build_base_headers()  # picks up _disco_id etc.
+        headers["Authorization"] = f"Bearer {token.access_token}"
+        return headers
 
     def _build_auth_payload(self) -> Dict[str, Any]:
         """
@@ -542,15 +590,18 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         """
         Perform anonymous authentication with two-step header negotiation.
 
-        Step 1: Initial request returns 400 with required headers
-        Step 2: Second request with all headers returns 200 with token
+        Step 1: GET /token with no session headers → 400 response whose
+                headers contain x-disco-id, x-wbd-session-state, x-wbd-ace.
+        Step 2: GET /token again with those three headers → 200 with token.
 
         Returns:
             Anonymous authentication token
         """
-        logger.info(f"Performing two-step anonymous authentication for {self.provider_name}")
+        logger.info(
+            f"Performing two-step anonymous authentication for {self.provider_name}"
+        )
 
-        # Base headers for initial request (without session headers)
+        # Step 1 headers: base headers only, no session headers yet
         base_headers = {
             "User-Agent": DISCOVERY_USER_AGENT,
             "x-device-info": self._build_device_info(),
@@ -563,7 +614,7 @@ class DiscoveryAuthenticator(BaseAuthenticator):
 
         params = {"realm": "bolt"}
 
-        # Step 1: Make initial request (expecting 400)
+        # Step 1: Initial request — we expect 400 + session headers in response
         logger.debug("Step 1: Making initial token request (expecting 400)")
         response = self.http_manager.get(
             self.token_endpoint,
@@ -573,22 +624,23 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             allow_redirects=False,
         )
 
-        # Check for 400 with required headers
         if response.status_code == 400:
-            # Extract ALL required headers from response
+            # Extract required session headers from the 400 response
             disco_id = response.headers.get("x-disco-id")
             session_state = response.headers.get("x-wbd-session-state")
             wbd_ace = response.headers.get("x-wbd-ace")
 
             if not all([disco_id, session_state, wbd_ace]):
-                missing = []
-                if not disco_id:
-                    missing.append("x-disco-id")
-                if not session_state:
-                    missing.append("x-wbd-session-state")
-                if not wbd_ace:
-                    missing.append("x-wbd-ace")
-                logger.error(f"Missing required headers in 400 response: {missing}")
+                missing = [
+                    h for h, v in [
+                        ("x-disco-id", disco_id),
+                        ("x-wbd-session-state", session_state),
+                        ("x-wbd-ace", wbd_ace),
+                    ] if not v
+                ]
+                logger.error(
+                    f"Missing required headers in 400 response: {missing}"
+                )
                 logger.debug(f"Response headers: {dict(response.headers)}")
                 response.raise_for_status()
 
@@ -596,13 +648,13 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             logger.debug(f"Received x-wbd-ace: {wbd_ace[:50]}...")
             logger.debug(f"Received x-wbd-session-state: {session_state[:100]}...")
 
-            # Store session headers for future requests
+            # Persist session headers for future requests (CMS, playback, etc.)
             self._disco_id = disco_id
             self._session_state = session_state
             self._wbd_ace = wbd_ace
 
-            # Step 2: Second request with ALL headers from first response
-            logger.debug("Step 2: Making second token request with all headers")
+            # Step 2: Repeat the request with all three session headers
+            logger.debug("Step 2: Making second token request with session headers")
             second_headers = base_headers.copy()
             second_headers["x-disco-id"] = disco_id
             second_headers["x-wbd-session-state"] = session_state
@@ -614,53 +666,122 @@ class DiscoveryAuthenticator(BaseAuthenticator):
                 headers=second_headers,
                 params=params,
             )
-
-            # Should now be 200 with token
             response.raise_for_status()
             token_data = response.json()
 
             logger.info("Anonymous authentication successful")
-            return self._create_token_from_response(token_data)
+            token = self._create_token_from_response(token_data)
 
-        # If we get 200 directly (unlikely), handle it
+            # Bootstrap with authenticated session to discover country-specific
+            # endpoints. Must happen after token is obtained.
+            self._discover_endpoints(self._build_authenticated_headers(token))
+
+            return token
+
         elif response.status_code == 200:
+            # Fallback: server skipped header negotiation (uncommon)
             logger.debug("Received 200 directly without header negotiation")
             token_data = response.json()
-            return self._create_token_from_response(token_data)
+            token = self._create_token_from_response(token_data)
+            self._discover_endpoints(self._build_authenticated_headers(token))
+            return token
 
-        # Any other status is an error
         else:
             logger.error(f"Unexpected response status: {response.status_code}")
             response.raise_for_status()
 
     def _perform_user_auth(self) -> BaseAuthToken:
         """
-        Perform user authentication (POST /login with credentials).
+        Perform user authentication by upgrading an anonymous token.
+
+        Discovery+ does not accept a bare credentials POST to /login.
+        The session must first be established anonymously, then the anonymous
+        token is used as a Bearer token to POST credentials to /login, which
+        returns a new token with anonymous=False and full user entitlements.
+
+        Flow:
+          1. Obtain anonymous token via two-step header negotiation (reuses
+             _perform_anonymous_auth, which also populates session headers).
+          2. POST /login with Authorization: Bearer <anon_token> and the
+             username/password payload to upgrade to a user token.
 
         Returns:
-            User authentication token
+            User-level authentication token (anonymous=False)
+
+        Raises:
+            InvalidCredentialsError: If credentials are missing or rejected
         """
-        logger.info(f"Performing user authentication for {self.provider_name}")
+        if not isinstance(self.credentials, DiscoveryUserCredentials):
+            raise InvalidCredentialsError(
+                "User credentials required for user authentication"
+            )
 
-        headers = self._get_auth_headers()
-        headers["Content-Type"] = "application/json"
+        logger.info(
+            f"Performing user authentication for {self.provider_name} "
+            f"(user: {self.credentials.username})"
+        )
 
-        payload = self._build_auth_payload()
+        # Step 1+2: Obtain anonymous token (also populates session headers
+        # self._disco_id / self._session_state / self._wbd_ace).
+        # NOTE: _perform_anonymous_auth calls _discover_endpoints internally
+        # with the anon token. That's fine — we intentionally overwrite the
+        # endpoint map below with the user token, which may return different
+        # (higher-entitlement) routing.
+        logger.debug("Obtaining anonymous base token for user auth upgrade")
+        anon_token = self._perform_anonymous_auth()
+
+        # Step 3: Upgrade anonymous session to user session
+        logger.debug(
+            f"Upgrading anonymous token to user token for "
+            f"{self.credentials.username}"
+        )
+
+        # Build headers: session headers + Bearer anon token
+        upgrade_headers = self._build_base_headers()  # includes session headers
+        upgrade_headers["Authorization"] = f"Bearer {anon_token.access_token}"
+        upgrade_headers["Content-Type"] = "application/json"
+
+        payload = self.credentials.to_login_payload()
 
         response = self.http_manager.post(
             self.login_endpoint,
             operation="auth",
-            headers=headers,
+            headers=upgrade_headers,
             json_data=payload,
         )
 
+        if response.status_code == 401:
+            raise InvalidCredentialsError(
+                f"Invalid credentials for user {self.credentials.username}"
+            )
+
         response.raise_for_status()
         token_data = response.json()
-        return self._create_token_from_response(token_data)
+
+        user_token = self._create_token_from_response(token_data)
+
+        if getattr(user_token, "anonymous", True):
+            # Login succeeded but token still anonymous — credentials were
+            # accepted but the account may lack an active subscription.
+            logger.warning(
+                f"Login succeeded for {self.credentials.username} but token "
+                "is still anonymous — account may lack an active subscription"
+            )
+        else:
+            logger.info(
+                f"User authentication successful for {self.credentials.username}"
+            )
+
+        # Re-run bootstrap with the user token so endpoints reflect full
+        # user entitlements (country routing may differ from anonymous session).
+        self._discover_endpoints(self._build_authenticated_headers(user_token))
+
+        return user_token
 
     def _refresh_token(self) -> Optional[BaseAuthToken]:
         """
-        Token refresh - Discovery tokens don't support refresh, re-authenticate.
+        Token refresh — Discovery+ tokens have no refresh_token mechanism.
+        Returning None triggers a full re-authentication in the base class.
 
         Returns:
             None (triggers re-authentication)
@@ -681,9 +802,8 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         Returns:
             Token authentication level
         """
-        if hasattr(token, "anonymous"):
-            if not token.anonymous:
-                return TokenAuthLevel.USER_AUTHENTICATED
+        if hasattr(token, "anonymous") and not token.anonymous:
+            return TokenAuthLevel.USER_AUTHENTICATED
         return TokenAuthLevel.ANONYMOUS
 
     def get_bearer_token(self, force_refresh: bool = False) -> str:
@@ -707,14 +827,14 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             True if authenticated with valid token
         """
         return (
-                self._current_token is not None and
-                not self._current_token.is_expired
+            self._current_token is not None and
+            not self._current_token.is_expired
         )
 
     def invalidate_token(self) -> None:
         """Invalidate current token and clear from storage"""
         self._current_token = None
-        # Also clear session headers
+        # Also clear session headers so next auth starts fresh
         self._disco_id = None
         self._session_state = None
         self._wbd_ace = None
