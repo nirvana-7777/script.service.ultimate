@@ -264,6 +264,11 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             enable_kodi_integration=True,
         )
 
+        if not self.credentials:
+            self.credentials = self._load_credentials_from_manager()
+            if self.credentials:
+                logger.info(f"Loaded stored credentials for discovery ({country})")
+
         # NOTE: _discover_endpoints() is NOT called here.
         # Bootstrap requires an authenticated session to return correct routing,
         # so it is called at the end of _perform_anonymous_auth /
