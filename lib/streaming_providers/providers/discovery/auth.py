@@ -3,8 +3,10 @@
 Discovery+ Authentication
 
 Handles authentication for Discovery+ including anonymous and user credentials.
+Supports two-step token negotiation with session headers.
 """
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
@@ -32,7 +34,7 @@ from .exceptions import (
 
 @dataclass
 class DiscoveryAnonymousCredentials(BaseCredentials):
-    """Discovery+ anonymous credentials"""
+    """Discovery+ anonymous credentials - no client_id/secret needed"""
 
     realm: str = DEFAULT_REALM
 
@@ -49,8 +51,7 @@ class DiscoveryAnonymousCredentials(BaseCredentials):
         Convert to authentication payload.
 
         For anonymous auth, Discovery+ uses query parameters, not a payload.
-        Return empty dict as this method is required by BaseCredentials
-        but won't be used for GET requests.
+        Return empty dict as this method is required by BaseCredentials.
         """
         return {}
 
@@ -174,9 +175,10 @@ class DiscoveryAuthenticator(BaseAuthenticator):
     Discovery+ authenticator with dynamic endpoint discovery.
 
     Supports:
-    - Anonymous authentication
+    - Anonymous authentication (two-step token negotiation)
     - User credentials (username/password)
     - Dynamic endpoint discovery from bootstrap
+    - Session header persistence (x-disco-id, x-wbd-session-state, x-wbd-ace)
 
     Note: Discovery+ uses simple token-based auth, not OAuth2.
     """
@@ -207,8 +209,12 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         self.env = DEFAULT_ENV
         self.device_id = DEFAULT_DEVICE_ID
 
+        # Session headers storage (from 400 response)
+        self._session_state: Optional[str] = None
+        self._disco_id: Optional[str] = None
+        self._wbd_ace: Optional[str] = None
+
         # Store http_manager and proxy_config BEFORE calling super().__init__
-        # BaseAuthenticator doesn't accept these parameters
         self._http_manager = http_manager
         self._proxy_config = proxy_config
         self._endpoints: Dict[str, str] = {}
@@ -419,6 +425,45 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             else "https://default.any-any.prd.api.discoveryplus.com/cms/collections"
         )
 
+    def _build_device_info(self) -> str:
+        """
+        Build x-device-info header.
+
+        Format: dplus/6.14.0 (desktop/desktop; Linux/x86_64; device-id/session-id)
+        """
+        # Use consistent device ID
+        device_id = self.device_id or DEFAULT_DEVICE_ID
+        # Generate new session ID for each auth attempt
+        session_id = str(uuid.uuid4())
+        return f"dplus/6.14.0 (desktop/desktop; Linux/x86_64; {device_id}/{session_id})"
+
+    def _build_base_headers(self) -> Dict[str, str]:
+        """
+        Build base headers for all requests, including session headers if available.
+
+        Returns:
+            Dictionary of HTTP headers
+        """
+        headers = {
+            "User-Agent": DISCOVERY_USER_AGENT,
+            "x-device-info": self._build_device_info(),
+            "x-disco-client": "WEB:x86_64:dplus:6.14.0",
+            "x-disco-params": "realm=bolt,bid=dplus,features=ar",
+            "x-wbd-device-consent": "gpc=0",
+            "x-wbd-preferred-language": f"{self.country}-DE".upper(),
+            "x-wbd-time-zone": "Europe/Berlin",
+        }
+
+        # Add session headers if we have them (from 400 response)
+        if self._disco_id:
+            headers["x-disco-id"] = self._disco_id
+        if self._session_state:
+            headers["x-wbd-session-state"] = self._session_state
+        if self._wbd_ace:
+            headers["x-wbd-ace"] = self._wbd_ace
+
+        return headers
+
     def _get_auth_headers(self) -> Dict[str, str]:
         """
         Get headers for authentication request.
@@ -426,10 +471,7 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         Returns:
             Dictionary of HTTP headers
         """
-        return {
-            "User-Agent": DISCOVERY_USER_AGENT,
-            "Accept": "application/json",
-        }
+        return self._build_base_headers()
 
     def _build_auth_payload(self) -> Dict[str, Any]:
         """
@@ -498,26 +540,98 @@ class DiscoveryAuthenticator(BaseAuthenticator):
 
     def _perform_anonymous_auth(self) -> BaseAuthToken:
         """
-        Perform anonymous authentication (GET /token?realm=bolt).
+        Perform anonymous authentication with two-step header negotiation.
+
+        Step 1: Initial request returns 400 with required headers
+        Step 2: Second request with all headers returns 200 with token
 
         Returns:
             Anonymous authentication token
         """
-        logger.info(f"Performing anonymous authentication for {self.provider_name}")
+        logger.info(f"Performing two-step anonymous authentication for {self.provider_name}")
 
-        params = {"realm": self.credentials.realm}
-        headers = self._get_auth_headers()
+        # Base headers for initial request (without session headers)
+        base_headers = {
+            "User-Agent": DISCOVERY_USER_AGENT,
+            "x-device-info": self._build_device_info(),
+            "x-disco-client": "WEB:x86_64:dplus:6.14.0",
+            "x-disco-params": "realm=bolt,bid=dplus,features=ar",
+            "x-wbd-device-consent": "gpc=0",
+            "x-wbd-preferred-language": f"{self.country}-DE".upper(),
+            "x-wbd-time-zone": "Europe/Berlin",
+        }
 
+        params = {"realm": "bolt"}
+
+        # Step 1: Make initial request (expecting 400)
+        logger.debug("Step 1: Making initial token request (expecting 400)")
         response = self.http_manager.get(
             self.token_endpoint,
             operation="auth",
-            headers=headers,
+            headers=base_headers,
             params=params,
+            allow_redirects=False,
         )
 
-        response.raise_for_status()
-        token_data = response.json()
-        return self._create_token_from_response(token_data)
+        # Check for 400 with required headers
+        if response.status_code == 400:
+            # Extract ALL required headers from response
+            disco_id = response.headers.get("x-disco-id")
+            session_state = response.headers.get("x-wbd-session-state")
+            wbd_ace = response.headers.get("x-wbd-ace")
+
+            if not all([disco_id, session_state, wbd_ace]):
+                missing = []
+                if not disco_id:
+                    missing.append("x-disco-id")
+                if not session_state:
+                    missing.append("x-wbd-session-state")
+                if not wbd_ace:
+                    missing.append("x-wbd-ace")
+                logger.error(f"Missing required headers in 400 response: {missing}")
+                logger.debug(f"Response headers: {dict(response.headers)}")
+                response.raise_for_status()
+
+            logger.debug(f"Received x-disco-id: {disco_id}")
+            logger.debug(f"Received x-wbd-ace: {wbd_ace[:50]}...")
+            logger.debug(f"Received x-wbd-session-state: {session_state[:100]}...")
+
+            # Store session headers for future requests
+            self._disco_id = disco_id
+            self._session_state = session_state
+            self._wbd_ace = wbd_ace
+
+            # Step 2: Second request with ALL headers from first response
+            logger.debug("Step 2: Making second token request with all headers")
+            second_headers = base_headers.copy()
+            second_headers["x-disco-id"] = disco_id
+            second_headers["x-wbd-session-state"] = session_state
+            second_headers["x-wbd-ace"] = wbd_ace
+
+            response = self.http_manager.get(
+                self.token_endpoint,
+                operation="auth",
+                headers=second_headers,
+                params=params,
+            )
+
+            # Should now be 200 with token
+            response.raise_for_status()
+            token_data = response.json()
+
+            logger.info("Anonymous authentication successful")
+            return self._create_token_from_response(token_data)
+
+        # If we get 200 directly (unlikely), handle it
+        elif response.status_code == 200:
+            logger.debug("Received 200 directly without header negotiation")
+            token_data = response.json()
+            return self._create_token_from_response(token_data)
+
+        # Any other status is an error
+        else:
+            logger.error(f"Unexpected response status: {response.status_code}")
+            response.raise_for_status()
 
     def _perform_user_auth(self) -> BaseAuthToken:
         """
@@ -600,6 +714,10 @@ class DiscoveryAuthenticator(BaseAuthenticator):
     def invalidate_token(self) -> None:
         """Invalidate current token and clear from storage"""
         self._current_token = None
+        # Also clear session headers
+        self._disco_id = None
+        self._session_state = None
+        self._wbd_ace = None
         try:
             self.settings_manager.clear_token(self.provider_name, self.country)
         except (AttributeError, KeyError, IOError, OSError):
