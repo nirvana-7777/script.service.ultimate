@@ -944,14 +944,17 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             self._restore_session_cookie(token.st_cookie)
 
         # Upgrade anonymous stored token when user credentials are available.
-        # The base class loads whatever was saved — if a previous run only got
-        # as far as anonymous auth, we should upgrade now rather than operate
-        # with restricted access.
-        is_anonymous_token = (
-            not isinstance(token, DiscoveryAuthToken) or
-            getattr(token, "anonymous", True)
-        )
+        # The base class may return a BaseAuthToken (not DiscoveryAuthToken) when
+        # loading from storage, so we read the anonymous flag from the raw token
+        # info dict rather than inspecting the object type.
+        token_info = self.get_token_info() or {}
+        is_anonymous_token = token_info.get("anonymous", True)
         has_user_credentials = isinstance(self.credentials, DiscoveryUserCredentials)
+
+        logger.debug(
+            f"Token state: anonymous={is_anonymous_token}, "
+            f"has_user_credentials={has_user_credentials}"
+        )
 
         if is_anonymous_token and has_user_credentials:
             logger.info(
