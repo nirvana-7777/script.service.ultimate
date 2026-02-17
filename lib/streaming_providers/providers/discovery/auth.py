@@ -7,6 +7,8 @@ Supports two-step token negotiation with session headers.
 """
 import time
 import uuid
+
+import requests
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
@@ -290,29 +292,37 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         """
         Discover API endpoints from bootstrap using an authenticated session.
 
-        Must be called AFTER a token has been obtained so that the request
-        carries the correct session headers (x-disco-id, x-wbd-session-state,
-        x-wbd-ace) and an Authorization: Bearer header. Without these the
-        bootstrap returns a generic 400 with no useful routing data.
+        Bootstrap is a POST with an empty JSON body {}. It requires:
+          - Authorization: Bearer <token>
+          - Full session headers (x-disco-id, x-wbd-session-state, x-wbd-ace)
+            populated from the /token negotiation.
+
+        Must be called AFTER a token has been obtained so all of the above
+        are available.
 
         Args:
-            auth_headers: Headers including Authorization and session headers,
+            auth_headers: Headers including Authorization and all session headers,
                           as built by _build_authenticated_headers().
         """
         try:
             logger.debug(f"Discovering endpoints for Discovery+ ({self.country})")
 
-            response = self.http_manager.get(
-                DISCOVERY_BOOTSTRAP_URL,
-                operation="bootstrap",
-                headers=auth_headers,
-                timeout=30,
-            )
-
-            if response.status_code != 200:
+            # Bootstrap is a POST with empty body — not a GET.
+            # http_manager.post() calls raise_for_status() internally, so we
+            # catch HTTPError and inspect the response ourselves to avoid
+            # treating a non-200 as a hard failure.
+            try:
+                response = self.http_manager.post(
+                    DISCOVERY_BOOTSTRAP_URL,
+                    operation="bootstrap",
+                    headers=auth_headers,
+                    json_data={},
+                    timeout=30,
+                )
+            except requests.exceptions.HTTPError as e:
+                status = e.response.status_code if e.response is not None else "unknown"
                 logger.warning(
-                    f"Bootstrap returned {response.status_code} — "
-                    "falling back to hardcoded endpoints"
+                    f"Bootstrap returned {status} — falling back to hardcoded endpoints"
                 )
                 return
 
