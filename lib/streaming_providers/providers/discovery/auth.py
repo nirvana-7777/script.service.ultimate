@@ -321,8 +321,14 @@ class DiscoveryAuthenticator(BaseAuthenticator):
                 )
             except requests.exceptions.HTTPError as e:
                 status = e.response.status_code if e.response is not None else "unknown"
+                body = ""
+                if e.response is not None:
+                    try:
+                        body = f" — body: {e.response.json()}"
+                    except Exception:
+                        body = f" — body: {e.response.text[:200]}"
                 logger.warning(
-                    f"Bootstrap returned {status} — falling back to hardcoded endpoints"
+                    f"Bootstrap returned {status}{body} — falling back to hardcoded endpoints"
                 )
                 return
 
@@ -491,7 +497,7 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             "x-disco-client": "WEB:x86_64:dplus:6.14.0",
             "x-disco-params": "realm=bolt,bid=dplus,features=ar",
             "x-wbd-device-consent": "gpc=0",
-            "x-wbd-preferred-language": f"{self.country}-DE".upper(),
+            "x-wbd-preferred-language": f"{self.country.lower()}-DE",
             "x-wbd-time-zone": "Europe/Berlin",
         }
 
@@ -518,17 +524,43 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         """
         Build headers for post-auth requests (bootstrap, CMS, playback).
 
-        Combines session headers (populated during /token negotiation) with
-        the Authorization: Bearer header from the obtained token.
+        Combines session headers (populated during /token negotiation) with:
+          - Authorization: Bearer <token>
+          - Content-Type: application/json
+          - Origin / Referer (required by bootstrap)
+          - x-wbd-session-state updated to include the token segment, which
+            the server expects after authentication completes. The session
+            state is a semicolon-separated list of named JWT segments; we
+            append/replace the "token:" segment with the current access token.
 
         Args:
             token: Successfully obtained authentication token
 
         Returns:
-            Headers dict including Authorization and all session headers
+            Headers dict ready for bootstrap, CMS, and playback requests
         """
         headers = self._build_base_headers()  # picks up _disco_id etc.
         headers["Authorization"] = f"Bearer {token.access_token}"
+        headers["Content-Type"] = "application/json"
+        headers["Origin"] = "https://auth.discoveryplus.com"
+        headers["Referer"] = "https://auth.discoveryplus.com/"
+
+        # Append the token segment to x-wbd-session-state.
+        # The session state is a semicolon-separated string of named segments
+        # e.g. "localization:eyJ...;profile:eyJ...;token:eyJ...".
+        # After authentication the server expects a "token:" segment carrying
+        # the encoded access token. We inject it here — replacing any existing
+        # token segment so re-auth / stored-token paths stay consistent.
+        if token.access_token:
+            session_state = headers.get("x-wbd-session-state", "")
+            # Strip any existing token segment
+            segments = [
+                seg for seg in session_state.split(";")
+                if seg and not seg.startswith("token:")
+            ]
+            segments.append(f"token:{token.access_token}")
+            headers["x-wbd-session-state"] = ";".join(segments)
+
         return headers
 
     def _build_auth_payload(self) -> Dict[str, Any]:
@@ -618,7 +650,7 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             "x-disco-client": "WEB:x86_64:dplus:6.14.0",
             "x-disco-params": "realm=bolt,bid=dplus,features=ar",
             "x-wbd-device-consent": "gpc=0",
-            "x-wbd-preferred-language": f"{self.country}-DE".upper(),
+            "x-wbd-preferred-language": f"{self.country.lower()}-DE",
             "x-wbd-time-zone": "Europe/Berlin",
         }
 
