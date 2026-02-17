@@ -810,6 +810,11 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         """
         Get bearer token for API requests.
 
+        Also ensures endpoint discovery has run. When a valid token is loaded
+        from storage the normal auth flow is skipped entirely, so
+        _discover_endpoints would never be called. We detect that here and run
+        it on-demand while we already have a valid token in hand.
+
         Args:
             force_refresh: Force token refresh
 
@@ -817,6 +822,18 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             Bearer token string
         """
         token = self.authenticate(force_refresh=force_refresh)
+
+        # If endpoints are empty it means either:
+        #   a) token was loaded from storage (auth flow was bypassed), or
+        #   b) bootstrap failed during a fresh auth and left _endpoints empty.
+        # Either way, try bootstrap now while we have a valid token in hand.
+        if not self._endpoints:
+            logger.debug(
+                "Endpoints not yet discovered (token loaded from storage or "
+                "previous bootstrap failed) — running bootstrap now"
+            )
+            self._discover_endpoints(self._build_authenticated_headers(token))
+
         return token.bearer_token
 
     def is_authenticated(self) -> bool:
