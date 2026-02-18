@@ -216,6 +216,25 @@ class DiscoveryAuthenticator(BaseAuthenticator):
     Note: Discovery+ uses simple token-based auth, not OAuth2.
     """
 
+    @staticmethod
+    def _promote_credentials(credentials):
+        """
+        Ensure credentials are Discovery-specific types rather than bare base classes.
+
+        The credential manager deserialises stored credentials as plain
+        UserPasswordCredentials. Promoting them here means every downstream
+        isinstance(..., DiscoveryUserCredentials) check works correctly without
+        requiring changes to shared infrastructure.
+        """
+        from ...base.auth.credentials import UserPasswordCredentials as BaseUPC
+
+        if isinstance(credentials, BaseUPC) and not isinstance(credentials, DiscoveryUserCredentials):
+            return DiscoveryUserCredentials(
+                username=credentials.username,
+                password=credentials.password,
+            )
+        return credentials
+
     def __init__(
             self,
             country: str = "de",
@@ -225,17 +244,6 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             http_manager=None,
             proxy_config: Optional[ProxyConfig] = None,
     ):
-        """
-        Initialize authenticator for specific country.
-
-        Args:
-            country: ISO country code (e.g., 'de', 'uk')
-            settings_manager: Settings manager instance
-            credentials: Authentication credentials
-            config_dir: Configuration directory path
-            http_manager: HTTP manager instance
-            proxy_config: Proxy configuration
-        """
         self.country = country
         self.home_market = HOME_MARKET_MAPPING.get(country, "emea")
         self.tenant = DEFAULT_TENANT
@@ -254,25 +262,30 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         self._api_groups: Dict[str, Any] = {}
         self._routing: Dict[str, Any] = {}
 
+        # Promote credentials to Discovery-specific type before passing to super,
+        # so that isinstance checks throughout the auth flow work correctly.
+        # The credential manager returns bare UserPasswordCredentials; wrapping
+        # here ensures DiscoveryUserCredentials is used consistently.
+        promoted_credentials = self._promote_credentials(credentials) if credentials else None
+
         # Call parent __init__ (BaseAuthenticator signature)
         super().__init__(
             provider_name="discovery",
             settings_manager=settings_manager,
-            credentials=credentials,
+            credentials=promoted_credentials,
             country=country,
             config_dir=config_dir,
             enable_kodi_integration=True,
         )
 
+        # If no credentials were provided at construction time, attempt to load
+        # from storage. Promote here too — the credential manager always returns
+        # bare base-class instances.
         if not self.credentials:
-            self.credentials = self._load_credentials_from_manager()
-            if self.credentials:
+            raw = self._load_credentials_from_manager()
+            if raw:
+                self.credentials = self._promote_credentials(raw)
                 logger.info(f"Loaded stored credentials for discovery ({country})")
-
-        # NOTE: _discover_endpoints() is NOT called here.
-        # Bootstrap requires an authenticated session to return correct routing,
-        # so it is called at the end of _perform_anonymous_auth /
-        # _perform_user_auth once a token and session headers are in hand.
 
     @property
     def http_manager(self):
