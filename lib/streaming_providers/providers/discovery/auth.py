@@ -846,6 +846,7 @@ class DiscoveryAuthenticator(BaseAuthenticator):
                 f"Invalid credentials for user {self.credentials.username}"
             )
 
+        logger.debug(f"Login 400 response body: {response.text}")
         response.raise_for_status()
         token_data = response.json()
 
