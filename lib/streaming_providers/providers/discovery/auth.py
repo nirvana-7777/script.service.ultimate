@@ -22,7 +22,14 @@ from .constants import (
     DEFAULT_ENV,
     DEFAULT_REALM,
     DEFAULT_TENANT,
+    DISCOVERY_AUTH_ORIGIN,
+    DISCOVERY_AUTH_REFERER,
     DISCOVERY_BOOTSTRAP_URL,
+    DISCOVERY_DEVICE_CONSENT,
+    DISCOVERY_DEFAULT_TIMEZONE,
+    DISCOVERY_DEVICE_INFO_TEMPLATE,
+    DISCOVERY_DISCO_CLIENT,
+    DISCOVERY_DISCO_PARAMS,
     DISCOVERY_USER_AGENT,
     HOME_MARKET_MAPPING,
     AuthProvider,
@@ -518,11 +525,13 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         """
         Build x-device-info header.
 
-        Format: dplus/6.14.0 (desktop/desktop; Linux/x86_64; device-id/session-id)
+        Format: dplus/<version> (desktop/desktop; Linux/x86_64; device-id/session-id)
         """
         device_id = self.device_id or DEFAULT_DEVICE_ID
         session_id = str(uuid.uuid4())
-        return f"dplus/6.14.0 (desktop/desktop; Linux/x86_64; {device_id}/{session_id})"
+        return DISCOVERY_DEVICE_INFO_TEMPLATE.format(
+            device_id=device_id, session_id=session_id
+        )
 
     def _build_base_headers(self) -> Dict[str, str]:
         """
@@ -534,11 +543,11 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         headers = {
             "User-Agent": DISCOVERY_USER_AGENT,
             "x-device-info": self._build_device_info(),
-            "x-disco-client": "WEB:x86_64:dplus:6.14.0",
-            "x-disco-params": "realm=bolt,bid=dplus,features=ar",
-            "x-wbd-device-consent": "gpc=0",
+            "x-disco-client": DISCOVERY_DISCO_CLIENT,
+            "x-disco-params": DISCOVERY_DISCO_PARAMS,
+            "x-wbd-device-consent": DISCOVERY_DEVICE_CONSENT,
             "x-wbd-preferred-language": f"{self.country.lower()}-DE",
-            "x-wbd-time-zone": "Europe/Berlin",
+            "x-wbd-time-zone": DISCOVERY_DEFAULT_TIMEZONE,
         }
 
         # Add session headers if we have them (from /token 400 response)
@@ -582,8 +591,8 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         headers = self._build_base_headers()  # picks up _disco_id etc.
         headers["Authorization"] = f"Bearer {token.access_token}"
         headers["Content-Type"] = "application/json"
-        headers["Origin"] = "https://auth.discoveryplus.com"
-        headers["Referer"] = "https://auth.discoveryplus.com/"
+        headers["Origin"] = DISCOVERY_AUTH_ORIGIN
+        headers["Referer"] = DISCOVERY_AUTH_REFERER
 
         # NOTE: x-wbd-session-state is a server-issued encrypted blob returned
         # in the /token 400 response headers. It cannot be constructed from the
@@ -679,11 +688,11 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         base_headers = {
             "User-Agent": DISCOVERY_USER_AGENT,
             "x-device-info": self._build_device_info(),
-            "x-disco-client": "WEB:x86_64:dplus:6.14.0",
-            "x-disco-params": "realm=bolt,bid=dplus,features=ar",
-            "x-wbd-device-consent": "gpc=0",
+            "x-disco-client": DISCOVERY_DISCO_CLIENT,
+            "x-disco-params": DISCOVERY_DISCO_PARAMS,
+            "x-wbd-device-consent": DISCOVERY_DEVICE_CONSENT,
             "x-wbd-preferred-language": f"{self.country.lower()}-DE",
-            "x-wbd-time-zone": "Europe/Berlin",
+            "x-wbd-time-zone": DISCOVERY_DEFAULT_TIMEZONE,
         }
 
         params = {"realm": "bolt"}
@@ -815,10 +824,13 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             f"{self.credentials.username}"
         )
 
-        # Build headers: session headers + Bearer anon token
+        # Build headers: session headers + Bearer anon token + Origin/Referer
+        # Origin and Referer are required by the /login endpoint (browser sends them).
         upgrade_headers = self._build_base_headers()  # includes session headers
         upgrade_headers["Authorization"] = f"Bearer {anon_token.access_token}"
         upgrade_headers["Content-Type"] = "application/json"
+        upgrade_headers["Origin"] = DISCOVERY_AUTH_ORIGIN
+        upgrade_headers["Referer"] = DISCOVERY_AUTH_REFERER
 
         payload = self.credentials.to_login_payload()
 

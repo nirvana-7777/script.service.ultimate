@@ -135,6 +135,34 @@ DISCOVERY_USER_AGENT: Final[
 # Device ID (consistent across sessions for anonymous tracking)
 DEFAULT_DEVICE_ID: Final[str] = "a2f463fa-2052-4af1-ae16-26d8289c6b94"
 
+# ============================================================================
+# Client / Header Configuration
+# ============================================================================
+
+# Client version string — used in x-disco-client and x-device-info headers
+DISCOVERY_CLIENT_VERSION: Final[str] = "6.14.0"
+
+# Full x-disco-client header value
+DISCOVERY_DISCO_CLIENT: Final[str] = f"WEB:x86_64:dplus:{DISCOVERY_CLIENT_VERSION}"
+
+# x-disco-params header value
+DISCOVERY_DISCO_PARAMS: Final[str] = "realm=bolt,bid=dplus,features=ar"
+
+# x-device-info header template — format with device_id and session_id
+DISCOVERY_DEVICE_INFO_TEMPLATE: Final[str] = (
+    f"dplus/{DISCOVERY_CLIENT_VERSION} (desktop/desktop; Linux/x86_64; {{device_id}}/{{session_id}})"
+)
+
+# x-wbd-device-consent header value
+DISCOVERY_DEVICE_CONSENT: Final[str] = "gpc=0"
+
+# Default timezone for x-wbd-time-zone header
+DISCOVERY_DEFAULT_TIMEZONE: Final[str] = "Europe/Berlin"
+
+# Origin / Referer for auth requests (login, bootstrap)
+DISCOVERY_AUTH_ORIGIN: Final[str] = "https://auth.discoveryplus.com"
+DISCOVERY_AUTH_REFERER: Final[str] = "https://auth.discoveryplus.com/"
+
 
 def get_default_device_info() -> Dict[str, any]:
     """
