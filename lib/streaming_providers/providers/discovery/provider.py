@@ -123,7 +123,8 @@ class DiscoveryProvider(StreamingProvider):
         # Create appropriate credentials.
         # Priority:
         #   1. Explicit username/password passed at construction time
-        #   2. Stored user credentials from settings manager
+        #   2. Stored user credentials from CredentialManager (same /config path
+        #      the authenticator uses — does not depend on injected settings_manager)
         #   3. Anonymous fallback
         if auth_type == "user_credentials":
             if not username or not password:
@@ -135,16 +136,17 @@ class DiscoveryProvider(StreamingProvider):
                 password=password,
             )
         else:
-            # Check settings manager for stored user credentials before
-            # falling back to anonymous. This allows auto-upgrade when the
-            # provider is registered without an explicit auth_type but
-            # credentials are present in storage.
             stored = None
-            if settings_manager and hasattr(settings_manager, "get_provider_credentials"):
-                try:
-                    stored = settings_manager.get_provider_credentials("discovery", country)
-                except Exception as e:
-                    logger.debug(f"Could not load stored credentials: {e}")
+            try:
+                from ...base.auth.credential_manager import CredentialManager
+                _cm = CredentialManager(config_dir=config_dir)
+                stored = _cm.load_credentials("discovery", country)
+                logger.debug(
+                    f"CredentialManager lookup for discovery ({country}): "
+                    f"{type(stored).__name__ if stored else 'None'}"
+                )
+            except Exception as e:
+                logger.debug(f"Could not load stored credentials via CredentialManager: {e}")
 
             if stored and stored.validate() and hasattr(stored, "username"):
                 logger.info(
@@ -163,7 +165,11 @@ class DiscoveryProvider(StreamingProvider):
                 )
                 self.credentials = DiscoveryAnonymousCredentials()
 
-        # Create authenticator with dynamic endpoint discovery
+        # Create authenticator with dynamic endpoint discovery.
+        # settings_manager is intentionally not passed so the authenticator
+        # self-constructs its own SettingsManager via the backward-compat path,
+        # identical to how JoynAuthenticator works. This ensures it always
+        # resolves the correct /config path via the environment variable.
         self.authenticator = DiscoveryAuthenticator(
             country=country,
             settings_manager=None,
