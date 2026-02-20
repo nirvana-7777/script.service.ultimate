@@ -175,8 +175,16 @@ class HTTPManager:
             # Additional context for HTTP errors
             status = e.response.status_code if e.response else "unknown"
             logger.error(
-                f"{self.config.provider}: HTTP {status} error for {operation} request to {url}: {e}"
+                f"{self.config.provider}: HTTP unknown error for {operation} request to {url}: {e}"
             )
+            if e.response is not None and 400 <= e.response.status_code < 500:
+                try:
+                    body = e.response.json()
+                except Exception:
+                    body = e.response.text
+                logger.debug(
+                    f"{self.config.provider}: {status} response body: {body}"
+                )
             raise
 
         except requests.exceptions.RequestException as e:
