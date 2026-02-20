@@ -166,7 +166,7 @@ class DiscoveryProvider(StreamingProvider):
         # Create authenticator with dynamic endpoint discovery
         self.authenticator = DiscoveryAuthenticator(
             country=country,
-            settings_manager=settings_manager,
+            settings_manager=None,
             config_dir=config_dir,
             http_manager=self.http_manager,
             proxy_config=self.http_manager.config.proxy_config,
