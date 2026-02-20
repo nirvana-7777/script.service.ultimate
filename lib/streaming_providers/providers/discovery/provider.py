@@ -120,7 +120,11 @@ class DiscoveryProvider(StreamingProvider):
             max_retries=3,
         )
 
-        # Create appropriate credentials
+        # Create appropriate credentials.
+        # Priority:
+        #   1. Explicit username/password passed at construction time
+        #   2. Stored user credentials from settings manager
+        #   3. Anonymous fallback
         if auth_type == "user_credentials":
             if not username or not password:
                 raise ValueError(
@@ -131,7 +135,33 @@ class DiscoveryProvider(StreamingProvider):
                 password=password,
             )
         else:
-            self.credentials = DiscoveryAnonymousCredentials()
+            # Check settings manager for stored user credentials before
+            # falling back to anonymous. This allows auto-upgrade when the
+            # provider is registered without an explicit auth_type but
+            # credentials are present in storage.
+            stored = None
+            if settings_manager and hasattr(settings_manager, "get_provider_credentials"):
+                try:
+                    stored = settings_manager.get_provider_credentials("discovery", country)
+                except Exception as e:
+                    logger.debug(f"Could not load stored credentials: {e}")
+
+            if stored and stored.validate() and hasattr(stored, "username"):
+                logger.info(
+                    f"Found stored user credentials for discovery ({country}), "
+                    "upgrading from anonymous to user authentication"
+                )
+                self.credentials = DiscoveryUserCredentials(
+                    username=stored.username,
+                    password=stored.password,
+                )
+                self.auth_type = "user_credentials"
+            else:
+                logger.debug(
+                    f"No stored user credentials found for discovery ({country}), "
+                    "using anonymous authentication"
+                )
+                self.credentials = DiscoveryAnonymousCredentials()
 
         # Create authenticator with dynamic endpoint discovery
         self.authenticator = DiscoveryAuthenticator(
@@ -147,7 +177,7 @@ class DiscoveryProvider(StreamingProvider):
         try:
             self.bearer_token = self.authenticator.get_bearer_token()
             self.token_info = self.authenticator.get_token_info()
-            logger.info(f"Authentication successful (type: {auth_type})")
+            logger.info(f"Authentication successful (type: {self.auth_type})")
         except Exception as e:
             logger.warning(
                 f"Could not authenticate during initialization: {e}"
