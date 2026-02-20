@@ -267,6 +267,10 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         # The credential manager returns bare UserPasswordCredentials; wrapping
         # here ensures DiscoveryUserCredentials is used consistently.
         promoted_credentials = self._promote_credentials(credentials) if credentials else None
+        logger.debug(
+            f"Discovery __init__: original={type(credentials).__name__}, "
+            f"promoted={type(promoted_credentials).__name__}"
+        )
 
         # Call parent __init__ (BaseAuthenticator signature)
         super().__init__(
@@ -277,6 +281,8 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             config_dir=config_dir,
             enable_kodi_integration=True,
         )
+
+        logger.debug(f"Discovery __init__ post-super: self.credentials={type(self.credentials).__name__}")
 
         # If no credentials were provided at construction time, attempt to load
         # from storage. Promote here too — the credential manager always returns
