@@ -142,8 +142,8 @@ DEFAULT_DEVICE_ID: Final[str] = "a2f463fa-2052-4af1-ae16-26d8289c6b94"
 # Client version string — used in x-disco-client and x-device-info headers
 DISCOVERY_CLIENT_VERSION: Final[str] = "6.14.0"
 
-# Full x-disco-client header value
-DISCOVERY_DISCO_CLIENT: Final[str] = f"WEB:x86_64:dplus:{DISCOVERY_CLIENT_VERSION}"
+# Full x-disco-client header value — WEB:{os_version}:dplus:{client_version}
+# OS version is "0.0.0" for web platform
 
 # x-disco-params header value
 DISCOVERY_DISCO_PARAMS: Final[str] = "realm=bolt,bid=dplus,features=ar"
@@ -183,11 +183,26 @@ DISCOVERY_ARKOSE_FC_URL: Final[str] = (
 # HMAC / Client ID Configuration
 # ============================================================================
 
-# GI SDK client ID — used as the HMAC-SHA256 key for x-disco-client-id
-DISCOVERY_GISDK_CLIENT_ID: Final[str] = "9f964812-8935-4293-a135-81be80f14c77"
+# HMAC key for web platform (base64-decoded from feature flags response)
+# Raw b64: NTVlZWExODktZTliNi00NzlmLWJjNTEtMjIyNGNmZGE1NmZl
+DISCOVERY_HMAC_KEY: Final[str] = "55eea189-e9b6-479f-bc51-2224cfda56fe"
 
-# x-disco-client-id prefix: web1_{env}
-DISCOVERY_CLIENT_ID_PREFIX: Final[str] = f"web1_{DEFAULT_ENV}"
+# x-disco-client-id prefix matches hmacKeys "id" field for web
+DISCOVERY_CLIENT_ID_PREFIX: Final[str] = "web1_prd"
+
+# x-disco-client format: WEB:{os_version}:dplus:{client_version}
+# OS version is "0.0.0" for web (not x86_64 as previously assumed)
+DISCOVERY_DISCO_CLIENT: Final[str] = f"WEB:0.0.0:dplus:{DISCOVERY_CLIENT_VERSION}"
+
+# Feature flags endpoint — provides hmacKeys, gisdk clientId, arkose config etc.
+# x-gisdk clientId comes from the response and is session-specific.
+DISCOVERY_FEATURE_FLAGS_URL: Final[str] = (
+    "https://default.any-any.prd.api.discoveryplus.com/labs/api/v1/sessions/feature-flags/decisions"
+)
+DISCOVERY_FEATURE_FLAGS_PAYLOAD: Final[Dict] = {
+    "context": {"deviceType": "desktop", "domain": "discoveryplus.com"},
+    "projectId": "7e52f0d0-d8b5-4eda-983b-597e4e2102a2",
+}
 
 
 def get_default_device_info() -> Dict[str, any]:

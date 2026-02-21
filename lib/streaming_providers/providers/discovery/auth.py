@@ -35,7 +35,9 @@ from .constants import (
     DISCOVERY_DEVICE_INFO_TEMPLATE,
     DISCOVERY_DISCO_CLIENT,
     DISCOVERY_DISCO_PARAMS,
-    DISCOVERY_GISDK_CLIENT_ID,
+    DISCOVERY_FEATURE_FLAGS_PAYLOAD,
+    DISCOVERY_FEATURE_FLAGS_URL,
+    DISCOVERY_HMAC_KEY,
     DISCOVERY_USER_AGENT,
     HOME_MARKET_MAPPING,
     AuthProvider,
@@ -267,6 +269,9 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         self._session_state: Optional[str] = None
         self._disco_id: Optional[str] = None
         self._wbd_ace: Optional[str] = None
+
+        # GI SDK client ID — fetched from feature flags, session-specific
+        self._gisdk_client_id: Optional[str] = None
 
         # Store http_manager and proxy_config BEFORE calling super().__init__
         self._http_manager = http_manager
@@ -527,13 +532,48 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             else "https://default.any-any.prd.api.discoveryplus.com/cms/collections"
         )
 
+    def _fetch_feature_flags(self) -> None:
+        """
+        Fetch feature flags to obtain a session-specific GI SDK client ID.
+
+        The x-gisdk clientId in x-gisdk header is session-specific and comes
+        from the feature flags decisions endpoint. Also validates HMAC keys
+        and Arkose config are as expected.
+
+        Populates self._gisdk_client_id.
+        """
+        try:
+            response = self.http_manager.post(
+                DISCOVERY_FEATURE_FLAGS_URL,
+                operation="auth",
+                headers={
+                    "User-Agent": DISCOVERY_USER_AGENT,
+                    "Content-Type": "application/json",
+                },
+                json_data=DISCOVERY_FEATURE_FLAGS_PAYLOAD,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            # Extract gisdk clientId from oauth config (session-specific)
+            oauth_cfg = data.get("oauth", {}).get("config", {})
+            client_id = oauth_cfg.get("webToMobileAuth", {}).get("clientId")
+            if client_id:
+                self._gisdk_client_id = client_id
+                logger.debug(f"Fetched GI SDK client ID from feature flags: {client_id}")
+            else:
+                logger.warning("No GI SDK client ID in feature flags response")
+
+        except Exception as e:
+            logger.warning(f"Feature flags fetch failed, using fallback gisdk clientId: {e}")
+
     def _build_client_id(self) -> str:
         """
         Build x-disco-client-id header value.
 
-        Format: web1_{env}:{timestamp}:{hmac_sha256}
+        Format: web1_prd:{timestamp}:{hmac_sha256}
         The HMAC-SHA256 is computed over "{prefix}:{timestamp}" using the
-        GI SDK client ID as the key.
+        decoded HMAC key from the feature flags hmacKeys.web.key field.
 
         Returns:
             Client ID string
@@ -544,7 +584,7 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         timestamp = str(int(time.time()))
         message = f"{DISCOVERY_CLIENT_ID_PREFIX}:{timestamp}"
         signature = hmac_lib.new(
-            DISCOVERY_GISDK_CLIENT_ID.encode("utf-8"),
+            DISCOVERY_HMAC_KEY.encode("utf-8"),
             message.encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()
@@ -575,7 +615,7 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             "x-disco-client": DISCOVERY_DISCO_CLIENT,
             "x-disco-client-id": self._build_client_id(),
             "x-disco-params": DISCOVERY_DISCO_PARAMS,
-            "x-gisdk": f"clientId={DISCOVERY_GISDK_CLIENT_ID}",
+            "x-gisdk": f"clientId={self._gisdk_client_id}" if self._gisdk_client_id else None,
             "x-wbd-device-consent": DISCOVERY_DEVICE_CONSENT,
             "x-wbd-preferred-language": f"{self.country.lower()}-DE",
             "x-wbd-time-zone": DISCOVERY_DEFAULT_TIMEZONE,
@@ -589,7 +629,8 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         if self._wbd_ace:
             headers["x-wbd-ace"] = self._wbd_ace
 
-        return headers
+        # Remove any None values (e.g. x-gisdk before feature flags are fetched)
+        return {k: v for k, v in headers.items() if v is not None}
 
     def _get_auth_headers(self) -> Dict[str, str]:
         """
@@ -715,18 +756,21 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             f"Performing two-step anonymous authentication for {self.provider_name}"
         )
 
+        # Fetch feature flags first — provides session-specific GI SDK client ID
+        self._fetch_feature_flags()
+
         # Step 1 headers: base headers only, no session headers yet
-        base_headers = {
+        base_headers = {k: v for k, v in {
             "User-Agent": DISCOVERY_USER_AGENT,
             "x-device-info": self._build_device_info(),
             "x-disco-client": DISCOVERY_DISCO_CLIENT,
             "x-disco-client-id": self._build_client_id(),
             "x-disco-params": DISCOVERY_DISCO_PARAMS,
-            "x-gisdk": f"clientId={DISCOVERY_GISDK_CLIENT_ID}",
+            "x-gisdk": f"clientId={self._gisdk_client_id}" if self._gisdk_client_id else None,
             "x-wbd-device-consent": DISCOVERY_DEVICE_CONSENT,
             "x-wbd-preferred-language": f"{self.country.lower()}-DE",
             "x-wbd-time-zone": DISCOVERY_DEFAULT_TIMEZONE,
-        }
+        }.items() if v is not None}
 
         params = {"realm": "bolt"}
 
