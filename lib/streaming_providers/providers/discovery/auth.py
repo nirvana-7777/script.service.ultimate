@@ -532,15 +532,17 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             else "https://default.any-any.prd.api.discoveryplus.com/cms/collections"
         )
 
-    def _fetch_feature_flags(self) -> None:
+    def _fetch_feature_flags(self, bearer_token: str) -> None:
         """
-        Fetch feature flags to obtain a session-specific GI SDK client ID.
+        Fetch feature flags to obtain session-specific GI SDK client ID.
 
-        The x-gisdk clientId in x-gisdk header is session-specific and comes
-        from the feature flags decisions endpoint. Also validates HMAC keys
-        and Arkose config are as expected.
+        Must be called AFTER obtaining an anonymous token since the endpoint
+        requires Authorization: Bearer <anon_token>.
 
         Populates self._gisdk_client_id.
+
+        Args:
+            bearer_token: Anonymous access token from /token
         """
         try:
             response = self.http_manager.post(
@@ -549,6 +551,7 @@ class DiscoveryAuthenticator(BaseAuthenticator):
                 headers={
                     "User-Agent": DISCOVERY_USER_AGENT,
                     "Content-Type": "application/json",
+                    "Authorization": f"Bearer {bearer_token}",
                 },
                 json_data=DISCOVERY_FEATURE_FLAGS_PAYLOAD,
             )
@@ -565,7 +568,7 @@ class DiscoveryAuthenticator(BaseAuthenticator):
                 logger.warning("No GI SDK client ID in feature flags response")
 
         except Exception as e:
-            logger.warning(f"Feature flags fetch failed, using fallback gisdk clientId: {e}")
+            logger.warning(f"Feature flags fetch failed, x-gisdk will be omitted: {e}")
 
     def _build_client_id(self) -> str:
         """
@@ -588,7 +591,9 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             message.encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()
-        return f"{message}:{signature}"
+        client_id = f"{message}:{signature}"
+        logger.debug(f"Built x-disco-client-id: {client_id}")
+        return client_id
 
     def _build_device_info(self) -> str:
         """
@@ -755,9 +760,6 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         logger.info(
             f"Performing two-step anonymous authentication for {self.provider_name}"
         )
-
-        # Fetch feature flags first — provides session-specific GI SDK client ID
-        self._fetch_feature_flags()
 
         # Step 1 headers: base headers only, no session headers yet
         base_headers = {k: v for k, v in {
@@ -990,8 +992,13 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         logger.debug("Obtaining anonymous base token for user auth upgrade")
         anon_token = self._perform_anonymous_auth()
 
-        # Step 3: Fetch Arkose blob and solve the challenge.
-        # Discovery+ rejects /login with 400 arkose.required without a valid token.
+        # Step 3: Fetch feature flags with anon token — provides session-specific
+        # GI SDK client ID needed for x-gisdk header and HMAC validation.
+        # Must be called AFTER /token since it requires Authorization: Bearer.
+        logger.debug("Fetching feature flags for GI SDK client ID")
+        self._fetch_feature_flags(anon_token.access_token)
+
+        # Step 4: Fetch Arkose blob and solve the challenge.
         logger.debug("Fetching Arkose blob for login challenge")
         self._current_anon_token = anon_token.access_token
         arkose_blob = self._fetch_arkose_blob()
