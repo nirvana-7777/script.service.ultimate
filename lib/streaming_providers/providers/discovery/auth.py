@@ -22,6 +22,10 @@ from .constants import (
     DEFAULT_ENV,
     DEFAULT_REALM,
     DEFAULT_TENANT,
+    DISCOVERY_ARKOSE_DATA_PAYLOAD,
+    DISCOVERY_ARKOSE_DATA_URL,
+    DISCOVERY_ARKOSE_FC_URL,
+    DISCOVERY_ARKOSE_SITEKEY,
     DISCOVERY_AUTH_ORIGIN,
     DISCOVERY_AUTH_REFERER,
     DISCOVERY_BOOTSTRAP_URL,
@@ -778,6 +782,105 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             logger.error(f"Unexpected response status: {response.status_code}")
             response.raise_for_status()
 
+    def _solve_arkose(self, blob: str) -> str:
+        """
+        Exchange the Arkose blob for a solved FunCaptcha token using
+        Discovery+'s own hosted Arkose endpoint.
+
+        Flow:
+          POST https://a4gds3vfh.discoveryplus.com/fc/gt2/public_key/<sitekey>
+          Content-Type: application/x-www-form-urlencoded
+          Body (form-encoded):
+            public_key=<sitekey>
+            ...
+            data[blob]=<blob from /users/arkose/data>
+
+        The x-ark-esync-value header is the current Unix timestamp rounded
+        down to the nearest hour, which is the sync value Arkose expects.
+
+        Args:
+            blob: Arkose data blob from /users/arkose/data
+
+        Returns:
+            Solved Arkose token string
+
+        Raises:
+            Exception: If the token exchange fails
+        """
+        import math
+
+        # esync value = current time rounded down to the nearest hour
+        esync_value = str(int(math.floor(time.time() / 3600) * 3600))
+
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Origin": DISCOVERY_AUTH_ORIGIN,
+            "Referer": DISCOVERY_AUTH_REFERER,
+            "User-Agent": DISCOVERY_USER_AGENT,
+            "x-ark-esync-value": esync_value,
+        }
+
+        # Full form payload mirrors what the browser sends
+        payload = {
+            "public_key": DISCOVERY_ARKOSE_SITEKEY,
+            "capi_version": "3.7.8",
+            "capi_mode": "lightbox",
+            "style_theme": "dplus",
+            "site": "null",
+            "userbrowser": DISCOVERY_USER_AGENT,
+            "language": "de-DE",
+            "data[blob]": blob,
+        }
+
+        logger.debug("Exchanging Arkose blob for FC token")
+        response = self.http_manager.post(
+            DISCOVERY_ARKOSE_FC_URL,
+            operation="auth",
+            data=payload,
+            headers=headers,
+        )
+        response.raise_for_status()
+
+        data = response.json()
+        token = data.get("token")
+        if not token:
+            raise Exception(f"No token in Arkose FC response: {data}")
+
+        logger.debug("Arkose FC token obtained successfully")
+        return token
+
+    def _fetch_arkose_blob(self) -> str:
+        """
+        Fetch the Arkose data blob required before POST /login.
+
+        Discovery+ requires a solved Arkose (FunCaptcha) token on every /login
+        request. The blob returned here is passed to your Arkose solver which
+        returns the final token to include in x-disco-arkose-token.
+
+        Returns:
+            Arkose blob string
+
+        Raises:
+            Exception: If the blob cannot be fetched
+        """
+        headers = self._build_base_headers()
+        headers["Authorization"] = f"Bearer {self._current_anon_token}"
+        headers["Content-Type"] = "application/json"
+        headers["Origin"] = DISCOVERY_AUTH_ORIGIN
+        headers["Referer"] = DISCOVERY_AUTH_REFERER
+
+        response = self.http_manager.post(
+            DISCOVERY_ARKOSE_DATA_URL,
+            operation="auth",
+            headers=headers,
+            json_data=DISCOVERY_ARKOSE_DATA_PAYLOAD,
+        )
+        response.raise_for_status()
+        data = response.json()
+        blob = data["data"]["attributes"]["blob"]
+        logger.debug(f"Fetched Arkose blob (length={len(blob)})")
+        return blob
+
     def _perform_user_auth(self) -> BaseAuthToken:
         """
         Perform user authentication by upgrading an anonymous token.
@@ -811,26 +914,32 @@ class DiscoveryAuthenticator(BaseAuthenticator):
 
         # Step 1+2: Obtain anonymous token (also populates session headers
         # self._disco_id / self._session_state / self._wbd_ace).
-        # NOTE: _perform_anonymous_auth calls _discover_endpoints internally
-        # with the anon token. That's fine — we intentionally overwrite the
-        # endpoint map below with the user token, which may return different
-        # (higher-entitlement) routing.
         logger.debug("Obtaining anonymous base token for user auth upgrade")
         anon_token = self._perform_anonymous_auth()
 
-        # Step 3: Upgrade anonymous session to user session
+        # Step 3: Fetch Arkose blob and solve the challenge.
+        # Discovery+ rejects /login with 400 arkose.required without a valid token.
+        logger.debug("Fetching Arkose blob for login challenge")
+        self._current_anon_token = anon_token.access_token
+        arkose_blob = self._fetch_arkose_blob()
+
+        arkose_token = self._solve_arkose(arkose_blob)
+        logger.debug("Arkose challenge solved")
+
+        # Step 4: Upgrade anonymous session to user session
         logger.debug(
             f"Upgrading anonymous token to user token for "
             f"{self.credentials.username}"
         )
 
-        # Build headers: session headers + Bearer anon token + Origin/Referer
-        # Origin and Referer are required by the /login endpoint (browser sends them).
+        # Build headers: session headers + Bearer anon token + Origin/Referer + Arkose
         upgrade_headers = self._build_base_headers()  # includes session headers
         upgrade_headers["Authorization"] = f"Bearer {anon_token.access_token}"
         upgrade_headers["Content-Type"] = "application/json"
         upgrade_headers["Origin"] = DISCOVERY_AUTH_ORIGIN
         upgrade_headers["Referer"] = DISCOVERY_AUTH_REFERER
+        upgrade_headers["x-disco-arkose-sitekey"] = DISCOVERY_ARKOSE_SITEKEY
+        upgrade_headers["x-disco-arkose-token"] = arkose_token
 
         payload = self.credentials.to_login_payload()
 
@@ -846,7 +955,6 @@ class DiscoveryAuthenticator(BaseAuthenticator):
                 f"Invalid credentials for user {self.credentials.username}"
             )
 
-        logger.debug(f"Login 400 response body: {response.text}")
         response.raise_for_status()
         token_data = response.json()
 

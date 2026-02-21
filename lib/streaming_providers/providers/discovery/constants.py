@@ -163,6 +163,22 @@ DISCOVERY_DEFAULT_TIMEZONE: Final[str] = "Europe/Berlin"
 DISCOVERY_AUTH_ORIGIN: Final[str] = "https://auth.discoveryplus.com"
 DISCOVERY_AUTH_REFERER: Final[str] = "https://auth.discoveryplus.com/"
 
+# Arkose (FunCaptcha) — required before POST /login
+DISCOVERY_ARKOSE_SITEKEY: Final[str] = "09CB1E22-0FB7-4AD8-957C-4F06CAFB3C7E"
+DISCOVERY_ARKOSE_DATA_URL: Final[str] = (
+    "https://default.dplus-emea.prd.api.discoveryplus.com/users/arkose/data"
+)
+DISCOVERY_ARKOSE_DATA_PAYLOAD: Final[Dict] = {
+    "data": {
+        "attributes": {"relativePath": "/login", "styleTheme": "dplus"},
+        "type": "arkoseDataExchange",
+    }
+}
+# Arkose FunCaptcha token exchange — Discovery+ hosts their own FC endpoint
+DISCOVERY_ARKOSE_FC_URL: Final[str] = (
+    f"https://a4gds3vfh.discoveryplus.com/fc/gt2/public_key/{DISCOVERY_ARKOSE_SITEKEY}"
+)
+
 
 def get_default_device_info() -> Dict[str, any]:
     """
