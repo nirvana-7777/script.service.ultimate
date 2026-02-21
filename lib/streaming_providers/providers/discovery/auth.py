@@ -29,11 +29,13 @@ from .constants import (
     DISCOVERY_AUTH_ORIGIN,
     DISCOVERY_AUTH_REFERER,
     DISCOVERY_BOOTSTRAP_URL,
+    DISCOVERY_CLIENT_ID_PREFIX,
     DISCOVERY_DEVICE_CONSENT,
     DISCOVERY_DEFAULT_TIMEZONE,
     DISCOVERY_DEVICE_INFO_TEMPLATE,
     DISCOVERY_DISCO_CLIENT,
     DISCOVERY_DISCO_PARAMS,
+    DISCOVERY_GISDK_CLIENT_ID,
     DISCOVERY_USER_AGENT,
     HOME_MARKET_MAPPING,
     AuthProvider,
@@ -525,6 +527,29 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             else "https://default.any-any.prd.api.discoveryplus.com/cms/collections"
         )
 
+    def _build_client_id(self) -> str:
+        """
+        Build x-disco-client-id header value.
+
+        Format: web1_{env}:{timestamp}:{hmac_sha256}
+        The HMAC-SHA256 is computed over "{prefix}:{timestamp}" using the
+        GI SDK client ID as the key.
+
+        Returns:
+            Client ID string
+        """
+        import hashlib
+        import hmac as hmac_lib
+
+        timestamp = str(int(time.time()))
+        message = f"{DISCOVERY_CLIENT_ID_PREFIX}:{timestamp}"
+        signature = hmac_lib.new(
+            DISCOVERY_GISDK_CLIENT_ID.encode("utf-8"),
+            message.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return f"{message}:{signature}"
+
     def _build_device_info(self) -> str:
         """
         Build x-device-info header.
@@ -548,7 +573,9 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             "User-Agent": DISCOVERY_USER_AGENT,
             "x-device-info": self._build_device_info(),
             "x-disco-client": DISCOVERY_DISCO_CLIENT,
+            "x-disco-client-id": self._build_client_id(),
             "x-disco-params": DISCOVERY_DISCO_PARAMS,
+            "x-gisdk": f"clientId={DISCOVERY_GISDK_CLIENT_ID}",
             "x-wbd-device-consent": DISCOVERY_DEVICE_CONSENT,
             "x-wbd-preferred-language": f"{self.country.lower()}-DE",
             "x-wbd-time-zone": DISCOVERY_DEFAULT_TIMEZONE,
@@ -693,7 +720,9 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             "User-Agent": DISCOVERY_USER_AGENT,
             "x-device-info": self._build_device_info(),
             "x-disco-client": DISCOVERY_DISCO_CLIENT,
+            "x-disco-client-id": self._build_client_id(),
             "x-disco-params": DISCOVERY_DISCO_PARAMS,
+            "x-gisdk": f"clientId={DISCOVERY_GISDK_CLIENT_ID}",
             "x-wbd-device-consent": DISCOVERY_DEVICE_CONSENT,
             "x-wbd-preferred-language": f"{self.country.lower()}-DE",
             "x-wbd-time-zone": DISCOVERY_DEFAULT_TIMEZONE,

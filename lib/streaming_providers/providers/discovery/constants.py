@@ -179,6 +179,16 @@ DISCOVERY_ARKOSE_FC_URL: Final[str] = (
     f"https://a4gds3vfh.discoveryplus.com/fc/gt2/public_key/{DISCOVERY_ARKOSE_SITEKEY}"
 )
 
+# ============================================================================
+# HMAC / Client ID Configuration
+# ============================================================================
+
+# GI SDK client ID — used as the HMAC-SHA256 key for x-disco-client-id
+DISCOVERY_GISDK_CLIENT_ID: Final[str] = "9f964812-8935-4293-a135-81be80f14c77"
+
+# x-disco-client-id prefix: web1_{env}
+DISCOVERY_CLIENT_ID_PREFIX: Final[str] = f"web1_{DEFAULT_ENV}"
+
 
 def get_default_device_info() -> Dict[str, any]:
     """
