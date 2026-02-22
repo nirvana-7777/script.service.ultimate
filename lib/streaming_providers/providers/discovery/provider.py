@@ -287,7 +287,7 @@ class DiscoveryProvider(StreamingProvider):
         try:
             headers = self._get_auth_headers()
 
-            # Fetch home route - include must be 'default' only; decorators handle the rest
+            # Fetch home route with all needed includes
             url = self.authenticator.cms_home_endpoint
             params = {
                 "include": CMS_INCLUDE_PARAMS,
@@ -423,8 +423,12 @@ class DiscoveryProvider(StreamingProvider):
                 "debug": {},
                 "device": {},
                 "googlePALNonce": google_pal_nonce,
-                "isLimitedAdTracking": 0,
-                "nielsenAppId": "",
+                "server": {
+                    "deviceId": "",
+                    "iabTCFString": "",
+                    "isLimitedAdTracking": 0,
+                    "nielsenAppId": "",
+                },
                 "ssaiProvider": {"version": "2.2.0"},
             },
             "consumptionType": "streaming",
