@@ -5,6 +5,7 @@ Discovery+ Authentication
 Handles authentication for Discovery+ including anonymous and user credentials.
 Supports two-step token negotiation with session headers.
 """
+import json
 import time
 import uuid
 
@@ -570,29 +571,39 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         except Exception as e:
             logger.warning(f"Feature flags fetch failed, x-gisdk will be omitted: {e}")
 
-    def _build_client_id(self) -> str:
+    def _sign_request(self, method: str, path: str, body: Optional[str] = None) -> str:
         """
-        Build x-disco-client-id header value.
+        Build x-disco-client-id header value for a specific request.
 
-        Format: web1_prd:{timestamp}:{hmac_sha256}
-        The HMAC-SHA256 is computed over "{prefix}:{timestamp}" using the
-        decoded HMAC key from the feature flags hmacKeys.web.key field.
+        Discovery+ signs each request with HMAC-SHA256. The message format
+        (from the GI SDK JS bundle) is:
+            "{timestamp}:{METHOD}:{relativePath}:{body}"
+        where body is the raw JSON string (or "" if no body).
+
+        The key is the base64-decoded hmacKeys.web.key from feature flags.
+        The header value is: "{keyId}:{timestamp}:{hex_signature}"
+
+        Args:
+            method: HTTP method in uppercase (e.g. "POST", "GET")
+            path: Relative path only, e.g. "/login"
+            body: Raw request body string, or None/empty for no body
 
         Returns:
-            Client ID string
+            x-disco-client-id header value
         """
         import hashlib
         import hmac as hmac_lib
 
         timestamp = str(int(time.time()))
-        message = f"{DISCOVERY_CLIENT_ID_PREFIX}:{timestamp}"
+        body_str = body if body else ""
+        message = f"{timestamp}:{method.upper()}:{path}:{body_str}"
         signature = hmac_lib.new(
             DISCOVERY_HMAC_KEY.encode("utf-8"),
             message.encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()
-        client_id = f"{message}:{signature}"
-        logger.debug(f"Built x-disco-client-id: {client_id}")
+        client_id = f"{DISCOVERY_CLIENT_ID_PREFIX}:{timestamp}:{signature}"
+        logger.debug(f"Signed request {method} {path} -> client-id prefix: {DISCOVERY_CLIENT_ID_PREFIX}:{timestamp}")
         return client_id
 
     def _build_device_info(self) -> str:
@@ -618,7 +629,6 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             "User-Agent": DISCOVERY_USER_AGENT,
             "x-device-info": self._build_device_info(),
             "x-disco-client": DISCOVERY_DISCO_CLIENT,
-            "x-disco-client-id": self._build_client_id(),
             "x-disco-params": DISCOVERY_DISCO_PARAMS,
             "x-gisdk": f"clientId={self._gisdk_client_id}" if self._gisdk_client_id else None,
             "x-wbd-device-consent": DISCOVERY_DEVICE_CONSENT,
@@ -766,7 +776,6 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             "User-Agent": DISCOVERY_USER_AGENT,
             "x-device-info": self._build_device_info(),
             "x-disco-client": DISCOVERY_DISCO_CLIENT,
-            "x-disco-client-id": self._build_client_id(),
             "x-disco-params": DISCOVERY_DISCO_PARAMS,
             "x-gisdk": f"clientId={self._gisdk_client_id}" if self._gisdk_client_id else None,
             "x-wbd-device-consent": DISCOVERY_DEVICE_CONSENT,
@@ -1012,16 +1021,18 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             f"{self.credentials.username}"
         )
 
+        payload = self.credentials.to_login_payload()
+        payload_str = json.dumps(payload, separators=(',', ':'))
+
         # Build headers: session headers + Bearer anon token + Origin/Referer + Arkose
-        upgrade_headers = self._build_base_headers()  # includes session headers
+        upgrade_headers = self._build_base_headers()
         upgrade_headers["Authorization"] = f"Bearer {anon_token.access_token}"
         upgrade_headers["Content-Type"] = "application/json"
         upgrade_headers["Origin"] = DISCOVERY_AUTH_ORIGIN
         upgrade_headers["Referer"] = DISCOVERY_AUTH_REFERER
         upgrade_headers["x-disco-arkose-sitekey"] = DISCOVERY_ARKOSE_SITEKEY
         upgrade_headers["x-disco-arkose-token"] = arkose_token
-
-        payload = self.credentials.to_login_payload()
+        upgrade_headers["x-disco-client-id"] = self._sign_request("POST", "/login", payload_str)
 
         response = self.http_manager.post(
             self.login_endpoint,
