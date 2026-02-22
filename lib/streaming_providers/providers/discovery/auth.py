@@ -5,6 +5,8 @@ Discovery+ Authentication
 Handles authentication for Discovery+ including anonymous and user credentials.
 Supports two-step token negotiation with session headers.
 """
+import base64
+import hashlib
 import json
 import time
 import uuid
@@ -571,6 +573,146 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         except Exception as e:
             logger.warning(f"Feature flags fetch failed, x-gisdk will be omitted: {e}")
 
+    @staticmethod
+    def _build_bda(user_agent: str) -> str:
+        """
+        Build an Arkose browser data (bda) fingerprint payload.
+
+        Arkose requires a bda field containing AES-encrypted JSON fingerprint
+        data. The encryption key is: userAgent + str(floor(now / 21600) * 21600)
+        — i.e. the UA concatenated with the current 6-hour window start.
+
+        The fingerprint mirrors a real Chrome/Linux browser session on
+        discoveryplus.com so Arkose validates it as a legitimate client.
+
+        Args:
+            user_agent: Browser User-Agent string (must match FC request header)
+
+        Returns:
+            Base64-encoded encrypted bda string
+        """
+        import os as _os
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives import padding as crypto_padding
+
+        ts_ms = int(time.time() * 1000)
+        ts_s = ts_ms // 1000
+        n_value = base64.b64encode(str(ts_s).encode()).decode()
+        f_value = hashlib.md5(user_agent.encode()).hexdigest()
+
+        enhanced_fp = [
+            {"key": "user_agent_data_brands", "value": "Not(A:Brand,Chromium,Google Chrome"},
+            {"key": "user_agent_data_mobile", "value": False},
+            {"key": "navigator_connection_downlink", "value": 10},
+            {"key": "navigator_connection_downlink_max", "value": None},
+            {"key": "network_info_rtt", "value": 50},
+            {"key": "network_info_save_data", "value": False},
+            {"key": "network_info_rtt_type", "value": None},
+            {"key": "screen_pixel_depth", "value": 24},
+            {"key": "navigator_device_memory", "value": 8},
+            {"key": "navigator_languages", "value": "de-DE"},
+            {"key": "window_inner_width", "value": 0},
+            {"key": "window_inner_height", "value": 0},
+            {"key": "window_outer_width", "value": 1920},
+            {"key": "window_outer_height", "value": 1040},
+            {"key": "browser_detection_firefox", "value": False},
+            {"key": "browser_detection_brave", "value": False},
+            {"key": "f58835f", "value": hashlib.md5((user_agent + "f58835f").encode()).hexdigest()},
+            {"key": "browser_object_checks", "value": hashlib.md5((user_agent + "boc").encode()).hexdigest()},
+            {"key": "29s83ih9", "value": hashlib.md5(b"").hexdigest()},
+            {"key": "audio_codecs", "value": "{\"ogg\":\"probably\",\"mp3\":\"probably\",\"wav\":\"probably\",\"m4a\":\"maybe\",\"aac\":\"probably\"}"},
+            {"key": "audio_codecs_extended_hash", "value": hashlib.md5(b"audio_codecs_extended").hexdigest()},
+            {"key": "video_codecs", "value": "{\"ogg\":\"\",\"h264\":\"probably\",\"webm\":\"probably\",\"mpeg4v\":\"\",\"mpeg4a\":\"\",\"theora\":\"\"}"},
+            {"key": "video_codecs_extended_hash", "value": hashlib.md5(b"video_codecs_extended").hexdigest()},
+            {"key": "media_query_dark_mode", "value": False},
+            {"key": "f9bf2db", "value": "{\"pc\":\"no-preference\",\"ah\":\"hover\",\"ap\":\"fine\",\"p\":\"fine\",\"h\":\"hover\",\"u\":\"fast\",\"prm\":\"no-preference\",\"prt\":\"no-preference\",\"s\":\"enabled\",\"fc\":\"none\"}"},
+            {"key": "headless_browser_phantom", "value": False},
+            {"key": "headless_browser_selenium", "value": False},
+            {"key": "headless_browser_nightmare_js", "value": False},
+            {"key": "862f2c1", "value": 4},
+            {"key": "1l2l5234ar2", "value": str(ts_ms)},
+            {"key": "document__referrer", "value": ""},
+            {"key": "window__ancestor_origins", "value": ["https://auth.discoveryplus.com"]},
+            {"key": "window__tree_index", "value": [3]},
+            {"key": "window__tree_structure", "value": "[[[]],[[]],[],[]]"},
+            {"key": "window__location_href", "value": "about:srcdoc"},
+            {"key": "client_config__sitedata_location_href", "value": "about:srcdoc"},
+            {"key": "client_config__language", "value": "de-DE"},
+            {"key": "client_config__surl", "value": "https://a4gds3vfh.discoveryplus.com"},
+            {"key": "c8480e29a", "value": hashlib.md5((user_agent + "c8480e29a").encode()).hexdigest()},
+            {"key": "client_config__triggered_inline", "value": False},
+            {"key": "mobile_sdk__is_sdk", "value": False},
+            {"key": "audio_fingerprint", "value": "124.04347527516074"},
+            {"key": "navigator_battery_charging", "value": False},
+            {"key": "7541c2s", "value": None},
+            {"key": "1f220c9", "value": hashlib.md5((user_agent + "1f220c9").encode()).hexdigest()},
+            {"key": "math_fingerprint", "value": hashlib.md5(b"math").hexdigest()},
+            {"key": "supported_math_functions", "value": hashlib.md5(b"supported_math").hexdigest()},
+            {"key": "3f76dd27", "value": "landscape-primary"},
+            {"key": "5dd48ca0", "value": 5},
+            {"key": "4b4b269e68", "value": "0d8cf6a2-ec3e-48fb-80bf-5f1c3a09af7f"},
+            {"key": "6a62b2a558", "value": hashlib.md5((user_agent + "6a62b2a558").encode()).hexdigest()},
+            {"key": "is_keyless", "value": False},
+            {"key": "wait_for_settings", "value": True},
+            {"key": "c2d2015", "value": hashlib.md5((user_agent + "c2d2015").encode()).hexdigest()},
+            {"key": "43f2d94", "value": []},
+            {"key": "20c15922", "value": False},
+            {"key": "4f59ca8", "value": None},
+            {"key": "3ea7194", "value": {"supported": True, "formats": ["HDR10", "HLG"], "isHDR": False}},
+            {"key": "05d3d24", "value": hashlib.md5((user_agent + "05d3d24").encode()).hexdigest()},
+            {"key": "speech_default_voice", "value": "Google Deutsch || de-DE"},
+            {"key": "speech_voices_hash", "value": hashlib.md5(b"speech_voices").hexdigest()},
+            {"key": "83eb055", "value": hashlib.md5((user_agent + "83eb055").encode()).hexdigest()},
+            {"key": "4ca87df3d1", "value": "Ow=="},
+            {"key": "867e25e5d4", "value": "Ow=="},
+            {"key": "d4a306884c", "value": "Ow=="},
+        ]
+
+        fe_list = [
+            "DNT:unknown", "L:de-DE", "D:24", "PR:1", "S:1920,1080",
+            "AS:1920,1040", "TO:-60", "SS:true", "LS:true", "IDB:true",
+            "B:false", "ODB:false", "CPUC:unknown", "PK:Linux x86_64",
+            "CFP:false", "FR:false", "FOS:false", "FB:false",
+            "JSF:Arial,Courier,Courier New,Helvetica,Times,Times New Roman",
+            "P:Chrome PDF Viewer,Chromium PDF Viewer,Microsoft Edge PDF Viewer,PDF Viewer,WebKit built-in PDF",
+            "T:0,false,false", "H:4", "SWF:false",
+        ]
+
+        fingerprint = [
+            {"key": "api_type", "value": "js"},
+            {"key": "f", "value": f_value},
+            {"key": "n", "value": n_value},
+            {"key": "wh", "value": f"{hashlib.md5(user_agent.encode()).hexdigest()}|{hashlib.md5((user_agent + 'wh').encode()).hexdigest()}"},
+            {"key": "enhanced_fp", "value": enhanced_fp},
+            {"key": "fe", "value": fe_list},
+            {"key": "ife_hash", "value": hashlib.md5(json.dumps(fe_list[:5]).encode()).hexdigest()},
+            {"key": "jsbd", "value": "{\"HL\":5,\"NCE\":true,\"DT\":\"Authentication\",\"NWD\":\"false\",\"DMTO\":1,\"DOTO\":1}"},
+        ]
+
+        plaintext = json.dumps(fingerprint, separators=(',', ':'))
+        key_time = round(ts_s - (ts_s % 21600))
+        key_str = user_agent + str(key_time)
+
+        # Encrypt: derive AES-256 key via MD5 chaining (same as Arkose JS client)
+        salt = _os.urandom(8)
+        dk = key_str.encode() + salt
+        arr = [hashlib.md5(dk).hexdigest()]
+        for x in range(1, 3):
+            arr.append(hashlib.md5(bytes.fromhex(arr[x - 1]) + dk).hexdigest())
+        result = ''.join(arr)
+        aes_key = bytes.fromhex(result[:64])
+        iv = _os.urandom(16)
+
+        padder = crypto_padding.PKCS7(128).padder()
+        padded = padder.update(plaintext.encode()) + padder.finalize()
+        cipher = Cipher(algorithms.AES(aes_key), modes.CBC(iv), backend=default_backend())
+        enc = cipher.encryptor()
+        ct = enc.update(padded) + enc.finalize()
+
+        payload = {"ct": base64.b64encode(ct).decode(), "s": salt.hex(), "iv": iv.hex()}
+        return base64.b64encode(json.dumps(payload).encode()).decode()
+
     def _sign_request(self, method: str, path: str, body: Optional[str] = None) -> str:
         """
         Build x-disco-client-id header value for a specific request.
@@ -893,13 +1035,20 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         """
         import math
 
+        # Build browser data fingerprint encrypted with UA + 6hr window key
+        bda = self._build_bda(DISCOVERY_USER_AGENT)
+
+        # rnd = random float in [0, 1) — mirrors what the browser JS sends
+        import random
+        rnd = str(random.random())
+
         # esync value = current time rounded down to the nearest hour
         esync_value = str(int(math.floor(time.time() / 3600) * 3600))
 
         headers = {
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
             "Origin": DISCOVERY_AUTH_ORIGIN,
-            "Referer": DISCOVERY_AUTH_REFERER,
+            "Referer": DISCOVERY_AUTH_REFERER + "/",
             "User-Agent": DISCOVERY_USER_AGENT,
             "x-ark-esync-value": esync_value,
         }
@@ -910,6 +1059,8 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             "capi_version": "3.7.8",
             "capi_mode": "lightbox",
             "style_theme": "dplus",
+            "rnd": rnd,
+            "bda": bda,
             "site": "null",
             "userbrowser": DISCOVERY_USER_AGENT,
             "language": "de-DE",
