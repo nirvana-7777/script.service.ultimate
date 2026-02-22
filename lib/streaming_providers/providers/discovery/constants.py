@@ -101,7 +101,7 @@ DEFAULT_COUNTRY: Final[str] = "de"
 # CMS Configuration
 # ============================================================================
 
-CMS_INCLUDE_PARAMS: Final[str] = "default,viewingHistory,isFavorite,contentAction,badges"
+CMS_INCLUDE_PARAMS: Final[str] = "default"
 CMS_PAGE_SIZE: Final[int] = 50
 
 # Known collection IDs for TV channels (will be discovered dynamically, but these are fallbacks)

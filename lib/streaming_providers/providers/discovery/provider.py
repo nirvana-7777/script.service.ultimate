@@ -287,7 +287,7 @@ class DiscoveryProvider(StreamingProvider):
         try:
             headers = self._get_auth_headers()
 
-            # Fetch home route with all needed includes
+            # Fetch home route - include must be 'default' only; decorators handle the rest
             url = self.authenticator.cms_home_endpoint
             params = {
                 "include": CMS_INCLUDE_PARAMS,
