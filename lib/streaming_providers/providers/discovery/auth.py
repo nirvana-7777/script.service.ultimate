@@ -182,7 +182,7 @@ class DiscoveryAuthToken(BaseAuthToken):
                 payload = json.loads(base64.b64decode(payload_b64))
                 if "exp" in payload:
                     self.expires_in = payload["exp"] - self.issued_at
-        except Exception:
+        except (ValueError, IndexError, KeyError):
             # If JWT parsing fails, keep default expiration
             pass
 
@@ -386,7 +386,7 @@ class DiscoveryAuthenticator(BaseAuthenticator):
                 if e.response is not None:
                     try:
                         body = f" — body: {e.response.json()}"
-                    except Exception:
+                    except ValueError:
                         body = f" — body: {e.response.text[:200]}"
                 logger.warning(
                     f"Bootstrap returned {status}{body} — falling back to hardcoded endpoints"
@@ -713,7 +713,8 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         payload = {"ct": base64.b64encode(ct).decode(), "s": salt.hex(), "iv": iv.hex()}
         return base64.b64encode(json.dumps(payload).encode()).decode()
 
-    def _sign_request(self, method: str, path: str, body: Optional[str] = None) -> str:
+    @staticmethod
+    def _sign_request(method: str, path: str, body: Optional[str] = None) -> str:
         """
         Build x-disco-client-id header value for a specific request.
 
@@ -984,6 +985,7 @@ class DiscoveryAuthenticator(BaseAuthenticator):
 
             logger.info("Anonymous authentication successful")
             token = self._create_token_from_response(token_data, response=response)
+            assert isinstance(token, DiscoveryAuthToken)
 
             if token.st_cookie:
                 logger.debug("Captured st= session cookie from /token response")
@@ -1001,12 +1003,14 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             logger.debug("Received 200 directly without header negotiation")
             token_data = response.json()
             token = self._create_token_from_response(token_data, response=response)
+            assert isinstance(token, DiscoveryAuthToken)
             self._discover_endpoints(self._build_authenticated_headers(token))
             return token
 
         else:
             logger.error(f"Unexpected response status: {response.status_code}")
             response.raise_for_status()
+            raise RuntimeError(f"Unexpected status {response.status_code} from /token")
 
     def _solve_arkose(self, blob: str) -> str:
         """
@@ -1151,6 +1155,7 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         # self._disco_id / self._session_state / self._wbd_ace).
         logger.debug("Obtaining anonymous base token for user auth upgrade")
         anon_token = self._perform_anonymous_auth()
+        assert isinstance(anon_token, DiscoveryAuthToken)
 
         # Step 3: Fetch feature flags with anon token — provides session-specific
         # GI SDK client ID needed for x-gisdk header and HMAC validation.
@@ -1205,13 +1210,14 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         token_data = response.json()
 
         user_token = self._create_token_from_response(token_data, response=response)
+        assert isinstance(user_token, DiscoveryAuthToken)
 
         if user_token.st_cookie:
             logger.debug("Captured st= session cookie from /login response")
         else:
             logger.warning("No st= cookie in /login response — user session may not persist")
 
-        if getattr(user_token, "anonymous", True):
+        if user_token.anonymous:
             # Login succeeded but token still anonymous — credentials were
             # accepted but the account may lack an active subscription.
             logger.warning(
@@ -1226,6 +1232,10 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         # Re-run bootstrap with the user token so endpoints reflect full
         # user entitlements (country routing may differ from anonymous session).
         self._discover_endpoints(self._build_authenticated_headers(user_token))
+
+        # Persist the user token immediately so it survives restarts.
+        self._current_token = user_token
+        self._save_session()
 
         return user_token
 
@@ -1394,9 +1404,7 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             self.http_manager._session.cookies.clear(
                 domain="api.discoveryplus.com", path="/", name="st"
             )
-        except Exception:
+        except (AttributeError, KeyError, ValueError):
             pass
-        try:
-            self.settings_manager.clear_token(self.provider_name, self.country)
         except (AttributeError, KeyError, IOError, OSError):
             pass
