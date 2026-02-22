@@ -1022,6 +1022,10 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         )
 
         payload = self.credentials.to_login_payload()
+        # Serialize body once — used for both HMAC signing and the actual request.
+        # requests' json= re-serializes with spaces (", "/": ") which would
+        # produce a different body than our compact HMAC input.
+        # Sending as data= with Content-Type set avoids re-serialization.
         payload_str = json.dumps(payload, separators=(',', ':'))
 
         # Build headers: session headers + Bearer anon token + Origin/Referer + Arkose
@@ -1038,7 +1042,7 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             self.login_endpoint,
             operation="auth",
             headers=upgrade_headers,
-            json_data=payload,
+            data=payload_str,  # raw string — no re-serialization by requests
         )
 
         if response.status_code == 401:
