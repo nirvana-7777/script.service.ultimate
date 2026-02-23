@@ -313,6 +313,9 @@ def get_drm_request_headers() -> Dict[str, str]:
     return {
         "Content-Type": "application/octet-stream",
         "User-Agent": DISCOVERY_USER_AGENT,
+        "Origin": "https://play.discoveryplus.com",
+        "Referer": "https://play.discoveryplus.com/",
+        "traceparent": "00-aba275155d9ed5c2b54d576682cb30e6-ddfd854be17b3a6e-01",
     }
 
 

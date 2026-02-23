@@ -109,6 +109,11 @@ class DiscoveryProvider(StreamingProvider):
         # Provider cache for DiscoveryChannel objects
         self._channels_cache: Dict[str, DiscoveryChannel] = {}
 
+        # Playback info cache: {edit_id: (expiry_timestamp, playback_data)}
+        # Entries are valid until expiry_timestamp (derived from drm_expiration,
+        # or 23 hours from fetch time as a safe fallback for the 24h token window).
+        self._playback_cache: Dict[str, tuple] = {}
+
         # Setup HTTP manager using abstraction
         self.http_manager = self._setup_http_manager(
             provider_name="discovery",
@@ -496,7 +501,69 @@ class DiscoveryProvider(StreamingProvider):
                 f"Error getting playback info for edit_id {edit_id}: {e}"
             )
 
-    def extract_streaming_data(self, playback_data: Dict) -> Dict[str, Any]:
+    def _get_cached_playback_info(self, edit_id: str) -> Dict:
+        """
+        Return playback info for edit_id, using a cache keyed on expiry time.
+
+        Tokens issued by Discovery+ are valid for 24 hours. The cache entry
+        is kept until the drm_expiration timestamp returned in the response
+        (minus a 60-second safety margin). If no expiration is present in the
+        response, a fallback TTL of 23 hours is used.
+
+        Args:
+            edit_id: Content edit ID
+
+        Returns:
+            Playback info dictionary (from cache or freshly fetched)
+        """
+        now = time.time()
+        cached = self._playback_cache.get(edit_id)
+
+        if cached:
+            expiry, data = cached
+            if now < expiry:
+                logger.debug(
+                    f"Playback cache hit for edit_id {edit_id} "
+                    f"(expires in {int(expiry - now)}s)"
+                )
+                return data
+            else:
+                logger.debug(f"Playback cache expired for edit_id {edit_id}, re-fetching")
+
+        data = self.get_playback_info(edit_id=edit_id)
+
+        # Determine expiry from drm_expiration field if available
+        expiry = None
+        try:
+            drm_expiration_str = (
+                data.get("drm", {}).get("expirationDate")
+            )
+            if drm_expiration_str:
+                from datetime import timezone
+                dt = datetime.fromisoformat(
+                    drm_expiration_str.replace("Z", "+00:00")
+                )
+                # Apply a 60-second safety margin
+                expiry = dt.timestamp() - 60
+        except Exception as e:
+            logger.debug(f"Could not parse drm_expiration: {e}")
+
+        if expiry is None or expiry <= now:
+            # Fallback: 23 hours from now
+            expiry = now + 23 * 3600
+            logger.debug(
+                f"Using fallback 23h TTL for playback cache (edit_id: {edit_id})"
+            )
+
+        self._playback_cache[edit_id] = (expiry, data)
+        logger.debug(
+            f"Playback cache stored for edit_id {edit_id} "
+            f"(expires in {int(expiry - now)}s)"
+        )
+        return data
+
+    @staticmethod
+    def extract_streaming_data(playback_data: Dict) -> Dict[str, Any]:
         """
         Extract streaming URLs and DRM info from playback response.
 
@@ -603,7 +670,7 @@ class DiscoveryProvider(StreamingProvider):
                         f"(edit_id: {edit_id}, attempt {retries + 1})"
                     )
 
-                    playback_data = self.get_playback_info(edit_id=edit_id)
+                    playback_data = self._get_cached_playback_info(edit_id=edit_id)
                     streaming_data = self.extract_streaming_data(playback_data)
 
                     if streaming_data["manifest_url"]:
@@ -685,7 +752,7 @@ class DiscoveryProvider(StreamingProvider):
                 logger.warning(f"No edit_id found for channel {channel.name}")
                 return None
 
-            playback_data = self.get_playback_info(edit_id=edit_id)
+            playback_data = self._get_cached_playback_info(edit_id=edit_id)
             streaming_data = self.extract_streaming_data(playback_data)
 
             if not streaming_data["manifest_url"]:
@@ -697,11 +764,6 @@ class DiscoveryProvider(StreamingProvider):
             # Configure DRM if license URL is present
             if streaming_data["license_url"]:
                 license_headers = get_drm_request_headers()
-
-                if streaming_data["drm_auth"]:
-                    license_headers["preauthorization"] = (
-                        streaming_data["drm_auth"]
-                    )
 
                 drm_config = DRMConfig(
                     system=DRMSystem.WIDEVINE,
@@ -752,7 +814,7 @@ class DiscoveryProvider(StreamingProvider):
                     f"No edit_id for channel {channel_id}"
                 )
 
-            playback_data = self.get_playback_info(edit_id=edit_id)
+            playback_data = self._get_cached_playback_info(edit_id=edit_id)
             streaming_data = self.extract_streaming_data(playback_data)
             return streaming_data.get("manifest_url")
 
@@ -790,16 +852,13 @@ class DiscoveryProvider(StreamingProvider):
             if not edit_id:
                 return []
 
-            playback_data = self.get_playback_info(edit_id=edit_id)
+            playback_data = self._get_cached_playback_info(edit_id=edit_id)
             streaming_data = self.extract_streaming_data(playback_data)
 
             if not streaming_data["license_url"]:
                 return []
 
             license_headers = get_drm_request_headers()
-
-            if streaming_data["drm_auth"]:
-                license_headers["preauthorization"] = streaming_data["drm_auth"]
 
             drm_config = DRMConfig(
                 system=DRMSystem.WIDEVINE,
