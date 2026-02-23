@@ -258,34 +258,35 @@ class DRMPluginManager:
         generated_configs = []
 
         try:
-            # Process each PSSH data entry
-            for pssh_data in pssh_data_list:
+            # Generic plugins are system-agnostic: key IDs are the same across all DRM systems,
+            # so we only need to call the plugin once with the first PSSH entry.
+            pssh_data = pssh_data_list[0]
+            logger.debug(
+                f"Phase 1: Processing PSSH for system {pssh_data.system_id} "
+                f"with plugin '{plugin.plugin_name}'"
+            )
+
+            # Pass dummy config - plugin should return real config(s) or None
+            result = plugin.process_drm_config(
+                dummy_configs[0],  # Dummy config
+                pssh_data,
+                **kwargs
+            )
+
+            if result:
+                generated_configs.append(result)
                 logger.debug(
-                    f"Phase 1: Processing PSSH for system {pssh_data.system_id} "
-                    f"with plugin '{plugin.plugin_name}'"
+                    f"Phase 1: Plugin '{plugin.plugin_name}' generated "
+                    f"{result.system.value} config"
                 )
 
-                # Pass dummy config - plugin should return real config(s) or None
-                result = plugin.process_drm_config(
-                    dummy_configs[0],  # Dummy config
-                    pssh_data,
-                    **kwargs
-                )
-
-                if result:
-                    generated_configs.append(result)
-                    logger.debug(
-                        f"Phase 1: Plugin '{plugin.plugin_name}' generated "
-                        f"{result.system.value} config"
+                # If ClearKey found, return immediately
+                if result.system == DRMSystem.CLEARKEY:
+                    logger.info(
+                        f"Phase 1: ClearKey config found from GENERIC plugin, "
+                        f"returning immediately"
                     )
-
-                    # If ClearKey found, return immediately
-                    if result.system == DRMSystem.CLEARKEY:
-                        logger.info(
-                            f"Phase 1: ClearKey config found from GENERIC plugin, "
-                            f"returning immediately"
-                        )
-                        return [result]
+                    return [result]
 
         except Exception as e:
             logger.error(
