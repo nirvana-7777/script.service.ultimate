@@ -5,7 +5,7 @@ Discovery+ Provider Constants
 All configuration values for the Discovery+ streaming provider.
 """
 from enum import Enum
-from typing import Dict, List, Final
+from typing import Dict, List, Final, Optional
 
 
 # ============================================================================
@@ -35,12 +35,29 @@ class DRMSystem(str, Enum):
     """DRM systems"""
     WIDEVINE = "widevine"
     CLEARKEY = "clearkey"
+    PLAYREADY = "playready"
 
 
 class AuthProvider(str, Enum):
     """Authentication providers"""
     USERNAME_PASSWORD = "USERNAME_PASSWORD"
     ANONYMOUS = "anonymous"
+
+
+class PlatformOS(str, Enum):
+    """
+    Target OS platform used for device/header spoofing.
+
+    LINUX   → Chrome browser, Widevine + ClearKey DRM, x-disco-client os_version="0.0.0"
+    WINDOWS → Microsoft Edge browser, PlayReady DRM,   x-disco-client os_version="NT 10.0"
+    """
+    LINUX = "linux"
+    WINDOWS = "windows"
+
+
+# Active platform — change this single constant to switch all OS-dependent behaviour.
+# LINUX preserves existing behaviour exactly; WINDOWS mirrors a real Edge/Windows client.
+DEFAULT_PLATFORM_OS: Final[PlatformOS] = PlatformOS.LINUX
 
 
 # ============================================================================
@@ -125,8 +142,21 @@ CHANNEL_ITEM_TYPES: Final[List[str]] = ["distributionChannel", "channel", "linea
 # User Agent Configuration
 # ============================================================================
 
-DISCOVERY_USER_AGENT: Final[
-    str] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+# Per-platform user agent strings.
+# LINUX  → Chrome on Linux  (original behaviour)
+# WINDOWS → Edge on Windows (matches real captured HAR traffic)
+DISCOVERY_USER_AGENT_LINUX: Final[str] = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+)
+DISCOVERY_USER_AGENT_WINDOWS: Final[str] = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36 Edg/139.0.0.0"
+)
+
+# Convenience alias — resolves to the Linux UA by default so existing callers
+# that reference DISCOVERY_USER_AGENT directly are unaffected.
+DISCOVERY_USER_AGENT: Final[str] = DISCOVERY_USER_AGENT_LINUX
 
 # ============================================================================
 # Device Configuration
@@ -148,9 +178,13 @@ DISCOVERY_CLIENT_VERSION: Final[str] = "6.14.0"
 # x-disco-params header value
 DISCOVERY_DISCO_PARAMS: Final[str] = "realm=bolt,bid=dplus,features=ar"
 
-# x-device-info header template — format with device_id and session_id
-DISCOVERY_DEVICE_INFO_TEMPLATE: Final[str] = (
+# x-device-info header templates — one per OS platform.
+# Format placeholders: {device_id}, {session_id}
+DISCOVERY_DEVICE_INFO_TEMPLATE_LINUX: Final[str] = (
     f"dplus/{DISCOVERY_CLIENT_VERSION} (desktop/desktop; Linux/x86_64; {{device_id}}/{{session_id}})"
+)
+DISCOVERY_DEVICE_INFO_TEMPLATE_WINDOWS: Final[str] = (
+    f"dplus/{DISCOVERY_CLIENT_VERSION} (desktop/desktop; Windows/NT 10.0; {{device_id}}/{{session_id}})"
 )
 
 # x-wbd-device-consent header value
@@ -190,9 +224,10 @@ DISCOVERY_HMAC_KEY: Final[str] = "55eea189-e9b6-479f-bc51-2224cfda56fe"
 # x-disco-client-id prefix matches hmacKeys "id" field for web
 DISCOVERY_CLIENT_ID_PREFIX: Final[str] = "web1_prd"
 
-# x-disco-client format: WEB:{os_version}:dplus:{client_version}
-# OS version is "0.0.0" for web (not x86_64 as previously assumed)
-DISCOVERY_DISCO_CLIENT: Final[str] = f"WEB:0.0.0:dplus:{DISCOVERY_CLIENT_VERSION}"
+# x-disco-client header — WEB:{os_version}:dplus:{client_version}
+# os_version encodes the OS: "0.0.0" for Linux web, "NT 10.0" for Windows
+DISCOVERY_DISCO_CLIENT_LINUX: Final[str] = f"WEB:0.0.0:dplus:{DISCOVERY_CLIENT_VERSION}"
+DISCOVERY_DISCO_CLIENT_WINDOWS: Final[str] = f"WEB:NT 10.0:dplus:{DISCOVERY_CLIENT_VERSION}"
 
 # Feature flags endpoint — provides hmacKeys, gisdk clientId, arkose config etc.
 # x-gisdk clientId comes from the response and is session-specific.
@@ -205,23 +240,39 @@ DISCOVERY_FEATURE_FLAGS_PAYLOAD: Final[Dict] = {
 }
 
 
-def get_default_device_info() -> Dict[str, any]:
+def get_default_device_info(platform_os: Optional[PlatformOS] = None) -> Dict[str, any]:
     """
-    Return a fresh copy of default device info.
+    Return a fresh copy of default device info for the given OS platform.
+
+    Args:
+        platform_os: Target OS platform. Defaults to DEFAULT_PLATFORM_OS.
+                     PlatformOS.LINUX  → Chrome on Linux  (original behaviour)
+                     PlatformOS.WINDOWS → Edge on Windows
 
     Returns:
-        Dictionary containing device information
+        Dictionary containing device information suitable for the playbackInfo body.
     """
+    if platform_os is None:
+        platform_os = DEFAULT_PLATFORM_OS
+
+    if platform_os == PlatformOS.WINDOWS:
+        os_info = {"name": "Windows", "version": "NT 10.0"}
+        browser_info = {"name": "Microsoft Edge", "version": "139.0.0.0"}
+    else:
+        # LINUX — preserves original behaviour exactly
+        os_info = {"name": "Linux", "version": "0.0.0"}
+        browser_info = {"name": "Chrome", "version": "144.0.0.0"}
+
     return {
         "deviceId": DEFAULT_DEVICE_ID,
-        "browser": {"name": "Chrome", "version": "144.0.0.0"},
+        "browser": browser_info,
         "make": "desktop",
         "model": "desktop",
-        "os": {"name": "Linux", "version": "0.0.0"},
+        "os": os_info,
         "platform": "WEB",
         "deviceType": "web",
         "player": {
-            "sdk": {"name": "Beam Player Desktop", "version": "6.14.0"},
+            "sdk": {"name": "Beam Player Desktop", "version": DISCOVERY_CLIENT_VERSION},
             "mediaEngine": {
                 "name": "GLUON_BROWSER",
                 "version": "7.0.0",
@@ -232,13 +283,35 @@ def get_default_device_info() -> Dict[str, any]:
     }
 
 
-def get_default_capabilities() -> Dict[str, any]:
+def get_default_capabilities(platform_os: Optional[PlatformOS] = None) -> Dict[str, any]:
     """
-    Return a fresh copy of default capabilities.
+    Return a fresh copy of default capabilities for the given OS platform.
+
+    The DRM advertised differs by platform:
+      LINUX   → ClearKey + Widevine L3   (original behaviour)
+      WINDOWS → ClearKey + PlayReady SL3000  (matches real Edge/Windows client)
+
+    Args:
+        platform_os: Target OS platform. Defaults to DEFAULT_PLATFORM_OS.
 
     Returns:
-        Dictionary containing device capabilities
+        Dictionary containing device capabilities suitable for the playbackInfo body.
     """
+    if platform_os is None:
+        platform_os = DEFAULT_PLATFORM_OS
+
+    if platform_os == PlatformOS.WINDOWS:
+        cdm_list = [
+            {"drmKeySystem": "clearkey"},
+            {"drmKeySystem": "playready", "maxSecurityLevel": "sl3000"},
+        ]
+    else:
+        # LINUX — preserves original behaviour exactly
+        cdm_list = [
+            {"drmKeySystem": "clearkey"},
+            {"drmKeySystem": "widevine", "maxSecurityLevel": "l3"},
+        ]
+
     return {
         "manifests": {"formats": {"dash": {}}},
         "codecs": {
@@ -270,10 +343,7 @@ def get_default_capabilities() -> Dict[str, any]:
             },
         },
         "contentProtection": {
-            "contentDecryptionModules": [
-                {"drmKeySystem": "clearkey"},
-                {"drmKeySystem": "widevine", "maxSecurityLevel": "l3"},
-            ]
+            "contentDecryptionModules": cdm_list
         },
         "devicePlatform": {
             "memory": {"allocatedMemory": 0, "freeAvailableMemory": 1.7976931348623157e308},
@@ -289,6 +359,41 @@ def get_default_capabilities() -> Dict[str, any]:
     }
 
 
+def get_disco_client(platform_os: Optional[PlatformOS] = None) -> str:
+    """
+    Return the x-disco-client header value for the given OS platform.
+
+    Args:
+        platform_os: Target OS platform. Defaults to DEFAULT_PLATFORM_OS.
+
+    Returns:
+        x-disco-client header string, e.g. "WEB:0.0.0:dplus:6.14.0"
+    """
+    if platform_os is None:
+        platform_os = DEFAULT_PLATFORM_OS
+    if platform_os == PlatformOS.WINDOWS:
+        return DISCOVERY_DISCO_CLIENT_WINDOWS
+    return DISCOVERY_DISCO_CLIENT_LINUX
+
+
+def get_device_info_template(platform_os: Optional[PlatformOS] = None) -> str:
+    """
+    Return the x-device-info header template for the given OS platform.
+    The caller must still call .format(device_id=..., session_id=...) on the result.
+
+    Args:
+        platform_os: Target OS platform. Defaults to DEFAULT_PLATFORM_OS.
+
+    Returns:
+        x-device-info template string with {device_id} and {session_id} placeholders.
+    """
+    if platform_os is None:
+        platform_os = DEFAULT_PLATFORM_OS
+    if platform_os == PlatformOS.WINDOWS:
+        return DISCOVERY_DEVICE_INFO_TEMPLATE_WINDOWS
+    return DISCOVERY_DEVICE_INFO_TEMPLATE_LINUX
+
+
 # ============================================================================
 # Playback Configuration
 # ============================================================================
@@ -301,18 +406,39 @@ DEFAULT_APPLICATION_SESSION_ID: Final[str] = "74985592-a061-4597-ab5b-51492d0fc2
 # ============================================================================
 
 DRM_SYSTEM_WIDEVINE: Final[str] = DRMSystem.WIDEVINE.value
+DRM_SYSTEM_PLAYREADY: Final[str] = DRMSystem.PLAYREADY.value
 
 
-def get_drm_request_headers() -> Dict[str, str]:
+def get_user_agent(platform_os: Optional[PlatformOS] = None) -> str:
     """
-    Return a fresh copy of DRM request headers.
+    Return the User-Agent string for the given OS platform.
+
+    Args:
+        platform_os: Target OS platform. Defaults to DEFAULT_PLATFORM_OS.
 
     Returns:
-        Dictionary containing DRM request headers
+        User-Agent header string.
+    """
+    if platform_os is None:
+        platform_os = DEFAULT_PLATFORM_OS
+    if platform_os == PlatformOS.WINDOWS:
+        return DISCOVERY_USER_AGENT_WINDOWS
+    return DISCOVERY_USER_AGENT_LINUX
+
+
+def get_drm_request_headers(platform_os: Optional[PlatformOS] = None) -> Dict[str, str]:
+    """
+    Return a fresh copy of DRM request headers for the given OS platform.
+
+    Args:
+        platform_os: Target OS platform. Defaults to DEFAULT_PLATFORM_OS.
+
+    Returns:
+        Dictionary containing DRM request headers.
     """
     return {
         "Content-Type": "application/octet-stream",
-        "User-Agent": DISCOVERY_USER_AGENT,
+        "User-Agent": get_user_agent(platform_os),
         "Origin": "https://play.discoveryplus.com",
         "Referer": "https://play.discoveryplus.com/",
         "traceparent": "00-aba275155d9ed5c2b54d576682cb30e6-ddfd854be17b3a6e-01",

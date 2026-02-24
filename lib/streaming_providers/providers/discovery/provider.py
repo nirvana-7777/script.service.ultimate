@@ -27,9 +27,11 @@ from .auth import (
 from .constants import (
     DEFAULT_COUNTRY,
     DEFAULT_TENANT,
+    DEFAULT_PLATFORM_OS,
     DISCOVERY_LOGO,
-    DISCOVERY_USER_AGENT,
     DRMSystem as DiscoveryDRMSystem,
+    DRM_SYSTEM_PLAYREADY,
+    PlatformOS,
     SUPPORTED_AUTH_TYPES,
     SUPPORTED_COUNTRIES,
     CMS_INCLUDE_PARAMS,
@@ -38,7 +40,10 @@ from .constants import (
     CHANNEL_ITEM_TYPES,
     get_default_capabilities,
     get_default_device_info,
+    get_device_info_template,
+    get_disco_client,
     get_drm_request_headers,
+    get_user_agent,
 )
 from .exceptions import (
     PlaybackRestrictedException,
@@ -56,7 +61,8 @@ class DiscoveryProvider(StreamingProvider):
     - Multi-country support (EMEA region)
     - Anonymous and user authentication
     - Live channels and VOD content
-    - DRM-protected streams (Widevine)
+    - DRM-protected streams (Widevine on Linux, PlayReady on Windows)
+    - OS platform spoofing via PlatformOS (see constants.DEFAULT_PLATFORM_OS)
     - Provider cache pattern for efficient channel management
     """
 
@@ -78,6 +84,7 @@ class DiscoveryProvider(StreamingProvider):
             settings_manager=None,
             proxy_config: Optional[ProxyConfig] = None,
             proxy_url: Optional[str] = None,
+            platform_os: Optional[PlatformOS] = None,
     ):
         """
         Initialize Discovery+ provider.
@@ -91,6 +98,10 @@ class DiscoveryProvider(StreamingProvider):
             settings_manager: Settings manager instance
             proxy_config: Optional proxy configuration
             proxy_url: Optional proxy URL string
+            platform_os: OS platform to spoof (PlatformOS.LINUX or PlatformOS.WINDOWS).
+                         Defaults to DEFAULT_PLATFORM_OS from constants.
+                         LINUX  → Widevine + Chrome on Linux (original behaviour)
+                         WINDOWS → PlayReady + Edge on Windows
 
         Raises:
             ValueError: If country not supported or credentials missing
@@ -102,6 +113,9 @@ class DiscoveryProvider(StreamingProvider):
             )
 
         super().__init__(country=country)
+
+        # OS platform used for all device/header/DRM spoofing
+        self.platform_os: PlatformOS = platform_os if platform_os is not None else DEFAULT_PLATFORM_OS
 
         self.auth_type = auth_type
         self._settings_manager = settings_manager
@@ -120,7 +134,7 @@ class DiscoveryProvider(StreamingProvider):
             proxy_config=proxy_config,
             proxy_url=proxy_url,
             config_dir=config_dir,
-            user_agent=DISCOVERY_USER_AGENT,
+            user_agent=get_user_agent(self.platform_os),
             timeout=30,
             max_retries=3,
         )
@@ -247,7 +261,7 @@ class DiscoveryProvider(StreamingProvider):
         """Get headers with authentication"""
         return self._build_provider_headers(
             base_headers={
-                "User-Agent": DISCOVERY_USER_AGENT,
+                "User-Agent": get_user_agent(self.platform_os),
                 "Accept": "application/json",
                 "Content-Type": "application/json",
             },
@@ -437,9 +451,9 @@ class DiscoveryProvider(StreamingProvider):
                 "ssaiProvider": {"version": "2.2.0"},
             },
             "consumptionType": "streaming",
-            "deviceInfo": get_default_device_info(),
+            "deviceInfo": get_default_device_info(self.platform_os),
             "editId": edit_id,
-            "capabilities": get_default_capabilities(),
+            "capabilities": get_default_capabilities(self.platform_os),
             "gdpr": False,
             "firstPlay": False,
             "playbackSessionId": str(uuid.uuid4()),
@@ -567,15 +581,28 @@ class DiscoveryProvider(StreamingProvider):
         """
         Extract streaming URLs and DRM info from playback response.
 
+        Detects whichever DRM scheme is present in the response — either
+        'widevine' (Linux/Chrome) or 'playready' (Windows/Edge) — and
+        records it as ``drm_system`` so callers can build the correct DRMConfig
+        without needing to know the active PlatformOS.
+
         Args:
             playback_data: Playback API response
 
         Returns:
-            Dictionary with manifest_url, license_url, drm_auth, etc.
+            Dictionary with:
+              manifest_url     – DASH manifest URL
+              license_url      – DRM license server URL (or None)
+              drm_system       – 'widevine' | 'playready' | None
+              drm_auth         – JWT auth token extracted from license URL (or None)
+              streaming_format – 'dash' (always for Discovery+)
+              drm_expiration   – ISO-8601 expiration string (or None)
+              fallback_manifest – Fallback manifest URL (or None)
         """
         result = {
             "manifest_url": None,
             "license_url": None,
+            "drm_system": None,
             "drm_auth": None,
             "streaming_format": "dash",
             "drm_expiration": None,
@@ -596,22 +623,32 @@ class DiscoveryProvider(StreamingProvider):
                 if fallback_manifest:
                     result["fallback_manifest"] = fallback_manifest.get("url")
 
-            # Extract DRM info
+            # Extract DRM info — check both schemes in priority order.
+            # The server returns exactly the scheme(s) matching the capabilities
+            # we advertised in the playback request (widevine for Linux,
+            # playready for Windows). We probe both so this method stays
+            # stateless and works regardless of which platform produced the response.
             drm = playback_data.get("drm", {})
             if drm:
+                result["drm_expiration"] = drm.get("expirationDate")
                 schemes = drm.get("schemes", {})
-                widevine = schemes.get("widevine", {})
-                if widevine:
-                    result["license_url"] = widevine.get("licenseUrl")
-                    result["drm_expiration"] = drm.get("expirationDate")
 
-                    # Extract auth token from license URL if present
-                    if result["license_url"] and "auth=" in result["license_url"]:
-                        import urllib.parse
-                        parsed = urllib.parse.urlparse(result["license_url"])
-                        query = urllib.parse.parse_qs(parsed.query)
-                        if "auth" in query:
-                            result["drm_auth"] = query["auth"][0]
+                # Preference order: widevine → playready (mirrors Linux default)
+                scheme_priority = ["widevine", "playready"]
+                for scheme_name in scheme_priority:
+                    scheme = schemes.get(scheme_name, {})
+                    if scheme and scheme.get("licenseUrl"):
+                        result["license_url"] = scheme["licenseUrl"]
+                        result["drm_system"] = scheme_name
+
+                        # Extract JWT auth token from the license URL if present
+                        if "auth=" in result["license_url"]:
+                            import urllib.parse
+                            parsed = urllib.parse.urlparse(result["license_url"])
+                            query = urllib.parse.parse_qs(parsed.query)
+                            if "auth" in query:
+                                result["drm_auth"] = query["auth"][0]
+                        break  # Stop at first found scheme
 
             # Extract CDN info
             cdn = playback_data.get("cdn", {})
@@ -622,6 +659,61 @@ class DiscoveryProvider(StreamingProvider):
             logger.error(f"Error extracting streaming data: {e}")
 
         return result
+
+    def _build_drm_config(self, streaming_data: Dict[str, Any]) -> Optional[DRMConfig]:
+        """
+        Build a DRMConfig from extracted streaming data.
+
+        Selects the correct DRMSystem based on the scheme returned by the
+        server (recorded in ``streaming_data["drm_system"]``).  Falls back to
+        the active ``self.platform_os`` when the scheme is absent so the caller
+        never has to make this decision themselves.
+
+        Supported schemes:
+          'widevine'  → DRMSystem.WIDEVINE  (Linux/Chrome path)
+          'playready' → DRMSystem.PLAYREADY (Windows/Edge path)
+
+        Args:
+            streaming_data: Dictionary returned by extract_streaming_data()
+
+        Returns:
+            DRMConfig instance or None if no license URL is available
+        """
+        license_url = streaming_data.get("license_url")
+        if not license_url:
+            return None
+
+        # Resolve DRM system from what the server actually returned,
+        # falling back to platform_os expectation if not present.
+        drm_system_str = streaming_data.get("drm_system")
+        if drm_system_str == "playready":
+            drm_system = DRMSystem.PLAYREADY
+        elif drm_system_str == "widevine":
+            drm_system = DRMSystem.WIDEVINE
+        else:
+            # Fallback: derive from active platform
+            drm_system = (
+                DRMSystem.PLAYREADY
+                if self.platform_os == PlatformOS.WINDOWS
+                else DRMSystem.WIDEVINE
+            )
+            logger.debug(
+                f"drm_system not in streaming_data, inferred from platform_os "
+                f"({self.platform_os.value}): {drm_system.name}"
+            )
+
+        license_headers = get_drm_request_headers(self.platform_os)
+
+        return DRMConfig(
+            system=drm_system,
+            priority=1,
+            license=LicenseConfig(
+                server_url=license_url,
+                req_headers=json.dumps(license_headers),
+                req_data="{CHA-RAW}",
+                use_http_get_request=False,
+            ),
+        )
 
     def populate_streaming_data(
             self,
@@ -678,8 +770,11 @@ class DiscoveryProvider(StreamingProvider):
                         channel.streaming_format = streaming_data["streaming_format"]
 
                         if streaming_data["license_url"]:
+                            drm_config = self._build_drm_config(streaming_data)
+                            if drm_config:
+                                channel.drm_config = drm_config
                             channel.license_url = streaming_data["license_url"]
-                            channel.cdm_type = DiscoveryDRMSystem.WIDEVINE.value
+                            channel.cdm_type = streaming_data["drm_system"]
 
                             # Store DRM token in DiscoveryChannel cache
                             if streaming_data["drm_auth"]:
@@ -763,20 +858,10 @@ class DiscoveryProvider(StreamingProvider):
 
             # Configure DRM if license URL is present
             if streaming_data["license_url"]:
-                license_headers = get_drm_request_headers()
-
-                drm_config = DRMConfig(
-                    system=DRMSystem.WIDEVINE,
-                    priority=1,
-                    license=LicenseConfig(
-                        server_url=streaming_data["license_url"],
-                        req_headers=json.dumps(license_headers),
-                        req_data="{CHA-RAW}",
-                        use_http_get_request=False,
-                    ),
-                )
-                channel.drm_config = drm_config
-                channel.cdm_type = DiscoveryDRMSystem.WIDEVINE.value
+                drm_config = self._build_drm_config(streaming_data)
+                if drm_config:
+                    channel.drm_config = drm_config
+                channel.cdm_type = streaming_data["drm_system"]
 
             return channel
 
@@ -858,20 +943,8 @@ class DiscoveryProvider(StreamingProvider):
             if not streaming_data["license_url"]:
                 return []
 
-            license_headers = get_drm_request_headers()
-
-            drm_config = DRMConfig(
-                system=DRMSystem.WIDEVINE,
-                priority=1,
-                license=LicenseConfig(
-                    server_url=streaming_data["license_url"],
-                    req_headers=json.dumps(license_headers),
-                    req_data="{CHA-RAW}",
-                    use_http_get_request=False,
-                ),
-            )
-
-            return [drm_config]
+            drm_config = self._build_drm_config(streaming_data)
+            return [drm_config] if drm_config else []
 
         except Exception as e:
             logger.error(

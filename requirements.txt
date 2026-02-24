@@ -6,7 +6,6 @@ iso8601>=1.1.0
 pycountry>=23.12.11
 python-dateutil>=2.8.2
 urllib3>=2.0.7
-chardet>=5.2.0
 pymp4~=1.4.0
 protobuf~=6.33.0
 pycryptodome~=3.23.0
