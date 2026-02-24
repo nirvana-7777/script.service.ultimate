@@ -2,7 +2,7 @@
 
 **Ultimate Backend** is a background service for **Kodi** that provides a local API for **live TV streaming**, **EPG data**, and **manifest management** from supported online TV providers.
 
-It act as the **bridge between streaming services and Kodi's PVR system**, designed specifically to work together with the official **PVR IPTV Simple Client**.
+It acts as the **bridge between streaming services and Kodi's PVR system**, designed specifically to work together with the official **PVR IPTV Simple Client**.
 
 ---
 
