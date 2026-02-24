@@ -57,7 +57,7 @@ class PlatformOS(str, Enum):
 
 # Active platform — change this single constant to switch all OS-dependent behaviour.
 # LINUX preserves existing behaviour exactly; WINDOWS mirrors a real Edge/Windows client.
-DEFAULT_PLATFORM_OS: Final[PlatformOS] = PlatformOS.WINDOWS
+DEFAULT_PLATFORM_OS: Final[PlatformOS] = PlatformOS.LINUX
 
 
 # ============================================================================
@@ -186,6 +186,8 @@ DISCOVERY_DEVICE_INFO_TEMPLATE_LINUX: Final[str] = (
 DISCOVERY_DEVICE_INFO_TEMPLATE_WINDOWS: Final[str] = (
     f"dplus/{DISCOVERY_CLIENT_VERSION} (desktop/desktop; Windows/NT 10.0; {{device_id}}/{{session_id}})"
 )
+# Backward-compatible alias — resolves to Linux template (original behaviour)
+DISCOVERY_DEVICE_INFO_TEMPLATE: Final[str] = DISCOVERY_DEVICE_INFO_TEMPLATE_LINUX
 
 # x-wbd-device-consent header value
 DISCOVERY_DEVICE_CONSENT: Final[str] = "gpc=0"
@@ -228,6 +230,8 @@ DISCOVERY_CLIENT_ID_PREFIX: Final[str] = "web1_prd"
 # os_version encodes the OS: "0.0.0" for Linux web, "NT 10.0" for Windows
 DISCOVERY_DISCO_CLIENT_LINUX: Final[str] = f"WEB:0.0.0:dplus:{DISCOVERY_CLIENT_VERSION}"
 DISCOVERY_DISCO_CLIENT_WINDOWS: Final[str] = f"WEB:NT 10.0:dplus:{DISCOVERY_CLIENT_VERSION}"
+# Backward-compatible alias — resolves to Linux value (original behaviour)
+DISCOVERY_DISCO_CLIENT: Final[str] = DISCOVERY_DISCO_CLIENT_LINUX
 
 # Feature flags endpoint — provides hmacKeys, gisdk clientId, arkose config etc.
 # x-gisdk clientId comes from the response and is session-specific.
@@ -240,7 +244,10 @@ DISCOVERY_FEATURE_FLAGS_PAYLOAD: Final[Dict] = {
 }
 
 
-def get_default_device_info(platform_os: Optional[PlatformOS] = None) -> Dict[str, any]:
+def get_default_device_info(
+        platform_os: Optional[PlatformOS] = None,
+        device_id: Optional[str] = None,
+) -> Dict[str, any]:
     """
     Return a fresh copy of default device info for the given OS platform.
 
@@ -248,12 +255,18 @@ def get_default_device_info(platform_os: Optional[PlatformOS] = None) -> Dict[st
         platform_os: Target OS platform. Defaults to DEFAULT_PLATFORM_OS.
                      PlatformOS.LINUX  → Chrome on Linux  (original behaviour)
                      PlatformOS.WINDOWS → Edge on Windows
+        device_id: Device ID to embed. Defaults to DEFAULT_DEVICE_ID.
+                   Pass the authenticator's self.device_id so the value
+                   matches what the server tracks per session.
 
     Returns:
         Dictionary containing device information suitable for the playbackInfo body.
     """
     if platform_os is None:
         platform_os = DEFAULT_PLATFORM_OS
+
+    if device_id is None:
+        device_id = DEFAULT_DEVICE_ID
 
     if platform_os == PlatformOS.WINDOWS:
         os_info = {"name": "Windows", "version": "NT 10.0"}
@@ -264,7 +277,7 @@ def get_default_device_info(platform_os: Optional[PlatformOS] = None) -> Dict[st
         browser_info = {"name": "Chrome", "version": "144.0.0.0"}
 
     return {
-        "deviceId": DEFAULT_DEVICE_ID,
+        "deviceId": device_id,
         "browser": browser_info,
         "make": "desktop",
         "model": "desktop",

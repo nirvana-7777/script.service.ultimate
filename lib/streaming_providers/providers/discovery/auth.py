@@ -264,15 +264,21 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             http_manager=None,
             proxy_config: Optional[ProxyConfig] = None,
             platform_os: Optional[PlatformOS] = None,
+            device_id: Optional[str] = None,
     ):
         self.country = country
         self.home_market = HOME_MARKET_MAPPING.get(country, "emea")
         self.tenant = DEFAULT_TENANT
         self.env = DEFAULT_ENV
-        self.device_id = DEFAULT_DEVICE_ID
 
         # OS platform — controls User-Agent, x-disco-client, x-device-info
         self.platform_os: PlatformOS = platform_os if platform_os is not None else DEFAULT_PLATFORM_OS
+
+        # Device ID — prefer injected value (from provider via settings_manager),
+        # fall back to _load_or_create_device_id() for standalone usage.
+        # Note: set to sentinel now; resolved after super().__init__() below
+        # so that self.settings_manager is available for the fallback path.
+        self._injected_device_id = device_id
 
         # Session headers storage (from /token 400 response)
         self._session_state: Optional[str] = None
@@ -310,6 +316,15 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         )
 
         logger.debug(f"Discovery __init__ post-super: self.credentials={type(self.credentials).__name__}")
+
+        # Resolve device_id now that super().__init__() has run and
+        # self.settings_manager (set by BaseAuthenticator) is available.
+        if self._injected_device_id:
+            self.device_id = self._injected_device_id
+            logger.debug(f"Using injected device_id: {self.device_id}")
+        else:
+            self.device_id = self._load_or_create_device_id()
+        del self._injected_device_id  # clean up sentinel
 
         # If no credentials were provided at construction time, attempt to load
         # from storage. Promote here too — the credential manager always returns
@@ -354,6 +369,35 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             )
 
         return self._http_manager
+
+    def _load_or_create_device_id(self) -> str:
+        """
+        Return a stable device ID for this installation.
+
+        Intended to be called after the settings_manager is available.
+        In normal operation the provider injects the device_id directly via
+        the constructor, so this is only used as a fallback when the
+        authenticator is constructed standalone (e.g. in tests).
+
+        Falls back to DEFAULT_DEVICE_ID if no settings manager is available.
+
+        Returns:
+            UUID string (with hyphens) to use as device ID
+        """
+        # BaseAuthenticator stores settings_manager as self.settings_manager
+        # (no underscore prefix) when passed via super().__init__()
+        sm = getattr(self, "settings_manager", None)
+        try:
+            if sm:
+                device_id = sm.get_device_id("discovery", self.country)
+                if device_id:
+                    logger.debug(f"Loaded device_id from settings: {device_id}")
+                    return device_id
+        except Exception as e:
+            logger.debug(f"Could not load device_id from settings manager: {e}")
+
+        logger.debug("No settings manager available, using DEFAULT_DEVICE_ID")
+        return DEFAULT_DEVICE_ID
 
     def _discover_endpoints(self, auth_headers: Dict[str, str]) -> None:
         """

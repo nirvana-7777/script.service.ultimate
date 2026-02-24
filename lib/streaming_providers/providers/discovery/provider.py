@@ -189,6 +189,19 @@ class DiscoveryProvider(StreamingProvider):
         # self-constructs its own SettingsManager via the backward-compat path,
         # identical to how JoynAuthenticator works. This ensures it always
         # resolves the correct /config path via the environment variable.
+        # Resolve stable device ID from settings manager before constructing
+        # the authenticator — the authenticator intentionally receives
+        # settings_manager=None so it cannot do this lookup itself.
+        _device_id = None
+        if self._settings_manager:
+            try:
+                _device_id = self._settings_manager.get_device_id(
+                    "discovery", country
+                )
+                logger.debug(f"Resolved device_id from settings: {_device_id}")
+            except Exception as e:
+                logger.debug(f"Could not resolve device_id from settings: {e}")
+
         self.authenticator = DiscoveryAuthenticator(
             country=country,
             settings_manager=None,
@@ -197,6 +210,7 @@ class DiscoveryProvider(StreamingProvider):
             proxy_config=self.http_manager.config.proxy_config,
             credentials=self.credentials,
             platform_os=self.platform_os,
+            device_id=_device_id,
         )
 
         # Authenticate
@@ -452,7 +466,10 @@ class DiscoveryProvider(StreamingProvider):
                 "ssaiProvider": {"version": "2.2.0"},
             },
             "consumptionType": "streaming",
-            "deviceInfo": get_default_device_info(self.platform_os),
+            "deviceInfo": get_default_device_info(
+                self.platform_os,
+                device_id=self.authenticator.device_id,
+            ),
             "editId": edit_id,
             "capabilities": get_default_capabilities(self.platform_os),
             "gdpr": False,
