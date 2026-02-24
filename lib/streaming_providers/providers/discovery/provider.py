@@ -196,6 +196,7 @@ class DiscoveryProvider(StreamingProvider):
             http_manager=self.http_manager,
             proxy_config=self.http_manager.config.proxy_config,
             credentials=self.credentials,
+            platform_os=self.platform_os,
         )
 
         # Authenticate

@@ -23,6 +23,7 @@ from ...base.utils.logger import logger
 from .constants import (
     DEFAULT_DEVICE_ID,
     DEFAULT_ENV,
+    DEFAULT_PLATFORM_OS,
     DEFAULT_REALM,
     DEFAULT_TENANT,
     DISCOVERY_ARKOSE_DATA_PAYLOAD,
@@ -35,15 +36,16 @@ from .constants import (
     DISCOVERY_CLIENT_ID_PREFIX,
     DISCOVERY_DEVICE_CONSENT,
     DISCOVERY_DEFAULT_TIMEZONE,
-    DISCOVERY_DEVICE_INFO_TEMPLATE,
-    DISCOVERY_DISCO_CLIENT,
     DISCOVERY_DISCO_PARAMS,
     DISCOVERY_FEATURE_FLAGS_PAYLOAD,
     DISCOVERY_FEATURE_FLAGS_URL,
     DISCOVERY_HMAC_KEY,
-    DISCOVERY_USER_AGENT,
     HOME_MARKET_MAPPING,
+    PlatformOS,
     AuthProvider,
+    get_device_info_template,
+    get_disco_client,
+    get_user_agent,
 )
 from .exceptions import (
     InvalidCredentialsError,
@@ -261,12 +263,16 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             config_dir: Optional[str] = None,
             http_manager=None,
             proxy_config: Optional[ProxyConfig] = None,
+            platform_os: Optional[PlatformOS] = None,
     ):
         self.country = country
         self.home_market = HOME_MARKET_MAPPING.get(country, "emea")
         self.tenant = DEFAULT_TENANT
         self.env = DEFAULT_ENV
         self.device_id = DEFAULT_DEVICE_ID
+
+        # OS platform — controls User-Agent, x-disco-client, x-device-info
+        self.platform_os: PlatformOS = platform_os if platform_os is not None else DEFAULT_PLATFORM_OS
 
         # Session headers storage (from /token 400 response)
         self._session_state: Optional[str] = None
@@ -338,7 +344,7 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             self._http_manager = HTTPManagerFactory.create_for_provider(
                 self.provider_name,
                 proxy_config=self._proxy_config,
-                user_agent=DISCOVERY_USER_AGENT,
+                user_agent=get_user_agent(self.platform_os),
                 timeout=30,
             )
         except Exception as e:
@@ -552,7 +558,7 @@ class DiscoveryAuthenticator(BaseAuthenticator):
                 DISCOVERY_FEATURE_FLAGS_URL,
                 operation="auth",
                 headers={
-                    "User-Agent": DISCOVERY_USER_AGENT,
+                    "User-Agent": get_user_agent(self.platform_os),
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {bearer_token}",
                 },
@@ -753,11 +759,13 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         """
         Build x-device-info header.
 
-        Format: dplus/<version> (desktop/desktop; Linux/x86_64; device-id/session-id)
+        Format varies by platform:
+          Linux:   dplus/<version> (desktop/desktop; Linux/x86_64; device-id/session-id)
+          Windows: dplus/<version> (desktop/desktop; Windows/NT 10.0; device-id/session-id)
         """
         device_id = self.device_id or DEFAULT_DEVICE_ID
         session_id = str(uuid.uuid4())
-        return DISCOVERY_DEVICE_INFO_TEMPLATE.format(
+        return get_device_info_template(self.platform_os).format(
             device_id=device_id, session_id=session_id
         )
 
@@ -769,9 +777,9 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             Dictionary of HTTP headers
         """
         headers = {
-            "User-Agent": DISCOVERY_USER_AGENT,
+            "User-Agent": get_user_agent(self.platform_os),
             "x-device-info": self._build_device_info(),
-            "x-disco-client": DISCOVERY_DISCO_CLIENT,
+            "x-disco-client": get_disco_client(self.platform_os),
             "x-disco-params": DISCOVERY_DISCO_PARAMS,
             "x-gisdk": f"clientId={self._gisdk_client_id}" if self._gisdk_client_id else None,
             "x-wbd-device-consent": DISCOVERY_DEVICE_CONSENT,
@@ -916,9 +924,9 @@ class DiscoveryAuthenticator(BaseAuthenticator):
 
         # Step 1 headers: base headers only, no session headers yet
         base_headers = {k: v for k, v in {
-            "User-Agent": DISCOVERY_USER_AGENT,
+            "User-Agent": get_user_agent(self.platform_os),
             "x-device-info": self._build_device_info(),
-            "x-disco-client": DISCOVERY_DISCO_CLIENT,
+            "x-disco-client": get_disco_client(self.platform_os),
             "x-disco-params": DISCOVERY_DISCO_PARAMS,
             "x-gisdk": f"clientId={self._gisdk_client_id}" if self._gisdk_client_id else None,
             "x-wbd-device-consent": DISCOVERY_DEVICE_CONSENT,
@@ -1040,7 +1048,7 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         import math
 
         # Build browser data fingerprint encrypted with UA + 6hr window key
-        bda = self._build_bda(DISCOVERY_USER_AGENT)
+        bda = self._build_bda(get_user_agent(self.platform_os))
 
         # rnd = random float in [0, 1) — mirrors what the browser JS sends
         import random
@@ -1053,7 +1061,7 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
             "Origin": DISCOVERY_AUTH_ORIGIN,
             "Referer": DISCOVERY_AUTH_REFERER + "/",
-            "User-Agent": DISCOVERY_USER_AGENT,
+            "User-Agent": get_user_agent(self.platform_os),
             "x-ark-esync-value": esync_value,
         }
 
@@ -1066,7 +1074,7 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             "rnd": rnd,
             "bda": bda,
             "site": "null",
-            "userbrowser": DISCOVERY_USER_AGENT,
+            "userbrowser": get_user_agent(self.platform_os),
             "language": "de-DE",
             "data[blob]": blob,
         }
