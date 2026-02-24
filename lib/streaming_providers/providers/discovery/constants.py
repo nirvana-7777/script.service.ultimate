@@ -57,7 +57,7 @@ class PlatformOS(str, Enum):
 
 # Active platform — change this single constant to switch all OS-dependent behaviour.
 # LINUX preserves existing behaviour exactly; WINDOWS mirrors a real Edge/Windows client.
-DEFAULT_PLATFORM_OS: Final[PlatformOS] = PlatformOS.LINUX
+DEFAULT_PLATFORM_OS: Final[PlatformOS] = PlatformOS.WINDOWS
 
 
 # ============================================================================
