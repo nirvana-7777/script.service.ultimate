@@ -9,6 +9,7 @@ python-dateutil>=2.8.2
 urllib3>=2.0.7
 chardet>=5.2.0
 protobuf>=3.20.0
+construct>=2.10.0
 pycryptodome>=3.19.0
 
 # Optional but recommended
