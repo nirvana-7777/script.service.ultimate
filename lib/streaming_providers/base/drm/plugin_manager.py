@@ -312,14 +312,19 @@ class DRMPluginManager:
     ) -> List[DRMConfig]:
         """
         PHASE 2: Process through system-specific plugins (EXCLUDE GENERIC).
+
+        For each DRM config, the matching plugin is called once per PSSH entry
+        for that system (n PSSHs → n plugin calls). ClearKey results from
+        multiple calls are merged into a single DRMConfig by combining their
+        keyids dicts. For all other systems, all non-None results are collected
+        (single PSSH expected in practice, so behaviour is unchanged).
         """
         if not drm_configs:
             logger.debug("Phase 2: No DRM configs to process")
             return []
 
         # Get system-specific plugins only (exclude GENERIC)
-        # ✅ Add explicit type annotation
-        from typing import Any  # or import your DRMPlugin type
+        from typing import Any
         system_plugins: dict[DRMSystem, Any] = {
             sys: plugin for sys, plugin in self.plugins.items()
             if sys != DRMSystem.GENERIC
@@ -334,16 +339,13 @@ class DRMPluginManager:
             f"{len(system_plugins)} system-specific plugins"
         )
 
-        # Create a mapping of DRM system to PSSH data for quick lookup
-        # ✅ Add explicit type annotation
-        pssh_by_system: dict[DRMSystem, PSSHData] = {}
+        # Group all PSSHs by DRM system (preserve all entries, not just last)
+        pssh_by_system: dict[DRMSystem, List[PSSHData]] = {}
         for pssh_data in pssh_data_list:
             drm_sys = pssh_data.drm_system
             if drm_sys is not None:
-                pssh_by_system[drm_sys] = pssh_data
-                logger.debug(
-                    f"Phase 2: Mapped PSSH data for DRM system: {drm_sys}"
-                )
+                pssh_by_system.setdefault(drm_sys, []).append(pssh_data)
+                logger.debug(f"Phase 2: Mapped PSSH data for DRM system: {drm_sys}")
 
         processed_configs = []
 
@@ -351,61 +353,86 @@ class DRMPluginManager:
         for config in drm_configs:
             logger.debug(f"Phase 2: Processing DRM config for system: {config.system}")
 
-            if config.system in system_plugins:
-                plugin = system_plugins[config.system]
-                pssh_data = pssh_by_system.get(config.system)
-
-                if pssh_data:
-                    logger.debug(
-                        f"Phase 2: Using PSSH data for DRM system {config.system}"
-                    )
-                else:
-                    logger.debug(
-                        f"Phase 2: No PSSH data available for DRM system {config.system}"
-                    )
-
-                try:
-                    logger.debug(
-                        f"Phase 2: Processing with plugin '{plugin.plugin_name}'"
-                    )
-
-                    result = plugin.process_drm_config(config, pssh_data, **kwargs)
-
-                    if result is not None:
-                        # Check for ClearKey and return immediately if found
-                        if result.system == DRMSystem.CLEARKEY:
-                            logger.info(
-                                f"Phase 2: ClearKey config found from plugin "
-                                f"'{plugin.plugin_name}', returning immediately"
-                            )
-                            return [result]
-
-                        processed_configs.append(result)
-                        logger.debug(
-                            f"Phase 2: Plugin '{plugin.plugin_name}' successfully "
-                            f"processed config"
-                        )
-                    else:
-                        logger.debug(
-                            f"Phase 2: Plugin '{plugin.plugin_name}' filtered out config "
-                            f"(returned None)"
-                        )
-
-                except Exception as e:
-                    logger.warning(
-                        f"Phase 2: Plugin '{plugin.plugin_name}' failed to process "
-                        f"config: {str(e)}"
-                    )
-                    # On error, keep original config
-                    processed_configs.append(config)
-                    logger.debug(f"Phase 2: Using original config as fallback")
-            else:
+            if config.system not in system_plugins:
                 # No plugin for this system, keep original
                 logger.debug(
                     f"Phase 2: No plugin registered for DRM system {config.system}, "
                     f"passing through unchanged"
                 )
                 processed_configs.append(config)
+                continue
+
+            plugin = system_plugins[config.system]
+            # Fall back to [None] so the plugin is still called once when no PSSH is available
+            pssh_entries = pssh_by_system.get(config.system) or [None]
+
+            logger.debug(
+                f"Phase 2: Calling plugin '{plugin.plugin_name}' "
+                f"{len(pssh_entries)} time(s) for {config.system}"
+            )
+
+            # Call plugin once per PSSH entry, collect all non-None results
+            plugin_results: List[DRMConfig] = []
+            for pssh_data in pssh_entries:
+                try:
+                    result = plugin.process_drm_config(config, pssh_data, **kwargs)
+                    if result is not None:
+                        plugin_results.append(result)
+                        logger.debug(
+                            f"Phase 2: Plugin '{plugin.plugin_name}' returned "
+                            f"{result.system.value} config for PSSH "
+                            f"'{pssh_data.system_id if pssh_data else 'None'}'"
+                        )
+                    else:
+                        logger.debug(
+                            f"Phase 2: Plugin '{plugin.plugin_name}' returned None "
+                            f"for PSSH '{pssh_data.system_id if pssh_data else 'None'}'"
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"Phase 2: Plugin '{plugin.plugin_name}' failed for PSSH "
+                        f"'{pssh_data.system_id if pssh_data else 'None'}': {e}"
+                    )
+
+            if not plugin_results:
+                # All calls returned None or errored — fall back to original config
+                logger.debug(
+                    f"Phase 2: Plugin '{plugin.plugin_name}' produced no results, "
+                    f"keeping original config"
+                )
+                processed_configs.append(config)
+                continue
+
+            # Separate ClearKey results from others
+            clearkey_results = [r for r in plugin_results if r.system == DRMSystem.CLEARKEY]
+            other_results = [r for r in plugin_results if r.system != DRMSystem.CLEARKEY]
+
+            # Merge all ClearKey results into one config by combining keyids
+            if clearkey_results:
+                merged_keyids: dict[str, str] = {}
+                highest_priority = 0
+                for ck in clearkey_results:
+                    if ck.license and ck.license.keyids:
+                        merged_keyids.update(ck.license.keyids)
+                    if ck.priority > highest_priority:
+                        highest_priority = ck.priority
+
+                merged_clearkey = DRMConfig.create_clearkey(
+                    keyids=merged_keyids,
+                    priority=highest_priority,
+                )
+                logger.info(
+                    f"Phase 2: Merged {len(clearkey_results)} ClearKey result(s) into "
+                    f"one config with {len(merged_keyids)} key(s)"
+                )
+                return [merged_clearkey]
+
+            # For non-ClearKey: collect all results (single PSSH expected in practice)
+            processed_configs.extend(other_results)
+            logger.debug(
+                f"Phase 2: Plugin '{plugin.plugin_name}' produced "
+                f"{len(other_results)} non-ClearKey config(s)"
+            )
 
         logger.info(
             f"Phase 2: Processed {len(drm_configs)} configs → {len(processed_configs)} configs"
