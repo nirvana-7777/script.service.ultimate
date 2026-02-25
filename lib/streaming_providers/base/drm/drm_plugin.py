@@ -35,7 +35,11 @@ class DRMPlugin(ABC):
         Args:
             drm_config: The DRM config to process (guaranteed to match supported_drm_system)
             pssh_data: The PSSH data for this DRM system from the manifest, or None if not available
-            **kwargs: Additional context from the original method call
+            **kwargs: Additional context from the original method call. Well-known keys:
+                proxy_config (Optional[ProxyConfig]): The proxy configured for the calling
+                    provider's HTTPManager, if any. Plugins that need to make outbound
+                    requests (e.g. license key fetching) should read this via
+                    ``kwargs.get("proxy_config")`` and apply it to their own HTTP calls.
 
         Returns:
             Transformed DRMConfig, or None if the config should be filtered out

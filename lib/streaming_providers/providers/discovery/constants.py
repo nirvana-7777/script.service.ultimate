@@ -66,7 +66,7 @@ DEFAULT_PLATFORM_OS: Final[PlatformOS] = PlatformOS.WINDOWS
 
 # Provider information
 DISCOVERY_LOGO: Final[
-    str] = "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f1/Discovery%2B_logo.svg/2560px-Discovery%2B_logo.svg.png"
+    str] = "https://upload.wikimedia.org/wikipedia/commons/thumb/d/df/Discovery%2B.png/960px-Discovery%2B.png"
 
 # Bootstrap endpoint for dynamic configuration
 DISCOVERY_BOOTSTRAP_URL: Final[

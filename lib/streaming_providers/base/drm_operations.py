@@ -250,6 +250,22 @@ class DRMOperations:
         if not provider:
             raise ValueError(f"Provider '{provider_name}' not found or disabled")
 
+        # Inject proxy_config from the provider's HTTPManager into kwargs so that
+        # DRM plugins can optionally use the same proxy the provider is configured with.
+        # Plugins read it via kwargs.get("proxy_config"). Existing callers that already
+        # pass proxy_config explicitly are not overridden.
+        if "proxy_config" not in kwargs:
+            http_mgr = getattr(provider, "http_manager", None)
+            if http_mgr is not None:
+                provider_proxy = getattr(getattr(http_mgr, "config", None), "proxy_config", None)
+                if provider_proxy is not None:
+                    kwargs["proxy_config"] = provider_proxy
+                    logger.debug(
+                        f"DRMOperations: Injected proxy_config from provider "
+                        f"'{provider_name}' into plugin kwargs "
+                        f"({provider_proxy.host}:{provider_proxy.port})"
+                    )
+
         # Step 0a: Fetch manifest and check if it's encrypted
         manifest_url = provider.get_manifest(channel_id, **kwargs)
         if manifest_url and manifest_url.startswith(('http://', 'https://')):
