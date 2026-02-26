@@ -443,23 +443,23 @@ class DRMOperations:
                     logger.debug(f"Phase 2: Using cached PSSH for {cache_key}")
 
         # ------------------------------------------------------------------
-        # Step 5: PHASE 2 — Process through system-specific plugins
+        # Step 5: PHASE 2 — Process through system-specific plugins.
+        # Snapshot provider_drm_configs first so we can reinstate any configs
+        # that a plugin replaced (e.g. PlayReady → ClearKey) if coverage turns
+        # out to be only partial.
         # ------------------------------------------------------------------
+        provider_configs_snapshot = list(provider_drm_configs)
         processed = self.drm_plugin_manager.process_system_specific_plugins(
             provider_drm_configs, pssh_data_list if pssh_data_list else [], **kwargs
         )
 
         # ------------------------------------------------------------------
         # Step 6: Merge Phase 1 partial ClearKey result (if any) with Phase 2
-        # output, then apply coverage check.
-        #
-        # If Phase 1 produced partial ClearKey configs, combine them with the
-        # Phase 2 results so upstream has the full picture.  De-duplicate by
-        # DRM system so we don't end up with two ClearKey entries.
+        # output.  Phase 1 configs whose DRM system is not already represented
+        # in Phase 2 are appended so upstream has the full picture.
+        # De-duplication is by DRM system to avoid two ClearKey entries.
         # ------------------------------------------------------------------
         if generic_configs:
-            # Merge: start with Phase 2 results, add Phase 1 configs whose
-            # system is not already represented in Phase 2.
             phase2_systems = {c.system for c in processed}
             extra = [c for c in generic_configs if c.system not in phase2_systems]
             if extra:
@@ -469,12 +469,32 @@ class DRMOperations:
                 processed = processed + extra
 
         # ------------------------------------------------------------------
-        # Step 7: Validate ClearKey configs and determine coverage
+        # Step 7: Validate ClearKey configs and determine coverage.
+        # If coverage is only partial, reinstate any original provider configs
+        # whose DRM system was replaced by a plugin but is no longer present
+        # in the processed list.  This ensures upstream always has a complete
+        # fallback (e.g. PlayReady) alongside a partial ClearKey config.
         # ------------------------------------------------------------------
         if pssh_data_list and any(c.system == DRMSystem.CLEARKEY for c in processed):
             processed, has_full_coverage = self._check_clearkey_coverage(processed, pssh_data_list)
         else:
             has_full_coverage = False
+
+        if not has_full_coverage:
+            # Find original provider systems that are no longer in processed
+            # (a plugin replaced them) and reinstate them.
+            processed_systems = {c.system for c in processed}
+            reinstated = [
+                c for c in provider_configs_snapshot
+                if c.system not in processed_systems
+            ]
+            if reinstated:
+                logger.info(
+                    f"Partial/no ClearKey coverage: reinstating "
+                    f"{len(reinstated)} replaced provider config(s): "
+                    f"{[c.system.name for c in reinstated]}"
+                )
+                processed = processed + reinstated
 
         if not processed:
             logger.error(
