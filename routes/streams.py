@@ -3,6 +3,8 @@
 Stream and manifest route handlers
 """
 
+import base64
+import json
 from datetime import datetime
 
 from bottle import HTTPResponse, redirect, request, response
@@ -12,20 +14,63 @@ from streaming_providers.base.utils import logger
 def setup_stream_routes(app, manager, service):
     """Setup stream and manifest-related routes"""
 
+    def _build_drm_header(provider, channel_id, country=None, is_catchup=False,
+                          start_time=None, end_time=None, epg_id=None):
+        """
+        Fetch DRM configs, serialize to JSON and base64-encode them.
+        Returns the encoded string, or None if anything fails.
+        Sets response.headers["x-kodi-drm-configs"] as a side effect on success.
+        Non-fatal: logs a warning and returns None on any error.
+        """
+        try:
+            if is_catchup:
+                drm_configs = manager.get_catchup_drm_configs(
+                    provider_name=provider,
+                    channel_id=channel_id,
+                    start_time=start_time,
+                    end_time=end_time,
+                    epg_id=epg_id,
+                    country=country,
+                )
+            else:
+                drm_configs = manager.get_channel_drm_configs(
+                    provider_name=provider, channel_id=channel_id, country=country
+                )
+
+            merged = {}
+            for config in drm_configs:
+                config_dict = config.to_dict() if hasattr(config, "to_dict") else config
+                merged.update(config_dict)
+
+            encoded = base64.b64encode(
+                json.dumps(merged).encode("utf-8")
+            ).decode("ascii")
+
+            response.headers["x-kodi-drm-configs"] = encoded
+            return encoded
+
+        except Exception as e:
+            logger.warning(f"Could not build x-kodi-drm-configs header for "
+                           f"{provider}/{channel_id}: {e}")
+            return None
+
     @app.route("/api/providers/<provider>/channels/<channel_id>/manifest")
     def get_channel_manifest(provider, channel_id):
         """
         Get channel manifest. Always returns JSON with manifest_url pointing to stream endpoint.
         """
         try:
+            country = request.query.get("country")
+
             # Build the stream URL (which will handle both proxy and non-proxy)
             base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
             stream_url = f"{base_url}/api/providers/{provider}/channels/{channel_id}/stream/index.mpd"
 
             # Add country parameter if provided
-            country = request.query.get("country")
             if country:
                 stream_url += f"?country={country}"
+
+            _build_drm_header(provider, channel_id, country=country)
 
             return {
                 "provider": provider,
@@ -98,6 +143,16 @@ def setup_stream_routes(app, manager, service):
                         "error": f"Content outside catchup window (max {catchup_hours} hours)"
                     }
 
+                # Set DRM header before any return/redirect
+                _build_drm_header(
+                    provider, channel_id,
+                    country=country,
+                    is_catchup=True,
+                    start_time=start_time_int,
+                    end_time=end_time_int,
+                    epg_id=epg_id,
+                )
+
                 # Check if provider needs proxy for catchup
                 if manager.needs_proxy(provider):
                     # Proxy mode: return rewritten MPD content directly
@@ -130,6 +185,10 @@ def setup_stream_routes(app, manager, service):
                     redirect(manifest_url)
             else:
                 # Live stream - existing logic
+
+                # Set DRM header before any return/redirect
+                _build_drm_header(provider, channel_id, country=country)
+
                 if manager.needs_proxy(provider):
                     return service._get_proxied_manifest(provider, channel_id)
                 else:
