@@ -95,7 +95,7 @@ SUPPORTED_AUTH_TYPES: Final[List[str]] = [
 
 # Wildcard sentinel — Discovery+ accepts any country; the user's actual country
 # is determined at runtime via the /users/me endpoint (currentLocationTerritory).
-SUPPORTED_COUNTRIES: Final[str] = "*"
+SUPPORTED_COUNTRIES: Final[List[str]] = ["*"]
 
 # Home market mapping (immutable)
 HOME_MARKET_MAPPING: Final[Dict[str, str]] = {

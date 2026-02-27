@@ -310,9 +310,8 @@ class DiscoveryProvider(StreamingProvider):
         The user's actual serving country is determined at runtime via
         get_user_country().
         """
-        if self.SUPPORTED_COUNTRIES == "*":
+        if self.SUPPORTED_COUNTRIES == ["*"]:
             return bool(country and country.isalpha() and len(country) == 2)
-        # Fallback to standard list-based check if constant is ever changed back
         return country.lower() in [c.lower() for c in self.SUPPORTED_COUNTRIES]
 
     def get_user_country(self) -> Optional[str]:
