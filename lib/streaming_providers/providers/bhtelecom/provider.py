@@ -7,13 +7,12 @@ Provides access to BH Telecom's live TV streaming service
 with support for channel discovery and manifest URLs.
 """
 
-import json
 import time
+import datetime
 from typing import ClassVar, Dict, List, Optional
 
-from ...base.models import DRMConfig, DRMSystem, LicenseConfig
 from ...base.models.proxy_models import ProxyConfig
-from ...base.models.streaming_channel import StreamingChannel
+from ...base.models import DRMConfig, StreamingChannel, Event
 from ...base.provider import AuthType, StreamingProvider
 from ...base.utils.logger import logger
 from .constants import (
@@ -213,6 +212,14 @@ class BHTelecomProvider(StreamingProvider):
                 return self._channels_cache
             raise
 
+    def get_events(
+            self,
+            start_time: Optional[datetime] = None,
+            end_time: Optional[datetime] = None,
+            **kwargs,
+    ) -> List[Event]:
+        return []
+
     def _parse_channel(self, entry: Dict, base_url: str) -> StreamingChannel:
         channel_id = entry.get("ch")
         channel_name = entry.get("title")
@@ -227,7 +234,7 @@ class BHTelecomProvider(StreamingProvider):
 
         return StreamingChannel(
             name=channel_name,
-            channel_id=channel_id,
+            content_id=channel_id,
             provider=self.provider_name,
             logo_url=logo_url,
             manifest=manifest_url,

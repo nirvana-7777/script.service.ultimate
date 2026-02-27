@@ -4,14 +4,14 @@ import base64
 import json
 import re
 import time
+import datetime
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
-from ...base.models import DRMConfig, DRMSystem, LicenseConfig
+from ...base.models import DRMConfig, DRMSystem, LicenseConfig, StreamingChannel, Event
 from ...base.models.auth import AuthState
 from ...base.models.proxy_models import ProxyConfig
-from ...base.models.streaming_channel import StreamingChannel
 from ...base.network import HTTPManagerFactory, ProxyConfigManager
 from ...base.provider import StreamingProvider
 from ...base.utils.logger import logger
@@ -798,6 +798,14 @@ class Magenta2Provider(StreamingProvider):
 
         except Exception as e:
             raise Exception(f"Error fetching channels from Magenta2 API: {e}")
+
+    def get_events(
+            self,
+            start_time: Optional[datetime] = None,
+            end_time: Optional[datetime] = None,
+            **kwargs,
+    ) -> List[Event]:
+        return []
 
     def _get_channels_from_mpx_feeds(self) -> List[StreamingChannel]:
         """Get channels from MPX feeds discovered in manifest"""

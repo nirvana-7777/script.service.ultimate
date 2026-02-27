@@ -15,9 +15,8 @@ from enum import Enum
 from typing import Any, Callable, ClassVar, Dict, List, Optional
 
 from ..providers.auth import AuthContext, AuthStatus
-from .models.drm import DRMConfig
 from .models.proxy_models import ProxyConfig
-from .models.streaming_channel import StreamingChannel
+from .models import DRMConfig, Event, StreamingChannel
 from .models.subscription import SubscriptionPackage, UserSubscription
 from .network import HTTPManager, HTTPManagerFactory
 from .utils.logger import logger
@@ -213,6 +212,27 @@ class StreamingProvider(ABC):
         pass
 
     @abstractmethod
+    def get_events(
+        self,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        **kwargs,
+    ) -> List[Event]:
+        """
+        Fetch one-time events (concerts, sports matches, etc.) from the provider.
+
+        Args:
+            start_time: Optional lower bound — only return events ending after this time.
+            end_time: Optional upper bound — only return events starting before this time.
+                      If neither is provided, the provider returns all known events
+                      (both upcoming and currently live).
+
+        Returns:
+            List of Event objects, or empty list if provider has no events.
+        """
+        return []
+
+    @abstractmethod
     def get_drm(self, channel_id: str, **kwargs) -> List[DRMConfig]:
         """Get all DRM configurations for a channel by ID"""
         return []
@@ -252,11 +272,11 @@ class StreamingProvider(ABC):
         """Get complete EPG data for this provider in XMLTV format"""
         return None
 
-    @abstractmethod
     def enrich_channel_data(
         self, channel: StreamingChannel, **kwargs
     ) -> Optional[StreamingChannel]:
-        """Enrich channel with additional data including manifest URL"""
+        """Optional: Enrich channel with additional data including manifest URL.
+        Override in subclasses that need pre-fetching of manifests/DRM before playback."""
         return None
 
     @abstractmethod

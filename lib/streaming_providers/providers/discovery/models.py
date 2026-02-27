@@ -286,7 +286,7 @@ class DiscoveryChannel:
 
         channel = StreamingChannel(
             name=self.name,
-            channel_id=self.channel_id,
+            content_id=self.channel_id,
             provider=provider_name,
             logo_url=self.logo_url,
             mode=self.mode,

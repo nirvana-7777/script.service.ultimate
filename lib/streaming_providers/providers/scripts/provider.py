@@ -16,11 +16,11 @@ import re
 import subprocess
 import sys
 import time
+import datetime
 from typing import ClassVar, Dict, List, Optional, Any
 
-from ...base.models.drm import DRMConfig, DRMSystem, LicenseConfig
+from ...base.models import DRMConfig, DRMSystem, LicenseConfig, StreamingChannel, Event
 from ...base.models.proxy_models import ProxyConfig
-from ...base.models.streaming_channel import StreamingChannel
 from ...base.provider import StreamingProvider
 from ...base.utils.logger import logger
 from ...base.utils.vfs import get_vfs
@@ -725,6 +725,14 @@ class ScriptsProvider(StreamingProvider):
         )
 
         return channels
+
+    def get_events(
+            self,
+            start_time: Optional[datetime] = None,
+            end_time: Optional[datetime] = None,
+            **kwargs,
+    ) -> List[Event]:
+        return []
 
     def get_manifest(
             self,

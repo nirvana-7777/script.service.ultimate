@@ -28,14 +28,14 @@ class ChannelOperations:
         channels = provider.get_channels(**kwargs)
         logger.info(f"Retrieved {len(channels)} channels from '{provider_name}'")
 
-        if fetch_manifests and not provider.uses_dynamic_manifests:
-            enriched = []
-            for channel in channels:
-                enriched_channel = provider.enrich_channel_data(channel, **kwargs)
-                if enriched_channel:
-                    enriched.append(enriched_channel)
-            logger.info(f"Enriched {len(enriched)}/{len(channels)} channels")
-            return enriched
+#        if fetch_manifests and not provider.uses_dynamic_manifests:
+#            enriched = []
+#            for channel in channels:
+#                enriched_channel = provider.enrich_channel_data(channel, **kwargs)
+#                if enriched_channel:
+#                    enriched.append(enriched_channel)
+#            logger.info(f"Enriched {len(enriched)}/{len(channels)} channels")
+#            return enriched
 
         return channels
 

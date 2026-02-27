@@ -13,11 +13,11 @@ Environment Variable:
 import os
 import re
 import time
+import datetime
 from typing import ClassVar, Dict, List, Optional
 
-from ...base.models.drm import DRMConfig, DRMSystem, LicenseConfig
+from ...base.models import DRMConfig, DRMSystem, LicenseConfig, StreamingChannel, Event
 from ...base.models.proxy_models import ProxyConfig
-from ...base.models.streaming_channel import StreamingChannel
 from ...base.provider import StreamingProvider
 from ...base.utils.logger import logger
 from ...base.utils.vfs import get_vfs
@@ -1171,6 +1171,14 @@ class M3UProvider(StreamingProvider):
                 logger.error(f"M3U ({self.provider_label}): Failed to parse files: {e}. Serving stale cache.")
                 return self._channels_cache
             raise
+
+    def get_events(
+            self,
+            start_time: Optional[datetime] = None,
+            end_time: Optional[datetime] = None,
+            **kwargs,
+    ) -> List[Event]:
+        return []
 
     def populate_streaming_data(
             self,

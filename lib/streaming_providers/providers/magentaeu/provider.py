@@ -1,12 +1,12 @@
 # streaming_providers/providers/magentaeu/provider.py
 # -*- coding: utf-8 -*-
 import time
+import datetime
 from typing import ClassVar, Dict, List, Optional
 
 from ...base.auth import UserPasswordCredentials
-from ...base.models import DRMConfig, DRMSystem, LicenseConfig
+from ...base.models import DRMConfig, DRMSystem, LicenseConfig, StreamingChannel, Event
 from ...base.models.proxy_models import ProxyConfig
-from ...base.models.streaming_channel import StreamingChannel
 from ...base.network import ProxyConfigManager
 from ...base.provider import StreamingProvider
 from ...base.utils.logger import logger
@@ -237,7 +237,7 @@ class MagentaEUProvider(StreamingProvider):
                 # Create streaming channel
                 streaming_channel = StreamingChannel(
                     name=title,
-                    channel_id=station_id or pid or title,
+                    content_id=station_id or pid or title,
                     provider=self.provider_name,
                     logo_url=logo,
                     mode="live",
@@ -264,6 +264,14 @@ class MagentaEUProvider(StreamingProvider):
                 logger.warning(f"Error processing channel data: {e}")
 
         return channels
+
+    def get_events(
+            self,
+            start_time: Optional[datetime] = None,
+            end_time: Optional[datetime] = None,
+            **kwargs,
+    ) -> List[Event]:
+        return []
 
     def enrich_channel_data(
         self, channel: StreamingChannel, **kwargs

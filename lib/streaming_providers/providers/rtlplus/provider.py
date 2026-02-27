@@ -1,12 +1,12 @@
 # lib/streaming_providers/providers/rtlplus/provider.py
 import json
+import datetime
 from typing import ClassVar, Dict, List, Optional
 
 import requests
 
-from ...base.models import DRMConfig, DRMSystem, LicenseConfig
+from ...base.models import DRMConfig, DRMSystem, LicenseConfig, StreamingChannel, Event
 from ...base.models.proxy_models import ProxyConfig
-from ...base.models.streaming_channel import StreamingChannel
 from ...base.provider import StreamingProvider
 from ...base.utils import logger
 from .auth import RTLPlusAuthenticator
@@ -158,6 +158,14 @@ class RTLPlusProvider(StreamingProvider):
             logger.error(f"Error parsing RTL+ channels: {e}")
             return []
 
+    def get_events(
+            self,
+            start_time: Optional[datetime] = None,
+            end_time: Optional[datetime] = None,
+            **kwargs,
+    ) -> List[Event]:
+        return []
+
     def _parse_station_to_channel(self, station: Dict) -> Optional[StreamingChannel]:
         """
         Parse a station object from RTL+ API to StreamingChannel
@@ -186,7 +194,7 @@ class RTLPlusProvider(StreamingProvider):
             # Create channel object
             channel = StreamingChannel(
                 name=name,
-                channel_id=channel_id,
+                content_id=channel_id,
                 provider=self.provider_name,
                 logo_url=logo_url,
                 mode="live",

@@ -1,12 +1,12 @@
 # lib/streaming_providers/providers/hrti/provider.py
 import json
+import datetime
 from typing import ClassVar, Dict, List, Optional
 
 import requests
 
-from ...base.models import DRMConfig, DRMSystem, LicenseConfig, LicenseUnwrapperParams
+from ...base.models import DRMConfig, DRMSystem, LicenseConfig, LicenseUnwrapperParams, StreamingChannel, Event
 from ...base.models.proxy_models import ProxyConfig
-from ...base.models.streaming_channel import StreamingChannel
 from ...base.provider import AuthType, StreamingProvider
 from ...base.utils import logger
 from .auth import HRTiAuthenticator
@@ -187,6 +187,14 @@ class HRTiProvider(StreamingProvider):
             logger.error(f"Error parsing HRTi channels: {e}")
             return []
 
+    def get_events(
+            self,
+            start_time: Optional[datetime] = None,
+            end_time: Optional[datetime] = None,
+            **kwargs,
+    ) -> List[Event]:
+        return []
+
     def _parse_channel_data(self, channel_data: Dict) -> Optional[StreamingChannel]:
         """
         Parse HRTi channel data to StreamingChannel
@@ -206,7 +214,7 @@ class HRTiProvider(StreamingProvider):
             # Create channel object
             channel = StreamingChannel(
                 name=name,
-                channel_id=channel_id,
+                content_id=channel_id,
                 provider=self.provider_name,
                 logo_url=icon_url,
                 mode="live",

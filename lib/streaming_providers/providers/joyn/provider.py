@@ -3,15 +3,15 @@
 import hashlib
 import json
 import time
+import datetime
 import urllib.parse
 from base64 import b64decode
 from datetime import datetime, timedelta
 from json import dumps
 from typing import ClassVar, Dict, List, Optional
 
-from ...base.models import DRMConfig, DRMSystem, LicenseConfig
+from ...base.models import DRMConfig, DRMSystem, LicenseConfig, StreamingChannel, Event
 from ...base.models.proxy_models import ProxyConfig
-from ...base.models.streaming_channel import StreamingChannel
 from ...base.provider import AuthType, StreamingProvider
 from ...base.utils.logger import logger
 from .auth import JoynAuthenticator
@@ -269,6 +269,14 @@ class JoynProvider(StreamingProvider):
 
         except Exception as e:
             raise Exception(f"Error fetching channels from GraphQL: {e}")
+
+    def get_events(
+            self,
+            start_time: Optional[datetime] = None,
+            end_time: Optional[datetime] = None,
+            **kwargs,
+    ) -> List[Event]:
+        return []
 
     def _process_graphql_response(self, response_data: Dict) -> List[StreamingChannel]:
         """Process GraphQL response and convert to StreamingChannel objects"""

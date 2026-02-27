@@ -13,9 +13,8 @@ import base64
 from datetime import datetime
 from typing import ClassVar, Dict, List, Optional, Any
 
-from ...base.models import DRMConfig, DRMSystem, LicenseConfig
 from ...base.models.proxy_models import ProxyConfig
-from ...base.models.streaming_channel import StreamingChannel
+from ...base.models import DRMConfig, DRMSystem, LicenseConfig,StreamingChannel, Event
 from ...base.provider import AuthType, StreamingProvider
 from ...base.utils.logger import logger
 
@@ -367,6 +366,14 @@ class DiscoveryProvider(StreamingProvider):
         except Exception as e:
             logger.error(f"Error fetching channels: {e}")
             return []
+
+    def get_events(
+            self,
+            start_time: Optional[datetime] = None,
+            end_time: Optional[datetime] = None,
+            **kwargs,
+    ) -> List[Event]:
+        return []
 
     def _extract_distribution_channels(
             self, data: Dict
