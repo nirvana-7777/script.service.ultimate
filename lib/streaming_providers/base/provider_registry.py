@@ -36,7 +36,7 @@ class ProviderMetadata:
 
             # Check if provider has an explicit single country
             supported_countries = self.plugin_class.get_static_supported_countries()
-            if len(supported_countries) == 1:
+            if len(supported_countries) == 1 and supported_countries[0] != "*":
                 # Provider has exactly one supported country (e.g., HRTi with ["HR"])
                 # Use that country instead of the passed-in country
                 self.country = supported_countries[0].upper()
