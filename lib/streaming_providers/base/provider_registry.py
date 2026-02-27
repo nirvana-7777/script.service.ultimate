@@ -27,22 +27,22 @@ class ProviderMetadata:
         supports_multiple = self.plugin_class.supports_multiple_countries()
 
         if supports_multiple:
+            # Multi-country provider: include country in name
             self.name = f"{self.plugin_name}_{self.country}"
             self.is_multi_country = True
         else:
+            # Single-country provider
+            self.name = self.plugin_name
+
+            # Check if provider has an explicit single country
             supported_countries = self.plugin_class.get_static_supported_countries()
-            if len(supported_countries) == 1 and supported_countries[0] != "*":
-                # True single-country provider (e.g. HRTi hardcoded to "HR")
-                self.name = self.plugin_name
+            if len(supported_countries) == 1:
+                # Provider has exactly one supported country (e.g., HRTi with ["HR"])
+                # Use that country instead of the passed-in country
                 self.country = supported_countries[0].upper()
                 self.is_multi_country = False
-            elif supported_countries == ["*"]:
-                # Wildcard provider: name includes the runtime country (e.g. "discovery_de")
-                self.name = f"{self.plugin_name}_{self.country.lower()}"
-                self.is_multi_country = False
             else:
-                # Country-agnostic or empty list
-                self.name = self.plugin_name
+                # True single-country or country-agnostic (empty list)
                 self.is_multi_country = False
 
         # Rest of the method remains the same...
@@ -252,7 +252,11 @@ class ProviderRegistry:
                 continue
 
             if plugin_class.supports_multiple_countries():
-                for country in plugin_class.get_static_supported_countries():
+                country_list = plugin_class.get_static_supported_countries()
+                if country_list == ["*"]:
+                    # Wildcard provider: register one instance for the default country
+                    country_list = [default_country]
+                for country in country_list:
                     instance_name = f"{plugin_name}_{country}"
                     enabled = self._is_provider_enabled(plugin_name, country)
 

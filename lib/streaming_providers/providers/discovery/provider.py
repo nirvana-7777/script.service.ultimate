@@ -301,18 +301,28 @@ class DiscoveryProvider(StreamingProvider):
             return self.token_info.get("anonymous", True)
         return True
 
-    def validate_country(self, country: str) -> bool:
+    @classmethod
+    def supports_multiple_countries(cls) -> bool:
+        """
+        Discovery+ uses a wildcard country list, but still registers one
+        instance per country — so the registry must treat it as multi-country
+        to produce names like ``discovery_de``.
+        """
+        return cls.SUPPORTED_COUNTRIES == ["*"]
+
+    @classmethod
+    def validate_country(cls, country: str) -> bool:
         """
         Override base validation.
 
-        Discovery+ supports all countries (SUPPORTED_COUNTRIES == "*"),
-        so any non-empty lowercase alpha-2 code is accepted.
-        The user's actual serving country is determined at runtime via
-        get_user_country().
+        With the wildcard sentinel any valid ISO-3166-1 alpha-2 code is
+        accepted.  The user's actual serving country is determined at runtime
+        via get_user_country().
         """
-        if self.SUPPORTED_COUNTRIES == ["*"]:
+        if cls.SUPPORTED_COUNTRIES == ["*"]:
             return bool(country and country.isalpha() and len(country) == 2)
-        return country.lower() in [c.lower() for c in self.SUPPORTED_COUNTRIES]
+        # Fallback to standard list-based check if constant is ever changed back
+        return country.lower() in [c.lower() for c in cls.SUPPORTED_COUNTRIES]
 
     def get_user_country(self) -> Optional[str]:
         """
