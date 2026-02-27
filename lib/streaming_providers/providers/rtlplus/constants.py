@@ -21,6 +21,13 @@ class RTLPlusDefaults:
     # User Agent components
     USER_AGENT = f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_VERSION} Safari/537.36"
 
+    # PlayReady-specific user agent (Edge/Windows as seen in license acquisition requests)
+    PLAYREADY_EDGE_VERSION = "145.0.0.0"
+    PLAYREADY_USER_AGENT = f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{PLAYREADY_EDGE_VERSION} Safari/537.36 Edg/{PLAYREADY_EDGE_VERSION}"
+
+    # PlayReady SOAP action for license acquisition
+    PLAYREADY_SOAP_ACTION = "http://schemas.microsoft.com/DRM/2007/03/protocols/AcquireLicense"
+
     # API endpoints
     AUTH_BASE_URL = "https://auth.rtl.de/auth/realms/rtlplus/protocol/openid-connect"
     AUTH_ENDPOINT = f"{AUTH_BASE_URL}/token"
@@ -104,7 +111,7 @@ class RTLPlusHeaders:
 
     @staticmethod
     def get_drm_headers(access_token: str, device_id: str = None, user_agent: str = None) -> dict:
-        """Get headers for DRM license requests"""
+        """Get headers for Widevine/FairPlay DRM license requests"""
         return {
             "X-Auth-Token": access_token,
             "X-Device-Id": device_id or RTLPlusDefaults.DEVICE_ID,
@@ -112,6 +119,20 @@ class RTLPlusHeaders:
             "User-Agent": user_agent or RTLPlusDefaults.USER_AGENT,
             "Origin": RTLPlusDefaults.BASE_WEBSITE.rstrip("/"),
             "Referer": RTLPlusDefaults.BASE_WEBSITE,
+        }
+
+    @staticmethod
+    def get_playready_drm_headers(access_token: str, device_id: str = None) -> dict:
+        """Get headers for PlayReady DRM license acquisition (SOAP/XML)"""
+        return {
+            "Content-Type": "text/xml; charset=UTF-8",
+            "Origin": RTLPlusDefaults.BASE_WEBSITE.rstrip("/"),
+            "Referer": RTLPlusDefaults.BASE_WEBSITE,
+            "SOAPAction": RTLPlusDefaults.PLAYREADY_SOAP_ACTION,
+            "User-Agent": RTLPlusDefaults.PLAYREADY_USER_AGENT,
+            "X-Auth-Token": access_token,
+            "X-Device-Id": device_id or RTLPlusDefaults.DEVICE_ID,
+            "X-Device-Name": RTLPlusDefaults.DEVICE_NAME,
         }
 
 
@@ -167,4 +188,11 @@ class RTLPlusConfig:
             access_token=access_token,
             device_id=self.device_id,
             user_agent=self.user_agent,
+        )
+
+    def get_playready_drm_headers(self, access_token: str) -> dict:
+        """Get PlayReady-specific DRM headers (Edge UA, SOAP content-type)"""
+        return RTLPlusHeaders.get_playready_drm_headers(
+            access_token=access_token,
+            device_id=self.device_id,
         )

@@ -388,7 +388,7 @@ class RTLPlusProvider(StreamingProvider):
                                     DRMSystem.PLAYREADY,
                                     2,
                                     license_url,
-                                    self.rtl_config.get_drm_headers(access_token),
+                                    self.rtl_config.get_playready_drm_headers(access_token),
                                 )
                             )
                         elif license_info.get("type") == "FAIRPLAY":
