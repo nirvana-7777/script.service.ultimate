@@ -28,6 +28,7 @@ from .constants import (
     DEFAULT_TENANT,
     DEFAULT_PLATFORM_OS,
     DISCOVERY_LOGO,
+    DISCOVERY_USERS_ME_URL,
     DRMSystem as DiscoveryDRMSystem,
     DRM_SYSTEM_PLAYREADY,
     PlatformOS,
@@ -71,7 +72,7 @@ class DiscoveryProvider(StreamingProvider):
     PROVIDER_LABEL: ClassVar[str] = "Discovery+"
     SUPPORTED_AUTH_TYPES: ClassVar[List[str]] = SUPPORTED_AUTH_TYPES
     PROVIDER_LOGO: ClassVar[str] = DISCOVERY_LOGO
-    SUPPORTED_COUNTRIES: ClassVar[List[str]] = SUPPORTED_COUNTRIES
+    SUPPORTED_COUNTRIES: ClassVar[str] = SUPPORTED_COUNTRIES  # "*" = all countries
 
     def __init__(
             self,
@@ -106,9 +107,9 @@ class DiscoveryProvider(StreamingProvider):
             ValueError: If country not supported or credentials missing
         """
         if not self.validate_country(country):
-            supported = ", ".join(self.SUPPORTED_COUNTRIES)
             raise ValueError(
-                f"Unsupported country: {country}. Discovery+ supports: {supported}"
+                f"Unsupported country: {country}. "
+                f"Provide a valid ISO-3166-1 alpha-2 country code (e.g. 'de', 'uk')."
             )
 
         super().__init__(country=country)
@@ -299,6 +300,64 @@ class DiscoveryProvider(StreamingProvider):
         if self.token_info:
             return self.token_info.get("anonymous", True)
         return True
+
+    def validate_country(self, country: str) -> bool:
+        """
+        Override base validation.
+
+        Discovery+ supports all countries (SUPPORTED_COUNTRIES == "*"),
+        so any non-empty lowercase alpha-2 code is accepted.
+        The user's actual serving country is determined at runtime via
+        get_user_country().
+        """
+        if self.SUPPORTED_COUNTRIES == "*":
+            return bool(country and country.isalpha() and len(country) == 2)
+        # Fallback to standard list-based check if constant is ever changed back
+        return country.lower() in [c.lower() for c in self.SUPPORTED_COUNTRIES]
+
+    def get_user_country(self) -> Optional[str]:
+        """
+        Detect the user's current country by calling the /users/me endpoint.
+
+        The API returns ``currentLocationTerritory`` (e.g. ``"DE"``) inside
+        ``data.attributes``.  This method normalises the value to lowercase
+        so it is consistent with the rest of the codebase (e.g. ``"de"``).
+
+        Returns:
+            Two-letter lowercase country code (e.g. ``"de"``, ``"uk"``) or
+            ``None`` if the request fails or the field is absent.
+
+        Example::
+
+            provider = DiscoveryProvider(country="de")
+            country = provider.get_user_country()
+            # → "de"  (or whatever territory the server reports)
+        """
+        try:
+            headers = self._get_auth_headers()
+            response = self.http_manager.get(
+                DISCOVERY_USERS_ME_URL,
+                operation="users_me",
+                headers=headers,
+            )
+            response.raise_for_status()
+            data = response.json()
+            territory = (
+                data.get("data", {})
+                    .get("attributes", {})
+                    .get("currentLocationTerritory")
+            )
+            if territory:
+                country_code = territory.lower()
+                logger.debug(
+                    f"Detected user country from /users/me: {country_code}"
+                )
+                return country_code
+            logger.warning("/users/me response missing currentLocationTerritory")
+            return None
+        except Exception as e:
+            logger.error(f"Failed to fetch user country from /users/me: {e}")
+            return None
 
     def get_channels(
             self,

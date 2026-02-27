@@ -17,6 +17,7 @@ class RTLPlusDefaults:
     # Device information
     DEVICE_ID = "8c3f37cc-13a3-4141-bd0f-e4b3673fe5e4"
     DEVICE_NAME = "Linux Chrome"
+    PLAYREADY_DEVICE_NAME = "Windows Edge"
 
     # User Agent components
     USER_AGENT = f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_VERSION} Safari/537.36"
@@ -132,7 +133,7 @@ class RTLPlusHeaders:
             "User-Agent": RTLPlusDefaults.PLAYREADY_USER_AGENT,
             "X-Auth-Token": access_token,
             "X-Device-Id": device_id or RTLPlusDefaults.DEVICE_ID,
-            "X-Device-Name": RTLPlusDefaults.DEVICE_NAME,
+            "X-Device-Name": RTLPlusDefaults.PLAYREADY_DEVICE_NAME,
         }
 
 

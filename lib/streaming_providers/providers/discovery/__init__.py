@@ -21,6 +21,7 @@ from .constants import (
     SUPPORTED_COUNTRIES,
     CHANNEL_COLLECTIONS,
     CHANNEL_ITEM_TYPES,
+    DISCOVERY_USERS_ME_URL,
     StreamingMode,
     CDMMode,
     VideoQuality,
@@ -75,6 +76,7 @@ __all__ = [
     "SUPPORTED_COUNTRIES",
     "CHANNEL_COLLECTIONS",
     "CHANNEL_ITEM_TYPES",
+    "DISCOVERY_USERS_ME_URL",
 
     # Constants - Enums
     "StreamingMode",

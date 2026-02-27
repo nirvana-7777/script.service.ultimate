@@ -72,6 +72,10 @@ DISCOVERY_LOGO: Final[
 DISCOVERY_BOOTSTRAP_URL: Final[
     str] = "https://default.any-any.prd.api.discoveryplus.com/session-context/headwaiter/v1/bootstrap"
 
+# User profile endpoint — returns currentLocationTerritory for country detection
+DISCOVERY_USERS_ME_URL: Final[
+    str] = "https://default.dplus-emea.prd.api.discoveryplus.com/users/me"
+
 # Default realm
 DEFAULT_REALM: Final[str] = "bolt"
 
@@ -89,10 +93,9 @@ SUPPORTED_AUTH_TYPES: Final[List[str]] = [
 # Country/Region Configuration
 # ============================================================================
 
-# Supported countries (EMEA region)
-SUPPORTED_COUNTRIES: Final[List[str]] = [
-    "de", "at", "ch", "dk", "fi", "no", "se", "it", "nl", "es", "uk", "ie",
-]
+# Wildcard sentinel — Discovery+ accepts any country; the user's actual country
+# is determined at runtime via the /users/me endpoint (currentLocationTerritory).
+SUPPORTED_COUNTRIES: Final[str] = "*"
 
 # Home market mapping (immutable)
 HOME_MARKET_MAPPING: Final[Dict[str, str]] = {
