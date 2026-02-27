@@ -422,7 +422,7 @@ class RTLPlusProvider(StreamingProvider):
 
     def get_license_url(self, channel: StreamingChannel, **kwargs) -> Optional[str]:
         """
-        Get license URL for a DRM-protected channel
+        Get license URL for a DRM-protected channels
         """
         drm_configs = self.get_drm(channel.channel_id, **kwargs)
         if drm_configs:
