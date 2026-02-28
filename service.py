@@ -1615,6 +1615,7 @@ class UltimateService:
         from routes.cache import setup_cache_routes
         from routes.config import setup_config_routes
         from routes.epg import setup_epg_routes
+        from routes.events import setup_events_routes
 
         # Setup routes from separate modules
         setup_provider_routes(self.app, self.manager, self)
@@ -1624,6 +1625,7 @@ class UltimateService:
         setup_cache_routes(self.app, self.manager, self)
         setup_config_routes(self.app, self.manager, self)
         setup_epg_routes(self.app, self.manager, self)
+        setup_events_routes(self.app, self.manager, self)
 
         # Core UI routes
         @self.app.route("/config")

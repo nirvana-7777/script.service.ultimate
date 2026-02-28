@@ -10,6 +10,7 @@ from .catchup_operations import CatchupOperations
 from .channel_operations import ChannelOperations
 from .drm_operations import DRMOperations
 from .epg_operations import EPGOperations
+from .event_operations import EventOperations
 from .models import StreamingChannel
 from .provider_registry import ProviderRegistry
 from .subscription_operations import SubscriptionOperations
@@ -32,6 +33,7 @@ class ProviderManager:
         self.drm_ops = DRMOperations(self.registry)
         self.catchup_ops = CatchupOperations(self.registry, self.drm_ops)
         self.subscription_ops = SubscriptionOperations(self.registry)
+        self.event_ops = EventOperations(self.registry)
 
         # Backward compatibility - expose managers directly
         self.drm_plugin_manager = self.drm_ops.drm_plugin_manager
@@ -206,6 +208,21 @@ class ProviderManager:
 
     def get_all_catchup_capabilities(self) -> Dict[str, Dict]:
         return self.catchup_ops.get_all_catchup_capabilities()
+
+    # ==========================================================================
+    # EVENT OPERATIONS (delegate to EventOperations)
+    # ==========================================================================
+
+    def get_events(
+        self,
+        provider_name: str,
+        start_time=None,
+        end_time=None,
+    ):
+        return self.event_ops.get_events(provider_name, start_time, end_time)
+
+    def get_all_events(self, start_time=None, end_time=None):
+        return self.event_ops.get_all_events(start_time, end_time)
 
     # ==========================================================================
     # SUBSCRIPTION OPERATIONS (delegate to SubscriptionOperations)

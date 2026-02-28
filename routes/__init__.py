@@ -18,6 +18,7 @@ from .config import setup_config_routes
 from .drm import setup_drm_routes
 from .epg import setup_epg_routes
 from .m3u import setup_m3u_routes
+from .events import setup_events_routes
 
 # Now import the route setup functions
 from .providers import setup_provider_routes
@@ -31,4 +32,5 @@ __all__ = [
     "setup_cache_routes",
     "setup_config_routes",
     "setup_epg_routes",
+    "setup_events_routes",
 ]
