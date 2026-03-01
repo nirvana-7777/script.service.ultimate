@@ -224,6 +224,12 @@ class ProviderManager:
     def get_all_events(self, start_time=None, end_time=None):
         return self.event_ops.get_all_events(start_time, end_time)
 
+    def get_event_manifest(self, provider_name: str, event_id: str, **kwargs) -> Optional[str]:
+        return self.event_ops.get_event_manifest(provider_name, event_id, **kwargs)
+
+    def get_event_drm_configs(self, provider_name: str, event_id: str, **kwargs) -> List:
+        return self.event_ops.get_event_drm_configs(provider_name, event_id, **kwargs)
+
     # ==========================================================================
     # SUBSCRIPTION OPERATIONS (delegate to SubscriptionOperations)
     # ==========================================================================

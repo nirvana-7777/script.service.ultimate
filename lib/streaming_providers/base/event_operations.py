@@ -56,3 +56,43 @@ class EventOperations:
 
         logger.info(f"Retrieved {total} total events")
         return result
+
+    def get_event_manifest(
+        self, provider_name: str, event_id: str, **kwargs
+    ) -> Optional[str]:
+        """
+        Get manifest URL for a specific event.
+
+        Delegates to provider.get_manifest() — the same method used for
+        channels — because manifest resolution is content-type-agnostic.
+        """
+        provider = self.registry.get_provider(provider_name)
+        if not provider:
+            raise ValueError(f"Provider '{provider_name}' not found or disabled")
+
+        manifest_url = provider.get_manifest(content_id=event_id, **kwargs)
+        if manifest_url:
+            logger.debug(
+                f"Retrieved manifest for event '{event_id}' from '{provider_name}'"
+            )
+        return manifest_url
+
+    def get_event_drm_configs(
+        self, provider_name: str, event_id: str, **kwargs
+    ) -> List:
+        """
+        Get DRM configurations for a specific event.
+
+        Delegates to provider.get_drm() — the same method used for
+        channels — because DRM resolution is content-type-agnostic.
+        """
+        provider = self.registry.get_provider(provider_name)
+        if not provider:
+            raise ValueError(f"Provider '{provider_name}' not found or disabled")
+
+        drm_configs = provider.get_drm(content_id=event_id, **kwargs)
+        logger.debug(
+            f"Retrieved {len(drm_configs)} DRM config(s) for event '{event_id}' "
+            f"from '{provider_name}'"
+        )
+        return drm_configs

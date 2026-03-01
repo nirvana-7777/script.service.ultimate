@@ -1,6 +1,26 @@
 #!/usr/bin/env python3
 """
-Stream and manifest route handlers
+Stream and manifest route handlers.
+
+Architecture
+============
+All content types (channels, events, future VOD) share identical transport-level
+operations: resolve a manifest URL, fetch DRM configs, optionally rewrite the
+manifest through a media proxy.  The typed route handlers (channel vs event vs
+vod) are therefore thin wrappers around two shared helpers:
+
+  _build_drm_header(content_type, provider, content_id, ...)
+      Fetches DRM configs via the correct manager method and attaches them as a
+      base64-encoded response header.  Non-fatal — logs a warning on failure.
+
+  _resolve_stream(content_type, provider, content_id, ...)
+      The single place that understands how to turn (type, provider, id) into a
+      manifest response — redirect, proxied rewrite, or decrypted rewrite.
+
+Adding VOD in the future means:
+  1. Implement manager.get_vod_manifest() / get_vod_drm_configs() (same pattern).
+  2. Register the three route URLs for /vod/<vod_id>/{stream,manifest,drm}.
+  3. No changes to the shared helpers.
 """
 
 import base64
@@ -10,31 +30,91 @@ from datetime import datetime
 from bottle import HTTPResponse, redirect, request, response
 from streaming_providers.base.utils import logger
 
+# ---------------------------------------------------------------------------
+# Content-type constants — single source of truth used by helpers and routes
+# ---------------------------------------------------------------------------
+CONTENT_TYPE_CHANNEL = "channel"
+CONTENT_TYPE_EVENT = "event"
+# CONTENT_TYPE_VOD = "vod"   # uncomment when VOD ops are implemented
+
 
 def setup_stream_routes(app, manager, service):
-    """Setup stream and manifest-related routes"""
+    """Setup stream and manifest-related routes."""
 
-    def _build_drm_header(provider, channel_id, country=None, is_catchup=False,
-                          start_time=None, end_time=None, epg_id=None):
+    # =========================================================================
+    # INTERNAL HELPERS
+    # =========================================================================
+
+    def _get_drm_configs(content_type: str, provider: str, content_id: str, **kwargs):
         """
-        Fetch DRM configs, serialize to JSON and base64-encode them.
-        Returns the encoded string, or None if anything fails.
-        Sets response.headers["x-kodi-drm-configs"] as a side effect on success.
-        Non-fatal: logs a warning and returns None on any error.
+        Dispatch DRM config retrieval to the correct manager method based on
+        content type.  Returns a list of DRMConfig objects (may be empty).
+        Raises ValueError for unknown provider; re-raises other exceptions.
+        """
+        if content_type == CONTENT_TYPE_CHANNEL:
+            return manager.get_channel_drm_configs(
+                provider_name=provider, channel_id=content_id, **kwargs
+            )
+        elif content_type == CONTENT_TYPE_EVENT:
+            return manager.get_event_drm_configs(
+                provider_name=provider, event_id=content_id, **kwargs
+            )
+        # elif content_type == CONTENT_TYPE_VOD:
+        #     return manager.get_vod_drm_configs(
+        #         provider_name=provider, vod_id=content_id, **kwargs
+        #     )
+        else:
+            raise ValueError(f"Unknown content_type '{content_type}'")
+
+    def _get_manifest_url(content_type: str, provider: str, content_id: str, **kwargs) -> str:
+        """
+        Dispatch manifest URL retrieval to the correct manager method.
+        Returns the raw upstream manifest URL (before any proxy rewriting).
+        """
+        if content_type == CONTENT_TYPE_CHANNEL:
+            return manager.get_channel_manifest(
+                provider_name=provider, channel_id=content_id, **kwargs
+            )
+        elif content_type == CONTENT_TYPE_EVENT:
+            return manager.get_event_manifest(
+                provider_name=provider, event_id=content_id, **kwargs
+            )
+        # elif content_type == CONTENT_TYPE_VOD:
+        #     return manager.get_vod_manifest(
+        #         provider_name=provider, vod_id=content_id, **kwargs
+        #     )
+        else:
+            raise ValueError(f"Unknown content_type '{content_type}'")
+
+    def _build_drm_header(
+        content_type: str,
+        provider: str,
+        content_id: str,
+        country=None,
+        # catchup-specific — only used for channels
+        is_catchup: bool = False,
+        start_time: int = None,
+        end_time: int = None,
+        epg_id: str = None,
+    ):
+        """
+        Fetch DRM configs, serialise to JSON and attach as a base64-encoded
+        response header (x-kodi-drm-configs).  Non-fatal: logs a warning and
+        returns None on any error.
         """
         try:
-            if is_catchup:
+            if is_catchup and content_type == CONTENT_TYPE_CHANNEL:
                 drm_configs = manager.get_catchup_drm_configs(
                     provider_name=provider,
-                    channel_id=channel_id,
+                    channel_id=content_id,
                     start_time=start_time,
                     end_time=end_time,
                     epg_id=epg_id,
                     country=country,
                 )
             else:
-                drm_configs = manager.get_channel_drm_configs(
-                    provider_name=provider, channel_id=channel_id, country=country
+                drm_configs = _get_drm_configs(
+                    content_type, provider, content_id, country=country
                 )
 
             merged = {}
@@ -50,70 +130,204 @@ def setup_stream_routes(app, manager, service):
             return encoded
 
         except Exception as e:
-            logger.warning(f"Could not build x-kodi-drm-configs header for "
-                           f"{provider}/{channel_id}: {e}")
+            logger.warning(
+                f"Could not build x-kodi-drm-configs header for "
+                f"{content_type} {provider}/{content_id}: {e}"
+            )
             return None
+
+    def _resolve_stream(
+        content_type: str,
+        provider: str,
+        content_id: str,
+        country=None,
+        # catchup-specific — only used for channels
+        is_catchup: bool = False,
+        start_time_int: int = None,
+        end_time_int: int = None,
+        epg_id: str = None,
+    ):
+        """
+        Core stream resolution: attach DRM header, then either redirect to the
+        upstream manifest or return a proxy-rewritten manifest body.
+
+        Handles three cases in order:
+          1. Catchup (channel-only for now)
+          2. Proxy needed  → return rewritten MPD body
+          3. No proxy      → HTTP 302 redirect to upstream manifest URL
+        """
+        # --- DRM header (best-effort, never fatal) ---
+        _build_drm_header(
+            content_type, provider, content_id,
+            country=country,
+            is_catchup=is_catchup,
+            start_time=start_time_int,
+            end_time=end_time_int,
+            epg_id=epg_id,
+        )
+
+        # --- Catchup path (channel-specific) ---
+        if is_catchup:
+            if manager.needs_proxy(provider):
+                return service._get_proxied_catchup_manifest(
+                    provider, content_id, start_time_int, end_time_int, epg_id, country
+                )
+            else:
+                manifest_url = manager.get_catchup_manifest(
+                    provider_name=provider,
+                    channel_id=content_id,
+                    start_time=start_time_int,
+                    end_time=end_time_int,
+                    epg_id=epg_id,
+                    country=country,
+                )
+                if not manifest_url:
+                    response.status = 404
+                    return {
+                        "error": f'Catchup manifest not available for channel "{content_id}"'
+                    }
+                logger.debug(f"Redirecting to catchup manifest: {manifest_url}")
+                redirect(manifest_url)
+
+        # --- Live / event / vod path ---
+        if manager.needs_proxy(provider):
+            return service._get_proxied_manifest(provider, content_id)
+        else:
+            manifest_url = _get_manifest_url(
+                content_type, provider, content_id, country=country
+            )
+            if not manifest_url:
+                response.status = 404
+                return {
+                    "error": (
+                        f'Manifest not available for {content_type} '
+                        f'"{content_id}" from provider "{provider}"'
+                    )
+                }
+            logger.debug(f"Redirecting to manifest: {manifest_url}")
+            redirect(manifest_url)
+
+    def _resolve_decrypted_stream(
+        content_type: str,
+        provider: str,
+        content_id: str,
+        highest_quality_only: bool = False,
+    ):
+        """
+        Shared handler for decrypted stream endpoints.
+        Resolves DRM, then returns an appropriately rewritten manifest.
+        """
+        try:
+            country = request.query.get("country")
+            drm_configs = _get_drm_configs(
+                content_type, provider, content_id, country=country
+            )
+
+            drm_dict = {}
+            for config in drm_configs:
+                drm_dict.update(
+                    config.to_dict() if hasattr(config, "to_dict") else config
+                )
+
+            has_clearkey = "org.w3.clearkey" in drm_dict
+            is_unencrypted = "none" in drm_dict
+
+            if has_clearkey:
+                if not service.media_proxy_url:
+                    response.status = 503
+                    return {"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"}
+
+                keyids = (
+                    drm_dict["org.w3.clearkey"]
+                    .get("license", {})
+                    .get("keyids", {})
+                )
+                if not keyids:
+                    response.status = 400
+                    return {"error": "ClearKey DRM found but no key IDs available"}
+
+                return service._get_decrypted_manifest(
+                    provider, content_id, keyids,
+                    highest_quality_only=highest_quality_only,
+                )
+
+            elif is_unencrypted:
+                if manager.needs_proxy(provider) and service.media_proxy_url:
+                    return service._get_proxied_manifest(
+                        provider, content_id,
+                        highest_quality_only=highest_quality_only,
+                    )
+                else:
+                    return service._get_original_manifest(provider, content_id, country)
+
+            else:
+                response.status = 400
+                return {
+                    "error": (
+                        f'{content_type.capitalize()} "{content_id}" does not support '
+                        f"decrypted playback (requires ClearKey or unencrypted)"
+                    )
+                }
+
+        except ValueError as e:
+            logger.error(f"API Error in decrypted {content_type} stream: {e}")
+            response.status = 404
+            return {"error": str(e)}
+        except Exception as e:
+            logger.error(f"API Error in decrypted {content_type} stream: {e}")
+            response.status = 500
+            return {"error": f"Internal server error: {str(e)}"}
+
+    # =========================================================================
+    # CHANNEL ROUTES  (preserved exactly — backward-compatible)
+    # =========================================================================
 
     @app.route("/api/providers/<provider>/channels/<channel_id>/manifest")
     def get_channel_manifest(provider, channel_id):
         """
-        Get channel manifest. Always returns JSON with manifest_url pointing to stream endpoint.
+        Returns JSON with a manifest_url pointing to the stream endpoint.
+        Attaches x-kodi-drm-configs header.
         """
         try:
             country = request.query.get("country")
-
-            # Build the stream URL (which will handle both proxy and non-proxy)
             base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
-            stream_url = f"{base_url}/api/providers/{provider}/channels/{channel_id}/stream/index.mpd"
-
-            # Add country parameter if provided
+            stream_url = (
+                f"{base_url}/api/providers/{provider}/channels/{channel_id}/stream/index.mpd"
+            )
             if country:
                 stream_url += f"?country={country}"
 
-            _build_drm_header(provider, channel_id, country=country)
+            _build_drm_header(CONTENT_TYPE_CHANNEL, provider, channel_id, country=country)
 
             return {
                 "provider": provider,
                 "channel_id": channel_id,
-                "manifest_url": stream_url,  # Now points to /stream/index.mpd endpoint
+                "manifest_url": stream_url,
             }
 
-        except ValueError as val_err:
-            logger.error(
-                f"API Error in /api/providers/{provider}/channels/{channel_id}/manifest: {str(val_err)}"
-            )
+        except ValueError as e:
+            logger.error(f"manifest endpoint error for {provider}/{channel_id}: {e}")
             response.status = 404
-            return {"error": str(val_err)}
-        except Exception as api_err:
-            logger.error(
-                f"API Error in /api/providers/{provider}/channels/{channel_id}/manifest: {str(api_err)}"
-            )
+            return {"error": str(e)}
+        except Exception as e:
+            logger.error(f"manifest endpoint error for {provider}/{channel_id}: {e}")
             response.status = 500
-            return {"error": f"Internal server error: {str(api_err)}"}
+            return {"error": f"Internal server error: {str(e)}"}
 
     @app.route("/api/providers/<provider>/channels/<channel_id>/stream/index.mpd")
     def get_channel_stream(provider, channel_id):
         """
-        Returns HTTP 302 redirect to the actual manifest or rewritten manifest endpoint.
-        Supports both live and catchup streaming.
+        Returns HTTP 302 redirect to the actual manifest, or a rewritten
+        manifest body when media proxy is active.  Supports live and catchup.
         """
         try:
-            # Get optional catchup parameters
             start_time = request.query.get("start_time")
             end_time = request.query.get("end_time")
             epg_id = request.query.get("epg_id")
             country = request.query.get("country")
-
-            # Determine if this is a catchup request
             is_catchup = bool(start_time and end_time)
 
             if is_catchup:
-                logger.info(
-                    f"Catchup stream request for {provider}/{channel_id}: "
-                    f"start={start_time}, end={end_time}, epg_id={epg_id}"
-                )
-
-                # Convert Unix timestamps to integers
                 try:
                     start_time_int = int(start_time)
                     end_time_int = int(end_time)
@@ -121,186 +335,287 @@ def setup_stream_routes(app, manager, service):
                     response.status = 400
                     return {"error": "Invalid start_time or end_time format"}
 
-                # Validate catchup is supported
                 provider_instance = manager.get_provider(provider)
-                catchup_hours = getattr(
-                    provider_instance, "catchup_window", 0
-                )  # Now in hours
-
+                catchup_hours = getattr(provider_instance, "catchup_window", 0)
                 if catchup_hours == 0:
                     response.status = 400
                     return {"error": f'Catchup not supported for provider "{provider}"'}
 
-                # Validate time is within catchup window (in HOURS)
                 import time
-
-                now = int(time.time())
-                max_age_seconds = catchup_hours * 3600  # Hours to seconds
-
-                if (now - start_time_int) > max_age_seconds:
+                if (int(time.time()) - start_time_int) > catchup_hours * 3600:
                     response.status = 400
                     return {
                         "error": f"Content outside catchup window (max {catchup_hours} hours)"
                     }
 
-                # Set DRM header before any return/redirect
-                _build_drm_header(
-                    provider, channel_id,
+                return _resolve_stream(
+                    CONTENT_TYPE_CHANNEL, provider, channel_id,
                     country=country,
                     is_catchup=True,
-                    start_time=start_time_int,
-                    end_time=end_time_int,
+                    start_time_int=start_time_int,
+                    end_time_int=end_time_int,
                     epg_id=epg_id,
                 )
-
-                # Check if provider needs proxy for catchup
-                if manager.needs_proxy(provider):
-                    # Proxy mode: return rewritten MPD content directly
-                    return service._get_proxied_catchup_manifest(
-                        provider,
-                        channel_id,
-                        start_time_int,
-                        end_time_int,
-                        epg_id,
-                        country,
-                    )
-                else:
-                    # Direct mode: get catchup manifest URL and redirect
-                    manifest_url = manager.get_catchup_manifest(
-                        provider_name=provider,
-                        channel_id=channel_id,
-                        start_time=start_time_int,
-                        end_time=end_time_int,
-                        epg_id=epg_id,
-                        country=country,
-                    )
-
-                    if not manifest_url:
-                        response.status = 404
-                        return {
-                            "error": f'Catchup manifest not available for channel "{channel_id}"'
-                        }
-
-                    logger.debug(f"Redirecting to catchup manifest: {manifest_url}")
-                    redirect(manifest_url)
             else:
-                # Live stream - existing logic
-
-                # Set DRM header before any return/redirect
-                _build_drm_header(provider, channel_id, country=country)
-
-                if manager.needs_proxy(provider):
-                    return service._get_proxied_manifest(provider, channel_id)
-                else:
-                    manifest_url = manager.get_channel_manifest(
-                        provider_name=provider,
-                        channel_id=channel_id,
-                        country=country,
-                    )
-
-                    if not manifest_url:
-                        response.status = 404
-                        return {
-                            "error": f'Manifest not available for channel "{channel_id}"'
-                        }
-
-                    logger.debug(f"Redirecting to manifest: {manifest_url}")
-                    redirect(manifest_url)
+                return _resolve_stream(
+                    CONTENT_TYPE_CHANNEL, provider, channel_id, country=country
+                )
 
         except HTTPResponse:
             raise
-        except ValueError as val_err:
-            logger.error(f"API Error in stream: {str(val_err)}")
+        except ValueError as e:
+            logger.error(f"stream error for channel {provider}/{channel_id}: {e}")
             response.status = 404
-            return {"error": str(val_err)}
-        except Exception as api_err:
-            logger.error(f"API Error in stream: {str(api_err)}")
+            return {"error": str(e)}
+        except Exception as e:
+            logger.error(f"stream error for channel {provider}/{channel_id}: {e}")
             response.status = 500
-            return {"error": f"Internal server error: {str(api_err)}"}
+            return {"error": f"Internal server error: {str(e)}"}
+
+    @app.route("/api/providers/<provider>/channels/<channel_id>/stream/decrypted/index.mpd")
+    def get_channel_stream_decrypted(provider, channel_id):
+        """Decrypted stream — all quality representations."""
+        return _resolve_decrypted_stream(
+            CONTENT_TYPE_CHANNEL, provider, channel_id, highest_quality_only=False
+        )
+
+    @app.route(
+        "/api/providers/<provider>/channels/<channel_id>/stream/decrypted/ffmpeg/index.mpd"
+    )
+    def get_channel_stream_decrypted_ffmpeg(provider, channel_id):
+        """Decrypted stream — highest quality only, optimised for ffmpeg."""
+        return _resolve_decrypted_stream(
+            CONTENT_TYPE_CHANNEL, provider, channel_id, highest_quality_only=True
+        )
+
+    @app.route("/api/providers/<provider>/channels/<channel_id>/drm")
+    def get_channel_drm(provider, channel_id):
+        """
+        Return DRM configs for a channel.  Supports catchup via query params.
+        """
+        try:
+            start_time = request.query.get("start_time")
+            end_time = request.query.get("end_time")
+            epg_id = request.query.get("epg_id")
+            country = request.query.get("country")
+            is_catchup = bool(start_time and end_time)
+
+            if is_catchup:
+                try:
+                    start_time_int = int(start_time)
+                    end_time_int = int(end_time)
+                except (ValueError, TypeError):
+                    response.status = 400
+                    return {"error": "Invalid start_time or end_time format"}
+
+                drm_configs = manager.get_catchup_drm_configs(
+                    provider_name=provider,
+                    channel_id=channel_id,
+                    start_time=start_time_int,
+                    end_time=end_time_int,
+                    epg_id=epg_id,
+                    country=country,
+                )
+            else:
+                drm_configs = _get_drm_configs(
+                    CONTENT_TYPE_CHANNEL, provider, channel_id, country=country
+                )
+
+            merged = {}
+            for config in drm_configs:
+                merged.update(
+                    config.to_dict() if hasattr(config, "to_dict") else config
+                )
+
+            return {
+                "provider": provider,
+                "channel_id": channel_id,
+                "content_type": CONTENT_TYPE_CHANNEL,
+                "is_catchup": is_catchup,
+                "drm_configs": merged,
+            }
+
+        except ValueError as e:
+            logger.error(f"DRM endpoint error for channel {provider}/{channel_id}: {e}")
+            response.status = 404
+            return {"error": str(e)}
+        except Exception as e:
+            logger.error(f"DRM endpoint error for channel {provider}/{channel_id}: {e}")
+            response.status = 500
+            return {"error": f"Internal server error: {str(e)}"}
+
+    # =========================================================================
+    # EVENT ROUTES
+    # =========================================================================
+
+    @app.route("/api/providers/<provider>/events/<event_id>/manifest")
+    def get_event_manifest(provider, event_id):
+        """
+        Returns JSON with a manifest_url pointing to the event stream endpoint.
+        Attaches x-kodi-drm-configs header.
+        """
+        try:
+            country = request.query.get("country")
+            base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
+            stream_url = (
+                f"{base_url}/api/providers/{provider}/events/{event_id}/stream/index.mpd"
+            )
+            if country:
+                stream_url += f"?country={country}"
+
+            _build_drm_header(CONTENT_TYPE_EVENT, provider, event_id, country=country)
+
+            return {
+                "provider": provider,
+                "event_id": event_id,
+                "manifest_url": stream_url,
+            }
+
+        except ValueError as e:
+            logger.error(f"manifest endpoint error for event {provider}/{event_id}: {e}")
+            response.status = 404
+            return {"error": str(e)}
+        except Exception as e:
+            logger.error(f"manifest endpoint error for event {provider}/{event_id}: {e}")
+            response.status = 500
+            return {"error": f"Internal server error: {str(e)}"}
+
+    @app.route("/api/providers/<provider>/events/<event_id>/stream/index.mpd")
+    def get_event_stream(provider, event_id):
+        """
+        Returns HTTP 302 redirect to the event manifest, or a rewritten
+        manifest body when media proxy is active.
+        """
+        try:
+            country = request.query.get("country")
+            return _resolve_stream(
+                CONTENT_TYPE_EVENT, provider, event_id, country=country
+            )
+        except HTTPResponse:
+            raise
+        except ValueError as e:
+            logger.error(f"stream error for event {provider}/{event_id}: {e}")
+            response.status = 404
+            return {"error": str(e)}
+        except Exception as e:
+            logger.error(f"stream error for event {provider}/{event_id}: {e}")
+            response.status = 500
+            return {"error": f"Internal server error: {str(e)}"}
+
+    @app.route(
+        "/api/providers/<provider>/events/<event_id>/stream/decrypted/index.mpd"
+    )
+    def get_event_stream_decrypted(provider, event_id):
+        """Decrypted event stream — all quality representations."""
+        return _resolve_decrypted_stream(
+            CONTENT_TYPE_EVENT, provider, event_id, highest_quality_only=False
+        )
+
+    @app.route(
+        "/api/providers/<provider>/events/<event_id>/stream/decrypted/ffmpeg/index.mpd"
+    )
+    def get_event_stream_decrypted_ffmpeg(provider, event_id):
+        """Decrypted event stream — highest quality only, optimised for ffmpeg."""
+        return _resolve_decrypted_stream(
+            CONTENT_TYPE_EVENT, provider, event_id, highest_quality_only=True
+        )
+
+    @app.route("/api/providers/<provider>/events/<event_id>/drm")
+    def get_event_drm(provider, event_id):
+        """Return DRM configs for a specific event."""
+        try:
+            country = request.query.get("country")
+            drm_configs = _get_drm_configs(
+                CONTENT_TYPE_EVENT, provider, event_id, country=country
+            )
+
+            merged = {}
+            for config in drm_configs:
+                merged.update(
+                    config.to_dict() if hasattr(config, "to_dict") else config
+                )
+
+            return {
+                "provider": provider,
+                "event_id": event_id,
+                "content_type": CONTENT_TYPE_EVENT,
+                "drm_configs": merged,
+            }
+
+        except ValueError as e:
+            logger.error(f"DRM endpoint error for event {provider}/{event_id}: {e}")
+            response.status = 404
+            return {"error": str(e)}
+        except Exception as e:
+            logger.error(f"DRM endpoint error for event {provider}/{event_id}: {e}")
+            response.status = 500
+            return {"error": f"Internal server error: {str(e)}"}
+
+    # =========================================================================
+    # EPG ROUTES  (unchanged from original)
+    # =========================================================================
 
     @app.route("/api/providers/<provider>/channels/<channel_id>/epg")
     def get_channel_epg(provider, channel_id):
         try:
-            # Parse optional parameters
             kwargs = {"country": request.query.get("country")}
 
             from datetime import timezone
 
-            # Handle start_time - can be Unix timestamp (from Kodi) or datetime
             if request.query.get("start_time"):
                 start_time_str = request.query.get("start_time")
                 try:
-                    # Try to parse as Unix timestamp (integer from Kodi PVR)
-                    start_time_int = int(start_time_str)
                     kwargs["start_time"] = datetime.fromtimestamp(
-                        start_time_int, tz=timezone.utc
+                        int(start_time_str), tz=timezone.utc
                     )
                 except (ValueError, TypeError):
-                    # Try to parse as ISO format string (for manual API calls)
                     try:
                         kwargs["start_time"] = datetime.fromisoformat(
                             start_time_str.replace("Z", "+00:00")
                         )
                     except ValueError:
                         logger.warning(f"Invalid start_time format: {start_time_str}")
-                        # Continue without start_time filter
-                        pass
 
-            # Handle end_time - can be Unix timestamp or datetime
             if request.query.get("end_time"):
                 end_time_str = request.query.get("end_time")
                 try:
-                    # Try to parse as Unix timestamp (integer from Kodi PVR)
-                    end_time_int = int(end_time_str)
                     kwargs["end_time"] = datetime.fromtimestamp(
-                        end_time_int, tz=timezone.utc
+                        int(end_time_str), tz=timezone.utc
                     )
                 except (ValueError, TypeError):
-                    # Try to parse as ISO format string (for manual API calls)
                     try:
                         kwargs["end_time"] = datetime.fromisoformat(
                             end_time_str.replace("Z", "+00:00")
                         )
                     except ValueError:
                         logger.warning(f"Invalid end_time format: {end_time_str}")
-                        # Continue without end_time filter
-                        pass
 
-            # Get EPG data from manager
             epg_data = manager.get_channel_epg(
                 provider_name=provider, channel_id=channel_id, **kwargs
             )
 
-            # Return as JSON
             response.content_type = "application/json; charset=utf-8"
             return {"provider": provider, "channel_id": channel_id, "epg": epg_data}
 
-        except ValueError as val_err:
-            # This handles the case where manager raises ValueError for unknown provider
-            logger.error(
-                f"API Error in /api/providers/{provider}/channels/{channel_id}/epg: {str(val_err)}"
-            )
+        except ValueError as e:
+            logger.error(f"EPG error for {provider}/{channel_id}: {e}")
             response.status = 404
             response.content_type = "application/json; charset=utf-8"
-            return {"error": str(val_err)}
-        except Exception as api_err:
-            logger.error(
-                f"API Error in /api/providers/{provider}/channels/{channel_id}/epg: {str(api_err)}"
-            )
+            return {"error": str(e)}
+        except Exception as e:
+            logger.error(f"EPG error for {provider}/{channel_id}: {e}")
             response.status = 500
             response.content_type = "application/json; charset=utf-8"
-            return {"error": f"Internal server error: {str(api_err)}"}
+            return {"error": f"Internal server error: {str(e)}"}
 
     @app.route("/api/providers/<provider>/epg")
     def get_provider_epg_xmltv(provider):
         try:
-            # Set appropriate headers for XMLTV
             response.content_type = "application/xml; charset=utf-8"
             response.headers["Content-Disposition"] = (
                 f'attachment; filename="{provider}_epg.xml"'
             )
 
-            # Get the XMLTV data from the provider
             xmltv_data = manager.get_provider_epg_xmltv(
                 provider_name=provider, country=request.query.get("country")
             )
@@ -311,186 +626,11 @@ def setup_stream_routes(app, manager, service):
 
             return xmltv_data
 
-        except ValueError as val_err:
-            # Handle unknown provider
-            logger.error(f"API Error in /api/providers/{provider}/epg: {str(val_err)}")
+        except ValueError as e:
+            logger.error(f"XMLTV EPG error for {provider}: {e}")
             response.status = 404
-            return {"error": str(val_err)}
-        except Exception as api_err:
-            logger.error(f"API Error in /api/providers/{provider}/epg: {str(api_err)}")
+            return {"error": str(e)}
+        except Exception as e:
+            logger.error(f"XMLTV EPG error for {provider}: {e}")
             response.status = 500
-            return {"error": f"Internal server error: {str(api_err)}"}
-
-    @app.route("/api/providers/<provider>/channels/<channel_id>/drm")
-    def get_channel_drm(provider, channel_id):
-        try:
-            # Get optional catchup parameters
-            start_time = request.query.get("start_time")
-            end_time = request.query.get("end_time")
-            epg_id = request.query.get("epg_id")
-            country = request.query.get("country")
-
-            # Determine if this is a catchup request
-            is_catchup = bool(start_time and end_time)
-
-            if is_catchup:
-                logger.debug(
-                    f"Catchup DRM request for {provider}/{channel_id}: "
-                    f"epg_id={epg_id}"
-                )
-
-                # Convert timestamps
-                try:
-                    start_time_int = int(start_time)
-                    end_time_int = int(end_time)
-                except (ValueError, TypeError):
-                    response.status = 400
-                    return {"error": "Invalid start_time or end_time format"}
-
-                # Get catchup DRM configs
-                drm_configs = manager.get_catchup_drm_configs(
-                    provider_name=provider,
-                    channel_id=channel_id,
-                    start_time=start_time_int,
-                    end_time=end_time_int,
-                    epg_id=epg_id,
-                    country=country,
-                )
-            else:
-                # Live DRM - existing logic
-                drm_configs = manager.get_channel_drm_configs(
-                    provider_name=provider, channel_id=channel_id, country=country
-                )
-
-            # Merge all DRM configs into a single dictionary
-            merged_drm_configs = {}
-            for config in drm_configs:
-                if hasattr(config, "to_dict"):
-                    config_dict = config.to_dict()
-                else:
-                    config_dict = config
-                merged_drm_configs.update(config_dict)
-
-            return {
-                "provider": provider,
-                "channel_id": channel_id,
-                "is_catchup": is_catchup,
-                "drm_configs": merged_drm_configs,
-            }
-
-        except ValueError as val_err:
-            logger.error(f"API Error in DRM endpoint: {str(val_err)}")
-            response.status = 404
-            return {"error": str(val_err)}
-        except Exception as api_err:
-            logger.error(f"API Error in DRM endpoint: {str(api_err)}")
-            response.status = 500
-            return {"error": f"Internal server error: {str(api_err)}"}
-
-    def _get_decrypted_stream_handler(provider, channel_id, highest_quality_only=False):
-        """
-        Helper function for decrypted stream handling.
-
-        Args:
-            provider: Provider name
-            channel_id: Channel ID
-            highest_quality_only: If True, filter to highest quality video only
-
-        Returns:
-            Rewritten manifest or error response
-        """
-        try:
-            country = request.query.get("country")
-
-            # Get DRM configs
-            drm_configs = manager.get_channel_drm_configs(
-                provider_name=provider, channel_id=channel_id, country=country
-            )
-
-            # Convert DRM configs to dictionary format
-            drm_dict = {}
-            if isinstance(drm_configs, list):
-                for config in drm_configs:
-                    config_dict = config.to_dict()
-                    drm_dict.update(config_dict)
-
-            # Check what type of stream we have
-            has_clearkey = "org.w3.clearkey" in drm_dict
-            is_unencrypted = "none" in drm_dict
-
-            # Handle ClearKey encrypted streams
-            if has_clearkey:
-                if not service.media_proxy_url:
-                    response.status = 503
-                    return {"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"}
-
-                clearkey_data = drm_dict["org.w3.clearkey"]
-                keyids = clearkey_data.get("license", {}).get("keyids", {})
-
-                if not keyids:
-                    response.status = 400
-                    return {"error": "ClearKey DRM found but no key IDs available"}
-
-                # Return decrypted manifest via proxy
-                return service._get_decrypted_manifest(
-                    provider, channel_id, keyids, highest_quality_only=highest_quality_only
-                )
-
-            # Handle unencrypted streams
-            elif is_unencrypted:
-                # If proxy needed and configured, rewrite manifest
-                if manager.needs_proxy(provider) and service.media_proxy_url:
-                    return service._get_proxied_manifest(
-                        provider, channel_id, highest_quality_only=highest_quality_only
-                    )
-                else:
-                    # No proxy needed/configured - passthrough original manifest
-                    # Note: highest_quality_only has no effect on passthrough
-                    return service._get_original_manifest(provider, channel_id, country)
-
-            # Other DRM systems not supported
-            else:
-                response.status = 400
-                return {
-                    "error": f'Channel "{channel_id}" does not support decrypted playback (requires ClearKey or unencrypted)'
-                }
-
-        except ValueError as val_err:
-            logger.error(f"API Error in decrypted stream: {str(val_err)}")
-            response.status = 404
-            return {"error": str(val_err)}
-        except Exception as api_err:
-            logger.error(f"API Error in decrypted stream: {str(api_err)}")
-            response.status = 500
-            return {"error": f"Internal server error: {str(api_err)}"}
-
-    @app.route(
-        "/api/providers/<provider>/channels/<channel_id>/stream/decrypted/index.mpd"
-    )
-    def get_channel_stream_decrypted(provider, channel_id):
-        """
-        Returns rewritten manifest for decrypted playback via media proxy.
-        Supports both ClearKey encrypted and unencrypted streams.
-        Includes all available video quality representations.
-        """
-        return _get_decrypted_stream_handler(
-            provider=provider,
-            channel_id=channel_id,
-            highest_quality_only=False
-        )
-
-    @app.route(
-        "/api/providers/<provider>/channels/<channel_id>/stream/decrypted/ffmpeg/index.mpd"
-    )
-    def get_channel_stream_decrypted_ffmpeg(provider, channel_id):
-        """
-        Returns rewritten manifest for decrypted playback via media proxy.
-        Supports both ClearKey encrypted and unencrypted streams.
-        Filters to highest quality video representation only (optimized for ffmpeg).
-        Audio and subtitle tracks remain unchanged.
-        """
-        return _get_decrypted_stream_handler(
-            provider=provider,
-            channel_id=channel_id,
-            highest_quality_only=True
-        )
+            return {"error": f"Internal server error: {str(e)}"}

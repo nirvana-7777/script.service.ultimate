@@ -42,7 +42,7 @@ class CatchupOperations:
 
         try:
             return provider.get_catchup_manifest(
-                channel_id=channel_id,
+                content_id=channel_id,
                 start_time=start_time,
                 end_time=end_time,
                 epg_id=epg_id,
@@ -73,7 +73,7 @@ class CatchupOperations:
 
         try:
             return provider.get_catchup_drm(
-                channel_id=channel_id,
+                content_id=channel_id,
                 start_time=start_time,
                 end_time=end_time,
                 epg_id=epg_id,

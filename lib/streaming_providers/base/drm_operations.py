@@ -329,7 +329,7 @@ class DRMOperations:
         # ------------------------------------------------------------------
         # Step 0a: Fetch manifest and short-circuit for unencrypted streams
         # ------------------------------------------------------------------
-        manifest_url = provider.get_manifest(channel_id, **kwargs)
+        manifest_url = provider.get_manifest(content_id=channel_id, **kwargs)
         if manifest_url and manifest_url.startswith(('http://', 'https://')):
             try:
                 from .network import HTTPManager
@@ -409,7 +409,7 @@ class DRMOperations:
         # ------------------------------------------------------------------
         # Step 3: PHASE 2 — Get provider's DRM configs
         # ------------------------------------------------------------------
-        provider_drm_configs = provider.get_drm(channel_id, **kwargs)
+        provider_drm_configs = provider.get_drm(content_id=channel_id, **kwargs)
 
         # Secondary unencrypted check (in case manifest fetch failed earlier)
         if not provider_drm_configs:
@@ -434,7 +434,7 @@ class DRMOperations:
 
                     if not pssh_data_list:
                         logger.debug(f"Phase 2: PSSH cache miss for {cache_key}, fetching manifest")
-                        manifest_url = provider.get_manifest(channel_id, **kwargs)
+                        manifest_url = provider.get_manifest(content_id=channel_id, **kwargs)
                         if manifest_url:
                             pssh_data_list = self._extract_pssh_from_manifest(manifest_url, provider_name)
                             if pssh_data_list:
@@ -549,7 +549,7 @@ class DRMOperations:
                     logger.warning(f"Provider '{provider_name}' not found for GENERIC plugin")
                     return None, None
 
-                manifest_url = provider.get_manifest(channel_id, **kwargs)
+                manifest_url = provider.get_manifest(content_id=channel_id, **kwargs)
                 if manifest_url:
                     pssh_data_list = self._extract_pssh_from_manifest(manifest_url, provider_name)
                     if pssh_data_list:
@@ -570,7 +570,7 @@ class DRMOperations:
                 logger.error(f"Cannot extract real PSSH: provider '{provider_name}' not found")
                 return None, pssh_data_list
 
-            manifest_url = provider.get_manifest(channel_id, **kwargs)
+            manifest_url = provider.get_manifest(content_id=channel_id, **kwargs)
             if manifest_url:
                 real_pssh = self._extract_pssh_from_manifest(manifest_url, provider_name)
 

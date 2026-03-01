@@ -45,7 +45,7 @@ class ChannelOperations:
         if not provider:
             raise ValueError(f"Provider '{provider_name}' not found or disabled")
 
-        manifest_url = provider.get_manifest(channel_id, **kwargs)
+        manifest_url = provider.get_manifest(content_id=channel_id, **kwargs)
         if manifest_url:
             logger.debug(f"Retrieved manifest for '{channel_id}' from '{provider_name}'")
         return manifest_url

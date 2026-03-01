@@ -233,7 +233,7 @@ class StreamingProvider(ABC):
         return []
 
     @abstractmethod
-    def get_drm(self, channel_id: str, **kwargs) -> List[DRMConfig]:
+    def get_drm(self, content_id: str, **kwargs) -> List[DRMConfig]:
         """Get all DRM configurations for a channel by ID"""
         return []
 
@@ -280,7 +280,7 @@ class StreamingProvider(ABC):
         return None
 
     @abstractmethod
-    def get_manifest(self, channel_id: str, **kwargs) -> Optional[str]:
+    def get_manifest(self, content_id: str, **kwargs) -> Optional[str]:
         """Get manifest URL for a specific channel by ID"""
         return None
 
@@ -660,7 +660,7 @@ class StreamingProvider(ABC):
 
     def get_catchup_manifest(
         self,
-        channel_id: str,
+        content_id: str,
         start_time: int,
         end_time: int,
         epg_id: Optional[str] = None,
@@ -686,17 +686,17 @@ class StreamingProvider(ABC):
             logger.debug(
                 f"{self.provider_name}: Catchup not supported, falling back to live manifest"
             )
-            return self.get_manifest(channel_id, **kwargs)
+            return self.get_manifest(content_id, **kwargs)
 
         logger.warning(
             f"{self.provider_name}: get_catchup_manifest not implemented, "
             f"falling back to live manifest"
         )
-        return self.get_manifest(channel_id, **kwargs)
+        return self.get_manifest(content_id, **kwargs)
 
     def get_catchup_drm(
         self,
-        channel_id: str,
+        content_id: str,
         start_time: int,
         end_time: int,
         epg_id: Optional[str] = None,
@@ -706,7 +706,7 @@ class StreamingProvider(ABC):
         Get DRM configurations for catchup content.
 
         Args:
-            channel_id: Channel identifier
+            content_id: Channel identifier
             start_time: Start time as Unix timestamp
             end_time: End time as Unix timestamp
             epg_id: Optional EPG event ID (might be needed for DRM licensing)
@@ -720,24 +720,24 @@ class StreamingProvider(ABC):
         """
         if not self.supports_catchup:
             logger.debug(f"{self.provider_name}: Catchup not supported, falling back to live DRM")
-            return self.get_drm(channel_id, **kwargs)
+            return self.get_drm(content_id, **kwargs)
 
         logger.debug(
             f"{self.provider_name}: get_catchup_drm not implemented, "
             f"using live DRM configuration"
         )
-        return self.get_drm(channel_id, **kwargs)
+        return self.get_drm(content_id, **kwargs)
 
     # ============================================================================
     # CATCHUP HELPER METHODS
     # ============================================================================
 
-    def get_catchup_window_for_channel(self, channel_id: str) -> int:
+    def get_catchup_window_for_channel(self, content_id: str) -> int:
         """
         Get catchup window for a specific channel in HOURS.
 
         Args:
-            channel_id: Channel identifier
+            content_id: Channel identifier
 
         Returns:
             int: Catchup window in hours for this channel
