@@ -23,6 +23,15 @@ class Event(Content):
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
     status: EventStatus = EventStatus.SCHEDULED
+    subtitle: Optional[str] = None           # secondaryTitle
+    original_name: Optional[str] = None      # originalName
+    competition: Optional[str] = None        # txCompetition
+    venue: Optional[str] = None              # txEvent
+    gender: Optional[str] = None             # txGender
+    discipline: Optional[str] = None         # txDiscipline
+    age_category: Optional[str] = None       # txAge
+    master_event: Optional[str] = None       # txMaster-sporting-event
+    channel: Optional[str] = None            # primaryChannel
 
     def __post_init__(self):
         if self.status == EventStatus.SCHEDULED and self.start_time and self.end_time:

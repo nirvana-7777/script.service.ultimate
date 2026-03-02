@@ -674,6 +674,68 @@ class DiscoveryProvider(StreamingProvider):
                             sport = page_included.get(sport_key, {})
                             genre = sport.get("attributes", {}).get("name")
 
+                        # Get competition (txCompetition)
+                        competition = None
+                        competition_refs = relationships.get("txCompetition", {}).get("data", [])
+                        if competition_refs:
+                            competition_key = f"{competition_refs[0].get('type')}:{competition_refs[0].get('id')}"
+                            competition_node = page_included.get(competition_key, {})
+                            competition = competition_node.get("attributes", {}).get("name")
+
+                        # Get venue/location (txEvent)
+                        venue = None
+                        venue_refs = relationships.get("txEvent", {}).get("data", [])
+                        if venue_refs:
+                            venue_key = f"{venue_refs[0].get('type')}:{venue_refs[0].get('id')}"
+                            venue_node = page_included.get(venue_key, {})
+                            venue = venue_node.get("attributes", {}).get("name")
+
+                        # Get gender (txGender)
+                        gender = None
+                        gender_refs = relationships.get("txGender", {}).get("data", [])
+                        if gender_refs:
+                            gender_key = f"{gender_refs[0].get('type')}:{gender_refs[0].get('id')}"
+                            gender_node = page_included.get(gender_key, {})
+                            gender_val = gender_node.get("attributes", {}).get("name")
+                            if gender_val and gender_val != ".":
+                                gender = gender_val
+
+                        # Get discipline (txDiscipline)
+                        discipline = None
+                        discipline_refs = relationships.get("txDiscipline", {}).get("data", [])
+                        if discipline_refs:
+                            discipline_key = f"{discipline_refs[0].get('type')}:{discipline_refs[0].get('id')}"
+                            discipline_node = page_included.get(discipline_key, {})
+                            discipline_val = discipline_node.get("attributes", {}).get("name")
+                            if discipline_val and discipline_val != ".":
+                                discipline = discipline_val
+
+                        # Get age category (txAge)
+                        age_category = None
+                        age_refs = relationships.get("txAge", {}).get("data", [])
+                        if age_refs:
+                            age_key = f"{age_refs[0].get('type')}:{age_refs[0].get('id')}"
+                            age_node = page_included.get(age_key, {})
+                            age_val = age_node.get("attributes", {}).get("name")
+                            if age_val and age_val != ".":
+                                age_category = age_val
+
+                        # Get master sporting event (txMaster-sporting-event)
+                        master_event = None
+                        master_refs = relationships.get("txMaster-sporting-event", {}).get("data", [])
+                        if master_refs:
+                            master_key = f"{master_refs[0].get('type')}:{master_refs[0].get('id')}"
+                            master_node = page_included.get(master_key, {})
+                            master_event = master_node.get("attributes", {}).get("name")
+
+                        # Get primary channel
+                        channel = None
+                        channel_ref = relationships.get("primaryChannel", {}).get("data")
+                        if channel_ref:
+                            channel_key = f"{channel_ref.get('type')}:{channel_ref.get('id')}"
+                            channel_node = page_included.get(channel_key, {})
+                            channel = channel_node.get("attributes", {}).get("name")
+
                         # Get audio tracks for language
                         audio_tracks = attributes.get("audioTracks", [])
                         language = "de"
@@ -682,9 +744,6 @@ class DiscoveryProvider(StreamingProvider):
                                 language = "de"
                             elif "Englisch" in audio_tracks:
                                 language = "en"
-
-#                        logger.debug(
-#                            f"Creating event: {attributes.get('name')} | material_type={material_type} | status={status} | start={start_dt} | end={end_dt}")
 
                         # Create Event object
                         event = Event(
@@ -704,6 +763,15 @@ class DiscoveryProvider(StreamingProvider):
                             start_time=start_dt,
                             end_time=end_dt,
                             status=status,
+                            subtitle=attributes.get("secondaryTitle"),
+                            original_name=attributes.get("originalName"),
+                            competition=competition,
+                            venue=venue,
+                            gender=gender,
+                            discipline=discipline,
+                            age_category=age_category,
+                            master_event=master_event,
+                            channel=channel,
                         )
 
                         events.append(event)
