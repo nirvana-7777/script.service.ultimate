@@ -478,12 +478,6 @@ class DiscoveryProvider(StreamingProvider):
                 "page[items.number]": kwargs.get("page", 1),
             }
 
-            # Add time filters if provided
-            if start_time:
-                params["filter[from]"] = start_time.isoformat()
-            if end_time:
-                params["filter[to]"] = end_time.isoformat()
-
             logger.debug(f"Fetching schedule route: {url}")
             response = self.http_manager.get(
                 url,
@@ -535,7 +529,7 @@ class DiscoveryProvider(StreamingProvider):
                 logger.error("No collection found in page")
                 return events
 
-            # Fetch the collection with minimal includes first
+            # Fetch the collection with items included
             collection_url = f"{self.authenticator.cms_collections_endpoint}/{collection_id}"
             collection_params = {
                 "include": "items",  # Only request items, not nested relationships
@@ -553,51 +547,25 @@ class DiscoveryProvider(StreamingProvider):
             collection_response.raise_for_status()
             collection_data = collection_response.json()
 
-            # Build new lookup for collection items
-            included_by_id.clear()
+            # Build lookup for collection items and their videos
+            # The video data should be in the included array
+            video_items = {}
+
             for item in collection_data.get("included", []):
                 item_id = item.get("id")
                 item_type = item.get("type")
                 if item_id and item_type:
-                    key = f"{item_type}:{item_id}"
-                    included_by_id[key] = item
+                    if item_type == "video":
+                        video_items[item_id] = item
 
-            # Extract collection items and get their video IDs
-            collection_items = collection_data.get("data", {}).get("relationships", {}).get("items", {}).get("data", [])
-            video_ids = []
-
-            for item_ref in collection_items:
-                item_key = f"{item_ref.get('type')}:{item_ref.get('id')}"
-                collection_item = included_by_id.get(item_key)
-                if collection_item:
-                    video_ref = collection_item.get("relationships", {}).get("video", {}).get("data")
-                    if video_ref:
-                        video_ids.append(video_ref.get("id"))
-
-            if not video_ids:
+            if not video_items:
                 logger.info("No videos found in collection")
                 return events
 
-            # Now fetch each video individually to get full details
-            for video_id in video_ids:
+            # Process each video
+            for video_id, video_data in video_items.items():
                 try:
-                    # Build video URL (you may need to add this endpoint to authenticator)
-                    video_url = f"{self.authenticator.cms_home_endpoint.rstrip('/home')}/videos/{video_id}"
-                    video_params = {
-                        "include": "badges,primaryChannel,images,edit,txSports",
-                        "decorators": "viewingHistory,isFavorite,contentAction,badges",
-                    }
-
-                    video_response = self.http_manager.get(
-                        video_url,
-                        operation="cms",
-                        headers=headers,
-                        params=video_params,
-                    )
-                    video_response.raise_for_status()
-                    video_data = video_response.json().get("data", {})
-
-                    # Extract event data
+                    # Extract event data from video
                     attributes = video_data.get("attributes", {})
                     relationships = video_data.get("relationships", {})
 
@@ -612,6 +580,9 @@ class DiscoveryProvider(StreamingProvider):
                     for badge_ref in badge_refs:
                         if badge_ref.get("id") == "live":
                             status = EventStatus.LIVE
+                            break
+                        elif badge_ref.get("id") == "release-state-upcoming":
+                            status = EventStatus.SCHEDULED
                             break
 
                     # Parse start and end times
@@ -639,11 +610,12 @@ class DiscoveryProvider(StreamingProvider):
                         if now > end_dt:
                             status = EventStatus.ENDED
 
-                    # Extract logo URL from images
+                    # Extract logo URL from images if available
                     logo_url = None
                     image_refs = relationships.get("images", {}).get("data", [])
                     if image_refs:
-                        # You'd need to fetch image details similarly
+                        # Images might be in included, but we don't have them here
+                        # You could make a separate request for images if needed
                         pass
 
                     # Get edit ID for streaming
@@ -654,7 +626,8 @@ class DiscoveryProvider(StreamingProvider):
                     genre = None
                     sport_refs = relationships.get("txSports", {}).get("data", [])
                     if sport_refs:
-                        # You'd need to fetch sport details
+                        # Sports might be in included, but we don't have them here
+                        # You could extract the sport name from the video title/description
                         pass
 
                     # Get audio tracks for language
@@ -669,7 +642,7 @@ class DiscoveryProvider(StreamingProvider):
                     # Create Event object
                     event = Event(
                         name=attributes.get("name", "Unknown Event"),
-                        content_id=video_data.get("id", ""),
+                        content_id=video_id,
                         provider=self.provider_name,
                         logo_url=logo_url,
                         mode="live" if attributes.get("videoType") == "LIVE" else "vod",
