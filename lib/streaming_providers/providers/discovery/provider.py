@@ -478,6 +478,12 @@ class DiscoveryProvider(StreamingProvider):
                 "page[items.number]": kwargs.get("page", 1),
             }
 
+            # Add time filters if provided
+            if start_time:
+                params["filter[from]"] = start_time.isoformat()
+            if end_time:
+                params["filter[to]"] = end_time.isoformat()
+
             logger.debug(f"Fetching schedule route: {url}")
             response = self.http_manager.get(
                 url,
@@ -529,10 +535,11 @@ class DiscoveryProvider(StreamingProvider):
                 logger.error("No collection found in page")
                 return events
 
-            # Fetch the collection with items included
+            # Fetch the collection with default includes
             collection_url = f"{self.authenticator.cms_collections_endpoint}/{collection_id}"
             collection_params = {
-                "include": "items",  # Get collection items
+                "include": "default",  # Use "default" instead of "items" to get all related data
+                "decorators": "viewingHistory,isFavorite,contentAction,badges",
                 "page[items.size]": kwargs.get("page_size", 30),
                 "page[items.number]": kwargs.get("page", 1),
             }
@@ -547,7 +554,7 @@ class DiscoveryProvider(StreamingProvider):
             collection_response.raise_for_status()
             collection_data = collection_response.json()
 
-            # Build lookup for included items
+            # Build new lookup for collection items and all related data
             included_by_id.clear()
             for item in collection_data.get("included", []):
                 item_id = item.get("id")
@@ -598,7 +605,18 @@ class DiscoveryProvider(StreamingProvider):
                     status = EventStatus.SCHEDULED
                     badge_refs = relationships.get("badges", {}).get("data", [])
                     for badge_ref in badge_refs:
+                        # Check if it's a direct badge reference or an overlay
                         if badge_ref.get("id") == "live":
+                            status = EventStatus.LIVE
+                            break
+                        elif badge_ref.get("id") == "release-state-upcoming":
+                            status = EventStatus.SCHEDULED
+                            break
+
+                        # Also check overlays for live status
+                        overlay_key = f"{badge_ref.get('type')}:{badge_ref.get('id')}"
+                        overlay = included_by_id.get(overlay_key, {})
+                        if overlay.get("id") == "live:default":
                             status = EventStatus.LIVE
                             break
 
@@ -683,6 +701,15 @@ class DiscoveryProvider(StreamingProvider):
                 except Exception as e:
                     logger.error(f"Error processing collection item: {e}")
                     continue
+
+            # Handle pagination if needed
+            meta = collection_data.get("meta", {})
+            total_pages = meta.get("itemsTotalPages", 1)
+            current_page = meta.get("itemsCurrentPage", 1)
+
+            if current_page < total_pages and kwargs.get("fetch_all_pages", False):
+                kwargs["page"] = current_page + 1
+                events.extend(self.get_events(start_time, end_time, **kwargs))
 
             logger.info(f"Found {len(events)} events")
 
