@@ -683,8 +683,8 @@ class DiscoveryProvider(StreamingProvider):
                             elif "Englisch" in audio_tracks:
                                 language = "en"
 
-                        logger.debug(
-                            f"Creating event: {attributes.get('name')} | material_type={material_type} | status={status} | start={start_dt} | end={end_dt}")
+#                        logger.debug(
+#                            f"Creating event: {attributes.get('name')} | material_type={material_type} | status={status} | start={start_dt} | end={end_dt}")
 
                         # Create Event object
                         event = Event(
@@ -696,7 +696,7 @@ class DiscoveryProvider(StreamingProvider):
                             session_manifest=True,
                             manifest_script=f"editid={edit_id}" if edit_id else None,
                             cdm=f"editid={edit_id}" if edit_id else None,
-                            content_type="LIVE",
+                            content_type="EVENT",
                             description=attributes.get("description", ""),
                             genre=genre,
                             language=language,
