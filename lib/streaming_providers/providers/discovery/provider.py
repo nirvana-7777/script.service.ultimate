@@ -629,6 +629,7 @@ class DiscoveryProvider(StreamingProvider):
 
                     if schedule_start:
                         try:
+                            # Parse ISO format and ensure timezone awareness
                             start_dt = datetime.fromisoformat(schedule_start.replace('Z', '+00:00'))
                         except (ValueError, TypeError):
                             pass
@@ -641,9 +642,18 @@ class DiscoveryProvider(StreamingProvider):
 
                     # Auto-update status based on current time if not live
                     if status != EventStatus.LIVE and start_dt and end_dt:
-                        now = datetime.now(start_dt.tzinfo if start_dt.tzinfo else None)
+                        # Get current time with timezone if start_dt has timezone
+                        if start_dt.tzinfo is not None:
+                            # Use timezone-aware datetime
+                            now = datetime.now(start_dt.tzinfo)
+                        else:
+                            # Use timezone-naive datetime
+                            now = datetime.now()
+
                         if now > end_dt:
                             status = EventStatus.ENDED
+                        elif start_dt <= now <= end_dt:
+                            status = EventStatus.LIVE
 
                     # Extract logo URL from images if available
                     logo_url = None
