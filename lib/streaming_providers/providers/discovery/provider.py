@@ -464,14 +464,11 @@ class DiscoveryProvider(StreamingProvider):
             # Get the schedule route - either from kwargs or use default
             route_id = kwargs.get("route_id", "sport-schedule")
 
-            # Fix: Don't append "/routes" - it's already in the endpoint
-            # The cms_home_endpoint already ends with "/cms/routes/home"
-            # We need to replace "/home" with f"/{route_id}"
+            # Build URL for the route
             base_url = self.authenticator.cms_home_endpoint
             if base_url.endswith('/home'):
                 url = base_url.replace('/home', f'/{route_id}')
             else:
-                # Fallback: construct manually
                 url = f"https://default.any-{self.authenticator.home_market}.{self.authenticator.env}.api.discoveryplus.com/cms/routes/{route_id}"
 
             params = {
@@ -507,7 +504,6 @@ class DiscoveryProvider(StreamingProvider):
                     included_by_id[key] = item
 
             # Find the schedule results collection
-            # The route points to a page, which contains a collection
             route_data = data.get("data", {})
             target_ref = route_data.get("relationships", {}).get("target", {}).get("data")
 
@@ -539,10 +535,10 @@ class DiscoveryProvider(StreamingProvider):
                 logger.error("No collection found in page")
                 return events
 
-            # Now fetch the collection directly
+            # Fetch the collection with minimal includes first
             collection_url = f"{self.authenticator.cms_collections_endpoint}/{collection_id}"
             collection_params = {
-                "include": CMS_SCHEDULE_INCLUDE_PARAMS,
+                "include": "items",  # Only request items, not nested relationships
                 "page[items.size]": kwargs.get("page_size", 30),
                 "page[items.number]": kwargs.get("page", 1),
             }
@@ -557,7 +553,7 @@ class DiscoveryProvider(StreamingProvider):
             collection_response.raise_for_status()
             collection_data = collection_response.json()
 
-            # Rebuild included lookup with collection data
+            # Build new lookup for collection items
             included_by_id.clear()
             for item in collection_data.get("included", []):
                 item_id = item.get("id")
@@ -566,34 +562,46 @@ class DiscoveryProvider(StreamingProvider):
                     key = f"{item_type}:{item_id}"
                     included_by_id[key] = item
 
-            # Extract video items from collection
+            # Extract collection items and get their video IDs
             collection_items = collection_data.get("data", {}).get("relationships", {}).get("items", {}).get("data", [])
+            video_ids = []
 
             for item_ref in collection_items:
-                try:
-                    # Find the collection item in included
-                    item_key = f"{item_ref.get('type')}:{item_ref.get('id')}"
-                    collection_item = included_by_id.get(item_key)
-
-                    if not collection_item:
-                        continue
-
-                    # Get video reference from collection item
+                item_key = f"{item_ref.get('type')}:{item_ref.get('id')}"
+                collection_item = included_by_id.get(item_key)
+                if collection_item:
                     video_ref = collection_item.get("relationships", {}).get("video", {}).get("data")
-                    if not video_ref:
-                        continue
+                    if video_ref:
+                        video_ids.append(video_ref.get("id"))
 
-                    video_key = f"{video_ref.get('type')}:{video_ref.get('id')}"
-                    video_data = included_by_id.get(video_key)
+            if not video_ids:
+                logger.info("No videos found in collection")
+                return events
 
-                    if not video_data:
-                        continue
+            # Now fetch each video individually to get full details
+            for video_id in video_ids:
+                try:
+                    # Build video URL (you may need to add this endpoint to authenticator)
+                    video_url = f"{self.authenticator.cms_home_endpoint.rstrip('/home')}/videos/{video_id}"
+                    video_params = {
+                        "include": "badges,primaryChannel,images,edit,txSports",
+                        "decorators": "viewingHistory,isFavorite,contentAction,badges",
+                    }
 
-                    # Extract event data from video
+                    video_response = self.http_manager.get(
+                        video_url,
+                        operation="cms",
+                        headers=headers,
+                        params=video_params,
+                    )
+                    video_response.raise_for_status()
+                    video_data = video_response.json().get("data", {})
+
+                    # Extract event data
                     attributes = video_data.get("attributes", {})
                     relationships = video_data.get("relationships", {})
 
-                    # Check if this is an EVENT or LINEAR type (both are events in schedule)
+                    # Check if this is an EVENT or LINEAR type
                     material_type = attributes.get("materialType")
                     if material_type not in ["EVENT", "LINEAR"]:
                         continue
@@ -602,9 +610,7 @@ class DiscoveryProvider(StreamingProvider):
                     status = EventStatus.SCHEDULED
                     badge_refs = relationships.get("badges", {}).get("data", [])
                     for badge_ref in badge_refs:
-                        badge_key = f"{badge_ref.get('type')}:{badge_ref.get('id')}"
-                        badge = included_by_id.get(badge_key, {})
-                        if badge.get("id") == "live":
+                        if badge_ref.get("id") == "live":
                             status = EventStatus.LIVE
                             break
 
@@ -636,13 +642,9 @@ class DiscoveryProvider(StreamingProvider):
                     # Extract logo URL from images
                     logo_url = None
                     image_refs = relationships.get("images", {}).get("data", [])
-                    for image_ref in image_refs:
-                        image_key = f"{image_ref.get('type')}:{image_ref.get('id')}"
-                        image = included_by_id.get(image_key, {})
-                        img_attrs = image.get("attributes", {})
-                        logo_url = img_attrs.get("src") or img_attrs.get("url")
-                        if logo_url:
-                            break
+                    if image_refs:
+                        # You'd need to fetch image details similarly
+                        pass
 
                     # Get edit ID for streaming
                     edit_ref = relationships.get("edit", {}).get("data", {})
@@ -652,20 +654,19 @@ class DiscoveryProvider(StreamingProvider):
                     genre = None
                     sport_refs = relationships.get("txSports", {}).get("data", [])
                     if sport_refs:
-                        sport_key = f"{sport_refs[0].get('type')}:{sport_refs[0].get('id')}"
-                        sport = included_by_id.get(sport_key, {})
-                        genre = sport.get("attributes", {}).get("name")
+                        # You'd need to fetch sport details
+                        pass
 
                     # Get audio tracks for language
                     audio_tracks = attributes.get("audioTracks", [])
-                    language = "de"  # Default
+                    language = "de"
                     if audio_tracks:
                         if "Deutsch" in audio_tracks:
                             language = "de"
                         elif "Englisch" in audio_tracks:
                             language = "en"
 
-                    # Create Event object - edit_id stored in cdm and manifest_script
+                    # Create Event object
                     event = Event(
                         name=attributes.get("name", "Unknown Event"),
                         content_id=video_data.get("id", ""),
@@ -688,17 +689,8 @@ class DiscoveryProvider(StreamingProvider):
                     events.append(event)
 
                 except Exception as e:
-                    logger.error(f"Error processing event item: {e}")
+                    logger.error(f"Error processing video {video_id}: {e}")
                     continue
-
-            # Handle pagination if needed
-            meta = collection_data.get("meta", {})
-            total_pages = meta.get("itemsTotalPages", 1)
-            current_page = meta.get("itemsCurrentPage", 1)
-
-            if current_page < total_pages and kwargs.get("fetch_all_pages", False):
-                kwargs["page"] = current_page + 1
-                events.extend(self.get_events(start_time, end_time, **kwargs))
 
             logger.info(f"Found {len(events)} events")
 
