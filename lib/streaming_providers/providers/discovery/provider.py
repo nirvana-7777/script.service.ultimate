@@ -534,9 +534,8 @@ class DiscoveryProvider(StreamingProvider):
                 logger.error("No collection found in page")
                 return events
 
-            # Fetch all pages of the collection
+            # Fetch and process all pages of the collection
             collection_url = f"{self.authenticator.cms_collections_endpoint}/{collection_id}"
-            all_collection_items = []
             current_page = 1
 
             while True:
@@ -557,170 +556,165 @@ class DiscoveryProvider(StreamingProvider):
                 collection_response.raise_for_status()
                 collection_data = collection_response.json()
 
-                # Build/extend lookup for included items
+                # Build lookup for this page's included items
+                page_included = {}
                 for item in collection_data.get("included", []):
                     item_id = item.get("id")
                     item_type = item.get("type")
                     if item_id and item_type:
                         key = f"{item_type}:{item_id}"
-                        included_by_id[key] = item
+                        page_included[key] = item
 
                 items = collection_data.get("data", {}).get("relationships", {}).get("items", {}).get("data", [])
-                all_collection_items.extend(items)
 
                 meta = collection_data.get("meta", {})
                 total_pages = meta.get("itemsTotalPages", 1)
                 logger.debug(f"Fetched collection page {current_page}/{total_pages} ({len(items)} items)")
 
+                # Process this page's items immediately while included data is available
+                for item_ref in items:
+                    try:
+                        item_key = f"{item_ref.get('type')}:{item_ref.get('id')}"
+                        collection_item = page_included.get(item_key)
+
+                        if not collection_item:
+                            continue
+
+                        # Get video reference from collection item
+                        video_ref = collection_item.get("relationships", {}).get("video", {}).get("data")
+                        if not video_ref:
+                            continue
+
+                        # Get video data from included
+                        video_key = f"{video_ref.get('type')}:{video_ref.get('id')}"
+                        video_data = page_included.get(video_key)
+
+                        if not video_data:
+                            continue
+
+                        # Extract event data from video
+                        attributes = video_data.get("attributes", {})
+                        relationships = video_data.get("relationships", {})
+
+                        # Only process EVENT materialType, skip LINEAR (channel feed duplicates)
+                        material_type = attributes.get("materialType")
+                        if material_type != "EVENT":
+                            continue
+
+                        # Determine event status from badges
+                        status = EventStatus.SCHEDULED
+                        badge_refs = relationships.get("badges", {}).get("data", [])
+                        for badge_ref in badge_refs:
+                            if badge_ref.get("id") == "live":
+                                status = EventStatus.LIVE
+                                break
+                            elif badge_ref.get("id") == "release-state-upcoming":
+                                status = EventStatus.SCHEDULED
+                                break
+
+                            # Also check overlays for live status
+                            overlay_key = f"{badge_ref.get('type')}:{badge_ref.get('id')}"
+                            overlay = page_included.get(overlay_key, {})
+                            if overlay.get("id") == "live:default":
+                                status = EventStatus.LIVE
+                                break
+
+                        # Parse start and end times
+                        schedule_start = attributes.get("scheduleStart")
+                        schedule_end = attributes.get("scheduleEnd")
+
+                        start_dt = None
+                        end_dt = None
+
+                        if schedule_start:
+                            try:
+                                start_dt = datetime.fromisoformat(schedule_start.replace('Z', '+00:00'))
+                            except (ValueError, TypeError):
+                                pass
+
+                        if schedule_end:
+                            try:
+                                end_dt = datetime.fromisoformat(schedule_end.replace('Z', '+00:00'))
+                            except (ValueError, TypeError):
+                                pass
+
+                        # Auto-update status based on current UTC time if not live
+                        if status != EventStatus.LIVE and start_dt and end_dt:
+                            from datetime import timezone
+                            now_utc = datetime.now(timezone.utc)
+
+                            if start_dt.tzinfo is None:
+                                start_dt = start_dt.replace(tzinfo=timezone.utc)
+                            if end_dt.tzinfo is None:
+                                end_dt = end_dt.replace(tzinfo=timezone.utc)
+
+                            if now_utc > end_dt:
+                                status = EventStatus.ENDED
+                            elif start_dt <= now_utc <= end_dt:
+                                status = EventStatus.LIVE
+
+                        # Extract logo URL from images if available
+                        logo_url = None
+                        image_refs = relationships.get("images", {}).get("data", [])
+                        if image_refs:
+                            image_key = f"{image_refs[0].get('type')}:{image_refs[0].get('id')}"
+                            image = page_included.get(image_key, {})
+                            img_attrs = image.get("attributes", {})
+                            logo_url = img_attrs.get("src") or img_attrs.get("url")
+
+                        # Get edit ID for streaming
+                        edit_ref = relationships.get("edit", {}).get("data", {})
+                        edit_id = edit_ref.get("id") if edit_ref else None
+
+                        # Get genre from txSports
+                        genre = None
+                        sport_refs = relationships.get("txSports", {}).get("data", [])
+                        if sport_refs:
+                            sport_key = f"{sport_refs[0].get('type')}:{sport_refs[0].get('id')}"
+                            sport = page_included.get(sport_key, {})
+                            genre = sport.get("attributes", {}).get("name")
+
+                        # Get audio tracks for language
+                        audio_tracks = attributes.get("audioTracks", [])
+                        language = "de"
+                        if audio_tracks:
+                            if "Deutsch" in audio_tracks:
+                                language = "de"
+                            elif "Englisch" in audio_tracks:
+                                language = "en"
+
+                        logger.debug(
+                            f"Creating event: {attributes.get('name')} | material_type={material_type} | status={status} | start={start_dt} | end={end_dt}")
+
+                        # Create Event object
+                        event = Event(
+                            name=attributes.get("name", "Unknown Event"),
+                            content_id=video_data.get("id", ""),
+                            provider=self.provider_name,
+                            logo_url=logo_url,
+                            mode="live" if attributes.get("videoType") == "LIVE" else "vod",
+                            session_manifest=True,
+                            manifest_script=f"editid={edit_id}" if edit_id else None,
+                            cdm=f"editid={edit_id}" if edit_id else None,
+                            content_type="LIVE",
+                            description=attributes.get("description", ""),
+                            genre=genre,
+                            language=language,
+                            country=self.country.upper(),
+                            start_time=start_dt,
+                            end_time=end_dt,
+                            status=status,
+                        )
+
+                        events.append(event)
+
+                    except Exception as e:
+                        logger.error(f"Error processing collection item: {e}")
+                        continue
+
                 if current_page >= total_pages:
                     break
                 current_page += 1
-
-            if not all_collection_items:
-                logger.info("No collection items found")
-                return events
-
-            # Process each collection item to get video data
-            for item_ref in all_collection_items:
-                try:
-                    # Get the collection item from included
-                    item_key = f"{item_ref.get('type')}:{item_ref.get('id')}"
-                    collection_item = included_by_id.get(item_key)
-
-                    if not collection_item:
-                        continue
-
-                    # Get video reference from collection item
-                    video_ref = collection_item.get("relationships", {}).get("video", {}).get("data")
-                    if not video_ref:
-                        continue
-
-                    # Get video data from included
-                    video_key = f"{video_ref.get('type')}:{video_ref.get('id')}"
-                    video_data = included_by_id.get(video_key)
-
-                    if not video_data:
-                        continue
-
-                    # Extract event data from video
-                    attributes = video_data.get("attributes", {})
-                    relationships = video_data.get("relationships", {})
-
-                    # Only process EVENT materialType, skip LINEAR (channel feed duplicates)
-                    material_type = attributes.get("materialType")
-                    if material_type != "EVENT":
-                        continue
-
-                    # Determine event status from badges
-                    status = EventStatus.SCHEDULED
-                    badge_refs = relationships.get("badges", {}).get("data", [])
-                    for badge_ref in badge_refs:
-                        if badge_ref.get("id") == "live":
-                            status = EventStatus.LIVE
-                            break
-                        elif badge_ref.get("id") == "release-state-upcoming":
-                            status = EventStatus.SCHEDULED
-                            break
-
-                        # Also check overlays for live status
-                        overlay_key = f"{badge_ref.get('type')}:{badge_ref.get('id')}"
-                        overlay = included_by_id.get(overlay_key, {})
-                        if overlay.get("id") == "live:default":
-                            status = EventStatus.LIVE
-                            break
-
-                    # Parse start and end times
-                    schedule_start = attributes.get("scheduleStart")
-                    schedule_end = attributes.get("scheduleEnd")
-
-                    start_dt = None
-                    end_dt = None
-
-                    if schedule_start:
-                        try:
-                            start_dt = datetime.fromisoformat(schedule_start.replace('Z', '+00:00'))
-                        except (ValueError, TypeError):
-                            pass
-
-                    if schedule_end:
-                        try:
-                            end_dt = datetime.fromisoformat(schedule_end.replace('Z', '+00:00'))
-                        except (ValueError, TypeError):
-                            pass
-
-                    # Auto-update status based on current UTC time if not live
-                    if status != EventStatus.LIVE and start_dt and end_dt:
-                        from datetime import timezone
-                        now_utc = datetime.now(timezone.utc)
-
-                        if start_dt.tzinfo is None:
-                            start_dt = start_dt.replace(tzinfo=timezone.utc)
-                        if end_dt.tzinfo is None:
-                            end_dt = end_dt.replace(tzinfo=timezone.utc)
-
-                        if now_utc > end_dt:
-                            status = EventStatus.ENDED
-                        elif start_dt <= now_utc <= end_dt:
-                            status = EventStatus.LIVE
-
-                    # Extract logo URL from images if available
-                    logo_url = None
-                    image_refs = relationships.get("images", {}).get("data", [])
-                    if image_refs:
-                        image_key = f"{image_refs[0].get('type')}:{image_refs[0].get('id')}"
-                        image = included_by_id.get(image_key, {})
-                        img_attrs = image.get("attributes", {})
-                        logo_url = img_attrs.get("src") or img_attrs.get("url")
-
-                    # Get edit ID for streaming
-                    edit_ref = relationships.get("edit", {}).get("data", {})
-                    edit_id = edit_ref.get("id") if edit_ref else None
-
-                    # Get genre from txSports
-                    genre = None
-                    sport_refs = relationships.get("txSports", {}).get("data", [])
-                    if sport_refs:
-                        sport_key = f"{sport_refs[0].get('type')}:{sport_refs[0].get('id')}"
-                        sport = included_by_id.get(sport_key, {})
-                        genre = sport.get("attributes", {}).get("name")
-
-                    # Get audio tracks for language
-                    audio_tracks = attributes.get("audioTracks", [])
-                    language = "de"
-                    if audio_tracks:
-                        if "Deutsch" in audio_tracks:
-                            language = "de"
-                        elif "Englisch" in audio_tracks:
-                            language = "en"
-
-                    logger.debug(
-                        f"Creating event: {attributes.get('name')} | material_type={material_type} | status={status} | start={start_dt} | end={end_dt}")
-
-                    # Create Event object
-                    event = Event(
-                        name=attributes.get("name", "Unknown Event"),
-                        content_id=video_data.get("id", ""),
-                        provider=self.provider_name,
-                        logo_url=logo_url,
-                        mode="live" if attributes.get("videoType") == "LIVE" else "vod",
-                        session_manifest=True,
-                        manifest_script=f"editid={edit_id}" if edit_id else None,
-                        cdm=f"editid={edit_id}" if edit_id else None,
-                        content_type="LIVE",
-                        description=attributes.get("description", ""),
-                        genre=genre,
-                        language=language,
-                        country=self.country.upper(),
-                        start_time=start_dt,
-                        end_time=end_dt,
-                        status=status,
-                    )
-
-                    events.append(event)
-
-                except Exception as e:
-                    logger.error(f"Error processing collection item: {e}")
-                    continue
 
             logger.info(f"Found {len(events)} events")
 
