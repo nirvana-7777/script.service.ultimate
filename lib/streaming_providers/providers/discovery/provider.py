@@ -451,7 +451,6 @@ class DiscoveryProvider(StreamingProvider):
             **kwargs: Additional parameters including:
                 - route_id: Optional route ID (default: sport-schedule route)
                 - page_size: Number of items per page
-                - page: Page number
 
         Returns:
             List of Event objects
@@ -472,10 +471,10 @@ class DiscoveryProvider(StreamingProvider):
                 url = f"https://default.any-{self.authenticator.home_market}.{self.authenticator.env}.api.discoveryplus.com/cms/routes/{route_id}"
 
             params = {
-                "include": CMS_INCLUDE_PARAMS,  # "default" from constants
+                "include": CMS_INCLUDE_PARAMS,
                 "decorators": "viewingHistory,isFavorite,contentAction,badges",
                 "page[items.size]": kwargs.get("page_size", 30),
-                "page[items.number]": kwargs.get("page", 1),
+                "page[items.number]": 1,
             }
 
             # Add time filters if provided
@@ -535,43 +534,54 @@ class DiscoveryProvider(StreamingProvider):
                 logger.error("No collection found in page")
                 return events
 
-            # Fetch the collection with default includes
+            # Fetch all pages of the collection
             collection_url = f"{self.authenticator.cms_collections_endpoint}/{collection_id}"
-            collection_params = {
-                "include": "default",  # Use "default" instead of "items" to get all related data
-                "decorators": "viewingHistory,isFavorite,contentAction,badges",
-                "page[items.size]": kwargs.get("page_size", 30),
-                "page[items.number]": kwargs.get("page", 1),
-            }
+            all_collection_items = []
+            current_page = 1
 
-            logger.debug(f"Fetching schedule collection: {collection_url}")
-            collection_response = self.http_manager.get(
-                collection_url,
-                operation="cms",
-                headers=headers,
-                params=collection_params,
-            )
-            collection_response.raise_for_status()
-            collection_data = collection_response.json()
+            while True:
+                collection_params = {
+                    "include": "default",
+                    "decorators": "viewingHistory,isFavorite,contentAction,badges",
+                    "page[items.size]": kwargs.get("page_size", 30),
+                    "page[items.number]": current_page,
+                }
 
-            # Build new lookup for collection items and all related data
-            included_by_id.clear()
-            for item in collection_data.get("included", []):
-                item_id = item.get("id")
-                item_type = item.get("type")
-                if item_id and item_type:
-                    key = f"{item_type}:{item_id}"
-                    included_by_id[key] = item
+                logger.debug(f"Fetching schedule collection page {current_page}: {collection_url}")
+                collection_response = self.http_manager.get(
+                    collection_url,
+                    operation="cms",
+                    headers=headers,
+                    params=collection_params,
+                )
+                collection_response.raise_for_status()
+                collection_data = collection_response.json()
 
-            # Get collection items from the collection's data
-            collection_items = collection_data.get("data", {}).get("relationships", {}).get("items", {}).get("data", [])
+                # Build/extend lookup for included items
+                for item in collection_data.get("included", []):
+                    item_id = item.get("id")
+                    item_type = item.get("type")
+                    if item_id and item_type:
+                        key = f"{item_type}:{item_id}"
+                        included_by_id[key] = item
 
-            if not collection_items:
+                items = collection_data.get("data", {}).get("relationships", {}).get("items", {}).get("data", [])
+                all_collection_items.extend(items)
+
+                meta = collection_data.get("meta", {})
+                total_pages = meta.get("itemsTotalPages", 1)
+                logger.debug(f"Fetched collection page {current_page}/{total_pages} ({len(items)} items)")
+
+                if current_page >= total_pages:
+                    break
+                current_page += 1
+
+            if not all_collection_items:
                 logger.info("No collection items found")
                 return events
 
             # Process each collection item to get video data
-            for item_ref in collection_items:
+            for item_ref in all_collection_items:
                 try:
                     # Get the collection item from included
                     item_key = f"{item_ref.get('type')}:{item_ref.get('id')}"
@@ -596,16 +606,15 @@ class DiscoveryProvider(StreamingProvider):
                     attributes = video_data.get("attributes", {})
                     relationships = video_data.get("relationships", {})
 
-                    # Check if this is an EVENT or LINEAR type
+                    # Only process EVENT materialType, skip LINEAR (channel feed duplicates)
                     material_type = attributes.get("materialType")
-                    if material_type not in ["EVENT", "LINEAR"]:
+                    if material_type != "EVENT":
                         continue
 
                     # Determine event status from badges
                     status = EventStatus.SCHEDULED
                     badge_refs = relationships.get("badges", {}).get("data", [])
                     for badge_ref in badge_refs:
-                        # Check if it's a direct badge reference or an overlay
                         if badge_ref.get("id") == "live":
                             status = EventStatus.LIVE
                             break
@@ -644,7 +653,6 @@ class DiscoveryProvider(StreamingProvider):
                         from datetime import timezone
                         now_utc = datetime.now(timezone.utc)
 
-                        # Ensure start_dt and end_dt are timezone-aware
                         if start_dt.tzinfo is None:
                             start_dt = start_dt.replace(tzinfo=timezone.utc)
                         if end_dt.tzinfo is None:
@@ -659,7 +667,6 @@ class DiscoveryProvider(StreamingProvider):
                     logo_url = None
                     image_refs = relationships.get("images", {}).get("data", [])
                     if image_refs:
-                        # Get first image
                         image_key = f"{image_refs[0].get('type')}:{image_refs[0].get('id')}"
                         image = included_by_id.get(image_key, {})
                         img_attrs = image.get("attributes", {})
@@ -686,7 +693,8 @@ class DiscoveryProvider(StreamingProvider):
                         elif "Englisch" in audio_tracks:
                             language = "en"
 
-                    logger.debug(f"Creating event: {attributes.get('name')} | material_type={material_type} | status={status} | start={start_dt} | end={end_dt}")
+                    logger.debug(
+                        f"Creating event: {attributes.get('name')} | material_type={material_type} | status={status} | start={start_dt} | end={end_dt}")
 
                     # Create Event object
                     event = Event(
@@ -710,19 +718,9 @@ class DiscoveryProvider(StreamingProvider):
 
                     events.append(event)
 
-
                 except Exception as e:
                     logger.error(f"Error processing collection item: {e}")
                     continue
-
-            # Handle pagination if needed
-            meta = collection_data.get("meta", {})
-            total_pages = meta.get("itemsTotalPages", 1)
-            current_page = meta.get("itemsCurrentPage", 1)
-
-            if current_page < total_pages and kwargs.get("fetch_all_pages", False):
-                kwargs["page"] = current_page + 1
-                events.extend(self.get_events(start_time, end_time, **kwargs))
 
             logger.info(f"Found {len(events)} events")
 
