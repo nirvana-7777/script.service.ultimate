@@ -123,6 +123,7 @@ DEFAULT_COUNTRY: Final[str] = "de"
 
 CMS_INCLUDE_PARAMS: Final[str] = "default"
 CMS_PAGE_SIZE: Final[int] = 50
+CMS_SCHEDULE_INCLUDE_PARAMS: Final[str] = "items.video.items.video.badges,items.video.primaryChannel,items.video.images,items.video.edit"
 
 # Known collection IDs for TV channels (will be discovered dynamically, but these are fallbacks)
 CHANNEL_COLLECTIONS: Final[Dict[str, List[str]]] = {

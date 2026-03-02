@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import ClassVar, Dict, List, Optional, Any
 
 from ...base.models.proxy_models import ProxyConfig
-from ...base.models import DRMConfig, DRMSystem, LicenseConfig,StreamingChannel, Event
+from ...base.models import DRMConfig, DRMSystem, LicenseConfig,StreamingChannel, Event, EventStatus
 from ...base.provider import AuthType, StreamingProvider
 from ...base.utils.logger import logger
 
@@ -35,6 +35,7 @@ from .constants import (
     SUPPORTED_AUTH_TYPES,
     SUPPORTED_COUNTRIES,
     CMS_INCLUDE_PARAMS,
+    CMS_SCHEDULE_INCLUDE_PARAMS,
     CMS_PAGE_SIZE,
     CHANNEL_COLLECTIONS,
     CHANNEL_ITEM_TYPES,
@@ -441,7 +442,264 @@ class DiscoveryProvider(StreamingProvider):
             end_time: Optional[datetime] = None,
             **kwargs,
     ) -> List[Event]:
-        return []
+        """
+        Fetch events from Discovery+ schedule.
+
+        Args:
+            start_time: Optional start time filter
+            end_time: Optional end time filter
+            **kwargs: Additional parameters including:
+                - route_id: Optional route ID (default: sport-schedule route)
+                - page_size: Number of items per page
+                - page: Page number
+
+        Returns:
+            List of Event objects
+        """
+        events = []
+
+        try:
+            headers = self._get_auth_headers()
+
+            # Get the schedule route - either from kwargs or use default
+            route_id = kwargs.get("route_id", "sport-schedule")
+
+            # Build URL for the route
+            # Using the pattern from your example: /cms/routes/{route_id}
+            url = f"{self.authenticator.cms_home_endpoint.rstrip('/home')}/routes/{route_id}"
+
+            params = {
+                "include": CMS_INCLUDE_PARAMS,  # "default" from constants
+                "decorators": "viewingHistory,isFavorite,contentAction,badges",
+                "page[items.size]": kwargs.get("page_size", 30),
+                "page[items.number]": kwargs.get("page", 1),
+            }
+
+            # Add time filters if provided
+            if start_time:
+                params["filter[from]"] = start_time.isoformat()
+            if end_time:
+                params["filter[to]"] = end_time.isoformat()
+
+            logger.debug(f"Fetching schedule route: {url}")
+            response = self.http_manager.get(
+                url,
+                operation="cms",
+                headers=headers,
+                params=params,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            # Build lookup of included items
+            included_by_id = {}
+            for item in data.get("included", []):
+                item_id = item.get("id")
+                item_type = item.get("type")
+                if item_id and item_type:
+                    key = f"{item_type}:{item_id}"
+                    included_by_id[key] = item
+
+            # Find the schedule results collection
+            # The route points to a page, which contains a collection
+            route_data = data.get("data", {})
+            target_ref = route_data.get("relationships", {}).get("target", {}).get("data")
+
+            if not target_ref:
+                logger.error("No target page found in route response")
+                return events
+
+            page_key = f"{target_ref.get('type')}:{target_ref.get('id')}"
+            page = included_by_id.get(page_key)
+
+            if not page:
+                logger.error("Target page not found in included items")
+                return events
+
+            # Find the collection from page items
+            page_items = page.get("relationships", {}).get("items", {}).get("data", [])
+            collection_id = None
+
+            for page_item_ref in page_items:
+                page_item_key = f"{page_item_ref.get('type')}:{page_item_ref.get('id')}"
+                page_item = included_by_id.get(page_item_key)
+                if page_item:
+                    collection_ref = page_item.get("relationships", {}).get("collection", {}).get("data")
+                    if collection_ref:
+                        collection_id = collection_ref.get("id")
+                        break
+
+            if not collection_id:
+                logger.error("No collection found in page")
+                return events
+
+            # Now fetch the collection directly
+            collection_url = f"{self.authenticator.cms_collections_endpoint}/{collection_id}"
+            collection_params = {
+                "include": CMS_SCHEDULE_INCLUDE_PARAMS,
+                "page[items.size]": kwargs.get("page_size", 30),
+                "page[items.number]": kwargs.get("page", 1),
+            }
+
+            logger.debug(f"Fetching schedule collection: {collection_url}")
+            collection_response = self.http_manager.get(
+                collection_url,
+                operation="cms",
+                headers=headers,
+                params=collection_params,
+            )
+            collection_response.raise_for_status()
+            collection_data = collection_response.json()
+
+            # Rebuild included lookup with collection data
+            included_by_id.clear()
+            for item in collection_data.get("included", []):
+                item_id = item.get("id")
+                item_type = item.get("type")
+                if item_id and item_type:
+                    key = f"{item_type}:{item_id}"
+                    included_by_id[key] = item
+
+            # Extract video items from collection
+            collection_items = collection_data.get("data", {}).get("relationships", {}).get("items", {}).get("data", [])
+
+            for item_ref in collection_items:
+                try:
+                    # Find the collection item in included
+                    item_key = f"{item_ref.get('type')}:{item_ref.get('id')}"
+                    collection_item = included_by_id.get(item_key)
+
+                    if not collection_item:
+                        continue
+
+                    # Get video reference from collection item
+                    video_ref = collection_item.get("relationships", {}).get("video", {}).get("data")
+                    if not video_ref:
+                        continue
+
+                    video_key = f"{video_ref.get('type')}:{video_ref.get('id')}"
+                    video_data = included_by_id.get(video_key)
+
+                    if not video_data:
+                        continue
+
+                    # Extract event data from video
+                    attributes = video_data.get("attributes", {})
+                    relationships = video_data.get("relationships", {})
+
+                    # Check if this is an EVENT or LINEAR type (both are events in schedule)
+                    material_type = attributes.get("materialType")
+                    if material_type not in ["EVENT", "LINEAR"]:
+                        continue
+
+                    # Determine event status from badges
+                    status = EventStatus.SCHEDULED
+                    badge_refs = relationships.get("badges", {}).get("data", [])
+                    for badge_ref in badge_refs:
+                        badge_key = f"{badge_ref.get('type')}:{badge_ref.get('id')}"
+                        badge = included_by_id.get(badge_key, {})
+                        if badge.get("id") == "live":
+                            status = EventStatus.LIVE
+                            break
+
+                    # Parse start and end times
+                    schedule_start = attributes.get("scheduleStart")
+                    schedule_end = attributes.get("scheduleEnd")
+
+                    start_dt = None
+                    end_dt = None
+
+                    if schedule_start:
+                        try:
+                            start_dt = datetime.fromisoformat(schedule_start.replace('Z', '+00:00'))
+                        except (ValueError, TypeError):
+                            pass
+
+                    if schedule_end:
+                        try:
+                            end_dt = datetime.fromisoformat(schedule_end.replace('Z', '+00:00'))
+                        except (ValueError, TypeError):
+                            pass
+
+                    # Auto-update status based on current time if not live
+                    if status != EventStatus.LIVE and start_dt and end_dt:
+                        now = datetime.now(start_dt.tzinfo if start_dt.tzinfo else None)
+                        if now > end_dt:
+                            status = EventStatus.ENDED
+
+                    # Extract logo URL from images
+                    logo_url = None
+                    image_refs = relationships.get("images", {}).get("data", [])
+                    for image_ref in image_refs:
+                        image_key = f"{image_ref.get('type')}:{image_ref.get('id')}"
+                        image = included_by_id.get(image_key, {})
+                        img_attrs = image.get("attributes", {})
+                        logo_url = img_attrs.get("src") or img_attrs.get("url")
+                        if logo_url:
+                            break
+
+                    # Get edit ID for streaming
+                    edit_ref = relationships.get("edit", {}).get("data", {})
+                    edit_id = edit_ref.get("id") if edit_ref else None
+
+                    # Get genre from txSports
+                    genre = None
+                    sport_refs = relationships.get("txSports", {}).get("data", [])
+                    if sport_refs:
+                        sport_key = f"{sport_refs[0].get('type')}:{sport_refs[0].get('id')}"
+                        sport = included_by_id.get(sport_key, {})
+                        genre = sport.get("attributes", {}).get("name")
+
+                    # Get audio tracks for language
+                    audio_tracks = attributes.get("audioTracks", [])
+                    language = "de"  # Default
+                    if audio_tracks:
+                        if "Deutsch" in audio_tracks:
+                            language = "de"
+                        elif "Englisch" in audio_tracks:
+                            language = "en"
+
+                    # Create Event object
+                    event = Event(
+                        name=attributes.get("name", "Unknown Event"),
+                        content_id=video_data.get("id", ""),
+                        provider=self.provider_name,
+                        logo_url=logo_url,
+                        mode="live" if attributes.get("videoType") == "LIVE" else "vod",
+                        session_manifest=True,
+                        manifest_script=f"editid={edit_id}" if edit_id else None,
+                        cdm=f"editid={edit_id}" if edit_id else None,
+                        content_type="LIVE",
+                        description=attributes.get("description", ""),
+                        genre=genre,
+                        language=language,
+                        country=self.country.upper(),
+                        start_time=start_dt,
+                        end_time=end_dt,
+                        status=status,
+                    )
+
+                    events.append(event)
+
+                except Exception as e:
+                    logger.error(f"Error processing event item: {e}")
+                    continue
+
+            # Handle pagination if needed
+            meta = collection_data.get("meta", {})
+            total_pages = meta.get("itemsTotalPages", 1)
+            current_page = meta.get("itemsCurrentPage", 1)
+
+            if current_page < total_pages and kwargs.get("fetch_all_pages", False):
+                kwargs["page"] = current_page + 1
+                events.extend(self.get_events(start_time, end_time, **kwargs))
+
+            logger.info(f"Found {len(events)} events")
+
+        except Exception as e:
+            logger.error(f"Error fetching events: {e}")
+
+        return events
 
     def _extract_distribution_channels(
             self, data: Dict
