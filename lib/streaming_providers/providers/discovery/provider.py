@@ -644,6 +644,12 @@ class DiscoveryProvider(StreamingProvider):
                         from datetime import timezone
                         now_utc = datetime.now(timezone.utc)
 
+                        # Ensure start_dt and end_dt are timezone-aware
+                        if start_dt.tzinfo is None:
+                            start_dt = start_dt.replace(tzinfo=timezone.utc)
+                        if end_dt.tzinfo is None:
+                            end_dt = end_dt.replace(tzinfo=timezone.utc)
+
                         if now_utc > end_dt:
                             status = EventStatus.ENDED
                         elif start_dt <= now_utc <= end_dt:
