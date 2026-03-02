@@ -682,7 +682,7 @@ class DiscoveryProvider(StreamingProvider):
                     events.append(event)
 
                 except Exception as e:
-                    logger.error(f"Error processing event item: {e}")
+                    logger.error(f"Error processing events item: {e}")
                     continue
 
             # Handle pagination if needed
