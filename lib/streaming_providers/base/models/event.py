@@ -1,6 +1,6 @@
 # streaming_providers/base/models/event.py
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Dict, List, Optional
 
@@ -25,9 +25,8 @@ class Event(Content):
     status: EventStatus = EventStatus.SCHEDULED
 
     def __post_init__(self):
-        # Auto-derive status from times if left at default
         if self.status == EventStatus.SCHEDULED and self.start_time and self.end_time:
-            now = datetime.now()
+            now = datetime.now(timezone.utc)
             if self.start_time <= now <= self.end_time:
                 self.status = EventStatus.LIVE
             elif now > self.end_time:

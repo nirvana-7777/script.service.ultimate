@@ -10,7 +10,6 @@ import time
 import uuid
 import secrets
 import base64
-import traceback
 from datetime import datetime
 from typing import ClassVar, Dict, List, Optional, Any
 
@@ -687,6 +686,8 @@ class DiscoveryProvider(StreamingProvider):
                         elif "Englisch" in audio_tracks:
                             language = "en"
 
+                    logger.debug(f"Creating event: {attributes.get('name')} | material_type={material_type} | status={status} | start={start_dt} | end={end_dt}")
+
                     # Create Event object
                     event = Event(
                         name=attributes.get("name", "Unknown Event"),
@@ -711,11 +712,7 @@ class DiscoveryProvider(StreamingProvider):
 
 
                 except Exception as e:
-
                     logger.error(f"Error processing collection item: {e}")
-
-                    logger.error(traceback.format_exc())
-
                     continue
 
             # Handle pagination if needed
