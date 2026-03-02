@@ -10,6 +10,7 @@ import time
 import uuid
 import secrets
 import base64
+import traceback
 from datetime import datetime
 from typing import ClassVar, Dict, List, Optional, Any
 
@@ -708,8 +709,13 @@ class DiscoveryProvider(StreamingProvider):
 
                     events.append(event)
 
+
                 except Exception as e:
+
                     logger.error(f"Error processing collection item: {e}")
+
+                    logger.error(traceback.format_exc())
+
                     continue
 
             # Handle pagination if needed
