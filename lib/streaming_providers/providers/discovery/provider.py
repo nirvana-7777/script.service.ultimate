@@ -464,9 +464,15 @@ class DiscoveryProvider(StreamingProvider):
             # Get the schedule route - either from kwargs or use default
             route_id = kwargs.get("route_id", "sport-schedule")
 
-            # Build URL for the route
-            # Using the pattern from your example: /cms/routes/{route_id}
-            url = f"{self.authenticator.cms_home_endpoint.rstrip('/home')}/routes/{route_id}"
+            # Fix: Don't append "/routes" - it's already in the endpoint
+            # The cms_home_endpoint already ends with "/cms/routes/home"
+            # We need to replace "/home" with f"/{route_id}"
+            base_url = self.authenticator.cms_home_endpoint
+            if base_url.endswith('/home'):
+                url = base_url.replace('/home', f'/{route_id}')
+            else:
+                # Fallback: construct manually
+                url = f"https://default.any-{self.authenticator.home_market}.{self.authenticator.env}.api.discoveryplus.com/cms/routes/{route_id}"
 
             params = {
                 "include": CMS_INCLUDE_PARAMS,  # "default" from constants
@@ -659,7 +665,7 @@ class DiscoveryProvider(StreamingProvider):
                         elif "Englisch" in audio_tracks:
                             language = "en"
 
-                    # Create Event object
+                    # Create Event object - edit_id stored in cdm and manifest_script
                     event = Event(
                         name=attributes.get("name", "Unknown Event"),
                         content_id=video_data.get("id", ""),
@@ -682,7 +688,7 @@ class DiscoveryProvider(StreamingProvider):
                     events.append(event)
 
                 except Exception as e:
-                    logger.error(f"Error processing events item: {e}")
+                    logger.error(f"Error processing event item: {e}")
                     continue
 
             # Handle pagination if needed
