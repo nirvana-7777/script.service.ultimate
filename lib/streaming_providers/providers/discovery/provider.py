@@ -532,7 +532,7 @@ class DiscoveryProvider(StreamingProvider):
             # Fetch the collection with items included
             collection_url = f"{self.authenticator.cms_collections_endpoint}/{collection_id}"
             collection_params = {
-                "include": "items",  # Only request items, not nested relationships
+                "include": "items",  # Get collection items
                 "page[items.size]": kwargs.get("page_size", 30),
                 "page[items.number]": kwargs.get("page", 1),
             }
@@ -547,24 +547,44 @@ class DiscoveryProvider(StreamingProvider):
             collection_response.raise_for_status()
             collection_data = collection_response.json()
 
-            # Build lookup for collection items and their videos
-            # The video data should be in the included array
-            video_items = {}
-
+            # Build lookup for included items
+            included_by_id.clear()
             for item in collection_data.get("included", []):
                 item_id = item.get("id")
                 item_type = item.get("type")
                 if item_id and item_type:
-                    if item_type == "video":
-                        video_items[item_id] = item
+                    key = f"{item_type}:{item_id}"
+                    included_by_id[key] = item
 
-            if not video_items:
-                logger.info("No videos found in collection")
+            # Get collection items from the collection's data
+            collection_items = collection_data.get("data", {}).get("relationships", {}).get("items", {}).get("data", [])
+
+            if not collection_items:
+                logger.info("No collection items found")
                 return events
 
-            # Process each video
-            for video_id, video_data in video_items.items():
+            # Process each collection item to get video data
+            for item_ref in collection_items:
                 try:
+                    # Get the collection item from included
+                    item_key = f"{item_ref.get('type')}:{item_ref.get('id')}"
+                    collection_item = included_by_id.get(item_key)
+
+                    if not collection_item:
+                        continue
+
+                    # Get video reference from collection item
+                    video_ref = collection_item.get("relationships", {}).get("video", {}).get("data")
+                    if not video_ref:
+                        continue
+
+                    # Get video data from included
+                    video_key = f"{video_ref.get('type')}:{video_ref.get('id')}"
+                    video_data = included_by_id.get(video_key)
+
+                    if not video_data:
+                        continue
+
                     # Extract event data from video
                     attributes = video_data.get("attributes", {})
                     relationships = video_data.get("relationships", {})
@@ -580,9 +600,6 @@ class DiscoveryProvider(StreamingProvider):
                     for badge_ref in badge_refs:
                         if badge_ref.get("id") == "live":
                             status = EventStatus.LIVE
-                            break
-                        elif badge_ref.get("id") == "release-state-upcoming":
-                            status = EventStatus.SCHEDULED
                             break
 
                     # Parse start and end times
@@ -614,9 +631,11 @@ class DiscoveryProvider(StreamingProvider):
                     logo_url = None
                     image_refs = relationships.get("images", {}).get("data", [])
                     if image_refs:
-                        # Images might be in included, but we don't have them here
-                        # You could make a separate request for images if needed
-                        pass
+                        # Get first image
+                        image_key = f"{image_refs[0].get('type')}:{image_refs[0].get('id')}"
+                        image = included_by_id.get(image_key, {})
+                        img_attrs = image.get("attributes", {})
+                        logo_url = img_attrs.get("src") or img_attrs.get("url")
 
                     # Get edit ID for streaming
                     edit_ref = relationships.get("edit", {}).get("data", {})
@@ -626,9 +645,9 @@ class DiscoveryProvider(StreamingProvider):
                     genre = None
                     sport_refs = relationships.get("txSports", {}).get("data", [])
                     if sport_refs:
-                        # Sports might be in included, but we don't have them here
-                        # You could extract the sport name from the video title/description
-                        pass
+                        sport_key = f"{sport_refs[0].get('type')}:{sport_refs[0].get('id')}"
+                        sport = included_by_id.get(sport_key, {})
+                        genre = sport.get("attributes", {}).get("name")
 
                     # Get audio tracks for language
                     audio_tracks = attributes.get("audioTracks", [])
@@ -642,7 +661,7 @@ class DiscoveryProvider(StreamingProvider):
                     # Create Event object
                     event = Event(
                         name=attributes.get("name", "Unknown Event"),
-                        content_id=video_id,
+                        content_id=video_data.get("id", ""),
                         provider=self.provider_name,
                         logo_url=logo_url,
                         mode="live" if attributes.get("videoType") == "LIVE" else "vod",
@@ -662,7 +681,7 @@ class DiscoveryProvider(StreamingProvider):
                     events.append(event)
 
                 except Exception as e:
-                    logger.error(f"Error processing video {video_id}: {e}")
+                    logger.error(f"Error processing collection item: {e}")
                     continue
 
             logger.info(f"Found {len(events)} events")
