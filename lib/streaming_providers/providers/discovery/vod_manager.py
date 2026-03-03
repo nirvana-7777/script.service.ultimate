@@ -236,6 +236,22 @@ class DiscoveryVodManager:
         logger.debug(f"[DIAG] _parse_page: page_obj type='{page_obj.get('type')}' id='{page_obj.get('id')}'")
         raw_items = page_obj.get("relationships", {}).get("items", {}).get("data", [])
         logger.debug(f"[DIAG] _parse_page: raw pageItem refs={len(raw_items)}, found in index={sum(1 for i in raw_items if i['id'] in index)}")
+        for pi_ref in raw_items:
+            pi = index.get(pi_ref["id"])
+            if not pi:
+                logger.debug(f"[DIAG]   pageItem {pi_ref['id']} → NOT IN INDEX")
+                continue
+            col_ref = pi.get("relationships", {}).get("collection", {}).get("data", {})
+            col = index.get(col_ref.get("id", "")) if col_ref else None
+            col_alias = col.get("attributes", {}).get("alias", "NO-ALIAS") if col else "NO-COLLECTION"
+            col_items = col.get("relationships", {}).get("items", {}).get("data", []) if col else []
+            logger.debug(f"[DIAG]   pageItem {pi_ref['id']} → col '{col_ref.get('id')}' alias='{col_alias}' items={len(col_items)}")
+            # peek at first collectionItem's relationship keys
+            for ci_ref in col_items[:3]:
+                ci = index.get(ci_ref["id"])
+                if ci:
+                    rel_keys = list(ci.get("relationships", {}).keys())
+                    logger.debug(f"[DIAG]     collectionItem {ci_ref['id']} rel keys: {rel_keys}")
         # --- END DIAGNOSTIC ---
         page_item_ids = [
             pi["id"]
