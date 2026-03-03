@@ -1616,6 +1616,7 @@ class UltimateService:
         from routes.config import setup_config_routes
         from routes.epg import setup_epg_routes
         from routes.events import setup_events_routes
+        from routes.vod import setup_vod_routes
 
         # Setup routes from separate modules
         setup_provider_routes(self.app, self.manager, self)
@@ -1626,6 +1627,7 @@ class UltimateService:
         setup_config_routes(self.app, self.manager, self)
         setup_epg_routes(self.app, self.manager, self)
         setup_events_routes(self.app, self.manager, self)
+        setup_vod_routes(self.app, self.manager)
 
         # Core UI routes
         @self.app.route("/config")

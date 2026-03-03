@@ -11,6 +11,7 @@ from .channel_operations import ChannelOperations
 from .drm_operations import DRMOperations
 from .epg_operations import EPGOperations
 from .event_operations import EventOperations
+from .vod_operations import VodOperations
 from .models import StreamingChannel
 from .provider_registry import ProviderRegistry
 from .subscription_operations import SubscriptionOperations
@@ -34,6 +35,7 @@ class ProviderManager:
         self.catchup_ops = CatchupOperations(self.registry, self.drm_ops)
         self.subscription_ops = SubscriptionOperations(self.registry)
         self.event_ops = EventOperations(self.registry)
+        self.vod_ops = VodOperations(self.registry)
 
         # Backward compatibility - expose managers directly
         self.drm_plugin_manager = self.drm_ops.drm_plugin_manager
@@ -229,6 +231,22 @@ class ProviderManager:
 
     def get_event_drm_configs(self, provider_name: str, event_id: str, **kwargs) -> List:
         return self.drm_ops.get_content_drm_configs(provider_name, event_id, **kwargs)
+
+    # ==========================================================================
+    # VOD OPERATIONS (delegate to VodOperations)
+    # ==========================================================================
+
+    def get_vod_node(self, provider_name: str, slug_segments: list) -> list:
+        return self.vod_ops.get_vod_node(provider_name, slug_segments)
+
+    def get_vod_manifest(self, provider_name: str, vod_id: str, **kwargs):
+        return self.vod_ops.get_vod_manifest(provider_name, vod_id, **kwargs)
+
+    def get_vod_drm_configs(self, provider_name: str, vod_id: str, **kwargs) -> list:
+        return self.drm_ops.get_content_drm_configs(provider_name, vod_id, **kwargs)
+
+    def get_all_vod_roots(self) -> dict:
+        return self.vod_ops.get_all_vod_roots()
 
     # ==========================================================================
     # SUBSCRIPTION OPERATIONS (delegate to SubscriptionOperations)

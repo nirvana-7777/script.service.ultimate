@@ -653,6 +653,42 @@ class StreamingProvider(ABC):
         except Exception as e:
             logger.error(f"{self.provider_name}: Error getting {token_type} token: {e}")
             return None
+    # =========================================================================
+    # VOD
+    # =========================================================================
+
+    @property
+    def implements_vod(self) -> bool:
+        """
+        Indicates whether this provider has a browsable VOD catalogue.
+
+        Return False (and let get_vod_category return []) for providers that
+        only offer live channels or events.  VodOperations will skip providers
+        where this returns False when aggregating across all providers.
+        """
+        return False
+
+    def get_vod_category(
+            self, category_path: List[str], **kwargs
+    ) -> List:
+        """
+        Return the children of a VOD tree node.
+
+        Args:
+            category_path: Ordered list of content_ids from root to the node
+                           whose children are requested, e.g.:
+                               []                      -> root
+                               ["sports_id"]           -> top-level sports node
+                               ["sports_id", "golf_id"] -> golf sub-node
+                           The provider typically only needs category_path[-1]
+                           (the immediate parent id), but the full path is
+                           provided for providers that require ancestor context.
+
+        Returns:
+            Mixed list of VodCategory and VodItem objects.
+            Return [] if the node has no children or VOD is not supported.
+        """
+        return []
 
     # ============================================================================
     # CATCHUP ABSTRACT METHODS
@@ -670,7 +706,7 @@ class StreamingProvider(ABC):
         Get manifest URL for catchup/timeshift content.
 
         Args:
-            channel_id: Channel identifier
+            content_id: Channel identifier
             start_time: Start time as Unix timestamp
             end_time: End time as Unix timestamp
             epg_id: Optional EPG event ID (might be needed by some providers)
