@@ -374,14 +374,25 @@ class DiscoveryVodManager:
         col_item_ids: List[str],
         index: Dict[str, dict],
         is_show_page: bool,
+        _visited: Optional[set] = None,
     ) -> List[str]:
         """
         Some collectionItems point to another collection rather than direct
-        content (e.g. the tab-group pattern).  Expand one level of nesting.
+        content (e.g. the tab-group → tab → grid pattern).
+
+        Recursively expands collection refs until only content items remain.
+        A visited set prevents infinite loops on circular references.
         Non-collection items are passed through unchanged.
         """
+        if _visited is None:
+            _visited = set()
+
         expanded: List[str] = []
         for ci_id in col_item_ids:
+            if ci_id in _visited:
+                continue
+            _visited.add(ci_id)
+
             ci = index.get(ci_id)
             if not ci:
                 continue
@@ -396,12 +407,18 @@ class DiscoveryVodManager:
                         kw in alias for kw in _EPISODE_ALIAS_KEYWORDS
                     ):
                         continue
-                    for nested_ci_ref in (
-                        nested_col.get("relationships", {})
-                                  .get("items", {})
-                                  .get("data", [])
-                    ):
-                        expanded.append(nested_ci_ref["id"])
+                    nested_ids = [
+                        ref["id"]
+                        for ref in nested_col.get("relationships", {})
+                                             .get("items", {})
+                                             .get("data", [])
+                    ]
+                    # Recurse to handle arbitrarily deep nesting
+                    expanded.extend(
+                        DiscoveryVodManager._expand_nested_collections(
+                            nested_ids, index, is_show_page, _visited
+                        )
+                    )
             else:
                 expanded.append(ci_id)
         return expanded
