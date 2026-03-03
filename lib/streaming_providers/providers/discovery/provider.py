@@ -248,6 +248,11 @@ class DiscoveryProvider(StreamingProvider):
             self.bearer_token = None
             self.token_info = None
 
+        # Discover CMS navigation routes from /home.
+        # Done eagerly so _cms_routes is populated before any call to
+        # get_events() — regardless of whether get_channels() is called first.
+        self._init_cms_routes()
+
     @property
     def provider_name(self) -> str:
         """Provider identifier"""
@@ -428,11 +433,13 @@ class DiscoveryProvider(StreamingProvider):
             response.raise_for_status()
             data = response.json()
 
-            # Discover CMS navigation routes from /home response.
-            # Cached in self._cms_routes for use by get_events() route selection.
-            self._cms_routes = self._discover_cms_routes(data)
-            if self._cms_routes:
-                logger.debug(f"Discovered CMS routes: {list(self._cms_routes.keys())}")
+            # Refresh CMS route cache from this /home response.
+            # _cms_routes is already populated at init, but get_channels() may
+            # be called later in a session when routes could have changed.
+            refreshed = self._discover_cms_routes(data)
+            if refreshed:
+                self._cms_routes = refreshed
+                logger.debug(f"CMS routes refreshed: {list(self._cms_routes.keys())}")
 
             # Extract channels and cache DiscoveryChannel objects
             discovery_channels = self._extract_distribution_channels(data)
@@ -478,8 +485,8 @@ class DiscoveryProvider(StreamingProvider):
           dynamically from the ``/home`` navigation graph (populated by
           ``get_channels()``).  The first route whose ID contains one of
           ``sport``, ``live``, or ``event`` wins.  If no match is found —
-          e.g. ``get_channels()`` hasn't been called yet — falls back to the
-          hardcoded ``CMS_ROUTE_SPORTS`` constant.
+          e.g. ``get_channels()`` hasn't been called yet — falls back to
+          ``CMS_ROUTE_SPORT_SCHEDULE`` (the full paginated schedule).
 
         **Parse paths** (determined by the selected route's response shape):
           1. ``/sports`` — ``airing`` items appear directly in ``included``
@@ -598,6 +605,44 @@ class DiscoveryProvider(StreamingProvider):
     # CMS route discovery
     # =========================================================================
 
+    def _init_cms_routes(self) -> None:
+        """
+        Fetch ``/home`` and populate ``self._cms_routes`` eagerly.
+
+        Called once at the end of ``__init__`` so route discovery is complete
+        before any call to ``get_events()`` or ``get_channels()``.  Failures
+        are caught and logged — the provider remains usable and ``get_events()``
+        will fall back to ``CMS_ROUTE_SPORT_SCHEDULE``.
+        """
+        try:
+            headers = self._get_auth_headers()
+            url = self.authenticator.cms_home_endpoint
+            params = {
+                "include": CMS_INCLUDE_PARAMS,
+                "decorators": "viewingHistory,isFavorite,contentAction,badges",
+                "page[items.size]": CMS_PAGE_SIZE,
+            }
+            response = self.http_manager.get(
+                url,
+                operation="cms",
+                headers=headers,
+                params=params,
+            )
+            response.raise_for_status()
+            data = response.json()
+            self._cms_routes = self._discover_cms_routes(data)
+            if self._cms_routes:
+                logger.debug(
+                    f"CMS routes discovered at init: {list(self._cms_routes.keys())}"
+                )
+            else:
+                logger.warning(
+                    "CMS route discovery returned no routes — "
+                    f"get_events() will fall back to '{CMS_ROUTE_SPORT_SCHEDULE}'"
+                )
+        except Exception as e:
+            logger.warning(f"Could not discover CMS routes at init: {e}")
+
     @staticmethod
     def _discover_cms_routes(data: dict) -> Dict[str, str]:
         """
@@ -641,32 +686,55 @@ class DiscoveryProvider(StreamingProvider):
 
         return routes
 
-    # Keywords used to identify event-bearing routes from the discovered set.
-    # Order matters: earlier patterns take priority.
-    _EVENT_ROUTE_KEYWORDS: ClassVar[tuple] = ("sport", "live", "event")
+    # Route preference order for event fetching.
+    # ``sport-schedule`` (paginated full schedule, ~300 events) is preferred
+    # over ``sports`` (featured/current airings only, ~14 events).
+    # Order matters: the first matching route wins.
+    _EVENT_ROUTE_PREFERENCE: ClassVar[tuple] = (
+        CMS_ROUTE_SPORT_SCHEDULE,   # "sport-schedule" — full paginated schedule
+        CMS_ROUTE_SPORTS,           # "sports"         — featured airings only (fallback)
+    )
+    # Generic keyword scan used when neither preferred route is discovered
+    _EVENT_ROUTE_KEYWORDS: ClassVar[tuple] = ("schedule", "sport", "live", "event")
 
     def _select_event_route(self) -> str:
         """
         Return the best event-producing CMS route from ``self._cms_routes``.
 
-        Iterates discovered routes and returns the first one whose ID contains
-        one of the ``_EVENT_ROUTE_KEYWORDS``.  Falls back to ``CMS_ROUTE_SPORTS``
-        if no match is found (e.g. ``get_channels()`` hasn't been called yet).
+        Preference order:
+          1. ``CMS_ROUTE_SPORT_SCHEDULE`` (``sport-schedule``) — full paginated
+             schedule, yields ~300 events via collection traversal.
+          2. ``CMS_ROUTE_SPORTS`` (``sports``) — featured/current airings only,
+             ~14 events.  Used only when sport-schedule is absent.
+          3. First discovered route matching a keyword in
+             ``_EVENT_ROUTE_KEYWORDS`` (generic fallback for unknown layouts).
+          4. ``CMS_ROUTE_SPORT_SCHEDULE`` hard-coded constant when ``_cms_routes``
+             is empty (e.g. ``get_channels()`` hasn't been called yet).
         """
+        # 1 & 2: explicit preference list checked against discovered routes
+        for preferred in self._EVENT_ROUTE_PREFERENCE:
+            if preferred in self._cms_routes:
+                logger.debug(f"_select_event_route: selected preferred route '{preferred}'")
+                return preferred
+
+        # 3: generic keyword scan for unexpected route layouts
         for keyword in self._EVENT_ROUTE_KEYWORDS:
             match = next(
-                (route_id for route_id in self._cms_routes if keyword in route_id.lower()),
+                (r for r in self._cms_routes if keyword in r.lower()),
                 None,
             )
             if match:
-                logger.debug(f"_select_event_route: selected '{match}' (matched '{keyword}')")
+                logger.debug(
+                    f"_select_event_route: selected '{match}' via keyword '{keyword}'"
+                )
                 return match
 
+        # 4: hard fallback — use the full schedule route, not the featured-only /sports route
         logger.debug(
             f"_select_event_route: no event route found in {list(self._cms_routes.keys())!r}, "
-            f"falling back to '{CMS_ROUTE_SPORTS}'"
+            f"falling back to '{CMS_ROUTE_SPORT_SCHEDULE}'"
         )
-        return CMS_ROUTE_SPORTS
+        return CMS_ROUTE_SPORT_SCHEDULE
 
     # =========================================================================
     # Airing-based event parsing  (/sports route)
