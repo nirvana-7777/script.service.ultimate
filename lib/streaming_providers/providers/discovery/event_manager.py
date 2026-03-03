@@ -278,17 +278,24 @@ class DiscoveryEventManager:
                     relationships, now_utc, start_dt, end_dt
                 )
 
-                # ---- channel lookup -----------------------------------------
-                channel_name: Optional[str] = None
+                # ---- edit_id from distributionChannel cache -----------------
+                # The distributionChannel relationship carries the CMS UUID
+                # (distribution_id). The cache is keyed by edit_id, so we
+                # use the reverse map on the provider to resolve it.
+                edit_id: Optional[str] = None
                 dist_channel_ref = (
                     relationships.get("distributionChannel", {}).get("data", {})
                 )
                 dist_channel_id = (
                     dist_channel_ref.get("id") if dist_channel_ref else None
                 )
+                channel_name: Optional[str] = None
                 if dist_channel_id:
-                    cached = self._channels_cache.get(dist_channel_id)
+                    cached = self._provider.channel_manager.get_by_distribution_id(
+                        dist_channel_id
+                    )
                     if cached:
+                        edit_id = cached.channel_id  # channel_id == edit_id
                         channel_name = cached.name
                     else:
                         logger.debug(
@@ -299,13 +306,13 @@ class DiscoveryEventManager:
                 # ---- build Event --------------------------------------------
                 event = Event(
                     name=attributes.get("name", "Unknown Event"),
-                    content_id=airing.get("id", ""),
+                    content_id=edit_id or airing.get("id", ""),
                     provider=self._provider.provider_name,
                     logo_url=None,
                     mode="live" if status == EventStatus.LIVE else "vod",
-                    session_manifest=False,
-                    manifest_script=None,
-                    cdm=None,
+                    session_manifest=True if edit_id else False,
+                    manifest_script=edit_id,
+                    cdm=edit_id,
                     content_type="AIRING",
                     description=attributes.get("description", ""),
                     genre=None,
@@ -613,7 +620,7 @@ class DiscoveryEventManager:
 
                     event = Event(
                         name=attributes.get("name", "Unknown Event"),
-                        content_id=video_data.get("id", ""),
+                        content_id=edit_id or video_data.get("id", ""),
                         provider=self._provider.provider_name,
                         logo_url=logo_url,
                         mode=(
@@ -621,11 +628,9 @@ class DiscoveryEventManager:
                             if attributes.get("videoType") == "LIVE"
                             else "vod"
                         ),
-                        session_manifest=True,
-                        manifest_script=(
-                            f"editid={edit_id}" if edit_id else None
-                        ),
-                        cdm=f"editid={edit_id}" if edit_id else None,
+                        session_manifest=True if edit_id else False,
+                        manifest_script=edit_id,
+                        cdm=edit_id,
                         content_type="EVENT",
                         description=attributes.get("description", ""),
                         genre=genre,

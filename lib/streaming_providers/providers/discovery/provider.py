@@ -35,7 +35,7 @@ from .constants import (
     get_user_agent,
 )
 from .event_manager import DiscoveryEventManager
-from .exceptions import ChannelNotFoundError, ManifestFetchError
+from .exceptions import ManifestFetchError
 from .models import DiscoveryChannel
 from .playback_manager import DiscoveryPlaybackManager
 
@@ -116,7 +116,7 @@ class DiscoveryProvider(StreamingProvider):
         # ------------------------------------------------------------------
         # Shared caches (owned here; passed by reference into each manager)
         # ------------------------------------------------------------------
-        # DiscoveryChannel objects keyed by channel_id
+        # DiscoveryChannel objects keyed by edit_id (the playback identifier)
         self._channels_cache: Dict[str, DiscoveryChannel] = {}
         # Navigation routes discovered from /home: { route_id: label }
         self._cms_routes: Dict[str, str] = {}
@@ -236,7 +236,6 @@ class DiscoveryProvider(StreamingProvider):
         )
         self.playback_manager = DiscoveryPlaybackManager(
             provider=self,
-            channels_cache=self._channels_cache,
             playback_cache=self._playback_cache,
         )
 
@@ -408,70 +407,48 @@ class DiscoveryProvider(StreamingProvider):
 
     def get_manifest(self, content_id: str, **kwargs) -> Optional[str]:
         """
-        Get manifest URL for a channel by ID.
+        Get manifest URL for a channel or event by ID.
 
-        Raises:
-            ChannelNotFoundError: If channel not in cache.
+        ``content_id`` is the ``edit_id`` (playback identifier), so it is
+        passed directly to the playback manager — no cache indirection needed.
         """
         try:
-            disco_channel = self._channels_cache.get(content_id)
-            if not disco_channel:
-                raise ChannelNotFoundError(content_id)
-
-            edit_id = disco_channel.edit_id
-            if not edit_id:
-                raise ManifestFetchError(
-                    f"No edit_id for channel {content_id}"
-                )
-
             playback_data = self.playback_manager.get_cached_playback_info(
-                edit_id=edit_id
+                edit_id=content_id
             )
             streaming_data = self.playback_manager.extract_streaming_data(
                 playback_data
             )
             return streaming_data.get("manifest_url")
-
-        except (ChannelNotFoundError, ManifestFetchError):
+        except ManifestFetchError:
             raise
         except Exception as e:
             logger.error(
-                f"Error getting manifest for channel {content_id}: {e}"
+                f"Error getting manifest for {content_id}: {e}"
             )
             return None
 
     def get_drm(self, content_id: str, **kwargs) -> List[DRMConfig]:
-        """Get all DRM configurations for a channel by ID."""
+        """
+        Get all DRM configurations for a channel or event by ID.
+
+        ``content_id`` is the ``edit_id`` (playback identifier), so it is
+        passed directly to the playback manager — no cache indirection needed.
+        """
         try:
-            disco_channel = self._channels_cache.get(content_id)
-            if not disco_channel:
-                logger.warning(
-                    f"Channel {content_id} not in cache for DRM"
-                )
-                return []
-
-            edit_id = disco_channel.edit_id
-            if not edit_id:
-                return []
-
             playback_data = self.playback_manager.get_cached_playback_info(
-                edit_id=edit_id
+                edit_id=content_id
             )
             streaming_data = self.playback_manager.extract_streaming_data(
                 playback_data
             )
-
             if not streaming_data["license_url"]:
                 return []
-
-            drm_config = self.playback_manager.build_drm_config(
-                streaming_data
-            )
+            drm_config = self.playback_manager.build_drm_config(streaming_data)
             return [drm_config] if drm_config else []
-
         except Exception as e:
             logger.error(
-                f"Error getting DRM configs for channel {content_id}: {e}"
+                f"Error getting DRM configs for {content_id}: {e}"
             )
             return []
 

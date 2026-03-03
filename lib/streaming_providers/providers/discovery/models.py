@@ -109,24 +109,30 @@ class DiscoveryChannel:
         attributes = distribution_data.get("attributes", {})
         relationships = distribution_data.get("relationships", {})
 
-        # Get edit ID
+        # edit_id is the playback identifier — used as content_id throughout
         edit_data = relationships.get("edit", {}).get("data", {})
         edit_id = edit_data.get("id")
+
+        # distribution_id is the CMS channel UUID — kept as metadata only
+        distribution_id = distribution_data.get("id", "")
 
         # Extract logo
         logo_url = cls._extract_logo_url(relationships, included_by_id)
 
+        raw = distribution_data.copy()
+        raw["distribution_id"] = distribution_id
+
         return cls(
             name=attributes.get("name", "Unknown Channel"),
-            channel_id=distribution_data.get("id", ""),
+            channel_id=edit_id or distribution_id,  # edit_id is the primary key
             edit_id=edit_id,
             logo_url=logo_url,
             description=attributes.get("description", ""),
             mode=StreamingMode.LIVE.value,
             session_manifest=True,
-            manifest_script=f"editid={edit_id}" if edit_id else None,
-            cdm=f"editid={edit_id}" if edit_id else None,
-            raw_data=distribution_data.copy(),
+            manifest_script=distribution_id or None,
+            cdm=distribution_id or None,
+            raw_data=raw,
         )
 
     @classmethod
@@ -150,23 +156,26 @@ class DiscoveryChannel:
         attributes = api_data.get("attributes", {})
         relationships = api_data.get("relationships", {})
 
-        # Get edit ID (for VOD, the ID itself is often the edit_id)
+        # For VOD/events, the item ID itself is the edit_id (playback identifier)
         edit_id = api_data.get("id")
 
         # Extract logo
         logo_url = cls._extract_logo_url(relationships, included_by_id)
 
+        raw = api_data.copy()
+        raw["source_id"] = edit_id  # preserve original CMS ID as metadata
+
         channel = cls(
             name=attributes.get("name", "Unknown Event"),
-            channel_id=api_data.get("id", ""),
+            channel_id=edit_id or "",  # edit_id is the primary key
             edit_id=edit_id,
             logo_url=logo_url,
             content_type="VOD",
             mode=StreamingMode.VOD.value,
             session_manifest=True,
-            manifest_script=f"editid={edit_id}" if edit_id else None,
-            cdm=f"editid={edit_id}" if edit_id else None,
-            raw_data=api_data.copy(),
+            manifest_script=edit_id or None,
+            cdm=edit_id or None,
+            raw_data=raw,
             **kwargs
         )
 
@@ -314,13 +323,9 @@ class DiscoveryChannel:
         # Transfer raw_data
         channel.raw_data = self.raw_data.copy()
 
-        # Store edit_id and timestamps in raw_data for later use
-        if self.edit_id:
-            channel.raw_data["edit_id"] = self.edit_id
-        if self.start_time:
-            channel.raw_data["start_time"] = self.start_time
-        if self.end_time:
-            channel.raw_data["end_time"] = self.end_time
+        # Store distribution_id in raw_data for reference (channels only)
+        if "distribution_id" in self.raw_data:
+            channel.raw_data["distribution_id"] = self.raw_data["distribution_id"]
 
         return channel
 

@@ -21,7 +21,6 @@ from ...base.utils.logger import logger
 
 from .constants import PlatformOS, get_default_capabilities, get_default_device_info, get_drm_request_headers
 from .exceptions import ManifestFetchError, PlaybackRestrictedException
-from .models import DiscoveryChannel
 
 
 class DiscoveryPlaybackManager:
@@ -43,11 +42,9 @@ class DiscoveryPlaybackManager:
     def __init__(
             self,
             provider,  # DiscoveryProvider — avoid circular import
-            channels_cache: Dict[str, DiscoveryChannel],
             playback_cache: Dict[str, tuple],
     ):
         self._provider = provider
-        self._channels_cache = channels_cache
         # {edit_id: (expiry_timestamp, playback_data)}
         self._playback_cache = playback_cache
 
@@ -63,9 +60,9 @@ class DiscoveryPlaybackManager:
         """
         Populate streaming data for a list of StreamingChannel objects.
 
-        Looks up each channel's ``edit_id`` in the shared ``_channels_cache``,
-        fetches (or returns cached) playback info, and attaches the manifest
-        URL, streaming format, and DRM config to the channel object.
+        ``channel.channel_id`` is the ``edit_id`` (playback identifier), so
+        it is passed directly to ``get_cached_playback_info`` — no cache
+        indirection required.
 
         Args:
             channels: StreamingChannel objects to populate.
@@ -83,17 +80,10 @@ class DiscoveryPlaybackManager:
 
             while retries < max_retries and not success and not is_restricted:
                 try:
-                    disco_channel = self._channels_cache.get(channel.channel_id)
-                    if not disco_channel:
-                        logger.warning(
-                            f"Channel {channel.name} not in cache, skipping"
-                        )
-                        break
-
-                    edit_id = disco_channel.edit_id
+                    edit_id = channel.channel_id
                     if not edit_id:
                         logger.warning(
-                            f"No edit_id for channel {channel.name}, skipping"
+                            f"No edit_id (channel_id) for {channel.name}, skipping"
                         )
                         break
 
@@ -119,11 +109,6 @@ class DiscoveryPlaybackManager:
                                 channel.drm_config = drm_config
                             channel.license_url = streaming_data["license_url"]
                             channel.cdm_type = streaming_data["drm_system"]
-
-                            if streaming_data["drm_auth"]:
-                                disco_channel.raw_data["drm_auth"] = (
-                                    streaming_data["drm_auth"]
-                                )
 
                         logger.info(
                             f"Streaming data populated for: {channel.name}"
@@ -319,7 +304,7 @@ class DiscoveryPlaybackManager:
             "applicationSessionId": str(uuid.uuid4()),
             "userPreferences": {
                 "videoQuality": "best",
-                "uiLanguage": f"{self._provider.country}-DE".upper(),
+                "uiLanguage": f"{self._provider.country.lower()}-{self._provider.country.upper()}",
             },
             "features": ["mlp"],
         }

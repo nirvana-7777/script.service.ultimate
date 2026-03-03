@@ -24,7 +24,7 @@ class DiscoveryChannelManager:
 
     Responsibilities:
     - Fetching and parsing distribution channels from the CMS /home route
-    - Maintaining the ``_channels_cache`` (channel_id → DiscoveryChannel)
+    - Maintaining the ``_channels_cache`` (edit_id → DiscoveryChannel)
     - Discovering and caching navigation routes from the /home response graph
       into ``_cms_routes`` (route_id → label)
 
@@ -162,6 +162,27 @@ class DiscoveryChannelManager:
                 )
         except Exception as e:
             logger.warning(f"Could not discover CMS routes at init: {e}")
+
+    def get_by_distribution_id(
+            self, distribution_id: str
+    ) -> Optional[DiscoveryChannel]:
+        """
+        Look up a cached DiscoveryChannel by its CMS distribution UUID.
+
+        The cache is keyed by ``edit_id``, so this performs a linear scan
+        using the ``distribution_id`` stored in ``raw_data``.  The channel
+        list is small (typically < 50), so this is acceptable.
+
+        Args:
+            distribution_id: The distributionChannel UUID from the CMS.
+
+        Returns:
+            Matching DiscoveryChannel, or None if not found.
+        """
+        for channel in self._channels_cache.values():
+            if channel.raw_data.get("distribution_id") == distribution_id:
+                return channel
+        return None
 
     # =========================================================================
     # CMS route discovery
