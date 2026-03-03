@@ -1208,7 +1208,7 @@ class M3UProvider(StreamingProvider):
 
     def get_manifest(
             self,
-            channel_id: str,
+            content_id: str,
             **kwargs,
     ) -> Optional[str]:
         """
@@ -1222,13 +1222,13 @@ class M3UProvider(StreamingProvider):
         """
         channels = self.get_channels()
         for channel in channels:
-            if channel.channel_id == channel_id:
+            if channel.channel_id == content_id:
                 return channel.manifest
         return None
 
     def get_drm(
             self,
-            channel_id: str,
+            content_id: str,
             **kwargs,
     ) -> List[DRMConfig]:
         """
@@ -1242,7 +1242,7 @@ class M3UProvider(StreamingProvider):
         """
         channels = self.get_channels()
         for channel in channels:
-            if channel.channel_id == channel_id:
+            if channel.channel_id == content_id:
                 if channel.drm_config is not None:
                     # Return as a list for consistency
                     return [channel.drm_config]

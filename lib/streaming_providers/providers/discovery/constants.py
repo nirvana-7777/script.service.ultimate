@@ -125,6 +125,14 @@ CMS_INCLUDE_PARAMS: Final[str] = "default"
 CMS_PAGE_SIZE: Final[int] = 50
 CMS_SCHEDULE_INCLUDE_PARAMS: Final[str] = "items.video.items.video.badges,items.video.primaryChannel,items.video.images,items.video.edit"
 
+# CMS route identifiers
+# /sports  — the primary sports landing page; returns airing items directly in
+#            the top-level `included` array (no nested collection hop required).
+# /sport-schedule — legacy schedule route; uses the deeper collection traversal
+#                   path and is kept as a fallback.
+CMS_ROUTE_SPORTS: Final[str] = "sports"
+CMS_ROUTE_SPORT_SCHEDULE: Final[str] = "sport-schedule"
+
 # Known collection IDs for TV channels (will be discovered dynamically, but these are fallbacks)
 CHANNEL_COLLECTIONS: Final[Dict[str, List[str]]] = {
     "de": [
@@ -141,6 +149,26 @@ CHANNEL_COLLECTIONS: Final[Dict[str, List[str]]] = {
 
 # Collection item types that represent channels
 CHANNEL_ITEM_TYPES: Final[List[str]] = ["distributionChannel", "channel", "linearChannel", "liveChannel"]
+
+# ============================================================================
+# Airing / Event Badge Constants
+# ============================================================================
+
+# Badge IDs returned on `airing` items in the CMS `/sports` route response.
+# These map directly to EventStatus values in the provider.
+#
+# "live"                    → EventStatus.LIVE    (event is currently airing)
+# "release-state-up-next"   → EventStatus.UPCOMING (event is scheduled soon)
+#
+# Note: The legacy event path used "release-state-upcoming" as the up-next badge
+# ID. The /sports airing items use "release-state-up-next" (with a trailing
+# "-next"). Both are handled in get_events() for backward compatibility.
+AIRING_BADGE_LIVE: Final[str] = "live"
+AIRING_BADGE_UP_NEXT: Final[str] = "release-state-up-next"
+AIRING_BADGE_UPCOMING_LEGACY: Final[str] = "release-state-upcoming"
+
+# Type string for airing items returned on the /sports route
+AIRING_ITEM_TYPE: Final[str] = "airing"
 
 # ============================================================================
 # User Agent Configuration

@@ -337,7 +337,7 @@ class HRTiProvider(StreamingProvider):
             logger.error(f"Traceback: {traceback.format_exc()}")
             return channel
 
-    def get_manifest(self, channel_id: str, **kwargs) -> Optional[str]:
+    def get_manifest(self, content_id: str, **kwargs) -> Optional[str]:
         """
         Get manifest URL for a channel by authorizing a session
         """
@@ -345,8 +345,8 @@ class HRTiProvider(StreamingProvider):
             # Authorize session for this channel
             session_data = self.authenticator.authorize_session(
                 content_type="tlive",  # TV live
-                content_ref_id=channel_id,
-                channel_id=channel_id,
+                content_ref_id=content_id,
+                channel_id=content_id,
             )
 
             if session_data and session_data.get("Authorized", False):
@@ -354,17 +354,17 @@ class HRTiProvider(StreamingProvider):
                 # The actual manifest will be resolved during playback with session authorization
                 channels = self.get_channels()
                 for channel in channels:
-                    if channel.channel_id == channel_id:
+                    if channel.channel_id == content_id:
                         return channel.manifest_script  # This is the streaming URL
 
-            logger.warning(f"Session authorization failed for channel {channel_id}")
+            logger.warning(f"Session authorization failed for channel {content_id}")
             return None
 
         except Exception as e:
-            logger.error(f"Error getting manifest for channel {channel_id}: {e}")
+            logger.error(f"Error getting manifest for channel {content_id}: {e}")
             return None
 
-    def get_drm(self, channel_id: str, session_data: Dict = None, **kwargs) -> List[DRMConfig]:
+    def get_drm(self, content_id: str, session_data: Dict = None, **kwargs) -> List[DRMConfig]:
         """
         Get DRM configurations for a channel with proper license data.
         If session_data is not provided, will authorize a new session.
@@ -373,7 +373,7 @@ class HRTiProvider(StreamingProvider):
             # If no session data provided, authorize a new session
             if not session_data:
                 logger.debug(
-                    f"No session data provided for DRM - authorizing new session for channel {channel_id}"
+                    f"No session data provided for DRM - authorizing new session for channel {content_id}"
                 )
 
                 # Find the channel to get content type and streaming URL
@@ -384,12 +384,12 @@ class HRTiProvider(StreamingProvider):
                 )
                 target_channel = None
                 for ch in channels:
-                    if ch.channel_id == channel_id:
+                    if ch.channel_id == content_id:
                         target_channel = ch
                         break
 
                 if not target_channel:
-                    logger.error(f"Channel {channel_id} not found for DRM authorization")
+                    logger.error(f"Channel {content_id} not found for DRM authorization")
                     return []
 
                 # Determine content type
@@ -407,35 +407,35 @@ class HRTiProvider(StreamingProvider):
                     content_drm_id = f"{path_parts[0]}_{path_parts[1]}"
 
                 logger.debug(
-                    f"Authorizing session for DRM - channel: {channel_id}, content_type: {content_type}, drm_id: {content_drm_id}"
+                    f"Authorizing session for DRM - channel: {content_id}, content_type: {content_type}, drm_id: {content_drm_id}"
                 )
 
                 # Authorize session
                 session_data = self.authenticator.authorize_session(
                     content_type=content_type,
-                    content_ref_id=channel_id,
+                    content_ref_id=content_id,
                     content_drm_id=content_drm_id,
                     video_store_ids=None,
-                    channel_id=channel_id,
+                    channel_id=content_id,
                     start_time=None,
                     end_time=None,
                 )
 
                 if not session_data:
-                    logger.error(f"Failed to authorize session for DRM - channel {channel_id}")
+                    logger.error(f"Failed to authorize session for DRM - channel {content_id}")
                     return []
 
                 # Check if authorized
                 if not session_data.get("Authorized", False):
-                    logger.warning(f"Session not authorized for DRM - channel {channel_id}")
+                    logger.warning(f"Session not authorized for DRM - channel {content_id}")
                     return []
 
-                logger.debug(f"Session authorized for DRM - channel {channel_id}")
+                logger.debug(f"Session authorized for DRM - channel {content_id}")
 
                 # Report session event (use full SessionId, not DrmId)
                 session_id = session_data.get("SessionId")
                 if session_id:
-                    self.authenticator.report_session_event(session_id, channel_id)
+                    self.authenticator.report_session_event(session_id, content_id)
 
             # IMPORTANT: For license data, use DrmId (not SessionId)
             # DrmId is the short random string for DRM
@@ -473,7 +473,7 @@ class HRTiProvider(StreamingProvider):
 
             # Create the license configuration
             # Use the class method to create LicenseConfig with base64 encoded req_data
-            license_config = LicenseConfig.create_with_base64_req_data(
+            license_config = LicenseConfig.create_with_req_data(
                 req_data_template="{CHA-RAW}",  # The placeholder string
                 server_url=self.hrti_config.license_url,
                 use_http_get_request=False,
@@ -486,11 +486,11 @@ class HRTiProvider(StreamingProvider):
             # Create the DRM configuration
             drm_config = DRMConfig(system=DRMSystem.WIDEVINE, priority=1, license=license_config)
 
-            logger.debug(f"Created DRM config for channel {channel_id} with DrmId {drm_id}")
+            logger.debug(f"Created DRM config for channel {content_id} with DrmId {drm_id}")
             return [drm_config]
 
         except Exception as e:
-            logger.error(f"Error getting DRM config for channel {channel_id}: {e}")
+            logger.error(f"Error getting DRM config for channel {content_id}: {e}")
             import traceback
 
             logger.error(f"Traceback: {traceback.format_exc()}")

@@ -10,11 +10,11 @@ import time
 import uuid
 import secrets
 import base64
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import ClassVar, Dict, List, Optional, Any
 
 from ...base.models.proxy_models import ProxyConfig
-from ...base.models import DRMConfig, DRMSystem, LicenseConfig,StreamingChannel, Event, EventStatus
+from ...base.models import DRMConfig, DRMSystem, LicenseConfig, StreamingChannel, Event, EventStatus
 from ...base.provider import AuthType, StreamingProvider
 from ...base.utils.logger import logger
 
@@ -25,24 +25,22 @@ from .auth import (
 )
 from .constants import (
     DEFAULT_COUNTRY,
-    DEFAULT_TENANT,
     DEFAULT_PLATFORM_OS,
     DISCOVERY_LOGO,
     DISCOVERY_USERS_ME_URL,
-    DRMSystem as DiscoveryDRMSystem,
-    DRM_SYSTEM_PLAYREADY,
     PlatformOS,
     SUPPORTED_AUTH_TYPES,
     SUPPORTED_COUNTRIES,
     CMS_INCLUDE_PARAMS,
-    CMS_SCHEDULE_INCLUDE_PARAMS,
     CMS_PAGE_SIZE,
-    CHANNEL_COLLECTIONS,
-    CHANNEL_ITEM_TYPES,
+    CMS_ROUTE_SPORTS,
+    CMS_ROUTE_SPORT_SCHEDULE,
+    AIRING_BADGE_LIVE,
+    AIRING_BADGE_UP_NEXT,
+    AIRING_BADGE_UPCOMING_LEGACY,
+    AIRING_ITEM_TYPE,
     get_default_capabilities,
     get_default_device_info,
-    get_device_info_template,
-    get_disco_client,
     get_drm_request_headers,
     get_user_agent,
 )
@@ -65,6 +63,24 @@ class DiscoveryProvider(StreamingProvider):
     - DRM-protected streams (Widevine on Linux, PlayReady on Windows)
     - OS platform spoofing via PlatformOS (see constants.DEFAULT_PLATFORM_OS)
     - Provider cache pattern for efficient channel management
+    - Dynamic CMS route discovery from ``/home`` navigation graph
+
+    Event fetching uses **dynamic route selection** (``_select_event_route``):
+    ``get_channels()`` parses the ``/home`` navigation graph and caches all
+    available routes in ``self._cms_routes``.  ``get_events()`` then picks the
+    first route whose ID contains ``sport``, ``live``, or ``event`` — no
+    hardcoded route names needed.  Two parse paths are supported:
+
+    1. /sports (CMS_ROUTE_SPORTS, default)
+       The API returns ``airing`` items directly in the top-level ``included``
+       array.  No nested collection traversal is needed; ``get_events()``
+       detects this shape and calls ``_parse_airing_events()`` directly.
+
+    2. /sport-schedule (CMS_ROUTE_SPORT_SCHEDULE, legacy fallback)
+       Items are nested inside a collection and require the full multi-hop
+       traversal: route → target page → page items → collection → paginated
+       items → video.  Used automatically when the /sports route returns no
+       airing items (e.g. future API layout changes).
     """
 
     # ============================================================================
@@ -123,6 +139,12 @@ class DiscoveryProvider(StreamingProvider):
 
         # Provider cache for DiscoveryChannel objects
         self._channels_cache: Dict[str, DiscoveryChannel] = {}
+
+        # CMS navigation routes discovered from /home response.
+        # Populated by get_channels() and used by get_events() to select the
+        # best event-producing route without hardcoding names.
+        # Format: { route_id: label }  e.g. {"sports": "Sport", "home": "Home"}
+        self._cms_routes: Dict[str, str] = {}
 
         # Playback info cache: {edit_id: (expiry_timestamp, playback_data)}
         # Entries are valid until expiry_timestamp (derived from drm_expiration,
@@ -406,6 +428,12 @@ class DiscoveryProvider(StreamingProvider):
             response.raise_for_status()
             data = response.json()
 
+            # Discover CMS navigation routes from /home response.
+            # Cached in self._cms_routes for use by get_events() route selection.
+            self._cms_routes = self._discover_cms_routes(data)
+            if self._cms_routes:
+                logger.debug(f"Discovered CMS routes: {list(self._cms_routes.keys())}")
+
             # Extract channels and cache DiscoveryChannel objects
             discovery_channels = self._extract_distribution_channels(data)
 
@@ -445,12 +473,28 @@ class DiscoveryProvider(StreamingProvider):
         """
         Fetch events from Discovery+ schedule.
 
+        **Route selection** (no ``route_id`` kwarg supplied):
+          Calls ``_select_event_route()`` which prefers a route discovered
+          dynamically from the ``/home`` navigation graph (populated by
+          ``get_channels()``).  The first route whose ID contains one of
+          ``sport``, ``live``, or ``event`` wins.  If no match is found —
+          e.g. ``get_channels()`` hasn't been called yet — falls back to the
+          hardcoded ``CMS_ROUTE_SPORTS`` constant.
+
+        **Parse paths** (determined by the selected route's response shape):
+          1. ``/sports`` — ``airing`` items appear directly in ``included``
+             (fast path, ``_parse_airing_events()``).
+          2. ``/sport-schedule`` — items are nested inside a collection
+             (legacy fallback, ``_fetch_events_via_collection()``).
+          The fast path is attempted first; if no ``airing`` items are found
+          the method retries with ``CMS_ROUTE_SPORT_SCHEDULE``.
+
         Args:
             start_time: Optional start time filter
             end_time: Optional end time filter
             **kwargs: Additional parameters including:
-                - route_id: Optional route ID (default: sport-schedule route)
-                - page_size: Number of items per page
+                - route_id: Override the CMS route (bypasses dynamic selection)
+                - page_size: Number of items per page (collection path only)
 
         Returns:
             List of Event objects
@@ -460,21 +504,29 @@ class DiscoveryProvider(StreamingProvider):
         try:
             headers = self._get_auth_headers()
 
-            # Get the schedule route - either from kwargs or use default
-            route_id = kwargs.get("route_id", "sport-schedule")
+            # Dynamic route selection: prefer a discovered route that looks
+            # event-bearing.  Falls back to CMS_ROUTE_SPORTS if get_channels()
+            # hasn't been called yet (self._cms_routes is empty).
+            if "route_id" not in kwargs:
+                route_id = self._select_event_route()
+            else:
+                route_id = kwargs["route_id"]
 
-            # Build URL for the route
+            # Build the CMS route URL
             base_url = self.authenticator.cms_home_endpoint
             if base_url.endswith('/home'):
                 url = base_url.replace('/home', f'/{route_id}')
             else:
-                url = f"https://default.any-{self.authenticator.home_market}.{self.authenticator.env}.api.discoveryplus.com/cms/routes/{route_id}"
+                url = (
+                    f"https://default.any-{self.authenticator.home_market}"
+                    f".{self.authenticator.env}.api.discoveryplus.com"
+                    f"/cms/routes/{route_id}"
+                )
 
             params = {
                 "include": CMS_INCLUDE_PARAMS,
                 "decorators": "viewingHistory,isFavorite,contentAction,badges",
-                "page[items.size]": kwargs.get("page_size", 30),
-                "page[items.number]": 1,
+                "page[items.size]": kwargs.get("page_size", 10),
             }
 
             # Add time filters if provided
@@ -483,7 +535,7 @@ class DiscoveryProvider(StreamingProvider):
             if end_time:
                 params["filter[to]"] = end_time.isoformat()
 
-            logger.debug(f"Fetching schedule route: {url}")
+            logger.debug(f"Fetching events route: {url}")
             response = self.http_manager.get(
                 url,
                 operation="cms",
@@ -493,303 +545,618 @@ class DiscoveryProvider(StreamingProvider):
             response.raise_for_status()
             data = response.json()
 
-            # Build lookup of included items
-            included_by_id = {}
-            for item in data.get("included", []):
-                item_id = item.get("id")
-                item_type = item.get("type")
-                if item_id and item_type:
-                    key = f"{item_type}:{item_id}"
-                    included_by_id[key] = item
+            # ------------------------------------------------------------------
+            # Fast path: /sports route returns airing items directly in included
+            # ------------------------------------------------------------------
+            airing_items = [
+                item for item in data.get("included", [])
+                if item.get("type") == AIRING_ITEM_TYPE
+            ]
 
-            # Find the schedule results collection
-            route_data = data.get("data", {})
-            target_ref = route_data.get("relationships", {}).get("target", {}).get("data")
-
-            if not target_ref:
-                logger.error("No target page found in route response")
-                return events
-
-            page_key = f"{target_ref.get('type')}:{target_ref.get('id')}"
-            page = included_by_id.get(page_key)
-
-            if not page:
-                logger.error("Target page not found in included items")
-                return events
-
-            # Find the collection from page items
-            page_items = page.get("relationships", {}).get("items", {}).get("data", [])
-            collection_id = None
-
-            for page_item_ref in page_items:
-                page_item_key = f"{page_item_ref.get('type')}:{page_item_ref.get('id')}"
-                page_item = included_by_id.get(page_item_key)
-                if page_item:
-                    collection_ref = page_item.get("relationships", {}).get("collection", {}).get("data")
-                    if collection_ref:
-                        collection_id = collection_ref.get("id")
-                        break
-
-            if not collection_id:
-                logger.error("No collection found in page")
-                return events
-
-            # Fetch and process all pages of the collection
-            collection_url = f"{self.authenticator.cms_collections_endpoint}/{collection_id}"
-            current_page = 1
-
-            while True:
-                collection_params = {
-                    "include": "default",
-                    "decorators": "viewingHistory,isFavorite,contentAction,badges",
-                    "page[items.size]": kwargs.get("page_size", 30),
-                    "page[items.number]": current_page,
-                }
-
-                logger.debug(f"Fetching schedule collection page {current_page}: {collection_url}")
-                collection_response = self.http_manager.get(
-                    collection_url,
-                    operation="cms",
-                    headers=headers,
-                    params=collection_params,
+            if airing_items:
+                logger.debug(
+                    f"Found {len(airing_items)} airing items in /sports route — "
+                    "using direct airing parse path"
                 )
-                collection_response.raise_for_status()
-                collection_data = collection_response.json()
+                events = self._parse_airing_events(airing_items, start_time, end_time)
+                logger.info(f"Found {len(events)} events (airing path)")
+                return events
 
-                # Build lookup for this page's included items
-                page_included = {}
-                for item in collection_data.get("included", []):
-                    item_id = item.get("id")
-                    item_type = item.get("type")
-                    if item_id and item_type:
-                        key = f"{item_type}:{item_id}"
-                        page_included[key] = item
+            # ------------------------------------------------------------------
+            # Slow path: collection-based traversal (legacy /sport-schedule shape)
+            # ------------------------------------------------------------------
+            # If the caller explicitly asked for the sports route but got no
+            # airings, retry once with the legacy route before giving up.
+            if route_id == CMS_ROUTE_SPORTS:
+                logger.debug(
+                    "No airing items on /sports route — falling back to "
+                    f"/{CMS_ROUTE_SPORT_SCHEDULE} collection path"
+                )
+                return self.get_events(
+                    start_time=start_time,
+                    end_time=end_time,
+                    route_id=CMS_ROUTE_SPORT_SCHEDULE,
+                    **{k: v for k, v in kwargs.items() if k != "route_id"},
+                )
 
-                items = collection_data.get("data", {}).get("relationships", {}).get("items", {}).get("data", [])
-
-                meta = collection_data.get("meta", {})
-                total_pages = meta.get("itemsTotalPages", 1)
-                logger.debug(f"Fetched collection page {current_page}/{total_pages} ({len(items)} items)")
-
-                # Process this page's items immediately while included data is available
-                for item_ref in items:
-                    try:
-                        item_key = f"{item_ref.get('type')}:{item_ref.get('id')}"
-                        collection_item = page_included.get(item_key)
-
-                        if not collection_item:
-                            continue
-
-                        # Get video reference from collection item
-                        video_ref = collection_item.get("relationships", {}).get("video", {}).get("data")
-                        if not video_ref:
-                            continue
-
-                        # Get video data from included
-                        video_key = f"{video_ref.get('type')}:{video_ref.get('id')}"
-                        video_data = page_included.get(video_key)
-
-                        if not video_data:
-                            continue
-
-                        # Extract event data from video
-                        attributes = video_data.get("attributes", {})
-                        relationships = video_data.get("relationships", {})
-
-                        # Only process EVENT materialType, skip LINEAR (channel feed duplicates)
-                        material_type = attributes.get("materialType")
-                        if material_type != "EVENT":
-                            continue
-
-                        # Determine event status from badges
-                        status = EventStatus.SCHEDULED
-                        badge_refs = relationships.get("badges", {}).get("data", [])
-                        for badge_ref in badge_refs:
-                            if badge_ref.get("id") == "live":
-                                status = EventStatus.LIVE
-                                break
-                            elif badge_ref.get("id") == "release-state-upcoming":
-                                status = EventStatus.SCHEDULED
-                                break
-
-                            # Also check overlays for live status
-                            overlay_key = f"{badge_ref.get('type')}:{badge_ref.get('id')}"
-                            overlay = page_included.get(overlay_key, {})
-                            if overlay.get("id") == "live:default":
-                                status = EventStatus.LIVE
-                                break
-
-                        # Parse start and end times
-                        schedule_start = attributes.get("scheduleStart")
-                        schedule_end = attributes.get("scheduleEnd")
-
-                        start_dt = None
-                        end_dt = None
-
-                        if schedule_start:
-                            try:
-                                start_dt = datetime.fromisoformat(schedule_start.replace('Z', '+00:00'))
-                            except (ValueError, TypeError):
-                                pass
-
-                        if schedule_end:
-                            try:
-                                end_dt = datetime.fromisoformat(schedule_end.replace('Z', '+00:00'))
-                            except (ValueError, TypeError):
-                                pass
-
-                        # Auto-update status based on current UTC time if not live
-                        if status != EventStatus.LIVE and start_dt and end_dt:
-                            from datetime import timezone
-                            now_utc = datetime.now(timezone.utc)
-
-                            if start_dt.tzinfo is None:
-                                start_dt = start_dt.replace(tzinfo=timezone.utc)
-                            if end_dt.tzinfo is None:
-                                end_dt = end_dt.replace(tzinfo=timezone.utc)
-
-                            if now_utc > end_dt:
-                                status = EventStatus.ENDED
-                            elif start_dt <= now_utc <= end_dt:
-                                status = EventStatus.LIVE
-
-                        # Extract logo URL from images if available
-                        logo_url = None
-                        image_refs = relationships.get("images", {}).get("data", [])
-                        if image_refs:
-                            image_key = f"{image_refs[0].get('type')}:{image_refs[0].get('id')}"
-                            image = page_included.get(image_key, {})
-                            img_attrs = image.get("attributes", {})
-                            logo_url = img_attrs.get("src") or img_attrs.get("url")
-
-                        # Get edit ID for streaming
-                        edit_ref = relationships.get("edit", {}).get("data", {})
-                        edit_id = edit_ref.get("id") if edit_ref else None
-
-                        # Get genre from txSports
-                        genre = None
-                        sport_refs = relationships.get("txSports", {}).get("data", [])
-                        if sport_refs:
-                            sport_key = f"{sport_refs[0].get('type')}:{sport_refs[0].get('id')}"
-                            sport = page_included.get(sport_key, {})
-                            genre = sport.get("attributes", {}).get("name")
-
-                        # Get competition (txCompetition)
-                        competition = None
-                        competition_refs = relationships.get("txCompetition", {}).get("data", [])
-                        if competition_refs:
-                            competition_key = f"{competition_refs[0].get('type')}:{competition_refs[0].get('id')}"
-                            competition_node = page_included.get(competition_key, {})
-                            competition = competition_node.get("attributes", {}).get("name")
-
-                        # Get venue/location (txEvent)
-                        venue = None
-                        venue_refs = relationships.get("txEvent", {}).get("data", [])
-                        if venue_refs:
-                            venue_key = f"{venue_refs[0].get('type')}:{venue_refs[0].get('id')}"
-                            venue_node = page_included.get(venue_key, {})
-                            venue = venue_node.get("attributes", {}).get("name")
-
-                        # Get gender (txGender)
-                        gender = None
-                        gender_refs = relationships.get("txGender", {}).get("data", [])
-                        if gender_refs:
-                            gender_key = f"{gender_refs[0].get('type')}:{gender_refs[0].get('id')}"
-                            gender_node = page_included.get(gender_key, {})
-                            gender_val = gender_node.get("attributes", {}).get("name")
-                            if gender_val and gender_val != ".":
-                                gender = gender_val
-
-                        # Get discipline (txDiscipline)
-                        discipline = None
-                        discipline_refs = relationships.get("txDiscipline", {}).get("data", [])
-                        if discipline_refs:
-                            discipline_key = f"{discipline_refs[0].get('type')}:{discipline_refs[0].get('id')}"
-                            discipline_node = page_included.get(discipline_key, {})
-                            discipline_val = discipline_node.get("attributes", {}).get("name")
-                            if discipline_val and discipline_val != ".":
-                                discipline = discipline_val
-
-                        # Get age category (txAge)
-                        age_category = None
-                        age_refs = relationships.get("txAge", {}).get("data", [])
-                        if age_refs:
-                            age_key = f"{age_refs[0].get('type')}:{age_refs[0].get('id')}"
-                            age_node = page_included.get(age_key, {})
-                            age_val = age_node.get("attributes", {}).get("name")
-                            if age_val and age_val != ".":
-                                age_category = age_val
-
-                        # Get master sporting event (txMaster-sporting-event)
-                        master_event = None
-                        master_refs = relationships.get("txMaster-sporting-event", {}).get("data", [])
-                        if master_refs:
-                            master_key = f"{master_refs[0].get('type')}:{master_refs[0].get('id')}"
-                            master_node = page_included.get(master_key, {})
-                            master_event = master_node.get("attributes", {}).get("name")
-
-                        # Get primary channel
-                        channel = None
-                        channel_ref = relationships.get("primaryChannel", {}).get("data")
-                        if channel_ref:
-                            channel_key = f"{channel_ref.get('type')}:{channel_ref.get('id')}"
-                            channel_node = page_included.get(channel_key, {})
-                            channel = channel_node.get("attributes", {}).get("name")
-
-                        # Get audio tracks for language
-                        audio_tracks = attributes.get("audioTracks", [])
-                        language = "de"
-                        if audio_tracks:
-                            if "Deutsch" in audio_tracks:
-                                language = "de"
-                            elif "Englisch" in audio_tracks:
-                                language = "en"
-
-                        # Create Event object
-                        event = Event(
-                            name=attributes.get("name", "Unknown Event"),
-                            content_id=video_data.get("id", ""),
-                            provider=self.provider_name,
-                            logo_url=logo_url,
-                            mode="live" if attributes.get("videoType") == "LIVE" else "vod",
-                            session_manifest=True,
-                            manifest_script=f"editid={edit_id}" if edit_id else None,
-                            cdm=f"editid={edit_id}" if edit_id else None,
-                            content_type="EVENT",
-                            description=attributes.get("description", ""),
-                            genre=genre,
-                            language=language,
-                            country=self.country.upper(),
-                            start_time=start_dt,
-                            end_time=end_dt,
-                            status=status,
-                            subtitle=attributes.get("secondaryTitle"),
-                            original_name=attributes.get("originalName"),
-                            competition=competition,
-                            venue=venue,
-                            gender=gender,
-                            discipline=discipline,
-                            age_category=age_category,
-                            master_event=master_event,
-                            channel=channel,
-                        )
-
-                        events.append(event)
-
-                    except Exception as e:
-                        logger.error(f"Error processing collection item: {e}")
-                        continue
-
-                if current_page >= total_pages:
-                    break
-                current_page += 1
-
-            logger.info(f"Found {len(events)} events")
+            # ---- legacy collection traversal (sport-schedule) ----------------
+            events = self._fetch_events_via_collection(
+                data=data,
+                headers=headers,
+                start_time=start_time,
+                end_time=end_time,
+                **kwargs,
+            )
+            logger.info(f"Found {len(events)} events (collection path)")
 
         except Exception as e:
             logger.error(f"Error fetching events: {e}")
 
         return events
+
+    # =========================================================================
+    # CMS route discovery
+    # =========================================================================
+
+    @staticmethod
+    def _discover_cms_routes(data: dict) -> Dict[str, str]:
+        """
+        Parse a /home CMS response and return a map of all navigation routes.
+
+        The /home response contains a ``data.relationships.navigationLinks``
+        array whose entries are resolved via the top-level ``included`` list.
+        Each resolved node has ``attributes.url`` (e.g. ``"/sports"``) and
+        ``attributes.label`` (localised display name).
+
+        Returns:
+            dict mapping route_id → label, e.g.
+            ``{"sports": "Sport", "channels": "Kanäle", "home": "Home"}``
+            Returns an empty dict if the navigation graph is absent.
+        """
+        included_by_id: Dict[str, dict] = {
+            f"{item['type']}:{item['id']}": item
+            for item in data.get("included", [])
+            if item.get("id") and item.get("type")
+        }
+        nav_refs = (
+            data.get("data", {})
+                .get("relationships", {})
+                .get("navigationLinks", {})
+                .get("data", [])
+        )
+        if not nav_refs:
+            logger.debug("_discover_cms_routes: no navigationLinks found in /home response")
+            return {}
+
+        routes: Dict[str, str] = {}
+        for ref in nav_refs:
+            key = f"{ref.get('type', 'link')}:{ref['id']}"
+            node = included_by_id.get(key, {})
+            attrs = node.get("attributes", {})
+            # Use the URL path segment as the route ID; fall back to the ref id
+            url_path = attrs.get("url", "").lstrip("/")
+            route_id = url_path or ref["id"]
+            label = attrs.get("label", route_id)
+            routes[route_id] = label
+
+        return routes
+
+    # Keywords used to identify event-bearing routes from the discovered set.
+    # Order matters: earlier patterns take priority.
+    _EVENT_ROUTE_KEYWORDS: ClassVar[tuple] = ("sport", "live", "event")
+
+    def _select_event_route(self) -> str:
+        """
+        Return the best event-producing CMS route from ``self._cms_routes``.
+
+        Iterates discovered routes and returns the first one whose ID contains
+        one of the ``_EVENT_ROUTE_KEYWORDS``.  Falls back to ``CMS_ROUTE_SPORTS``
+        if no match is found (e.g. ``get_channels()`` hasn't been called yet).
+        """
+        for keyword in self._EVENT_ROUTE_KEYWORDS:
+            match = next(
+                (route_id for route_id in self._cms_routes if keyword in route_id.lower()),
+                None,
+            )
+            if match:
+                logger.debug(f"_select_event_route: selected '{match}' (matched '{keyword}')")
+                return match
+
+        logger.debug(
+            f"_select_event_route: no event route found in {list(self._cms_routes.keys())!r}, "
+            f"falling back to '{CMS_ROUTE_SPORTS}'"
+        )
+        return CMS_ROUTE_SPORTS
+
+    # =========================================================================
+    # Airing-based event parsing  (/sports route)
+    # =========================================================================
+
+    def _parse_airing_events(
+            self,
+            airing_items: List[Dict],
+            start_time: Optional[datetime] = None,
+            end_time: Optional[datetime] = None,
+    ) -> List[Event]:
+        """
+        Parse a list of ``airing`` objects from the /sports CMS route into
+        ``Event`` instances.
+
+        The /sports route places ``airing`` items directly in the top-level
+        ``included`` array.  Each airing carries:
+
+        - ``attributes.scheduleStart / scheduleEnd``  — ISO-8601 UTC timestamps
+        - ``attributes.name``                          — episode/event title
+        - ``attributes.showName``                      — parent show name
+        - ``attributes.description / secondaryTitle``  — optional metadata
+        - ``attributes.episodeNumber / seasonNumber``  — episode metadata
+        - ``relationships.badges``                     — live / up-next status
+        - ``relationships.distributionChannel``        — links to channel cache
+
+        Badge → EventStatus mapping:
+          AIRING_BADGE_LIVE     ("live")                   → EventStatus.LIVE
+          AIRING_BADGE_UP_NEXT  ("release-state-up-next")  → EventStatus.UPCOMING
+          (fallback clock-based logic handles ENDED / LIVE for unlabelled items)
+
+        The ``distributionChannel`` relationship ID is looked up in
+        ``self._channels_cache`` so the event carries the correct channel name
+        without an extra API round-trip.
+
+        Args:
+            airing_items: List of airing dicts from ``data["included"]``.
+            start_time:   Optional lower bound filter (inclusive).
+            end_time:     Optional upper bound filter (inclusive).
+
+        Returns:
+            List of Event objects, optionally filtered by time window.
+        """
+        events: List[Event] = []
+        now_utc = datetime.now(timezone.utc)
+
+        for airing in airing_items:
+            try:
+                attributes = airing.get("attributes", {})
+                relationships = airing.get("relationships", {})
+
+                # ---- schedule times -----------------------------------------
+                schedule_start = attributes.get("scheduleStart")
+                schedule_end = attributes.get("scheduleEnd")
+
+                start_dt: Optional[datetime] = None
+                end_dt: Optional[datetime] = None
+
+                if schedule_start:
+                    try:
+                        start_dt = datetime.fromisoformat(
+                            schedule_start.replace("Z", "+00:00")
+                        )
+                    except (ValueError, TypeError):
+                        pass
+
+                if schedule_end:
+                    try:
+                        end_dt = datetime.fromisoformat(
+                            schedule_end.replace("Z", "+00:00")
+                        )
+                    except (ValueError, TypeError):
+                        pass
+
+                # ---- optional caller-supplied time window filter -------------
+                if start_time and end_dt and end_dt < start_time:
+                    continue
+                if end_time and start_dt and start_dt > end_time:
+                    continue
+
+                # ---- event status from badges --------------------------------
+                # Badge priority: explicit "live" wins over "up-next"; clock-
+                # based logic is applied when neither badge is present.
+                status = EventStatus.SCHEDULED
+                badge_refs = relationships.get("badges", {}).get("data", [])
+                badge_ids = {b.get("id") for b in badge_refs}
+
+                if AIRING_BADGE_LIVE in badge_ids:
+                    status = EventStatus.LIVE
+                elif AIRING_BADGE_UP_NEXT in badge_ids or AIRING_BADGE_UPCOMING_LEGACY in badge_ids:
+                    status = EventStatus.SCHEDULED
+                elif start_dt and end_dt:
+                    # Ensure tz-aware before comparison
+                    _start = start_dt if start_dt.tzinfo else start_dt.replace(tzinfo=timezone.utc)
+                    _end = end_dt if end_dt.tzinfo else end_dt.replace(tzinfo=timezone.utc)
+
+                    if now_utc > _end:
+                        status = EventStatus.ENDED
+                    elif _start <= now_utc <= _end:
+                        status = EventStatus.LIVE
+
+                # ---- channel lookup -----------------------------------------
+                # distributionChannel.data.id matches the keys in _channels_cache
+                channel_name: Optional[str] = None
+                dist_channel_ref = (
+                    relationships.get("distributionChannel", {}).get("data", {})
+                )
+                dist_channel_id = dist_channel_ref.get("id") if dist_channel_ref else None
+
+                if dist_channel_id:
+                    cached_channel = self._channels_cache.get(dist_channel_id)
+                    if cached_channel:
+                        channel_name = cached_channel.name
+                    else:
+                        logger.debug(
+                            f"distributionChannel {dist_channel_id} not in cache "
+                            f"for airing '{attributes.get('name')}'"
+                        )
+
+                # ---- build Event --------------------------------------------
+                event = Event(
+                    name=attributes.get("name", "Unknown Event"),
+                    content_id=airing.get("id", ""),
+                    provider=self.provider_name,
+                    logo_url=None,          # airing items carry image IDs only;
+                                            # full URLs require a separate fetch
+                    mode="live" if status == EventStatus.LIVE else "vod",
+                    session_manifest=False,
+                    manifest_script=None,
+                    cdm=None,
+                    content_type="AIRING",
+                    description=attributes.get("description", ""),
+                    genre=None,
+                    language="de",          # airings don't expose audioTracks
+                    country=self.country.upper(),
+                    start_time=start_dt,
+                    end_time=end_dt,
+                    status=status,
+                    subtitle=attributes.get("secondaryTitle"),
+                    original_name=attributes.get("showName"),
+                    competition=None,
+                    venue=None,
+                    gender=None,
+                    discipline=None,
+                    age_category=None,
+                    master_event=None,
+                    channel=channel_name,
+                )
+
+                events.append(event)
+
+            except Exception as e:
+                logger.error(
+                    f"Error processing airing item {airing.get('id')}: {e}"
+                )
+                continue
+
+        return events
+
+    # =========================================================================
+    # Legacy collection-based event fetching  (/sport-schedule route)
+    # =========================================================================
+
+    def _fetch_events_via_collection(
+            self,
+            data: Dict,
+            headers: Dict,
+            start_time: Optional[datetime] = None,
+            end_time: Optional[datetime] = None,
+            **kwargs,
+    ) -> List[Event]:
+        """
+        Traverse the legacy collection-based CMS shape to extract events.
+
+        This implements the original multi-hop traversal:
+          route data → target page → page items → collection →
+          paginated collection items → video attributes
+
+        Args:
+            data: Parsed JSON from the initial CMS route request.
+            headers: Auth headers for subsequent requests.
+            start_time: Optional lower bound filter.
+            end_time: Optional upper bound filter.
+            **kwargs: Forwarded kwargs (page_size, etc.).
+
+        Returns:
+            List of Event objects.
+        """
+        events: List[Event] = []
+
+        # Build lookup of included items by type:id
+        included_by_id: Dict[str, Dict] = {}
+        for item in data.get("included", []):
+            item_id = item.get("id")
+            item_type = item.get("type")
+            if item_id and item_type:
+                included_by_id[f"{item_type}:{item_id}"] = item
+
+        # Find the target page from the route
+        route_data = data.get("data", {})
+        target_ref = route_data.get("relationships", {}).get("target", {}).get("data")
+
+        if not target_ref:
+            logger.error("No target page found in route response (collection path)")
+            return events
+
+        page_key = f"{target_ref.get('type')}:{target_ref.get('id')}"
+        page = included_by_id.get(page_key)
+
+        if not page:
+            logger.error("Target page not found in included items (collection path)")
+            return events
+
+        # Find the collection from page items
+        page_items = page.get("relationships", {}).get("items", {}).get("data", [])
+        collection_id = None
+
+        for page_item_ref in page_items:
+            page_item_key = f"{page_item_ref.get('type')}:{page_item_ref.get('id')}"
+            page_item = included_by_id.get(page_item_key)
+            if page_item:
+                collection_ref = (
+                    page_item.get("relationships", {})
+                    .get("collection", {})
+                    .get("data")
+                )
+                if collection_ref:
+                    collection_id = collection_ref.get("id")
+                    break
+
+        if not collection_id:
+            logger.error("No collection found in page (collection path)")
+            return events
+
+        # Paginate through the collection
+        collection_url = (
+            f"{self.authenticator.cms_collections_endpoint}/{collection_id}"
+        )
+        current_page = 1
+
+        while True:
+            collection_params = {
+                "include": "default",
+                "decorators": "viewingHistory,isFavorite,contentAction,badges",
+                "page[items.size]": kwargs.get("page_size", 30),
+                "page[items.number]": current_page,
+            }
+
+            logger.debug(
+                f"Fetching schedule collection page {current_page}: {collection_url}"
+            )
+            collection_response = self.http_manager.get(
+                collection_url,
+                operation="cms",
+                headers=headers,
+                params=collection_params,
+            )
+            collection_response.raise_for_status()
+            collection_data = collection_response.json()
+
+            # Build per-page included lookup
+            page_included: Dict[str, Dict] = {}
+            for item in collection_data.get("included", []):
+                item_id = item.get("id")
+                item_type = item.get("type")
+                if item_id and item_type:
+                    page_included[f"{item_type}:{item_id}"] = item
+
+            items = (
+                collection_data.get("data", {})
+                .get("relationships", {})
+                .get("items", {})
+                .get("data", [])
+            )
+
+            meta = collection_data.get("meta", {})
+            total_pages = meta.get("itemsTotalPages", 1)
+            logger.debug(
+                f"Fetched collection page {current_page}/{total_pages} "
+                f"({len(items)} items)"
+            )
+
+            for item_ref in items:
+                try:
+                    item_key = f"{item_ref.get('type')}:{item_ref.get('id')}"
+                    collection_item = page_included.get(item_key)
+
+                    if not collection_item:
+                        continue
+
+                    # Get video reference from collection item
+                    video_ref = (
+                        collection_item.get("relationships", {})
+                        .get("video", {})
+                        .get("data")
+                    )
+                    if not video_ref:
+                        continue
+
+                    video_key = f"{video_ref.get('type')}:{video_ref.get('id')}"
+                    video_data = page_included.get(video_key)
+
+                    if not video_data:
+                        continue
+
+                    # Only process EVENT materialType
+                    attributes = video_data.get("attributes", {})
+                    relationships = video_data.get("relationships", {})
+
+                    material_type = attributes.get("materialType")
+                    if material_type != "EVENT":
+                        continue
+
+                    # ---- status from badges ----------------------------------
+                    status = EventStatus.SCHEDULED
+                    badge_refs = relationships.get("badges", {}).get("data", [])
+                    badge_ids = {b.get("id") for b in badge_refs}
+
+                    if AIRING_BADGE_LIVE in badge_ids:
+                        status = EventStatus.LIVE
+                    elif (
+                        AIRING_BADGE_UP_NEXT in badge_ids
+                        or AIRING_BADGE_UPCOMING_LEGACY in badge_ids
+                    ):
+                        status = EventStatus.SCHEDULED
+
+                        # Also check overlays for live status
+                    for badge_ref in badge_refs:
+                        overlay_key = f"{badge_ref.get('type')}:{badge_ref.get('id')}"
+                        overlay = page_included.get(overlay_key, {})
+                        if overlay.get("id") == "live:default":
+                            status = EventStatus.LIVE
+                            break
+
+                    # ---- schedule times -------------------------------------
+                    schedule_start = attributes.get("scheduleStart")
+                    schedule_end = attributes.get("scheduleEnd")
+
+                    start_dt: Optional[datetime] = None
+                    end_dt: Optional[datetime] = None
+
+                    if schedule_start:
+                        try:
+                            start_dt = datetime.fromisoformat(
+                                schedule_start.replace("Z", "+00:00")
+                            )
+                        except (ValueError, TypeError):
+                            pass
+
+                    if schedule_end:
+                        try:
+                            end_dt = datetime.fromisoformat(
+                                schedule_end.replace("Z", "+00:00")
+                            )
+                        except (ValueError, TypeError):
+                            pass
+
+                    # Clock-based status refinement
+                    if status != EventStatus.LIVE and start_dt and end_dt:
+                        now_utc = datetime.now(timezone.utc)
+                        _start = start_dt if start_dt.tzinfo else start_dt.replace(tzinfo=timezone.utc)
+                        _end = end_dt if end_dt.tzinfo else end_dt.replace(tzinfo=timezone.utc)
+
+                        if now_utc > _end:
+                            status = EventStatus.ENDED
+                        elif _start <= now_utc <= _end:
+                            status = EventStatus.LIVE
+
+                    # ---- logo -----------------------------------------------
+                    logo_url = None
+                    image_refs = relationships.get("images", {}).get("data", [])
+                    if image_refs:
+                        image_key = f"{image_refs[0].get('type')}:{image_refs[0].get('id')}"
+                        image = page_included.get(image_key, {})
+                        img_attrs = image.get("attributes", {})
+                        logo_url = img_attrs.get("src") or img_attrs.get("url")
+
+                    # ---- edit ID for streaming --------------------------------
+                    edit_ref = relationships.get("edit", {}).get("data", {})
+                    edit_id = edit_ref.get("id") if edit_ref else None
+
+                    # ---- taxonomy lookups -----------------------------------
+                    genre = self._resolve_taxonomy(
+                        relationships, "txSports", page_included
+                    )
+                    competition = self._resolve_taxonomy(
+                        relationships, "txCompetition", page_included
+                    )
+                    venue = self._resolve_taxonomy(
+                        relationships, "txEvent", page_included
+                    )
+                    gender_val = self._resolve_taxonomy(
+                        relationships, "txGender", page_included
+                    )
+                    gender = gender_val if gender_val and gender_val != "." else None
+
+                    discipline_val = self._resolve_taxonomy(
+                        relationships, "txDiscipline", page_included
+                    )
+                    discipline = discipline_val if discipline_val and discipline_val != "." else None
+
+                    age_val = self._resolve_taxonomy(
+                        relationships, "txAge", page_included
+                    )
+                    age_category = age_val if age_val and age_val != "." else None
+
+                    master_event = self._resolve_taxonomy(
+                        relationships, "txMaster-sporting-event", page_included
+                    )
+
+                    # ---- primary channel ------------------------------------
+                    channel_name = None
+                    channel_ref = relationships.get("primaryChannel", {}).get("data")
+                    if channel_ref:
+                        channel_key = f"{channel_ref.get('type')}:{channel_ref.get('id')}"
+                        channel_node = page_included.get(channel_key, {})
+                        channel_name = channel_node.get("attributes", {}).get("name")
+
+                    # ---- language from audio tracks -------------------------
+                    audio_tracks = attributes.get("audioTracks", [])
+                    language = "de"
+                    if audio_tracks:
+                        if "Deutsch" in audio_tracks:
+                            language = "de"
+                        elif "Englisch" in audio_tracks:
+                            language = "en"
+
+                    event = Event(
+                        name=attributes.get("name", "Unknown Event"),
+                        content_id=video_data.get("id", ""),
+                        provider=self.provider_name,
+                        logo_url=logo_url,
+                        mode="live" if attributes.get("videoType") == "LIVE" else "vod",
+                        session_manifest=True,
+                        manifest_script=f"editid={edit_id}" if edit_id else None,
+                        cdm=f"editid={edit_id}" if edit_id else None,
+                        content_type="EVENT",
+                        description=attributes.get("description", ""),
+                        genre=genre,
+                        language=language,
+                        country=self.country.upper(),
+                        start_time=start_dt,
+                        end_time=end_dt,
+                        status=status,
+                        subtitle=attributes.get("secondaryTitle"),
+                        original_name=attributes.get("originalName"),
+                        competition=competition,
+                        venue=venue,
+                        gender=gender,
+                        discipline=discipline,
+                        age_category=age_category,
+                        master_event=master_event,
+                        channel=channel_name,
+                    )
+
+                    events.append(event)
+
+                except Exception as e:
+                    logger.error(f"Error processing collection item: {e}")
+                    continue
+
+            if current_page >= total_pages:
+                break
+            current_page += 1
+
+        return events
+
+    @staticmethod
+    def _resolve_taxonomy(
+            relationships: Dict,
+            key: str,
+            included: Dict,
+    ) -> Optional[str]:
+        """
+        Resolve a single taxonomy relationship to its name attribute.
+
+        Args:
+            relationships: ``relationships`` dict from a video/event item.
+            key: Relationship key, e.g. ``"txSports"``, ``"txCompetition"``.
+            included: Per-page included lookup (``type:id`` → item).
+
+        Returns:
+            The ``attributes.name`` string, or ``None`` if not found.
+        """
+        refs = relationships.get(key, {}).get("data", [])
+        if not refs:
+            return None
+        ref = refs[0]
+        node = included.get(f"{ref.get('type')}:{ref.get('id')}", {})
+        return node.get("attributes", {}).get("name")
 
     def _extract_distribution_channels(
             self, data: Dict
@@ -994,7 +1361,6 @@ class DiscoveryProvider(StreamingProvider):
                 data.get("drm", {}).get("expirationDate")
             )
             if drm_expiration_str:
-                from datetime import timezone
                 dt = datetime.fromisoformat(
                     drm_expiration_str.replace("Z", "+00:00")
                 )
@@ -1257,67 +1623,12 @@ class DiscoveryProvider(StreamingProvider):
         )
         return successful_channels
 
-    def enrich_channel_data(
-            self,
-            channel: StreamingChannel,
-            **kwargs
-    ) -> Optional[StreamingChannel]:
-        """
-        Get manifest URL for a specific channel and properly configure DRM.
-
-        Args:
-            channel: StreamingChannel to enrich
-            **kwargs: Additional parameters
-
-        Returns:
-            Enriched StreamingChannel or None if failed
-        """
-        try:
-            # Get DiscoveryChannel from cache
-            disco_channel = self._channels_cache.get(channel.channel_id)
-
-            if not disco_channel:
-                logger.warning(
-                    f"Channel {channel.name} not in cache, cannot enrich"
-                )
-                return None
-
-            edit_id = disco_channel.edit_id
-
-            if not edit_id:
-                logger.warning(f"No edit_id found for channel {channel.name}")
-                return None
-
-            playback_data = self._get_cached_playback_info(edit_id=edit_id)
-            streaming_data = self.extract_streaming_data(playback_data)
-
-            if not streaming_data["manifest_url"]:
-                return None
-
-            channel.manifest = streaming_data["manifest_url"]
-            channel.streaming_format = streaming_data["streaming_format"]
-
-            # Configure DRM if license URL is present
-            if streaming_data["license_url"]:
-                drm_config = self._build_drm_config(streaming_data)
-                if drm_config:
-                    channel.drm_config = drm_config
-                channel.cdm_type = streaming_data["drm_system"]
-
-            return channel
-
-        except Exception as e:
-            logger.error(
-                f"Error enriching channel data for {channel.name}: {e}"
-            )
-            return None
-
-    def get_manifest(self, channel_id: str, **kwargs) -> Optional[str]:
+    def get_manifest(self, content_id: str, **kwargs) -> Optional[str]:
         """
         Get manifest URL for a specific channel by ID.
 
         Args:
-            channel_id: Channel identifier
+            content_id: Channel identifier
             **kwargs: Additional parameters
 
         Returns:
@@ -1328,16 +1639,16 @@ class DiscoveryProvider(StreamingProvider):
         """
         try:
             # Get DiscoveryChannel from cache
-            disco_channel = self._channels_cache.get(channel_id)
+            disco_channel = self._channels_cache.get(content_id)
 
             if not disco_channel:
-                raise ChannelNotFoundError(channel_id)
+                raise ChannelNotFoundError(content_id)
 
             edit_id = disco_channel.edit_id
 
             if not edit_id:
                 raise ManifestFetchError(
-                    f"No edit_id for channel {channel_id}"
+                    f"No edit_id for channel {content_id}"
                 )
 
             playback_data = self._get_cached_playback_info(edit_id=edit_id)
@@ -1348,16 +1659,16 @@ class DiscoveryProvider(StreamingProvider):
             raise
         except Exception as e:
             logger.error(
-                f"Error getting manifest for channel {channel_id}: {e}"
+                f"Error getting manifest for channel {content_id}: {e}"
             )
             return None
 
-    def get_drm(self, channel_id: str, **kwargs) -> List[DRMConfig]:
+    def get_drm(self, content_id: str, **kwargs) -> List[DRMConfig]:
         """
         Get all DRM configurations for a channel by ID.
 
         Args:
-            channel_id: Channel identifier
+            content_id: Channel identifier
             **kwargs: Additional parameters
 
         Returns:
@@ -1365,11 +1676,11 @@ class DiscoveryProvider(StreamingProvider):
         """
         try:
             # Get DiscoveryChannel from cache
-            disco_channel = self._channels_cache.get(channel_id)
+            disco_channel = self._channels_cache.get(content_id)
 
             if not disco_channel:
                 logger.warning(
-                    f"Channel {channel_id} not in cache for DRM"
+                    f"Channel {content_id} not in cache for DRM"
                 )
                 return []
 
@@ -1389,7 +1700,7 @@ class DiscoveryProvider(StreamingProvider):
 
         except Exception as e:
             logger.error(
-                f"Error getting DRM configs for channel {channel_id}: {e}"
+                f"Error getting DRM configs for channel {content_id}: {e}"
             )
             return []
 

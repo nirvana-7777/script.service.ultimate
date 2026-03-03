@@ -574,7 +574,7 @@ class JoynProvider(StreamingProvider):
 
     def get_manifest(
         self,
-        channel_id: str,
+        content_id: str,
         content_type: str = CONTENT_TYPE_LIVE,
         video_config: Optional[Dict] = None,
         **kwargs,
@@ -593,20 +593,20 @@ class JoynProvider(StreamingProvider):
         """
         try:
             entitlement_token = self.get_entitlement_token(
-                content_id=channel_id, content_type=content_type
+                content_id=content_id, content_type=content_type
             )
 
-            playlist_data = self.get_channel_playlist(channel_id, entitlement_token, video_config)
+            playlist_data = self.get_channel_playlist(content_id, entitlement_token, video_config)
 
             return playlist_data.get("manifestUrl")
 
         except Exception as e:
-            logger.error(f"Error getting manifest for channel {channel_id}: {e}")
+            logger.error(f"Error getting manifest for channel {content_id}: {e}")
             return None
 
     def get_drm(
         self,
-        channel_id: str,
+        content_id: str,
         content_type: str = CONTENT_TYPE_LIVE,
         video_config: Optional[Dict] = None,
         **kwargs,
@@ -625,10 +625,10 @@ class JoynProvider(StreamingProvider):
         """
         try:
             entitlement_token = self.get_entitlement_token(
-                content_id=channel_id, content_type=content_type
+                content_id=content_id, content_type=content_type
             )
 
-            playlist_data = self.get_channel_playlist(channel_id, entitlement_token, video_config)
+            playlist_data = self.get_channel_playlist(content_id, entitlement_token, video_config)
 
             license_url = playlist_data.get("licenseUrl")
             if not license_url:
@@ -655,7 +655,7 @@ class JoynProvider(StreamingProvider):
             return [drm_config]
 
         except Exception as e:
-            logger.error(f"Error getting DRM configs for channel {channel_id}: {e}")
+            logger.error(f"Error getting DRM configs for channel {content_id}: {e}")
             return []
 
     def get_epg(

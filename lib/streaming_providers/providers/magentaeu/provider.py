@@ -315,7 +315,7 @@ class MagentaEUProvider(StreamingProvider):
 
         return True
 
-    def get_manifest(self, channel_id: str, **kwargs) -> Optional[str]:
+    def get_manifest(self, content_id: str, **kwargs) -> Optional[str]:
         """Get manifest URL for a channel by ID"""
 
         # Ensure cache is populated
@@ -324,10 +324,10 @@ class MagentaEUProvider(StreamingProvider):
 
         # Look for the channel
         for channel in self._channels_cache:
-            if channel.channel_id == channel_id:
+            if channel.channel_id == content_id:
                 return channel.manifest
 
-        logger.warning(f"Channel {channel_id} not found in available channels")
+        logger.warning(f"Channel {content_id} not found in available channels")
         return None
 
     def get_catchup_manifest(
@@ -383,24 +383,24 @@ class MagentaEUProvider(StreamingProvider):
             logger.warning(f"Falling back to live manifest for channel {channel_id}")
             return base_manifest
 
-    def get_drm(self, channel_id: str, **kwargs) -> List[DRMConfig]:
+    def get_drm(self, content_id: str, **kwargs) -> List[DRMConfig]:
         """Get DRM configurations for channel by ID"""
-        logger.info(f"=== get_drm_configs_by_id CALLED for channel_id: {channel_id} ===")
+        logger.info(f"=== get_drm_configs_by_id CALLED for channel_id: {content_id} ===")
 
         # Ensure cache is populated
         if not self._ensure_channels_cache():
-            logger.warning(f"Cannot get DRM for {channel_id}, channels cache unavailable")
+            logger.warning(f"Cannot get DRM for {content_id}, channels cache unavailable")
             return []
 
         # Find channel in cache
         channel = None
         for cached_channel in self._channels_cache:
-            if cached_channel.channel_id == channel_id:
+            if cached_channel.channel_id == content_id:
                 channel = cached_channel
                 break
 
         if not channel:
-            logger.warning(f"Channel with ID {channel_id} not found in cache")
+            logger.warning(f"Channel with ID {content_id} not found in cache")
             return []
 
         # Get DRM config using the existing method

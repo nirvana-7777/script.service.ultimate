@@ -263,19 +263,19 @@ class BHTelecomProvider(StreamingProvider):
 
     def get_manifest(
             self,
-            channel_id: str,
+            content_id: str,
             **kwargs,
     ) -> Optional[str]:
         # Hits the cache logically
         channels = self.get_channels(fetch_manifests=False)
         for channel in channels:
-            if channel.channel_id == channel_id:
+            if channel.channel_id == content_id:
                 return channel.manifest
         return None
 
     def get_drm(
             self,
-            channel_id: str,
+            content_id: str,
             **kwargs,
     ) -> List[DRMConfig]:
         return []

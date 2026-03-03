@@ -736,7 +736,7 @@ class ScriptsProvider(StreamingProvider):
 
     def get_manifest(
             self,
-            channel_id: str,
+            content_id: str,
             proxy_url: Optional[str] = None,
             **kwargs,
     ) -> Optional[str]:
@@ -755,12 +755,12 @@ class ScriptsProvider(StreamingProvider):
         channel = None
         channels = self.get_channels()
         for ch in channels:
-            if ch.channel_id == channel_id:
+            if ch.channel_id == content_id:
                 channel = ch
                 break
 
         if not channel:
-            logger.warning(f"Scripts ({self.provider_label}): Channel not found: {channel_id}")
+            logger.warning(f"Scripts ({self.provider_label}): Channel not found: {content_id}")
             return None
 
         # Parse manifest script parameters
@@ -804,7 +804,7 @@ class ScriptsProvider(StreamingProvider):
 
     def get_drm(
             self,
-            channel_id: str,
+            content_id: str,
             proxy_url: Optional[str] = None,
             force_refresh: bool = False,
             **kwargs,
@@ -825,20 +825,20 @@ class ScriptsProvider(StreamingProvider):
         channel = None
         channels = self.get_channels()
         for ch in channels:
-            if ch.channel_id == channel_id:
+            if ch.channel_id == content_id:
                 channel = ch
                 break
 
         if not channel:
-            logger.warning(f"Scripts ({self.provider_label}): Channel not found: {channel_id}")
+            logger.warning(f"Scripts ({self.provider_label}): Channel not found: {content_id}")
             return []
 
         # Check cache
-        if not force_refresh and not self._should_refresh_cdm_cache(channel_id):
-            cached_config = self._cdm_cache.get(channel_id)
+        if not force_refresh and not self._should_refresh_cdm_cache(content_id):
+            cached_config = self._cdm_cache.get(content_id)
             if cached_config:
                 self._stats["cache_hits"] += 1
-                logger.debug(f"Scripts ({self.provider_label}): Returning DRM config from cache for {channel_id}")
+                logger.debug(f"Scripts ({self.provider_label}): Returning DRM config from cache for {content_id}")
                 return [cached_config]
 
         self._stats["cache_misses"] += 1
@@ -866,12 +866,12 @@ class ScriptsProvider(StreamingProvider):
             return []
 
         # Parse DRM config
-        drm_config = self._parse_cdm_output(output, channel_id)
+        drm_config = self._parse_cdm_output(output, content_id)
 
         if drm_config:
             # Update cache
-            self._cdm_cache[channel_id] = drm_config
-            self._cdm_cache_timestamps[channel_id] = time.time()
+            self._cdm_cache[content_id] = drm_config
+            self._cdm_cache_timestamps[content_id] = time.time()
             return [drm_config]
 
         return []

@@ -1254,10 +1254,10 @@ class Magenta2Provider(StreamingProvider):
             return None
 
     def get_manifest(
-        self, channel_id: str, content_type: str = CONTENT_TYPE_LIVE, **kwargs
+        self, content_id: str, content_type: str = CONTENT_TYPE_LIVE, **kwargs
     ) -> Optional[str]:
         """Get MPD manifest URL using cached SMIL data"""
-        smil_data = self._get_smil_data(channel_id)
+        smil_data = self._get_smil_data(content_id)
         return smil_data.get("mpd_url") if smil_data else None
 
     def get_catchup_manifest(
@@ -1510,17 +1510,17 @@ class Magenta2Provider(StreamingProvider):
             return None
 
     def get_drm(
-        self, channel_id: str, content_type: str = CONTENT_TYPE_LIVE, **kwargs
+        self, content_id: str, content_type: str = CONTENT_TYPE_LIVE, **kwargs
     ) -> List[DRMConfig]:
         """Get DRM configuration using unified SMIL data"""
         try:
-            smil_data = self._get_smil_data(channel_id)
+            smil_data = self._get_smil_data(content_id)
             if not smil_data:
-                logger.error(f"No SMIL data found for channel {channel_id}")
+                logger.error(f"No SMIL data found for channel {content_id}")
                 return []
 
             if not smil_data.get("release_pid"):
-                logger.error(f"No releasePid found in SMIL for channel {channel_id}")
+                logger.error(f"No releasePid found in SMIL for channel {content_id}")
                 # Debug what we do have
                 logger.debug(f"SMIL data keys: {list(smil_data.keys())}")
                 if "content" in smil_data and smil_data["content"]:
@@ -1576,12 +1576,12 @@ class Magenta2Provider(StreamingProvider):
             )
 
             logger.info(
-                f"✓ DRM configuration created for channel {channel_id} (releasePid: {release_pid})"
+                f"✓ DRM configuration created for channel {content_id} (releasePid: {release_pid})"
             )
             return [drm_config]
 
         except Exception as e:
-            logger.error(f"Error getting DRM configs for channel {channel_id}: {e}")
+            logger.error(f"Error getting DRM configs for channel {content_id}: {e}")
             return []
 
     def _get_account_uri(self) -> str:

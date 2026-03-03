@@ -258,8 +258,8 @@ class RTLPlusProvider(StreamingProvider):
             logger.error(f"Error enriching channel data for {channel.name}: {e}")
             return channel
 
-    def get_manifest(self, channel_id: str, **kwargs) -> Optional[str]:
-        manifest_url = self.rtl_config.get_manifest_url(channel_id)
+    def get_manifest(self, content_id: str, **kwargs) -> Optional[str]:
+        manifest_url = self.rtl_config.get_manifest_url(content_id)
 
         try:
             logger.debug(f"RTL+ Manifest Request: GET {manifest_url}")
@@ -334,13 +334,13 @@ class RTLPlusProvider(StreamingProvider):
         except Exception:
             return manifest_data
 
-    def get_drm(self, channel_id: str, **kwargs) -> List[DRMConfig]:
+    def get_drm(self, content_id: str, **kwargs) -> List[DRMConfig]:
         """
         Get DRM configurations for a channel from RTL+ streaming API
         """
         try:
             # Fetch manifest data to get license information
-            manifest_url = self.rtl_config.get_manifest_url(channel_id)
+            manifest_url = self.rtl_config.get_manifest_url(content_id)
 
             response = self.http_manager.get(manifest_url, operation="manifest")
             response.raise_for_status()
@@ -405,10 +405,10 @@ class RTLPlusProvider(StreamingProvider):
             return drm_configs
 
         except requests.RequestException as e:
-            logger.error(f"Error fetching DRM configs for RTL+ channel {channel_id}: {e}")
+            logger.error(f"Error fetching DRM configs for RTL+ channel {content_id}: {e}")
             return []
         except Exception as e:
-            logger.error(f"Error parsing DRM configs for RTL+ channel {channel_id}: {e}")
+            logger.error(f"Error parsing DRM configs for RTL+ channel {content_id}: {e}")
             return []
 
     @staticmethod
