@@ -513,7 +513,7 @@ class DiscoveryVodManager:
         if not route_url:
             logger.debug(
                 f"DiscoveryVodManager: taxonomyNode '{node.get('id')}' "
-                "has no route — skipping"
+                "has no routes — skipping"
             )
             return None
 
