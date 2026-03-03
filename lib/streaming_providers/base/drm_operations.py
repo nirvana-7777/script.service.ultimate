@@ -287,7 +287,7 @@ class DRMOperations:
 
         return configs
 
-    def get_channel_drm_configs(self, provider_name: str, channel_id: str, **kwargs) -> List:
+    def get_content_drm_configs(self, provider_name: str, channel_id: str, **kwargs) -> List:
         """
         Get DRM configurations for a channel with two-phase plugin processing.
 

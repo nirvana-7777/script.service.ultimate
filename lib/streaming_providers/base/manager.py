@@ -162,7 +162,7 @@ class ProviderManager:
     # ==========================================================================
 
     def get_channel_drm_configs(self, provider_name: str, channel_id: str, **kwargs) -> List:
-        return self.drm_ops.get_channel_drm_configs(provider_name, channel_id, **kwargs)
+        return self.drm_ops.get_content_drm_configs(provider_name, channel_id, **kwargs)
 
     def list_drm_plugins(self) -> Dict:
         return self.drm_ops.list_drm_plugins()
@@ -228,7 +228,7 @@ class ProviderManager:
         return self.event_ops.get_event_manifest(provider_name, event_id, **kwargs)
 
     def get_event_drm_configs(self, provider_name: str, event_id: str, **kwargs) -> List:
-        return self.event_ops.get_event_drm_configs(provider_name, event_id, **kwargs)
+        return self.drm_ops.get_content_drm_configs(provider_name, event_id, **kwargs)
 
     # ==========================================================================
     # SUBSCRIPTION OPERATIONS (delegate to SubscriptionOperations)
