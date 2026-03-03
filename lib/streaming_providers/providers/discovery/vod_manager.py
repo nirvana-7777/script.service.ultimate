@@ -19,8 +19,10 @@ Tree structure
 
 Every non-root level works identically:
   1. Treat content_id as a CMS route path.
-  2. Resolve /cms/routes{path}  → page_id
-  3. Fetch  /cms/pages/{page_id}
+  2. GET /cms/routes{path} — the response contains the full page object and
+     all included items; no second fetch is needed.
+  3. Swap data → the page object from included so _parse_page sees a
+     standard page structure.
   4. Parse included items and dispatch on type.
 
 Root is the only special case — it returns four hardcoded bucket categories.
@@ -109,20 +111,25 @@ class DiscoveryVodManager:
         self, route: str
     ) -> List[Union[VodCategory, VodItem]]:
         """
-        Resolve a CMS route path to a page, then parse its children.
+        Resolve a CMS route path and parse its children.
+
+        The /cms/routes response already contains the full page object and
+        all included items — no second /cms/pages fetch is needed.
         """
         try:
-            page_id = self._resolve_route(route)
-            page_data = self._fetch_page(page_id)
+            route_data = self._resolve_route(route)
+            page_data = self._route_to_page_data(route_data, route)
             return self._parse_page(page_data)
         except Exception as e:
             logger.error(f"DiscoveryVodManager: failed to fetch '{route}': {e}")
             return []
 
-    def _resolve_route(self, route: str) -> str:
+    def _resolve_route(self, route: str) -> dict:
         """
-        GET /cms/routes{route}  → returns the page id.
-        e.g. /sports  → page_id string
+        GET /cms/routes{route} → full JSON:API response.
+
+        Returns the raw response dict (data + included).  The caller is
+        responsible for extracting the page object via _route_to_page_data.
         """
         url = f"{_CMS_BASE}/cms/routes{route}"
         params = {
@@ -136,6 +143,7 @@ class DiscoveryVodManager:
         )
         response.raise_for_status()
         data = response.json()
+
         page_id = (
             data.get("data", {})
                 .get("relationships", {})
@@ -146,26 +154,40 @@ class DiscoveryVodManager:
         if not page_id:
             raise ValueError(f"No page_id in route response for '{route}'")
         logger.debug(f"DiscoveryVodManager: route '{route}' → page '{page_id}'")
-        return page_id
 
-    def _fetch_page(self, page_id: str) -> dict:
+        return data
+
+    @staticmethod
+    def _route_to_page_data(route_data: dict, route: str) -> dict:
         """
-        GET /cms/pages/{page_id}  → full JSON:API response with included array.
+        The /cms/routes response has data.type == "route".  _parse_page
+        expects data to be the page object so it can walk
+        data.relationships.items.
+
+        This method swaps data to the actual page object found in included,
+        leaving included intact so the full index is available to the parser.
         """
-        url = f"{_CMS_BASE}/cms/pages/{page_id}"
-        params = {
-            "include": "default",
-            "decorators": "viewingHistory,isFavorite,contentAction,badges",
-            "page[items.size]": "100",
-        }
-        response = self._provider.http_manager.get(
-            url,
-            operation="vod_fetch_page",
-            headers=self._provider.get_auth_headers(),
-            params=params,
+        included: List[dict] = route_data.get("included", [])
+        index: Dict[str, dict] = {obj["id"]: obj for obj in included}
+
+        # The route's target relationship points to the page id
+        page_id = (
+            route_data.get("data", {})
+                      .get("relationships", {})
+                      .get("target", {})
+                      .get("data", {})
+                      .get("id")
         )
-        response.raise_for_status()
-        return response.json()
+        page_obj = index.get(page_id)
+        if not page_obj:
+            raise ValueError(
+                f"Page object '{page_id}' not found in route included for '{route}'"
+            )
+
+        return {
+            "data": page_obj,
+            "included": included,
+        }
 
     # ------------------------------------------------------------------
     # Page parser
