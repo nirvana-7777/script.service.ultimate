@@ -47,8 +47,8 @@ _EPISODE_ALIAS_KEYWORDS = ("episode",)
 # Root buckets — the four top-level VOD sections
 # ---------------------------------------------------------------------------
 _ROOT_BUCKETS = [
-    ("/sports",    "Sports"),
-    ("/genre",     "Genres"),
+    ("/sports", "Sports"),
+    ("/genre", "Genres"),
     ("/franchise", "Franchises"),
     ("/editorial", "Editorial"),
 ]
@@ -71,7 +71,7 @@ class DiscoveryVodManager:
     # ------------------------------------------------------------------
 
     def get_vod_category(
-        self, category_path: List[str], **kwargs
+            self, category_path: List[str], **kwargs
     ) -> List[Union[VodCategory, VodItem]]:
         """
         Return the children of the VOD node identified by *path*.
@@ -108,7 +108,7 @@ class DiscoveryVodManager:
     # ------------------------------------------------------------------
 
     def _fetch_children(
-        self, route: str
+            self, route: str
     ) -> List[Union[VodCategory, VodItem]]:
         """
         Resolve a CMS route path and parse its children.
@@ -148,10 +148,10 @@ class DiscoveryVodManager:
 
         page_id = (
             data.get("data", {})
-                .get("relationships", {})
-                .get("target", {})
-                .get("data", {})
-                .get("id")
+            .get("relationships", {})
+            .get("target", {})
+            .get("data", {})
+            .get("id")
         )
         if not page_id:
             raise ValueError(f"No page_id in route response for '{route}'")
@@ -175,30 +175,11 @@ class DiscoveryVodManager:
         # The route's target relationship points to the page id
         page_id = (
             route_data.get("data", {})
-                      .get("relationships", {})
-                      .get("target", {})
-                      .get("data", {})
-                      .get("id")
+            .get("relationships", {})
+            .get("target", {})
+            .get("data", {})
+            .get("id")
         )
-
-        # --- DIAGNOSTIC ---
-        type_counts = {}
-        for obj in included:
-            t = obj.get("type", "unknown")
-            type_counts[t] = type_counts.get(t, 0) + 1
-        logger.debug(f"[DIAG] included object types: {type_counts}")
-        logger.debug(f"[DIAG] looking for page_id='{page_id}' in index of {len(index)} items")
-        logger.debug(f"[DIAG] page found in index: {page_id in index}")
-        if page_id in index:
-            page_obj = index[page_id]
-            items_data = (
-                page_obj.get("relationships", {})
-                        .get("items", {})
-                        .get("data", [])
-            )
-            logger.debug(f"[DIAG] page.relationships.items count: {len(items_data)}")
-            logger.debug(f"[DIAG] first 3 pageItem ids: {[i['id'] for i in items_data[:3]]}")
-        # --- END DIAGNOSTIC ---
 
         page_obj = index.get(page_id)
         if not page_obj:
@@ -216,7 +197,7 @@ class DiscoveryVodManager:
     # ------------------------------------------------------------------
 
     def _parse_page(
-        self, data: dict
+            self, data: dict
     ) -> List[Union[VodCategory, VodItem]]:
         """
         Parse a CMS page response into VodCategory / VodItem entries.
@@ -232,32 +213,11 @@ class DiscoveryVodManager:
         # Collect all collections on this page (via pageItems)
         page_obj = data.get("data", {})
 
-        # --- DIAGNOSTIC ---
-        logger.debug(f"[DIAG] _parse_page: page_obj type='{page_obj.get('type')}' id='{page_obj.get('id')}'")
-        raw_items = page_obj.get("relationships", {}).get("items", {}).get("data", [])
-        logger.debug(f"[DIAG] _parse_page: raw pageItem refs={len(raw_items)}, found in index={sum(1 for i in raw_items if i['id'] in index)}")
-        for pi_ref in raw_items:
-            pi = index.get(pi_ref["id"])
-            if not pi:
-                logger.debug(f"[DIAG]   pageItem {pi_ref['id']} → NOT IN INDEX")
-                continue
-            col_ref = pi.get("relationships", {}).get("collection", {}).get("data", {})
-            col = index.get(col_ref.get("id", "")) if col_ref else None
-            col_alias = col.get("attributes", {}).get("alias", "NO-ALIAS") if col else "NO-COLLECTION"
-            col_items = col.get("relationships", {}).get("items", {}).get("data", []) if col else []
-            logger.debug(f"[DIAG]   pageItem {pi_ref['id']} → col '{col_ref.get('id')}' alias='{col_alias}' items={len(col_items)}")
-            # peek at first collectionItem's relationship keys
-            for ci_ref in col_items[:3]:
-                ci = index.get(ci_ref["id"])
-                if ci:
-                    rel_keys = list(ci.get("relationships", {}).keys())
-                    logger.debug(f"[DIAG]     collectionItem {ci_ref['id']} rel keys: {rel_keys}")
-        # --- END DIAGNOSTIC ---
         page_item_ids = [
             pi["id"]
             for pi in page_obj.get("relationships", {})
-                               .get("items", {})
-                               .get("data", [])
+            .get("items", {})
+            .get("data", [])
         ]
         page_items = [index[pid] for pid in page_item_ids if pid in index]
 
@@ -266,8 +226,8 @@ class DiscoveryVodManager:
         for pi in page_items:
             col_ref = (
                 pi.get("relationships", {})
-                  .get("collection", {})
-                  .get("data", {})
+                .get("collection", {})
+                .get("data", {})
             )
             if col_ref and col_ref.get("id") in index:
                 collections.append(index[col_ref["id"]])
@@ -291,9 +251,9 @@ class DiscoveryVodManager:
         col_item_ids: List[str] = []
         for col in collections:
             for ci_ref in (
-                col.get("relationships", {})
-                   .get("items", {})
-                   .get("data", [])
+                    col.get("relationships", {})
+                            .get("items", {})
+                            .get("data", [])
             ):
                 col_item_ids.append(ci_ref["id"])
 
@@ -371,10 +331,10 @@ class DiscoveryVodManager:
 
     @staticmethod
     def _expand_nested_collections(
-        col_item_ids: List[str],
-        index: Dict[str, dict],
-        is_show_page: bool,
-        _visited: Optional[set] = None,
+            col_item_ids: List[str],
+            index: Dict[str, dict],
+            is_show_page: bool,
+            _visited: Optional[set] = None,
     ) -> List[str]:
         """
         Some collectionItems point to another collection rather than direct
@@ -404,14 +364,14 @@ class DiscoveryVodManager:
                     alias = nested_col.get("attributes", {}).get("alias", "")
                     # On show pages skip nested collections that aren't episodes
                     if is_show_page and not any(
-                        kw in alias for kw in _EPISODE_ALIAS_KEYWORDS
+                            kw in alias for kw in _EPISODE_ALIAS_KEYWORDS
                     ):
                         continue
                     nested_ids = [
                         ref["id"]
                         for ref in nested_col.get("relationships", {})
-                                             .get("items", {})
-                                             .get("data", [])
+                        .get("items", {})
+                        .get("data", [])
                     ]
                     # Recurse to handle arbitrarily deep nesting
                     expanded.extend(
@@ -425,7 +385,7 @@ class DiscoveryVodManager:
 
     @staticmethod
     def _resolve_route_url(
-        obj: dict, index: Dict[str, dict]
+            obj: dict, index: Dict[str, dict]
     ) -> Optional[str]:
         """
         Follow obj → relationships.routes[0] → route.attributes.url
@@ -433,8 +393,8 @@ class DiscoveryVodManager:
         """
         route_refs = (
             obj.get("relationships", {})
-               .get("routes", {})
-               .get("data", [])
+            .get("routes", {})
+            .get("data", [])
         )
         for ref in route_refs:
             route = index.get(ref["id"])
@@ -449,13 +409,13 @@ class DiscoveryVodManager:
 
     @staticmethod
     def _pick_image(
-        obj: dict, index: Dict[str, dict], preferred_kind: str = "default"
+            obj: dict, index: Dict[str, dict], preferred_kind: str = "default"
     ) -> Optional[str]:
         """Return the src of the first image matching preferred_kind, else first image."""
         image_refs = (
             obj.get("relationships", {})
-               .get("images", {})
-               .get("data", [])
+            .get("images", {})
+            .get("data", [])
         )
         fallback_src = None
         for ref in image_refs:
@@ -476,7 +436,7 @@ class DiscoveryVodManager:
     # ------------------------------------------------------------------
 
     def _video_to_vod_item(
-        self, video: dict, index: Dict[str, dict]
+            self, video: dict, index: Dict[str, dict]
     ) -> Optional[VodItem]:
         """
         Convert a video JSON:API object to a VodItem.
@@ -484,8 +444,8 @@ class DiscoveryVodManager:
         """
         edit_ref = (
             video.get("relationships", {})
-                 .get("edit", {})
-                 .get("data", {})
+            .get("edit", {})
+            .get("data", {})
         )
         edit_id = edit_ref.get("id") if edit_ref else None
         if not edit_id:
@@ -513,7 +473,7 @@ class DiscoveryVodManager:
         )
 
     def _show_to_vod_category(
-        self, show: dict, index: Dict[str, dict]
+            self, show: dict, index: Dict[str, dict]
     ) -> Optional[VodCategory]:
         """
         Convert a show JSON:API object to a VodCategory.
@@ -536,7 +496,7 @@ class DiscoveryVodManager:
         )
 
     def _taxonomy_node_to_vod_category(
-        self, node: dict, index: Dict[str, dict]
+            self, node: dict, index: Dict[str, dict]
     ) -> Optional[VodCategory]:
         """
         Convert a taxonomyNode JSON:API object to a VodCategory.
