@@ -180,6 +180,26 @@ class DiscoveryVodManager:
                       .get("data", {})
                       .get("id")
         )
+
+        # --- DIAGNOSTIC ---
+        type_counts = {}
+        for obj in included:
+            t = obj.get("type", "unknown")
+            type_counts[t] = type_counts.get(t, 0) + 1
+        logger.debug(f"[DIAG] included object types: {type_counts}")
+        logger.debug(f"[DIAG] looking for page_id='{page_id}' in index of {len(index)} items")
+        logger.debug(f"[DIAG] page found in index: {page_id in index}")
+        if page_id in index:
+            page_obj = index[page_id]
+            items_data = (
+                page_obj.get("relationships", {})
+                        .get("items", {})
+                        .get("data", [])
+            )
+            logger.debug(f"[DIAG] page.relationships.items count: {len(items_data)}")
+            logger.debug(f"[DIAG] first 3 pageItem ids: {[i['id'] for i in items_data[:3]]}")
+        # --- END DIAGNOSTIC ---
+
         page_obj = index.get(page_id)
         if not page_obj:
             raise ValueError(
@@ -211,6 +231,12 @@ class DiscoveryVodManager:
 
         # Collect all collections on this page (via pageItems)
         page_obj = data.get("data", {})
+
+        # --- DIAGNOSTIC ---
+        logger.debug(f"[DIAG] _parse_page: page_obj type='{page_obj.get('type')}' id='{page_obj.get('id')}'")
+        raw_items = page_obj.get("relationships", {}).get("items", {}).get("data", [])
+        logger.debug(f"[DIAG] _parse_page: raw pageItem refs={len(raw_items)}, found in index={sum(1 for i in raw_items if i['id'] in index)}")
+        # --- END DIAGNOSTIC ---
         page_item_ids = [
             pi["id"]
             for pi in page_obj.get("relationships", {})
