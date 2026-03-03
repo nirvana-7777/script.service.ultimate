@@ -452,6 +452,10 @@ class DiscoveryVodManager:
         """
         Convert a video JSON:API object to a VodItem.
         content_id = edit.id  (the playback identifier).
+
+        Name is built as "name — secondaryTitle" when secondaryTitle is present
+        so that sibling broadcasts of the same event (e.g. different feeds or
+        gender groups) produce distinct slugs and avoid collisions.
         """
         edit_ref = (
             video.get("relationships", {})
@@ -472,8 +476,17 @@ class DiscoveryVodManager:
         duration_ms = edit_obj.get("attributes", {}).get("duration")
         duration_seconds = int(duration_ms / 1000) if duration_ms else None
 
+        # Build a display name that is unique across sibling broadcasts.
+        # Discovery+ often has multiple feeds for the same event (e.g. different
+        # language channels or gender groups) that share the same `name`.
+        # Appending secondaryTitle (e.g. "Weltcup | Frauen") disambiguates them
+        # and prevents slug collisions in the backend.
+        base_name = attrs.get("name", "")
+        secondary = attrs.get("secondaryTitle", "")
+        name = f"{base_name} — {secondary}" if secondary else base_name
+
         return VodItem.create_episode(
-            name=attrs.get("name", ""),
+            name=name,
             content_id=edit_id,
             provider="discovery",
             season_number=attrs.get("seasonNumber"),
@@ -512,6 +525,13 @@ class DiscoveryVodManager:
         """
         Convert a taxonomyNode JSON:API object to a VodCategory.
         content_id = canonical route URL (e.g. /sports/alpine-skiing).
+
+        The category name is set to the node's alternateId rather than its
+        localised display name.  The backend derives URL slugs from the name,
+        so using the alternateId (which matches the URL path segment exactly,
+        e.g. "nordic-combined") ensures that slug resolution works correctly
+        across all locales.  The localised name is preserved in description
+        so that UI layers can still display it when desired.
         """
         route_url = self._resolve_route_url(node, index)
         if not route_url:
@@ -522,9 +542,20 @@ class DiscoveryVodManager:
             return None
 
         attrs = node.get("attributes", {})
+
+        # Prefer alternateId as the canonical name used for slug matching.
+        # Fall back to the last path segment of the route URL, and finally
+        # to the localised display name if neither is available.
+        alternate_id = attrs.get("alternateId", "").strip()
+        route_segment = route_url.rstrip("/").rsplit("/", 1)[-1]
+        name = alternate_id or route_segment or attrs.get("name", "")
+
         return VodCategory(
-            name=attrs.get("name", ""),
+            name=name,
             content_id=route_url,
             provider="discovery",
+            # Surface the localised display name as description so UI layers
+            # can render it in the user's language when needed.
+            description=attrs.get("name") or None,
             logo_url=self._pick_image(node, index, "default"),
         )
