@@ -134,6 +134,8 @@ class DiscoveryVodManager:
         url = f"{_CMS_BASE}/cms/routes{route}"
         params = {
             "include": "default",
+            "decorators": "viewingHistory,isFavorite,contentAction,badges",
+            "page[items.size]": "100",
         }
         response = self._provider.http_manager.get(
             url,
