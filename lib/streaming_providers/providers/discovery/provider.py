@@ -35,6 +35,7 @@ from .constants import (
     get_user_agent,
 )
 from .event_manager import DiscoveryEventManager
+from .vod_manager import DiscoveryVodManager
 from .exceptions import ManifestFetchError
 from .models import DiscoveryChannel
 from .playback_manager import DiscoveryPlaybackManager
@@ -234,6 +235,7 @@ class DiscoveryProvider(StreamingProvider):
             channels_cache=self._channels_cache,
             cms_routes=self._cms_routes,
         )
+        self.vod_manager = DiscoveryVodManager(provider=self)
         self.playback_manager = DiscoveryPlaybackManager(
             provider=self,
             playback_cache=self._playback_cache,
@@ -287,6 +289,10 @@ class DiscoveryProvider(StreamingProvider):
     @property
     def implements_epg(self) -> bool:
         return False
+
+    @property
+    def implements_vod(self) -> bool:
+        return True
 
     # =========================================================================
     # Authentication helpers
@@ -394,6 +400,17 @@ class DiscoveryProvider(StreamingProvider):
             end_time=end_time,
             **kwargs,
         )
+
+    def get_vod_category(self, category_path: List[str], **kwargs) -> List:
+        """
+        Return VOD children for path (list of content_id strings):
+          []                    -> root (4 buckets)
+          ["/sports"]           -> sport subcategories
+          ["/sports/biathlon"]  -> VodItems (videos)
+          ["/genre/true-crime"] -> VodCategories (shows)
+          ["/show/{uuid}"]      -> VodItems (episodes)
+        """
+        return self.vod_manager.get_vod_category(category_path)
 
     def populate_streaming_data(
             self,
