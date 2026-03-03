@@ -85,7 +85,18 @@ class DiscoveryVodManager:
         if not category_path:
             return self._root()
 
+        # category_path elements are content_ids returned by previous calls.
+        # Each content_id is already a full CMS route path (e.g. "/sports",
+        # "/sports/nordic-combined", "/show/uuid").  The last element is the
+        # node the user wants to browse into, so use it directly as the route.
         route = category_path[-1]
+
+        # Guard: content_ids must start with "/" — if the caller passes raw
+        # URL segments (e.g. ["sports", "nordic-combined"]) instead of the
+        # content_id we returned, reconstruct the path as a fallback.
+        if not route.startswith("/"):
+            route = "/" + "/".join(category_path)
+
         return self._fetch_children(route)
 
     # ------------------------------------------------------------------
