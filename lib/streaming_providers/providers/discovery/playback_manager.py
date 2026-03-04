@@ -19,7 +19,14 @@ from typing import Any, Dict, List, Optional
 from ...base.models import DRMConfig, DRMSystem, LicenseConfig, StreamingChannel
 from ...base.utils.logger import logger
 
-from .constants import PlatformOS, get_default_capabilities, get_default_device_info, get_drm_request_headers
+from .constants import (
+    BLACKLISTED_CDN_PREFIXES,
+    CDN_MAX_RETRIES,
+    PlatformOS,
+    get_default_capabilities,
+    get_default_device_info,
+    get_drm_request_headers,
+)
 from .exceptions import ManifestFetchError, PlaybackRestrictedException
 
 
@@ -92,7 +99,7 @@ class DiscoveryPlaybackManager:
                         f"(edit_id: {edit_id}, attempt {retries + 1})"
                     )
 
-                    playback_data = self.get_cached_playback_info(
+                    playback_data = self.get_playback_info_with_cdn_check(
                         edit_id=edit_id
                     )
                     streaming_data = self.extract_streaming_data(playback_data)
@@ -231,7 +238,18 @@ class DiscoveryPlaybackManager:
                 )
 
         data = self.get_playback_info(edit_id=edit_id)
+        self._store_playback_cache(edit_id, data)
+        return data
 
+    def _store_playback_cache(self, edit_id: str, data: Dict) -> None:
+        """
+        Compute the expiry timestamp from playback data and write it to the cache.
+
+        Args:
+            edit_id: Content edit ID used as the cache key.
+            data: Playback API response dict.
+        """
+        now = time.time()
         expiry = None
         try:
             drm_expiration_str = data.get("drm", {}).get("expirationDate")
@@ -255,7 +273,6 @@ class DiscoveryPlaybackManager:
             f"Playback cache stored for edit_id {edit_id} "
             f"(expires in {int(expiry - now)}s)"
         )
-        return data
 
     # =========================================================================
     # Payload / streaming data helpers
@@ -383,6 +400,93 @@ class DiscoveryPlaybackManager:
             logger.error(f"Error extracting streaming data: {e}")
 
         return result
+
+    # =========================================================================
+    # CDN helpers
+    # =========================================================================
+
+    @staticmethod
+    def _extract_cdn_prefix(url: str) -> Optional[str]:
+        """
+        Extract the CDN prefix from a manifest URL.
+
+        The prefix is the first label of the hostname.
+        Example: ``https://cf.dplus.eu.prd.media.max.com/...`` → ``"cf"``
+
+        Args:
+            url: Manifest URL string.
+
+        Returns:
+            Lowercase CDN prefix, or None if the URL cannot be parsed.
+        """
+        try:
+            import urllib.parse
+            hostname = urllib.parse.urlparse(url).hostname or ""
+            prefix = hostname.split(".")[0]
+            return prefix.lower() if prefix else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _is_blacklisted_cdn(url: str) -> bool:
+        """
+        Return True if the manifest URL's CDN prefix is blacklisted.
+
+        Args:
+            url: Manifest URL string.
+
+        Returns:
+            True when the CDN prefix appears in BLACKLISTED_CDN_PREFIXES.
+        """
+        prefix = DiscoveryPlaybackManager._extract_cdn_prefix(url)
+        return prefix in BLACKLISTED_CDN_PREFIXES
+
+    def get_playback_info_with_cdn_check(self, edit_id: str) -> Dict:
+        """
+        Fetch playback info, retrying up to CDN_MAX_RETRIES times if the
+        resolved manifest URL lands on a blacklisted CDN.
+
+        Each retry issues a completely fresh playback request (bypassing the
+        cache) so Discovery+ may route us to a different CDN node.  After all
+        retries are exhausted the last response is returned regardless of CDN.
+
+        Args:
+            edit_id: Content edit ID.
+
+        Returns:
+            Playback info dictionary — CDN-filtered when possible.
+        """
+        cdn_prefix=''
+        playback_data = {}
+
+        for attempt in range(1, CDN_MAX_RETRIES + 1):
+            # Always fetch fresh — we need a new request to get a new CDN assignment.
+            playback_data = self.get_playback_info(edit_id=edit_id)
+
+            manifest_url = playback_data.get("manifest", {}).get("url", "")
+            cdn_prefix = self._extract_cdn_prefix(manifest_url)
+
+            if not self._is_blacklisted_cdn(manifest_url):
+                if attempt > 1:
+                    logger.info(
+                        f"CDN check passed on attempt {attempt}/{CDN_MAX_RETRIES} "
+                        f"(cdn={cdn_prefix}, edit_id={edit_id})"
+                    )
+                self._store_playback_cache(edit_id, playback_data)
+                return playback_data
+
+            logger.warning(
+                f"Blacklisted CDN '{cdn_prefix}' on attempt {attempt}/{CDN_MAX_RETRIES} "
+                f"for edit_id={edit_id} — retrying"
+            )
+
+        # All retries exhausted — accept whatever CDN we got last.
+        logger.warning(
+            f"All {CDN_MAX_RETRIES} CDN retries exhausted for edit_id={edit_id}; "
+            f"accepting blacklisted CDN '{cdn_prefix}'"
+        )
+        self._store_playback_cache(edit_id, playback_data)
+        return playback_data
 
     def build_drm_config(
             self, streaming_data: Dict[str, Any]

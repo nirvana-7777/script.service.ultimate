@@ -500,6 +500,26 @@ DEFAULT_RETRY_DELAY: Final[int] = 1
 
 
 # ============================================================================
+# CDN Configuration
+# ============================================================================
+
+# CDN prefixes extracted from the subdomain of manifest URLs.
+# Example URL: https://cf.dplus.eu.prd.media.max.com/protected
+#              ^^  ← CDN prefix is "cf"
+#
+# If the resolved manifest URL's CDN prefix is in this list, the playback
+# request will be retried (up to CDN_MAX_RETRIES times) in the hope that
+# the next request lands on an acceptable CDN.
+BLACKLISTED_CDN_PREFIXES: Final[List[str]] = [
+    "akm",  # Akamai — blacklisted; prefer Cloudfront ("cf") or others
+]
+
+# Maximum number of extra playback attempts when a blacklisted CDN is encountered.
+# After this many retries the blacklisted URL is accepted as a last resort.
+CDN_MAX_RETRIES: Final[int] = 5
+
+
+# ============================================================================
 # Error Codes
 # ============================================================================
 
