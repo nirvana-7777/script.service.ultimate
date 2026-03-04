@@ -128,6 +128,17 @@ class VodOperations:
             )
         return manifest_url
 
+    def get_vod_drm_configs(
+        self, provider_name: str, vod_id: str, **kwargs
+    ):
+        """
+        Get DRM configs for a specific VOD item.
+
+        Delegates directly to provider.get_drm(content_id).
+        """
+        provider = self._get_provider(provider_name)
+        return provider.get_drm(content_id=vod_id, **kwargs)
+
     def get_all_vod_roots(self) -> Dict[str, List[Union[VodCategory, VodItem]]]:
         """
         Get root VOD entries from all enabled providers that implement VOD.
