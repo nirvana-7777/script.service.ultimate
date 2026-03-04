@@ -76,27 +76,38 @@ class DiscoveryVodManager:
         """
         Return the children of the VOD node identified by *path*.
 
-        path is a list of content_id strings as returned by previous calls,
-        e.g. [] → root, ["/sports"] → sport list, ["/sports/alpine-skiing"] → items.
+        Handles two calling conventions:
 
-        Only the *last* element matters for fetching; earlier elements are
-        kept by the base VodOperations path-resolver but not used here.
+        1. content_id convention (internal / API-aware callers):
+           Each element is already a full CMS route path as returned by a
+           previous call, e.g. ["/sports"], ["/sports/nordic-combined"].
+           Only the last element is used — it is the complete route.
+
+        2. URL-segment convention (base VodOperations path-resolver):
+           The base layer walks the tree level-by-level using slugified names
+           and passes raw path segments, e.g. ["sports", "nordic-combined"].
+           We detect this and reconstruct the CMS route by joining all segments.
+
+        Both conventions produce the same CMS route, so every depth level
+        (root → sport-group → sub-group → video) works identically.
         """
         if not category_path:
             return self._root()
 
-        # category_path elements are content_ids returned by previous calls.
-        # Each content_id is already a full CMS route path (e.g. "/sports",
-        # "/sports/nordic-combined", "/show/uuid").  The last element is the
-        # node the user wants to browse into, so use it directly as the route.
-        route = category_path[-1]
+        last = category_path[-1]
 
-        # Guard: content_ids must start with "/" — if the caller passes raw
-        # URL segments (e.g. ["sports", "nordic-combined"]) instead of the
-        # content_id we returned, reconstruct the path as a fallback.
-        if not route.startswith("/"):
-            route = "/" + "/".join(category_path)
+        if last.startswith("/"):
+            # Convention 1: last element is already a full CMS route path.
+            # This is the normal path when content_ids flow through correctly.
+            route = last
+        else:
+            # Convention 2: raw URL segments from the base path-resolver.
+            # Join all segments to reconstruct the full CMS route.
+            # e.g. ["sports", "nordic-combined"] → "/sports/nordic-combined"
+            # e.g. ["genre", "true-crime", "show-slug"] → "/genre/true-crime/show-slug"
+            route = "/" + "/".join(s.strip("/") for s in category_path)
 
+        logger.debug(f"DiscoveryVodManager: get_vod_category({category_path!r}) → route '{route}'")
         return self._fetch_children(route)
 
     # ------------------------------------------------------------------

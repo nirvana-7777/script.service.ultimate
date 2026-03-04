@@ -403,12 +403,16 @@ class DiscoveryProvider(StreamingProvider):
 
     def get_vod_category(self, category_path: List[str], **kwargs) -> List:
         """
-        Return VOD children for path (list of content_id strings):
-          []                    -> root (4 buckets)
-          ["/sports"]           -> sport subcategories
-          ["/sports/biathlon"]  -> VodItems (videos)
-          ["/genre/true-crime"] -> VodCategories (shows)
-          ["/show/{uuid}"]      -> VodItems (episodes)
+        Return VOD children for path (list of path segments or content_ids):
+          []                              -> root (4 buckets)
+          ["sports"]  or ["/sports"]      -> sport subcategories
+          ["sports","nordic-combined"]
+            or ["/sports/nordic-combined"]-> VodItems / sub-categories
+          ["genre","true-crime"]          -> VodCategories (shows)
+          ["/show/{uuid}"]                -> VodItems (episodes)
+
+        Both raw URL-segment lists and content_id lists (starting with "/")
+        are accepted — DiscoveryVodManager normalises them to a CMS route.
         """
         return self.vod_manager.get_vod_category(category_path)
 
