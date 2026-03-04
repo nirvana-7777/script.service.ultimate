@@ -97,9 +97,13 @@ class VodOperations:
             )
             return children
 
-        # Resolve slugs → ids, then fetch the final node's children
-        resolved_ids = self._resolve_path_to_ids(provider_name, slug_segments)
-        children = provider.get_vod_category(resolved_ids)
+        # Pass slug segments directly to the provider.
+        # Providers whose content_ids are full route paths (e.g. Discovery+)
+        # will join the segments themselves into the correct CMS route.
+        # The old slug-walking approach (_resolve_path_to_ids) is bypassed
+        # because it fetches every intermediate level unnecessarily and fails
+        # when the provider's tree is too deep or slugs don't match exactly.
+        children = provider.get_vod_category(slug_segments)
 
         logger.info(
             f"Retrieved {len(children)} VOD entries from '{provider_name}' "
