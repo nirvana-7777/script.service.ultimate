@@ -558,12 +558,14 @@ def setup_stream_routes(app, manager, service):
     # /drm       → returns raw DRM configs
     # =========================================================================
 
-    @app.route("/api/providers/<provider>/vod/<vod_id>/manifest")
-    def get_vod_stream_manifest(provider, vod_id):
+    @app.route("/api/providers/<provider>/vod/<path:path>/manifest")
+    def get_vod_stream_manifest(provider, path):
         """
         Returns JSON with a manifest_url pointing to the VOD stream endpoint.
+        The last segment of <path> is the vod_id (edit_id / content_id).
         Attaches x-kodi-drm-configs header.
         """
+        vod_id = path.rstrip("/").rsplit("/", 1)[-1]
         try:
             country = request.query.get("country")
             base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
@@ -590,12 +592,9 @@ def setup_stream_routes(app, manager, service):
             response.status = 500
             return {"error": f"Internal server error: {str(e)}"}
 
-    @app.route("/api/providers/<provider>/vod/<vod_id>/stream/index.mpd")
-    def get_vod_stream(provider, vod_id):
-        """
-        Returns HTTP 302 redirect to the VOD manifest, or a rewritten
-        manifest body when media proxy is active.
-        """
+    @app.route("/api/providers/<provider>/vod/<path:path>/stream/index.mpd")
+    def get_vod_stream(provider, path):
+        vod_id = path.rstrip("/").rsplit("/", 1)[-1]
         try:
             country = request.query.get("country")
             return _resolve_stream(
@@ -613,26 +612,26 @@ def setup_stream_routes(app, manager, service):
             return {"error": f"Internal server error: {str(e)}"}
 
     @app.route(
-        "/api/providers/<provider>/vod/<vod_id>/stream/decrypted/index.mpd"
+        "/api/providers/<provider>/vod/<path:path>/stream/decrypted/index.mpd"
     )
-    def get_vod_stream_decrypted(provider, vod_id):
-        """Decrypted VOD stream — all quality representations."""
+    def get_vod_stream_decrypted(provider, path):
+        vod_id = path.rstrip("/").rsplit("/", 1)[-1]
         return _resolve_decrypted_stream(
             CONTENT_TYPE_VOD, provider, vod_id, highest_quality_only=False
         )
 
     @app.route(
-        "/api/providers/<provider>/vod/<vod_id>/stream/decrypted/ffmpeg/index.mpd"
+        "/api/providers/<provider>/vod/<path:path>/stream/decrypted/ffmpeg/index.mpd"
     )
-    def get_vod_stream_decrypted_ffmpeg(provider, vod_id):
-        """Decrypted VOD stream — highest quality only, optimised for ffmpeg."""
+    def get_vod_stream_decrypted_ffmpeg(provider, path):
+        vod_id = path.rstrip("/").rsplit("/", 1)[-1]
         return _resolve_decrypted_stream(
             CONTENT_TYPE_VOD, provider, vod_id, highest_quality_only=True
         )
 
-    @app.route("/api/providers/<provider>/vod/<vod_id>/drm")
-    def get_vod_drm(provider, vod_id):
-        """Return DRM configs for a specific VOD item."""
+    @app.route("/api/providers/<provider>/vod/<path:path>/drm")
+    def get_vod_drm(provider, path):
+        vod_id = path.rstrip("/").rsplit("/", 1)[-1]
         try:
             country = request.query.get("country")
             drm_configs = _get_drm_configs(
