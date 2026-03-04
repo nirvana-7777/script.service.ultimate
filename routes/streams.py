@@ -35,7 +35,7 @@ from streaming_providers.base.utils import logger
 # ---------------------------------------------------------------------------
 CONTENT_TYPE_CHANNEL = "channel"
 CONTENT_TYPE_EVENT = "event"
-# CONTENT_TYPE_VOD = "vod"   # uncomment when VOD ops are implemented
+CONTENT_TYPE_VOD = "vod"
 
 
 def setup_stream_routes(app, manager, service):
@@ -59,10 +59,10 @@ def setup_stream_routes(app, manager, service):
             return manager.get_event_drm_configs(
                 provider_name=provider, event_id=content_id, **kwargs
             )
-        # elif content_type == CONTENT_TYPE_VOD:
-        #     return manager.get_vod_drm_configs(
-        #         provider_name=provider, vod_id=content_id, **kwargs
-        #     )
+        elif content_type == CONTENT_TYPE_VOD:
+            return manager.get_vod_drm_configs(
+                provider_name=provider, vod_id=content_id, **kwargs
+            )
         else:
             raise ValueError(f"Unknown content_type '{content_type}'")
 
@@ -79,10 +79,10 @@ def setup_stream_routes(app, manager, service):
             return manager.get_event_manifest(
                 provider_name=provider, event_id=content_id, **kwargs
             )
-        # elif content_type == CONTENT_TYPE_VOD:
-        #     return manager.get_vod_manifest(
-        #         provider_name=provider, vod_id=content_id, **kwargs
-        #     )
+        elif content_type == CONTENT_TYPE_VOD:
+            return manager.get_vod_manifest(
+                provider_name=provider, vod_id=content_id, **kwargs
+            )
         else:
             raise ValueError(f"Unknown content_type '{content_type}'")
 
@@ -548,6 +548,116 @@ def setup_stream_routes(app, manager, service):
             return {"error": str(e)}
         except Exception as e:
             logger.error(f"DRM endpoint error for event {provider}/{event_id}: {e}")
+            response.status = 500
+            return {"error": f"Internal server error: {str(e)}"}
+
+    # =========================================================================
+    # VOD ROUTES  — identical transport pattern to event routes
+    # /manifest  → returns local stream URL + attaches DRM header
+    # /stream    → proxy-rewrites or redirects to upstream manifest
+    # /drm       → returns raw DRM configs
+    # =========================================================================
+
+    @app.route("/api/providers/<provider>/vod/<vod_id>/manifest")
+    def get_vod_stream_manifest(provider, vod_id):
+        """
+        Returns JSON with a manifest_url pointing to the VOD stream endpoint.
+        Attaches x-kodi-drm-configs header.
+        """
+        try:
+            country = request.query.get("country")
+            base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
+            stream_url = (
+                f"{base_url}/api/providers/{provider}/vod/{vod_id}/stream/index.mpd"
+            )
+            if country:
+                stream_url += f"?country={country}"
+
+            _build_drm_header(CONTENT_TYPE_VOD, provider, vod_id, country=country)
+
+            return {
+                "provider": provider,
+                "vod_id": vod_id,
+                "manifest_url": stream_url,
+            }
+
+        except ValueError as e:
+            logger.error(f"manifest endpoint error for VOD {provider}/{vod_id}: {e}")
+            response.status = 404
+            return {"error": str(e)}
+        except Exception as e:
+            logger.error(f"manifest endpoint error for VOD {provider}/{vod_id}: {e}")
+            response.status = 500
+            return {"error": f"Internal server error: {str(e)}"}
+
+    @app.route("/api/providers/<provider>/vod/<vod_id>/stream/index.mpd")
+    def get_vod_stream(provider, vod_id):
+        """
+        Returns HTTP 302 redirect to the VOD manifest, or a rewritten
+        manifest body when media proxy is active.
+        """
+        try:
+            country = request.query.get("country")
+            return _resolve_stream(
+                CONTENT_TYPE_VOD, provider, vod_id, country=country
+            )
+        except HTTPResponse:
+            raise
+        except ValueError as e:
+            logger.error(f"stream error for VOD {provider}/{vod_id}: {e}")
+            response.status = 404
+            return {"error": str(e)}
+        except Exception as e:
+            logger.error(f"stream error for VOD {provider}/{vod_id}: {e}")
+            response.status = 500
+            return {"error": f"Internal server error: {str(e)}"}
+
+    @app.route(
+        "/api/providers/<provider>/vod/<vod_id>/stream/decrypted/index.mpd"
+    )
+    def get_vod_stream_decrypted(provider, vod_id):
+        """Decrypted VOD stream — all quality representations."""
+        return _resolve_decrypted_stream(
+            CONTENT_TYPE_VOD, provider, vod_id, highest_quality_only=False
+        )
+
+    @app.route(
+        "/api/providers/<provider>/vod/<vod_id>/stream/decrypted/ffmpeg/index.mpd"
+    )
+    def get_vod_stream_decrypted_ffmpeg(provider, vod_id):
+        """Decrypted VOD stream — highest quality only, optimised for ffmpeg."""
+        return _resolve_decrypted_stream(
+            CONTENT_TYPE_VOD, provider, vod_id, highest_quality_only=True
+        )
+
+    @app.route("/api/providers/<provider>/vod/<vod_id>/drm")
+    def get_vod_drm(provider, vod_id):
+        """Return DRM configs for a specific VOD item."""
+        try:
+            country = request.query.get("country")
+            drm_configs = _get_drm_configs(
+                CONTENT_TYPE_VOD, provider, vod_id, country=country
+            )
+
+            merged = {}
+            for config in drm_configs:
+                merged.update(
+                    config.to_dict() if hasattr(config, "to_dict") else config
+                )
+
+            return {
+                "provider": provider,
+                "vod_id": vod_id,
+                "content_type": CONTENT_TYPE_VOD,
+                "drm_configs": merged,
+            }
+
+        except ValueError as e:
+            logger.error(f"DRM endpoint error for VOD {provider}/{vod_id}: {e}")
+            response.status = 404
+            return {"error": str(e)}
+        except Exception as e:
+            logger.error(f"DRM endpoint error for VOD {provider}/{vod_id}: {e}")
             response.status = 500
             return {"error": f"Internal server error: {str(e)}"}
 
