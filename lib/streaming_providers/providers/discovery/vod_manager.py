@@ -44,14 +44,24 @@ _CMS_BASE = "https://default.any-any.prd.api.discoveryplus.com"
 _EPISODE_ALIAS_KEYWORDS = ("episode",)
 
 # ---------------------------------------------------------------------------
-# Root buckets — the four top-level VOD sections
+# Root bucket prefixes — used to group taxonomy nodes from the home endpoint
+# into labelled top-level categories.
+#
+# /sports, /genre, /franchise, /editorial do NOT exist as CMS routes —
+# calling them directly returns 404.  The real browsable categories live one
+# level deeper (e.g. /genre/true-crime, /franchise/gold-rush).
+# We discover them by fetching /home and collecting all taxonomyNode routes
+# that start with one of these prefixes.
 # ---------------------------------------------------------------------------
-_ROOT_BUCKETS = [
-    ("/sports", "Sports"),
-    ("/genre", "Genres"),
+_ROOT_PREFIXES = [
+    ("/sports",    "Sports"),
+    ("/genre",     "Genres"),
     ("/franchise", "Franchises"),
     ("/editorial", "Editorial"),
 ]
+
+# Home endpoint — used to discover the actual top-level categories
+_HOME_ROUTE = "/home"
 
 
 class DiscoveryVodManager:
@@ -111,19 +121,88 @@ class DiscoveryVodManager:
         return self._fetch_children(route)
 
     # ------------------------------------------------------------------
-    # Root
+    # Root — dynamically discovered from the /home endpoint
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _root() -> List[VodCategory]:
-        return [
-            VodCategory(
-                name=label,
-                content_id=route,
-                provider="discovery",
+    def _root(self) -> List[VodCategory]:
+        """
+        Return top-level VOD categories by fetching /home and extracting all
+        taxonomyNode routes grouped under the known prefixes.
+
+        Discovery+ does not expose /genre, /franchise, or /editorial as
+        valid CMS routes — those paths return 404.  The actual browsable
+        top-level categories (e.g. /genre/true-crime, /franchise/gold-rush)
+        are embedded in the /home response as taxonomyNode objects with
+        canonical route URLs.  We collect them here so the rest of the tree
+        can use real content_ids that resolve correctly.
+
+        Falls back to an empty list (with a logged error) if the home fetch
+        fails, so callers always receive a list.
+        """
+        try:
+            home_data = self._resolve_route(_HOME_ROUTE)
+        except Exception as e:
+            logger.error(f"DiscoveryVodManager: failed to fetch home route: {e}")
+            return []
+
+        included: List[dict] = home_data.get("included", [])
+        index: Dict[str, dict] = {obj["id"]: obj for obj in included}
+
+        # Build a map of route-URL → (alternateId, localisedName) from all
+        # taxonomyNode objects present in the home response.
+        # A single taxonomyNode may have multiple route refs; we walk all of
+        # them so we don't miss canonical vs non-canonical variants.
+        route_url_to_node_attrs: Dict[str, dict] = {}
+        for obj in included:
+            if obj.get("type") != "taxonomyNode":
+                continue
+            attrs = obj.get("attributes", {})
+            for ref in obj.get("relationships", {}).get("routes", {}).get("data", []):
+                route_obj = index.get(ref["id"])
+                if not route_obj:
+                    continue
+                url = route_obj.get("attributes", {}).get("url", "")
+                if url:
+                    route_url_to_node_attrs[url] = attrs
+
+        # Group discovered URLs under each root prefix and deduplicate.
+        results: List[VodCategory] = []
+        seen_urls: set = set()
+
+        for prefix, label in _ROOT_PREFIXES:
+            # Collect all URLs that belong to this prefix
+            children: List[VodCategory] = []
+            for url, attrs in sorted(route_url_to_node_attrs.items()):
+                if not url.startswith(prefix + "/"):
+                    continue
+                if url in seen_urls:
+                    continue
+                seen_urls.add(url)
+
+                # Use alternateId as the canonical name (matches URL slug exactly),
+                # falling back to the last path segment or the localised display name.
+                alternate_id = attrs.get("alternateId", "").strip()
+                segment = url.rstrip("/").rsplit("/", 1)[-1]
+                name = alternate_id or segment or attrs.get("name", "")
+
+                children.append(
+                    VodCategory(
+                        name=name,
+                        content_id=url,
+                        provider="discovery",
+                        description=attrs.get("name") or None,
+                    )
+                )
+
+            # Only emit the group entry when we actually found children.
+            # (Sports is fetched differently and always has entries; the others
+            # depend on what the home page exposes for this territory.)
+            results.extend(children)
+            logger.debug(
+                f"DiscoveryVodManager: root — '{label}' has {len(children)} categories"
             )
-            for route, label in _ROOT_BUCKETS
-        ]
+
+        return results
 
     # ------------------------------------------------------------------
     # Generic page fetch + parse
