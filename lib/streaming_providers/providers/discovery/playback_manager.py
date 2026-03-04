@@ -237,9 +237,8 @@ class DiscoveryPlaybackManager:
                     f"Playback cache expired for edit_id {edit_id}, re-fetching"
                 )
 
-        data = self.get_playback_info(edit_id=edit_id)
-        self._store_playback_cache(edit_id, data)
-        return data
+        # CDN check + cache write are both handled inside get_playback_info_with_cdn_check.
+        return self.get_playback_info_with_cdn_check(edit_id=edit_id)
 
     def _store_playback_cache(self, edit_id: str, data: Dict) -> None:
         """
@@ -456,8 +455,8 @@ class DiscoveryPlaybackManager:
         Returns:
             Playback info dictionary — CDN-filtered when possible.
         """
-        cdn_prefix=''
-        playback_data = {}
+        playback_data: Dict = {}
+        cdn_prefix: Optional[str] = None
 
         for attempt in range(1, CDN_MAX_RETRIES + 1):
             # Always fetch fresh — we need a new request to get a new CDN assignment.
