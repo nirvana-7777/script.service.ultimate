@@ -410,6 +410,35 @@ class MPDRewriter:
                 period.remove(adaptation_set)
 
         logger.info(f"Removed {removal_count} video representation(s), kept highest quality only")
+
+        # Clean up SupplementalProperty elements that reference removed AdaptationSet IDs.
+        # These are used for codec-switching hints (e.g. AVC↔HEVC) and become dangling
+        # after we discard all but one video AdaptationSet.
+        CODEC_SWITCH_SCHEME = "urn:mpeg:dash:adaptation-set-switching:2016"
+        surviving_as_ids: Set[str] = set()
+        for period in root.findall(".//mpd:Period", self.MPD_NAMESPACE):
+            for adaptation_set in period.findall("mpd:AdaptationSet", self.MPD_NAMESPACE):
+                as_id = adaptation_set.get("id")
+                if as_id:
+                    surviving_as_ids.add(as_id)
+
+        for period in root.findall(".//mpd:Period", self.MPD_NAMESPACE):
+            for adaptation_set in period.findall("mpd:AdaptationSet", self.MPD_NAMESPACE):
+                for sp in list(adaptation_set.findall("mpd:SupplementalProperty", self.MPD_NAMESPACE)):
+                    if sp.get("schemeIdUri") == CODEC_SWITCH_SCHEME:
+                        raw_value = sp.get("value", "")
+                        # Keep only IDs that still exist in the tree
+                        kept = [
+                            v.strip()
+                            for v in raw_value.split(",")
+                            if v.strip() in surviving_as_ids
+                        ]
+                        if not kept:
+                            # No surviving peers — remove the property entirely
+                            adaptation_set.remove(sp)
+                        else:
+                            sp.set("value", ",".join(kept))
+
         return best_video
 
     def _is_video_adaptation_set(self, adaptation_set: ET.Element) -> bool:
@@ -797,7 +826,62 @@ class MPDRewriter:
         if element.tag.endswith("Representation"):
             current_rep_id = element.get("id", "")
 
-        # Rewrite URL attributes
+        # ------------------------------------------------------------------
+        # SegmentBase manifest support (Bug 2 fix):
+        # Representation-level <BaseURL> elements carry the full media URL.
+        # Rewrite their text content through the proxy so all media requests
+        # are routed correctly.  We also resolve <SegmentBase> / <Initialization>
+        # range-request URLs here (Bug 3 fix) so the init segment is fetched
+        # via the proxy with proper decryption parameters.
+        # ------------------------------------------------------------------
+        if element.tag.endswith("BaseURL") and element.text:
+            parent_rep_id = current_rep_id  # captured when we entered Representation
+            raw_url = element.text.strip()
+            if raw_url:
+                resolved = urljoin(base_url, raw_url)
+                # Rewrite the BaseURL text through the proxy.
+                # We don't know the segment type yet (the SegmentBase child will
+                # handle Initialization specifically), so pass None for seg_type
+                # so the proxy receives both kid+key when in decrypt mode.
+                element.text = self.build_proxy_url(
+                    resolved, None, None, current_encrypted, current_kid,
+                    representation_id=parent_rep_id,
+                )
+                # Update local base_url so that any sibling/child elements that
+                # use urljoin against it resolve correctly against the proxied URL.
+                # We intentionally do NOT update the outer base_url variable here
+                # — it is passed by value to children via the recursion call below.
+                base_url = resolved  # use original resolved URL for child resolution
+
+        # SegmentBase <Initialization range="…"/> — rewrite as a proxy URL that
+        # carries the Range header information so the proxy can pass it through.
+        # The actual media bytes live at the parent Representation's <BaseURL>,
+        # which has already been rewritten above.  We rebuild the init URL from
+        # the (original, pre-proxy) base_url so we don't double-encode it.
+        if element.tag.endswith("Initialization") and "range" in element.attrib:
+            byte_range = element.attrib["range"]
+            # base_url at this point is the resolved (original CDN) Representation
+            # URL set just above when we processed the sibling <BaseURL> element.
+            # If for some reason it wasn't set (no <BaseURL> sibling), fall back
+            # to the inherited base_url which is the AdaptationSet/Period base.
+            init_proxy_url = self.build_proxy_url(
+                base_url, None, "initialization", current_encrypted, current_kid,
+                representation_id=current_rep_id,
+            )
+            # Replace the range attribute with a marker the proxy understands,
+            # and store the proxied URL as a sourceURL attribute so the player
+            # uses it for the range request rather than the BaseURL text.
+            # DASH players that understand SegmentBase will issue:
+            #   GET <sourceURL>  Range: bytes=<range>
+            # Proxies that receive this will forward the Range header to the CDN.
+            element.set("sourceURL", init_proxy_url)
+            # Leave the range attribute intact so the player still knows which
+            # bytes to request.
+
+        # ------------------------------------------------------------------
+        # Standard SegmentTemplate / SegmentList attribute rewriting
+        # (unchanged from original — handles media/initialization/sourceURL attrs)
+        # ------------------------------------------------------------------
         attr_map = {
             "media": "media",
             "initialization": "initialization",

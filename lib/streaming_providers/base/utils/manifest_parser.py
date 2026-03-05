@@ -68,7 +68,9 @@ class ManifestParser:
         Returns:
             Full URL to an initialization segment, or None if not found
         """
-        # Build effective base URL from manifest URL and BaseURL elements
+        # Build effective base URL from manifest URL and MPD/Period-level BaseURL
+        # elements only (Representation-level BaseURLs are relative media paths,
+        # not base URLs, and are intentionally excluded by extract_base_urls).
         base_urls = ManifestUtils.extract_base_urls(manifest_content)
         effective_base = URLResolver.build_effective_base_url(manifest_url, base_urls)
 
@@ -82,43 +84,75 @@ class ManifestParser:
         target_sets = video_sets + audio_sets
 
         for ad_set_info in target_sets:
-            # Extract SegmentTemplate initialization attribute
+            # ------------------------------------------------------------------
+            # Branch A: SegmentTemplate-based manifest (most live/VOD streams)
+            # The init segment URL is expressed as a template attribute.
+            # ------------------------------------------------------------------
             init_template = ManifestUtils.extract_segment_template_initialization(
                 ad_set_info.content
             )
 
-            if not init_template:
-                continue
+            if init_template:
+                logger.debug(f"Found init template: {init_template}")
 
-            logger.debug(f"Found init template: {init_template}")
+                # Get first Representation ID from this AdaptationSet
+                rep_id = ManifestUtils.extract_first_representation_id(ad_set_info.content)
 
-            # Get first Representation ID from this AdaptationSet
-            rep_id = ManifestUtils.extract_first_representation_id(ad_set_info.content)
+                if not rep_id:
+                    logger.debug("No Representation ID found in AdaptationSet")
+                    continue
 
-            if not rep_id:
-                logger.debug("No Representation ID found in AdaptationSet")
-                continue
+                logger.debug(f"Using Representation ID: {rep_id}")
 
-            logger.debug(f"Using Representation ID: {rep_id}")
+                # Substitute template variables with defaults
+                init_url = URLResolver.substitute_template_variables(
+                    init_template,
+                    representation_id=rep_id,
+                    bandwidth="0",
+                    time="0",
+                    number="1"
+                )
 
-            # Substitute template variables with defaults
-            init_url = URLResolver.substitute_template_variables(
-                init_template,
-                representation_id=rep_id,
-                bandwidth="0",
-                time="0",
-                number="1"
-            )
+                # Construct full URL
+                full_url = URLResolver.construct_full_url(
+                    effective_base,
+                    init_url,
+                    url_encode_filename=True
+                )
 
-            # Construct full URL
-            full_url = URLResolver.construct_full_url(
-                effective_base,
-                init_url,
-                url_encode_filename=True
-            )
+                logger.info(f"Constructed init segment URL (SegmentTemplate): {full_url}")
+                return full_url
 
-            logger.info(f"Constructed init segment URL: {full_url}")
-            return full_url
+            # ------------------------------------------------------------------
+            # Branch B: SegmentBase manifest (on-demand, single-file MP4)
+            # Each Representation has a <BaseURL> pointing to the full MP4 file.
+            # The init segment is the same file, accessed via HTTP Range using
+            # the range from <Initialization range="start-end"/>.
+            # We return the bare MP4 URL; the caller is responsible for issuing
+            # an appropriate Range request if it wants only the init bytes.
+            # ------------------------------------------------------------------
+            segment_base_url = ManifestUtils.extract_segment_base_url(ad_set_info.content)
+
+            if segment_base_url:
+                init_range = ManifestUtils.extract_segment_base_init_range(ad_set_info.content)
+
+                full_url = URLResolver.construct_full_url(
+                    effective_base,
+                    segment_base_url,
+                    url_encode_filename=False  # path is already a clean relative URL
+                )
+
+                if init_range:
+                    logger.info(
+                        f"Constructed init segment URL (SegmentBase): {full_url} "
+                        f"[Range: bytes={init_range}]"
+                    )
+                else:
+                    logger.info(
+                        f"Constructed init segment URL (SegmentBase, no range): {full_url}"
+                    )
+
+                return full_url
 
         logger.warning("Could not find init segment URL in manifest")
         return None

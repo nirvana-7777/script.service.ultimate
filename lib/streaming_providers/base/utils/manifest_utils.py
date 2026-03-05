@@ -131,12 +131,61 @@ class ManifestUtils:
     @staticmethod
     def extract_base_urls(manifest_content: str) -> List[str]:
         """
-        Extract all BaseURL elements from manifest.
+        Extract only MPD-level and Period-level BaseURL elements from manifest.
+        Representation-level BaseURL values are relative media paths, not base URLs,
+        and must NOT be included here or they corrupt the effective base URL calculation.
 
         Args:
             manifest_content: Full manifest XML content
 
         Returns:
-            List of BaseURL text contents
+            List of BaseURL text contents at MPD or Period scope only
         """
-        return re.findall(r"<BaseURL[^>]*>([^<]+)</BaseURL>", manifest_content)
+        base_urls = []
+
+        # Strip everything from the first AdaptationSet onward so we only
+        # see MPD-level and Period-level BaseURL elements.
+        first_as = re.search(r"<AdaptationSet[\s>]", manifest_content)
+        header_content = manifest_content[:first_as.start()] if first_as else manifest_content
+
+        for match in re.finditer(r"<BaseURL[^>]*>([^<]+)</BaseURL>", header_content):
+            base_urls.append(match.group(1))
+
+        return base_urls
+
+    @staticmethod
+    def extract_segment_base_url(ad_set_content: str) -> Optional[str]:
+        """
+        For SegmentBase manifests, extract the first Representation-level BaseURL
+        within an AdaptationSet.  This is the complete (relative or absolute) URL
+        for a self-contained MP4 file; the init segment lives inside it at the byte
+        range given by the <Initialization range="…"/> element.
+
+        Args:
+            ad_set_content: AdaptationSet XML content
+
+        Returns:
+            BaseURL string from the first Representation, or None if not present
+        """
+        match = re.search(r"<BaseURL[^>]*>([^<]+)</BaseURL>", ad_set_content)
+        return match.group(1).strip() if match else None
+
+    @staticmethod
+    def extract_segment_base_init_range(ad_set_content: str) -> Optional[str]:
+        """
+        Extract the byte-range for the init segment from a SegmentBase manifest.
+        Returns the value of the 'range' attribute on the <Initialization> element,
+        e.g. "0-686".
+
+        Args:
+            ad_set_content: AdaptationSet XML content
+
+        Returns:
+            Range string ("start-end") or None if not present
+        """
+        match = re.search(
+            r"<Initialization[^>]*\brange=\"([^\"]+)\"",
+            ad_set_content,
+            re.IGNORECASE,
+        )
+        return match.group(1).strip() if match else None
