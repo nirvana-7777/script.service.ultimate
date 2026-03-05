@@ -143,7 +143,7 @@ def setup_provider_routes(app, manager, service):
                 return {"error": f"Provider {provider} not found"}
 
             # Get SettingsManager
-            settings_manager = service._get_settings_manager()
+            settings_manager = service.get_settings_manager()
             if not settings_manager:
                 response.status = 500
                 return {"error": "Settings manager not available"}
@@ -199,7 +199,7 @@ def setup_provider_routes(app, manager, service):
         }
         """
         try:
-            settings_manager = service._get_settings_manager()
+            settings_manager = service.get_settings_manager()
 
             # Parse provider and country
             provider_name, country = settings_manager.parse_provider_country(provider)
@@ -291,7 +291,7 @@ def setup_provider_routes(app, manager, service):
                 return {"error": "Credentials data must be a JSON object"}
 
             # Get settings manager
-            settings_manager = service._get_settings_manager()
+            settings_manager = service.get_settings_manager()
 
             # Parse provider and country
             provider_name, country = settings_manager.parse_provider_country(provider)
@@ -367,7 +367,7 @@ def setup_provider_routes(app, manager, service):
         Example: DELETE /api/providers/joyn_de/credentials
         """
         try:
-            settings_manager = service._get_settings_manager()
+            settings_manager = service.get_settings_manager()
             success, message = settings_manager.delete_provider_credentials_from_api(
                 provider
             )
@@ -412,7 +412,7 @@ def setup_provider_routes(app, manager, service):
         Example: GET /api/providers/joyn/proxy
         """
         try:
-            settings_manager = service._get_settings_manager()
+            settings_manager = service.get_settings_manager()
 
             # Parse provider and country
             provider_name, country = settings_manager.parse_provider_country(provider)
@@ -488,7 +488,7 @@ def setup_provider_routes(app, manager, service):
                 response.status = 400
                 return {"error": "Proxy data must be a JSON object"}
 
-            settings_manager = service._get_settings_manager()
+            settings_manager = service.get_settings_manager()
             success, message = settings_manager.save_provider_proxy_from_api(
                 provider, proxy_data
             )
@@ -538,7 +538,7 @@ def setup_provider_routes(app, manager, service):
         Example: DELETE /api/providers/joyn_de/proxy
         """
         try:
-            settings_manager = service._get_settings_manager()
+            settings_manager = service.get_settings_manager()
             success, message = settings_manager.delete_provider_proxy_from_api(provider)
 
             if success:

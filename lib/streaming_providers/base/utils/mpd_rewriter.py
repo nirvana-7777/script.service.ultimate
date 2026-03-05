@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from .logger import logger
 from .vfs import get_vfs
 from .url_resolver import URLResolver
+from ..models.drm.constants import DRM_SYSTEM_NAMES
 
 # Pre-compile regex for ISO duration parsing at module level
 ISO_8601_PERIOD_RE = re.compile(
@@ -175,6 +176,12 @@ class MPDRewriter:
     MPD_NAMESPACE = {"mpd": "urn:mpeg:dash:schema:mpd:2011"}
     CENC_NAMESPACE = {"cenc": "urn:mpeg:cenc:2013"}
 
+    # Derive from shared DRM constants — format raw hex UUID as urn:uuid:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+    _ck_hex = DRM_SYSTEM_NAMES["CLEARKEY"]  # e2719d58a985b3c9781ab030af78d30e
+    CLEARKEY_SCHEME_URI = (
+        f"urn:uuid:{_ck_hex[0:8]}-{_ck_hex[8:12]}-{_ck_hex[12:16]}-{_ck_hex[16:20]}-{_ck_hex[20:32]}"
+    )
+
     def __init__(
             self,
             media_proxy_url: str,
@@ -184,11 +191,16 @@ class MPDRewriter:
             provider: Optional[str] = None,
             channel: Optional[str] = None,
             blocklist_path: str = "representation_blocklist.json",
+            clearkey_receiver_side: bool = False,
     ):
         self.media_proxy_url = media_proxy_url.rstrip("/")
         self.provider_proxy_url = provider_proxy_url
         self.key_config = KeyConfiguration(clearkey_keyids or {})
         self.highest_quality_video_only = highest_quality_video_only
+        self.clearkey_receiver_side = clearkey_receiver_side
+
+        if self.clearkey_receiver_side and not self.key_config.keys:
+            logger.warning("clearkey_receiver_side=True but no keys provided; receiver will have no keys to decrypt with")
 
         # Blocklist configuration
         self.provider = provider
@@ -222,7 +234,7 @@ class MPDRewriter:
     ) -> str:
         params = {"url": original_url, **self._static_params}
 
-        if self.key_config.keys and is_encrypted:
+        if self.key_config.keys and is_encrypted and not self.clearkey_receiver_side:
             if self.key_config.single_key_mode:
                 # Single key mode: use the default key for everything
                 if segment_type == "initialization":
@@ -255,7 +267,8 @@ class MPDRewriter:
                     logger.warning(f"No KID provided for encrypted segment, using fallback key")
 
         encoded = self.encode_url(urlencode(params))
-        endpoint = "decrypt" if (self.key_config.keys and is_encrypted) else "proxy"
+        decrypt_server_side = self.key_config.keys and is_encrypted and not self.clearkey_receiver_side
+        endpoint = "decrypt" if decrypt_server_side else "proxy"
         proxy_url = f"{self.media_proxy_url}/api/{endpoint}/{encoded}"
 
         if template_pattern:
@@ -279,10 +292,13 @@ class MPDRewriter:
             encrypted_ids, as_id_to_kid, base_url_map = self._prepare_tree_and_extract_kids(root, mpd_base_url)
 
             # FIRST: Filter out encrypted AdaptationSets without available keys
-            if self.key_config.keys:
+            if self.key_config.keys and not self.clearkey_receiver_side:
+                # Server-side decrypt: remove sets we can't decrypt
                 self._remove_adaptationsets_without_keys(root, as_id_to_kid)
-            else:
+            elif not self.key_config.keys:
+                # Proxy-only: remove all encrypted sets (player has no keys either)
                 self._remove_all_encrypted_adaptationsets(root)
+            # else: receiver-side clearkey — keep all sets; receiver will decrypt using injected keys
 
             # SECOND: Filter out blocked representations that cause 500 errors
             if self.provider and self.channel:
@@ -532,13 +548,31 @@ class MPDRewriter:
                         as_id_to_kid[unique_id] = extracted_kid
                         logger.debug(f"AdaptationSet {unique_id} KID: {extracted_kid[:8]}...")
 
-                # Remove ContentProtection elements (we've already extracted what we need)
-                for cp in list(adaptation_set.findall("mpd:ContentProtection", self.MPD_NAMESPACE)):
-                    adaptation_set.remove(cp)
+                # Handle ContentProtection elements based on mode:
+                #   - server-side decrypt: strip all (player sees plain stream)
+                #   - receiver-side clearkey: replace with ClearKey signaling so player can decrypt
+                #   - proxy-only (no keys): preserve as-is so player can handle DRM itself
+                if self.key_config.keys and not self.clearkey_receiver_side:
+                    # Server-side decrypt mode: strip everything
+                    for cp in list(adaptation_set.findall("mpd:ContentProtection", self.MPD_NAMESPACE)):
+                        adaptation_set.remove(cp)
+                    for representation in adaptation_set.findall("mpd:Representation", self.MPD_NAMESPACE):
+                        for cp in list(representation.findall("mpd:ContentProtection", self.MPD_NAMESPACE)):
+                            representation.remove(cp)
 
-                for representation in adaptation_set.findall("mpd:Representation", self.MPD_NAMESPACE):
-                    for cp in list(representation.findall("mpd:ContentProtection", self.MPD_NAMESPACE)):
-                        representation.remove(cp)
+                elif self.clearkey_receiver_side and has_content_protection:
+                    # Receiver-side clearkey mode: strip original DRM signaling, inject ClearKey
+                    for cp in list(adaptation_set.findall("mpd:ContentProtection", self.MPD_NAMESPACE)):
+                        adaptation_set.remove(cp)
+                    for representation in adaptation_set.findall("mpd:Representation", self.MPD_NAMESPACE):
+                        for cp in list(representation.findall("mpd:ContentProtection", self.MPD_NAMESPACE)):
+                            representation.remove(cp)
+
+                    # Inject ClearKey ContentProtection element
+                    kid = as_id_to_kid.get(unique_id)
+                    self._inject_clearkey_content_protection(adaptation_set, kid)
+
+                # else: proxy-only, no keys — leave ContentProtection untouched
 
         return encrypted_ids, as_id_to_kid, base_url_map
 
@@ -578,6 +612,30 @@ class MPDRewriter:
                     logger.debug(f"Error extracting KID from PSSH: {e}")
 
         return None
+
+    def _inject_clearkey_content_protection(self, adaptation_set: ET.Element, kid: Optional[str]):
+        """
+        Inject a ClearKey ContentProtection element so the receiver can decrypt.
+
+        If a KID is available (extracted from the original ContentProtection), it is
+        formatted as a UUID and set as cenc:default_KID. Otherwise only the scheme URI
+        is signaled and the receiver must derive the KID from the stream itself.
+        """
+        ET.register_namespace("cenc", "urn:mpeg:cenc:2013")
+
+        attribs = {"schemeIdUri": self.CLEARKEY_SCHEME_URI}
+
+        if kid:
+            # Format 32-char hex KID as UUID (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
+            kid_uuid = f"{kid[0:8]}-{kid[8:12]}-{kid[12:16]}-{kid[16:20]}-{kid[20:32]}"
+            attribs["{urn:mpeg:cenc:2013}default_KID"] = kid_uuid
+            logger.debug(f"Injecting ClearKey ContentProtection with KID={kid_uuid}")
+        else:
+            logger.debug("Injecting ClearKey ContentProtection without KID (not found in original)")
+
+        cp_elem = ET.Element("ContentProtection", attribs)
+        # Insert at the front of the AdaptationSet so players encounter it early
+        adaptation_set.insert(0, cp_elem)
 
     def _remove_adaptationsets_without_keys(self, root: ET.Element, as_id_to_kid: Dict[str, str]):
         """Remove encrypted AdaptationSets for which we don't have keys."""

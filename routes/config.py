@@ -17,7 +17,7 @@ def setup_config_routes(app, manager, service):
     def export_config():
         """Export all configurations as JSON"""
         try:
-            settings_manager = service._get_settings_manager()
+            settings_manager = service.get_settings_manager()
 
             # Use SettingsManager's export method
             export_path = settings_manager.export_all_settings()
@@ -74,7 +74,7 @@ def setup_config_routes(app, manager, service):
         imported_count = 0
         try:
             # Use SettingsManager to import
-            settings_manager = service._get_settings_manager()
+            settings_manager = service.get_settings_manager()
 
             # Import credentials
             credentials = import_data.get("providers", {})

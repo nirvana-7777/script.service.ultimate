@@ -169,7 +169,7 @@ def setup_stream_routes(app, manager, service):
         # --- Catchup path (channel-specific) ---
         if is_catchup:
             if manager.needs_proxy(provider):
-                return service._get_proxied_catchup_manifest(
+                return service.get_proxied_catchup_manifest(
                     provider, content_id, start_time_int, end_time_int, epg_id, country
                 )
             else:
@@ -191,7 +191,42 @@ def setup_stream_routes(app, manager, service):
 
         # --- Live / event / vod path ---
         if manager.needs_proxy(provider):
-            return service._get_proxied_manifest(provider, content_id)
+            # Check for ClearKey DRM — if present, rewrite manifest with ClearKey signaling
+            # so the receiver can decrypt itself, rather than serving a plain proxy stream
+            # with stripped ContentProtection that the player cannot handle.
+            try:
+                drm_configs = _get_drm_configs(
+                    content_type, provider, content_id, country=country
+                )
+                drm_dict = {}
+                for config in drm_configs:
+                    drm_dict.update(
+                        config.to_dict() if hasattr(config, "to_dict") else config
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"Could not fetch DRM configs for {content_type} "
+                    f"{provider}/{content_id} during proxy resolution: {e}"
+                )
+                drm_dict = {}
+
+            keyids = (
+                drm_dict.get("org.w3.clearkey", {})
+                .get("license", {})
+                .get("keyids", {})
+            )
+
+            if keyids:
+                logger.debug(
+                    f"ClearKey DRM detected for {provider}/{content_id} "
+                    f"— using receiver-side ClearKey rewrite"
+                )
+                return service.get_decrypted_manifest(
+                    provider, content_id, keyids,
+                    receiver_side=True,
+                )
+            else:
+                return service.get_proxied_manifest(provider, content_id)
         else:
             manifest_url = _get_manifest_url(
                 content_type, provider, content_id, country=country
@@ -205,7 +240,7 @@ def setup_stream_routes(app, manager, service):
                     )
                 }
             logger.debug(f"Redirecting to manifest: {manifest_url}")
-            redirect(manifest_url)
+            return redirect(manifest_url)
 
     def _resolve_decrypted_stream(
         content_type: str,
@@ -246,19 +281,19 @@ def setup_stream_routes(app, manager, service):
                     response.status = 400
                     return {"error": "ClearKey DRM found but no key IDs available"}
 
-                return service._get_decrypted_manifest(
+                return service.get_decrypted_manifest(
                     provider, content_id, keyids,
                     highest_quality_only=highest_quality_only,
                 )
 
             elif is_unencrypted:
                 if manager.needs_proxy(provider) and service.media_proxy_url:
-                    return service._get_proxied_manifest(
+                    return service.get_proxied_manifest(
                         provider, content_id,
                         highest_quality_only=highest_quality_only,
                     )
                 else:
-                    return service._get_original_manifest(provider, content_id, country)
+                    return service.get_original_manifest(provider, content_id, country)
 
             else:
                 response.status = 400

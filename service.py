@@ -332,12 +332,13 @@ class UltimateService:
         # Fallback to environment manager config
         return self.env_manager.get_config(setting_id, default)
 
-    def _get_decrypted_manifest(
-            self, provider: str, channel_id: str, keyids: dict, highest_quality_only: bool = False
+    def get_decrypted_manifest(
+            self, provider: str, channel_id: str, keyids: dict,
+            highest_quality_only: bool = False, receiver_side: bool = False
     ) -> str:
         """
         Get rewritten MPD manifest for decrypted playback via media proxy.
-        Similar to _get_proxied_manifest but adds kid/key parameters.
+        Similar to get_proxied_manifest but adds kid/key parameters.
 
         Args:
             provider: Provider name
@@ -352,7 +353,8 @@ class UltimateService:
 
         # Note: We don't cache decrypted manifests as they contain keys
         logger.info(
-            f"Generating decrypted manifest for {provider}/{channel_id} (highest_quality_only={highest_quality_only})")
+            f"Generating {'receiver-side clearkey' if receiver_side else 'decrypted'} manifest "
+            f"for {provider}/{channel_id} (highest_quality_only={highest_quality_only})")
 
         # Get original manifest URL
         manifest_url = self.manager.get_channel_manifest(
@@ -399,8 +401,9 @@ class UltimateService:
                 provider_proxy_url,
                 keyids,
                 highest_quality_only,
-                provider=provider,  # NEW: Enable blocklist filtering
-                channel=channel_id  # NEW: Enable blocklist filtering
+                provider=provider,
+                channel=channel_id,
+                clearkey_receiver_side=receiver_side,
             )
             rewritten_mpd = rewriter.rewrite_mpd(manifest_response.text, manifest_url)
 
@@ -414,7 +417,7 @@ class UltimateService:
             response.content_type = "application/json"
             return json.dumps({"error": f"Failed to fetch manifest: {str(fetch_err)}"})
 
-    def _get_proxied_manifest(self, provider: str, channel_id: str, highest_quality_only: bool = False) -> str:
+    def get_proxied_manifest(self, provider: str, channel_id: str, highest_quality_only: bool = False) -> str:
         """
         Get proxied and rewritten MPD manifest for a channel using media proxy.
         Uses cache when available and valid.
@@ -1474,7 +1477,7 @@ class UltimateService:
 
         return m3u_content
 
-    def _get_proxied_catchup_manifest(
+    def get_proxied_catchup_manifest(
             self,
             provider: str,
             channel_id: str,
@@ -1485,7 +1488,7 @@ class UltimateService:
     ) -> str:
         """
         Get proxied and rewritten MPD manifest for catchup content using media proxy.
-        Similar to _get_proxied_manifest but for catchup streams.
+        Similar to get_proxied_manifest but for catchup streams.
         """
         # Generate cache key that includes time parameters
         cache_key = f"{channel_id}_catchup_{start_time}_{end_time}"
@@ -1584,7 +1587,7 @@ class UltimateService:
             return json.dumps({"error": f"Failed to fetch manifest: {str(fetch_err)}"})
 
     @staticmethod
-    def _get_settings_manager():
+    def get_settings_manager():
         """Simple helper to get SettingsManager"""
         try:
             from streaming_providers.base.settings.settings_manager import (
