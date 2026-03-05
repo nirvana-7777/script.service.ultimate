@@ -829,23 +829,15 @@ class MPDRewriter:
         if element.tag.endswith("Representation"):
             current_rep_id = element.get("id", "")
 
-            # Detect SegmentBase pattern: a <BaseURL> child plus a
-            # <SegmentBase>/<Initialization range="…"> grandchild.
-            # We must handle these together because they are siblings in the
-            # XML tree; processing them in separate per-element recursion calls
-            # would cause the Initialization handler to see a stale/wrong
-            # base_url and double-proxy the URL.
+            # Detect SegmentBase pattern: a Representation with a <BaseURL> child.
+            # We rewrite the <BaseURL> text to a proxy URL here at the Representation
+            # level so we have control over the resolved CDN URL before recursion
+            # descends into children.
             base_url_child = None
-            init_elem = None
-            seg_base_elem = None
             for child in element:
                 if child.tag.endswith("BaseURL") and child.text:
                     base_url_child = child
-                elif child.tag.endswith("SegmentBase"):
-                    seg_base_elem = child
-                    for grandchild in child:
-                        if grandchild.tag.endswith("Initialization"):
-                            init_elem = grandchild
+                    break
 
             if base_url_child is not None:
                 raw_url = base_url_child.text.strip()
@@ -853,32 +845,20 @@ class MPDRewriter:
                     # Resolve the relative BaseURL against the current base.
                     resolved_cdn_url = self._urljoin_preserve_query(base_url, raw_url)
 
-                    # Rewrite the <BaseURL> text to a proxy URL so the player
-                    # fetches all segment byte-ranges through the proxy.
+                    # Rewrite the <BaseURL> text to a proxy URL.
+                    # For SegmentBase manifests the player uses <BaseURL> for ALL
+                    # requests (init segment, index, and media), issuing HTTP Range
+                    # requests as directed by indexRange / <Initialization range="…"/>.
+                    # No sourceURL is needed — the range attribute on <Initialization>
+                    # stays untouched and the player combines it with the proxied
+                    # <BaseURL> automatically.
                     base_url_child.text = self.build_proxy_url(
                         resolved_cdn_url, None, None,
                         current_encrypted, current_kid,
                         representation_id=current_rep_id,
                     )
 
-                    # If there is a sibling <SegmentBase><Initialization range="…"/>,
-                    # add a sourceURL pointing to the proxy so the player uses it
-                    # for the init segment range request.  We build this from the
-                    # original resolved CDN URL, never from the already-proxied
-                    # BaseURL text, to avoid double-proxying.
-                    if init_elem is not None and "range" in init_elem.attrib:
-                        init_proxy_url = self.build_proxy_url(
-                            resolved_cdn_url, None, "initialization",
-                            current_encrypted, current_kid,
-                            representation_id=current_rep_id,
-                        )
-                        init_elem.set("sourceURL", init_proxy_url)
-
-                    # Update base_url for any remaining children/grandchildren
-                    # that are not BaseURL or Initialization (e.g. SegmentBase
-                    # indexRange attributes are informational and need no rewriting,
-                    # but if there were SegmentURL children they should resolve
-                    # against the CDN URL, not the proxied one).
+                    # Update base_url for any further descendants.
                     base_url = resolved_cdn_url
 
         # ------------------------------------------------------------------
@@ -886,53 +866,44 @@ class MPDRewriter:
         # Handles media/initialization/sourceURL attributes on SegmentTemplate,
         # SegmentList, etc.
         #
-        # Skip <Initialization> elements entirely here — for SegmentBase manifests
-        # their sourceURL was already written correctly at the Representation level
-        # above, and re-processing it would double-proxy it.  SegmentTemplate
-        # initialization is expressed as an *attribute* on <SegmentTemplate>, not
-        # as a child element, so this skip does not affect that case.
-        # ------------------------------------------------------------------
-        if element.tag.endswith("Initialization"):
-            pass  # handled at Representation level for SegmentBase; no-op otherwise
-        else:
-            attr_map = {
-                "media": "media",
-                "initialization": "initialization",
-                "sourceURL": None,
-            }
+        attr_map = {
+            "media": "media",
+            "initialization": "initialization",
+            "sourceURL": None,
+        }
 
-            for attr, seg_type in attr_map.items():
-                if attr in element.attrib:
-                    val = element.attrib[attr]
-                    if not val:
-                        continue
+        for attr, seg_type in attr_map.items():
+            if attr in element.attrib:
+                val = element.attrib[attr]
+                if not val:
+                    continue
 
-                    resolved = self._urljoin_preserve_query(base_url, val)
-                    if "$" in resolved:
-                        # Use shared utility for splitting template URLs
-                        path, pattern = URLResolver.split_template_url(resolved)
-                        element.attrib[attr] = self.build_proxy_url(
-                            path, pattern, seg_type, current_encrypted, current_kid,
-                            representation_id=current_rep_id
-                        )
-                    else:
-                        element.attrib[attr] = self.build_proxy_url(
-                            resolved, None, seg_type, current_encrypted, current_kid,
-                            representation_id=current_rep_id
-                        )
+                resolved = self._urljoin_preserve_query(base_url, val)
+                if "$" in resolved:
+                    # Use shared utility for splitting template URLs
+                    path, pattern = URLResolver.split_template_url(resolved)
+                    element.attrib[attr] = self.build_proxy_url(
+                        path, pattern, seg_type, current_encrypted, current_kid,
+                        representation_id=current_rep_id
+                    )
+                else:
+                    element.attrib[attr] = self.build_proxy_url(
+                        resolved, None, seg_type, current_encrypted, current_kid,
+                        representation_id=current_rep_id
+                    )
 
-            # Handle SegmentURL (always 'media' type)
-            if element.tag.endswith("SegmentURL") and "media" in element.attrib:
-                resolved = self._urljoin_preserve_query(base_url, element.attrib["media"])
-                path, pattern = (
-                    URLResolver.split_template_url(resolved)
-                    if "$" in resolved
-                    else (resolved, None)
-                )
-                element.attrib["media"] = self.build_proxy_url(
-                    path, pattern, "media", current_encrypted, current_kid,
-                    representation_id=current_rep_id
-                )
+        # Handle SegmentURL (always 'media' type)
+        if element.tag.endswith("SegmentURL") and "media" in element.attrib:
+            resolved = self._urljoin_preserve_query(base_url, element.attrib["media"])
+            path, pattern = (
+                URLResolver.split_template_url(resolved)
+                if "$" in resolved
+                else (resolved, None)
+            )
+            element.attrib["media"] = self.build_proxy_url(
+                path, pattern, "media", current_encrypted, current_kid,
+                representation_id=current_rep_id
+            )
 
         # Recurse to children.
         # For SegmentBase Representations, the BaseURL and Initialization children
