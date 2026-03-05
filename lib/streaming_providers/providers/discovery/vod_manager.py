@@ -561,6 +561,18 @@ class DiscoveryVodManager:
 
         attrs = video.get("attributes", {})
 
+        # Only finished content is eligible for VOD.
+        # videoType == "LIVE" means the event is upcoming or ongoing — skip it.
+        # "STANDALONE_EVENT" → full past broadcast; "CLIP" → highlight reel.
+        video_type = attrs.get("videoType", "")
+        if video_type == "LIVE":
+            logger.debug(
+                f"DiscoveryVodManager: video '{video.get('id')}' is LIVE — skipping"
+            )
+            return None
+
+        is_highlight = video_type == "CLIP"
+
         # Duration: edit has duration_ms; fall back to video attrs
         edit_obj = index.get(edit_id, {})
         duration_ms = edit_obj.get("attributes", {}).get("duration")
@@ -584,6 +596,7 @@ class DiscoveryVodManager:
             description=attrs.get("description") or attrs.get("longDescription"),
             logo_url=self._pick_image(video, index, "default"),
             duration_seconds=duration_seconds,
+            is_highlight=is_highlight,
         )
 
     def _show_to_vod_category(

@@ -170,6 +170,11 @@ class VodItem(Content):
     # Promotional
     trailer_url: Optional[str] = None
 
+    # Content classification
+    # True  → short highlight/clip reel (videoType == "CLIP")
+    # False → full broadcast recording  (videoType == "STANDALONE_EVENT" etc.)
+    is_highlight: bool = False
+
     # Cached slug
     _slug: Optional[str] = field(default=None, repr=False)
 
@@ -205,6 +210,7 @@ class VodItem(Content):
         result.update({
             "type": self.node_type,
             "slug": self.slug,
+            "is_highlight": self.is_highlight,
             "duration_seconds": self.duration_seconds,
             "duration_minutes": self.duration_minutes,
             "release_year": self.release_year,
