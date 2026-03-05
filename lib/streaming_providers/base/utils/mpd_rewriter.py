@@ -528,7 +528,7 @@ class MPDRewriter:
             period_base_elem = period.find("mpd:BaseURL", self.MPD_NAMESPACE)
             if period_base_elem is not None and period_base_elem.text:
                 period_base_text = period_base_elem.text.strip()
-                period_base_url = urljoin(mpd_base_url, period_base_text)
+                period_base_url = self._urljoin_preserve_query(mpd_base_url, period_base_text)
                 logger.debug(f"Period {period_id} BaseURL: {period_base_url}")
 
             # Remove Period-level BaseURL elements
@@ -547,7 +547,7 @@ class MPDRewriter:
                 as_base_elem = adaptation_set.find("mpd:BaseURL", self.MPD_NAMESPACE)
                 if as_base_elem is not None and as_base_elem.text:
                     as_base_text = as_base_elem.text.strip()
-                    as_base_url = urljoin(period_base_url, as_base_text)
+                    as_base_url = self._urljoin_preserve_query(period_base_url, as_base_text)
                     logger.debug(f"AdaptationSet {unique_id} BaseURL: {as_base_url}")
 
                 # Store the resolved base URL for this AdaptationSet
@@ -838,7 +838,7 @@ class MPDRewriter:
             parent_rep_id = current_rep_id  # captured when we entered Representation
             raw_url = element.text.strip()
             if raw_url:
-                resolved = urljoin(base_url, raw_url)
+                resolved = self._urljoin_preserve_query(base_url, raw_url)
                 # Rewrite the BaseURL text through the proxy.
                 # We don't know the segment type yet (the SegmentBase child will
                 # handle Initialization specifically), so pass None for seg_type
@@ -894,7 +894,7 @@ class MPDRewriter:
                 if not val:
                     continue
 
-                resolved = urljoin(base_url, val)
+                resolved = self._urljoin_preserve_query(base_url, val)
                 if "$" in resolved:
                     # Use shared utility for splitting template URLs
                     path, pattern = URLResolver.split_template_url(resolved)
@@ -910,7 +910,7 @@ class MPDRewriter:
 
         # Handle SegmentURL (always 'media' type)
         if element.tag.endswith("SegmentURL") and "media" in element.attrib:
-            resolved = urljoin(base_url, element.attrib["media"])
+            resolved = self._urljoin_preserve_query(base_url, element.attrib["media"])
             path, pattern = (
                 URLResolver.split_template_url(resolved)
                 if "$" in resolved
@@ -927,6 +927,49 @@ class MPDRewriter:
                 child, base_url, encrypted_ids, as_id_to_kid, base_url_map,
                 current_encrypted, current_kid, current_period_id, best_video_info
             )
+
+    @staticmethod
+    def _urljoin_preserve_query(base: str, url: str) -> str:
+        """
+        Like urljoin(base, url) but preserves the query string of *base* when
+        the relative *url* itself carries no query string.
+
+        Why this is needed:
+          Some CDNs (e.g. Discovery+/Max) embed the auth token in the manifest
+          URL's query string (e.g. ?manifest-params=…).  The segment paths
+          inside such manifests are plain relative paths like "v/0_9cd1a5/v13.mp4"
+          with no query component.  Standard urljoin() discards the base query
+          string when joining with a relative path (RFC 3986 §5.3 – correct
+          behaviour in general, wrong here).  The CDN requires the same token on
+          every segment request, so we must re-append it.
+
+        Rules (mirrors RFC 3986 §5.3 reference-resolution):
+          - If *url* is absolute (has a scheme) → plain urljoin, no query merging.
+          - If *url* already has its own query string → plain urljoin; the
+            relative URL's query takes full precedence.
+          - If *url* has no query string and *base* does → urljoin then re-attach
+            base's query string to the result.
+        """
+        from urllib.parse import urlparse, urlunparse
+
+        parsed_url = urlparse(url)
+
+        # Absolute URL or url already has its own query — standard behaviour.
+        if parsed_url.scheme or parsed_url.query:
+            return urljoin(base, url)
+
+        joined = urljoin(base, url)
+
+        # Re-attach the base query string if it has one and the result lost it.
+        base_query = urlparse(base).query
+        if base_query:
+            parsed_joined = urlparse(joined)
+            if not parsed_joined.query:
+                # urlunparse is typed as returning str | bytes depending on input;
+                # our inputs are always str so cast to make the type checker happy.
+                joined = str(urlunparse(parsed_joined._replace(query=base_query)))
+
+        return joined
 
     def _extract_mpd_base_url(self, root: ET.Element, manifest_url: str) -> str:
         """
