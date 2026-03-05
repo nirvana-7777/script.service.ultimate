@@ -941,13 +941,26 @@ class MPDRewriter:
 
         parsed_url = urlparse(url)
 
-        # Absolute URL or url already has its own query — standard behaviour.
-        if parsed_url.scheme or parsed_url.query:
+        # Absolute URL: standard behaviour, no query merging.
+        if parsed_url.scheme:
+            return urljoin(base, url)
+
+        # URL contains $ template variables (e.g. $RepresentationID$, $Number$):
+        # these are SegmentTemplate patterns that manage their own query strings.
+        # Never re-attach the base query — it would be injected into the middle of
+        # the template pattern and corrupt the CDN URL the proxy encodes.
+        if "$" in url:
+            return urljoin(base, url)
+
+        # URL already has its own query string — it takes full precedence.
+        if parsed_url.query:
             return urljoin(base, url)
 
         joined = urljoin(base, url)
 
         # Re-attach the base query string if it has one and the result lost it.
+        # This handles CDNs that embed auth tokens in the manifest URL query string
+        # (e.g. ?manifest-params=...) which must be forwarded to every segment URL.
         base_query = urlparse(base).query
         if base_query:
             parsed_joined = urlparse(joined)
