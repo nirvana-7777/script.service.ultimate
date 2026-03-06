@@ -640,11 +640,8 @@ class MPDRewriter:
                 representation_id=current_rep_id
             )
 
-        # Recurse to children (but skip if we already handled Period children)
+        # Recurse to children
         for child in element:
-            # Skip if this is a Period element - we handle them separately at the top level
-            if child.tag.endswith("Period"):
-                continue
             self._rewrite_node(
                 child, base_url, encrypted_ids, as_id_to_kid, base_url_map,
                 current_encrypted, current_kid, current_period_id, best_video_info
