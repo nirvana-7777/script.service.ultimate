@@ -200,7 +200,8 @@ class MPDRewriter:
         self.clearkey_receiver_side = clearkey_receiver_side
 
         if self.clearkey_receiver_side and not self.key_config.keys:
-            logger.warning("clearkey_receiver_side=True but no keys provided; receiver will have no keys to decrypt with")
+            logger.warning(
+                "clearkey_receiver_side=True but no keys provided; receiver will have no keys to decrypt with")
 
         # Blocklist configuration
         self.provider = provider
@@ -284,6 +285,7 @@ class MPDRewriter:
         try:
             root = ET.fromstring(mpd_content)
             ET.register_namespace("", self.MPD_NAMESPACE["mpd"])
+            ET.register_namespace("cenc", self.CENC_NAMESPACE["cenc"])
 
             # Extract MPD-level base URL using shared utility
             mpd_base_url = self._extract_mpd_base_url(root, manifest_url)
@@ -537,6 +539,11 @@ class MPDRewriter:
                 period_base_text = period_base_elem.text.strip()
                 period_base_url = self._urljoin_preserve_query(mpd_base_url, period_base_text)
                 logger.debug(f"Period {period_id} BaseURL: {period_base_url}")
+
+                # Store period-level base URL in base_url_map with a special key
+                # This preserves the period base URL for use during rewriting
+                period_key = f"period_{period_id}" if period_id else "period_root"
+                base_url_map[period_key] = period_base_url
 
             # Remove Period-level BaseURL elements
             for bu in list(period.findall("mpd:BaseURL", self.MPD_NAMESPACE)):
@@ -810,6 +817,12 @@ class MPDRewriter:
         # Track period ID as we traverse
         if element.tag.endswith("Period"):
             current_period_id = element.get("id", "")
+
+            # CRITICAL FIX: When entering a new period, check if we have a period-level base URL stored
+            period_key = f"period_{current_period_id}" if current_period_id else "period_root"
+            if period_key in base_url_map:
+                # Update base_url to the period-specific base URL
+                base_url = base_url_map[period_key]
 
         # Update state when entering an AdaptationSet
         current_as_id = None
