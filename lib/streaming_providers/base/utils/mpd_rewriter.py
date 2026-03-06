@@ -973,46 +973,21 @@ class MPDRewriter:
 
     def _extract_mpd_base_url(self, root: ET.Element, manifest_url: str) -> str:
         """
-        Extract and resolve MPD-level BaseURL, preserving the manifest URL's
-        query string on the result.
-
-        Why query preservation is needed here:
-          Some CDNs (e.g. Discovery+/Max) embed their auth token in the manifest
-          URL's query string (e.g. ?manifest-params=...).  URLResolver strips the
-          filename — and therefore the query string — when deriving the directory
-          base URL from a .mpd filename URL.  All segment paths in the manifest
-          are relative (e.g. "v/0_9cd1a5/v5.mp4") with no query component, so
-          without this fix the CDN token is silently dropped from every resolved
-          segment URL.
-
-          Re-attaching the manifest query string here means _urljoin_preserve_query
-          sees it on the base and propagates it to every resolved segment URL whose
-          relative path carries no query of its own.
+        Extract and resolve MPD-level BaseURL.
+        Uses shared URLResolver utility.
         """
-        from urllib.parse import urlparse, urlunparse
-
         base_url_elem = root.find("mpd:BaseURL", self.MPD_NAMESPACE)
         base_url_text = None
 
         if base_url_elem is not None and base_url_elem.text:
             base_url_text = base_url_elem.text.strip()
 
-        # Use shared utility - it handles special service prefixes
-        resolved = URLResolver.resolve_base_url_with_element(manifest_url, base_url_text)
-
-        # Re-attach the manifest query string if the resolved base lost it.
-        # Only do this when:
-        #   1. The manifest URL had a query string, AND
-        #   2. The resolved base has none (URLResolver stripped it), AND
-        #   3. No MPD-level <BaseURL> element introduced its own query
-        #      (if it did, that takes full precedence — leave it alone).
-        manifest_query = urlparse(manifest_url).query
-        if manifest_query:
-            parsed = urlparse(resolved)
-            if not parsed.query:
-                resolved = str(urlunparse(parsed._replace(query=manifest_query)))
-
-        return resolved
+        # Use shared utility - it handles special service prefixes.
+        # Note: URLResolver intentionally strips the manifest URL's query string
+        # when deriving the base directory URL. This is correct — query strings
+        # like ?manifest-params= are only for the .mpd fetch itself and must NOT
+        # be forwarded to segment requests.
+        return URLResolver.resolve_base_url_with_element(manifest_url, base_url_text)
 
     @staticmethod
     def extract_cache_ttl(headers: dict) -> int:
