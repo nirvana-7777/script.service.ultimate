@@ -291,14 +291,21 @@ class MPDRewriter:
             # Single-pass tree preparation with BaseURL extraction
             encrypted_ids, as_id_to_kid, base_url_map = self._prepare_tree_and_extract_kids(root, mpd_base_url)
 
-            # FIRST: Filter out encrypted AdaptationSets without available keys
+            # FIRST: Filter out encrypted AdaptationSets without available keys.
+            # Only applies to server-side decrypt mode — we can only decrypt what
+            # we have keys for, so remove sets whose KID we don't have a key for.
+            #
+            # Proxy-only mode (no keys): pass everything through unchanged.
+            # The proxy just forwards bytes; the player uses its own DRM stack
+            # (Widevine/PlayReady) to decrypt. Stripping encrypted sets in proxy
+            # mode would break multi-period manifests where the main content is
+            # encrypted and only a short free bumper is unencrypted.
+            #
+            # Receiver-side clearkey (keys + clearkey_receiver_side): keep all
+            # sets; receiver will decrypt using injected keys.
             if self.key_config.keys and not self.clearkey_receiver_side:
                 # Server-side decrypt: remove sets we can't decrypt
                 self._remove_adaptationsets_without_keys(root, as_id_to_kid)
-            elif not self.key_config.keys:
-                # Proxy-only: remove all encrypted sets (player has no keys either)
-                self._remove_all_encrypted_adaptationsets(root)
-            # else: receiver-side clearkey — keep all sets; receiver will decrypt using injected keys
 
             # SECOND: Filter out blocked representations that cause 500 errors
             if self.provider and self.channel:
