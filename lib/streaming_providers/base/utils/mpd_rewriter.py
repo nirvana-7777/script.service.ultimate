@@ -7,169 +7,18 @@ Handles URL proxying, DRM key injection, quality filtering, and representation b
 import base64
 import struct
 import xml.etree.ElementTree as ET
-import re
-from typing import Optional, Tuple, Set, Dict, List
+from typing import Optional, Tuple, Set, Dict
 from urllib.parse import urljoin, quote, urlencode
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from dataclasses import dataclass, field
 
 from .logger import logger
-from .vfs import get_vfs
 from .url_resolver import URLResolver
+from .drm_key_manager import KeyConfiguration
+from .representation_blocklist import RepresentationBlocklist
+from .video_quality import VideoQualityFilter, VideoRepresentation
+from .time_utils import parse_iso_duration
 from ..models.drm.constants import DRM_SYSTEM_NAMES
-
-# Pre-compile regex for ISO duration parsing at module level
-ISO_8601_PERIOD_RE = re.compile(
-    r"P(?:(?P<years>\d+)Y)?(?:(?P<months>\d+)M)?(?:(?P<weeks>\d+)W)?(?:(?P<days>\d+)D)?(?:T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+(?:\.\d+)?)S)?)?"
-)
-
-
-@dataclass
-class KeyConfiguration:
-    """Configuration for DRM key management with validation and normalization."""
-    keys: Dict[str, str] = field(default_factory=dict)
-    single_key_mode: bool = field(init=False)
-    default_kid: Optional[str] = field(init=False, default=None)
-    default_key: Optional[str] = field(init=False, default=None)
-
-    def __post_init__(self):
-        """Normalize and validate keys on initialization."""
-        normalized = {}
-        for kid, key in self.keys.items():
-            norm_kid = kid.replace("-", "").lower()
-            norm_key = key.replace("-", "").lower()
-
-            # Validate hex format (32 characters = 16 bytes)
-            if len(norm_kid) != 32 or not all(c in '0123456789abcdef' for c in norm_kid):
-                logger.warning(f"Invalid KID format (expected 32 hex chars): {kid}")
-                continue
-            if len(norm_key) != 32 or not all(c in '0123456789abcdef' for c in norm_key):
-                logger.warning(f"Invalid key format for KID {kid}: {key}")
-                continue
-
-            normalized[norm_kid] = norm_key
-
-        self.keys = normalized
-        self.single_key_mode = len(self.keys) <= 1
-
-        if self.single_key_mode and self.keys:
-            self.default_kid, self.default_key = next(iter(self.keys.items()))
-            logger.debug(f"Single key mode: KID={self.default_kid[:8]}...")
-        elif self.keys:
-            logger.debug(f"Multi-key mode: {len(self.keys)} keys available")
-
-
-class RepresentationBlocklist:
-    """
-    Manages blocklist of problematic Representation IDs that cause 500 errors.
-
-    Blocklist format (JSON):
-    {
-        "provider_name": {
-            "channel_name": ["rep_id_1", "rep_id_2"],
-            "another_channel": ["rep_id_3"]
-        }
-    }
-    """
-
-    def __init__(self, blocklist_path: str = "representation_blocklist.json"):
-        """
-        Initialize blocklist manager.
-
-        Args:
-            blocklist_path: Path to JSON file containing blocklist configuration
-        """
-        self.blocklist_path = blocklist_path
-        self.blocklist: Dict[str, Dict[str, List[str]]] = {}
-        self._load_blocklist()
-
-    def _load_blocklist(self):
-        """Load blocklist from JSON file using VFS."""
-        try:
-            vfs = get_vfs()
-            data = vfs.read_json(self.blocklist_path)
-
-            if data:
-                self.blocklist = data
-                total_blocked = sum(
-                    len(rep_ids)
-                    for provider in self.blocklist.values()
-                    for rep_ids in provider.values()
-                )
-                logger.info(
-                    f"Loaded representation blocklist: "
-                    f"{len(self.blocklist)} providers, {total_blocked} total blocked representations"
-                )
-            else:
-                logger.info(f"No blocklist found at {self.blocklist_path}, starting with empty blocklist")
-
-        except Exception as e:
-            logger.warning(f"Failed to load representation blocklist from {self.blocklist_path}: {e}")
-            self.blocklist = {}
-
-    def is_blocked(self, provider: str, channel: str, representation_id: str) -> bool:
-        """
-        Check if a representation ID is blocked for a given provider/channel.
-
-        Args:
-            provider: Provider name (e.g., "magenta_tv", "ht_iptv")
-            channel: Channel name/ID
-            representation_id: Representation ID to check
-
-        Returns:
-            True if blocked, False otherwise
-        """
-        if not provider or not channel:
-            return False
-
-        provider_data = self.blocklist.get(provider, {})
-        channel_data = provider_data.get(channel, [])
-
-        return representation_id in channel_data
-
-    def get_blocked_ids(self, provider: str, channel: str) -> Set[str]:
-        """
-        Get set of all blocked representation IDs for a provider/channel.
-
-        Args:
-            provider: Provider name
-            channel: Channel name/ID
-
-        Returns:
-            Set of blocked representation IDs
-        """
-        if not provider or not channel:
-            return set()
-
-        provider_data = self.blocklist.get(provider, {})
-        channel_data = provider_data.get(channel, [])
-
-        return set(channel_data)
-
-
-@dataclass
-class VideoRepresentation:
-    """Represents a video representation with its quality metrics."""
-    element: ET.Element
-    adaptation_set: ET.Element
-    period: ET.Element
-    bandwidth: int
-    width: Optional[int] = None
-    height: Optional[int] = None
-    frame_rate: Optional[float] = None
-    representation_id: str = ""
-    period_id: str = ""
-    as_id: str = ""
-
-    def get_quality_score(self) -> Tuple[int, int, int]:
-        """
-        Returns a tuple for comparison: (resolution_pixels, bandwidth, frame_rate_score)
-        Higher values = better quality
-        """
-        resolution = (self.width or 0) * (self.height or 0)
-        frame_rate_score = int((self.frame_rate or 0) * 100)
-        return resolution, self.bandwidth, frame_rate_score
 
 
 class MPDRewriter:
@@ -316,12 +165,15 @@ class MPDRewriter:
             # THEN: Filter to highest quality video from remaining decryptable content
             best_video_info = None
             if self.highest_quality_video_only:
-                best_video_info = self._filter_to_highest_quality_video(root)
+                best_video_info = VideoQualityFilter.find_best_video(root)
                 if best_video_info:
                     logger.info(
                         f"Filtered to highest quality video: {best_video_info.width}x{best_video_info.height} "
                         f"@ {best_video_info.bandwidth}bps, RepID={best_video_info.representation_id}"
                     )
+
+                    # Remove all other video representations, keep only the best one
+                    self._filter_to_single_best_video(root, best_video_info)
 
             # Verify we have playable content remaining
             remaining_sets = root.findall(".//mpd:AdaptationSet", self.MPD_NAMESPACE)
@@ -340,52 +192,19 @@ class MPDRewriter:
             logger.error(f"Failed to rewrite MPD: {e}")
             raise
 
-    def _filter_to_highest_quality_video(self, root: ET.Element) -> Optional[VideoRepresentation]:
+    def _filter_to_single_best_video(self, root: ET.Element, best_video: VideoRepresentation):
         """
-        Find the absolute highest quality video representation across all periods and adaptation sets.
-        Remove all other video representations, keep audio/subtitles unchanged.
-        Returns information about the best video representation found.
+        Remove all video representations except the best one.
+        Keeps audio/subtitles unchanged.
         """
-        all_video_reps: List[VideoRepresentation] = []
-
-        # Scan all periods and adaptation sets to find video representations
-        for period in root.findall(".//mpd:Period", self.MPD_NAMESPACE):
-            period_id = period.get("id", "")
-
-            for adaptation_set in period.findall("mpd:AdaptationSet", self.MPD_NAMESPACE):
-                # Check if this is a video adaptation set
-                if not self._is_video_adaptation_set(adaptation_set):
-                    continue
-
-                as_id = adaptation_set.get("id", str(id(adaptation_set)))
-
-                # Collect all representations from this video adaptation set
-                for representation in adaptation_set.findall("mpd:Representation", self.MPD_NAMESPACE):
-                    video_rep = self._parse_video_representation(
-                        representation, adaptation_set, period, period_id, as_id
-                    )
-                    if video_rep:
-                        all_video_reps.append(video_rep)
-
-        if not all_video_reps:
-            logger.warning("No video representations found for filtering")
-            return None
-
-        # Find the best video representation
-        best_video = max(all_video_reps, key=lambda v: v.get_quality_score())
-        logger.debug(
-            f"Found {len(all_video_reps)} video representations, "
-            f"best: {best_video.width}x{best_video.height} @ {best_video.bandwidth}bps"
-        )
-
-        # Now remove all video representations EXCEPT the best one
         removal_count = 0
+        adaptation_sets_to_remove = []
+
         for period in root.findall(".//mpd:Period", self.MPD_NAMESPACE):
             period_id = period.get("id", "")
-            adaptation_sets_to_remove = []
 
             for adaptation_set in period.findall("mpd:AdaptationSet", self.MPD_NAMESPACE):
-                if not self._is_video_adaptation_set(adaptation_set):
+                if not VideoQualityFilter.is_video_adaptation_set(adaptation_set):
                     continue
 
                 as_id = adaptation_set.get("id", str(id(adaptation_set)))
@@ -414,16 +233,24 @@ class MPDRewriter:
                 if not contains_best:
                     adaptation_sets_to_remove.append(adaptation_set)
 
-            # Remove empty video adaptation sets
-            for adaptation_set in adaptation_sets_to_remove:
-                period.remove(adaptation_set)
+        # Remove empty video adaptation sets
+        for period in root.findall(".//mpd:Period", self.MPD_NAMESPACE):
+            for adaptation_set in list(period.findall("mpd:AdaptationSet", self.MPD_NAMESPACE)):
+                if adaptation_set in adaptation_sets_to_remove:
+                    period.remove(adaptation_set)
 
         logger.info(f"Removed {removal_count} video representation(s), kept highest quality only")
 
         # Clean up SupplementalProperty elements that reference removed AdaptationSet IDs.
         # These are used for codec-switching hints (e.g. AVC↔HEVC) and become dangling
         # after we discard all but one video AdaptationSet.
+        self._cleanup_codec_switch_properties(root)
+
+    def _cleanup_codec_switch_properties(self, root: ET.Element):
+        """Remove or update SupplementalProperty elements for codec switching."""
         CODEC_SWITCH_SCHEME = "urn:mpeg:dash:adaptation-set-switching:2016"
+
+        # Collect all surviving AdaptationSet IDs
         surviving_as_ids: Set[str] = set()
         for period in root.findall(".//mpd:Period", self.MPD_NAMESPACE):
             for adaptation_set in period.findall("mpd:AdaptationSet", self.MPD_NAMESPACE):
@@ -431,6 +258,7 @@ class MPDRewriter:
                 if as_id:
                     surviving_as_ids.add(as_id)
 
+        # Clean up SupplementalProperty elements
         for period in root.findall(".//mpd:Period", self.MPD_NAMESPACE):
             for adaptation_set in period.findall("mpd:AdaptationSet", self.MPD_NAMESPACE):
                 for sp in list(adaptation_set.findall("mpd:SupplementalProperty", self.MPD_NAMESPACE)):
@@ -447,76 +275,6 @@ class MPDRewriter:
                             adaptation_set.remove(sp)
                         else:
                             sp.set("value", ",".join(kept))
-
-        return best_video
-
-    def _is_video_adaptation_set(self, adaptation_set: ET.Element) -> bool:
-        """Determine if an AdaptationSet is video based on mimeType or contentType."""
-        mime_type = adaptation_set.get("mimeType", "")
-        content_type = adaptation_set.get("contentType", "")
-
-        # Check AdaptationSet level
-        if mime_type.startswith("video/") or content_type == "video":
-            return True
-
-        # Check Representation level if not specified at AdaptationSet level
-        for representation in adaptation_set.findall("mpd:Representation", self.MPD_NAMESPACE):
-            rep_mime = representation.get("mimeType", "")
-            if rep_mime.startswith("video/"):
-                return True
-
-        return False
-
-    @staticmethod
-    def _parse_video_representation(
-            representation: ET.Element,
-            adaptation_set: ET.Element,
-            period: ET.Element,
-            period_id: str,
-            as_id: str
-    ) -> Optional[VideoRepresentation]:
-        """Parse a Representation element and extract video quality information."""
-        try:
-            # Bandwidth is required
-            bandwidth = int(representation.get("bandwidth", "0"))
-            if bandwidth == 0:
-                return None
-
-            # Width and height (can be on Representation or AdaptationSet)
-            width = representation.get("width") or adaptation_set.get("width")
-            height = representation.get("height") or adaptation_set.get("height")
-
-            width = int(width) if width else None
-            height = int(height) if height else None
-
-            # Frame rate (can be on Representation or AdaptationSet)
-            frame_rate_str = representation.get("frameRate") or adaptation_set.get("frameRate")
-            frame_rate = None
-            if frame_rate_str:
-                # Handle both "30" and "30000/1001" formats
-                if "/" in frame_rate_str:
-                    num, denom = frame_rate_str.split("/")
-                    frame_rate = float(num) / float(denom)
-                else:
-                    frame_rate = float(frame_rate_str)
-
-            representation_id = representation.get("id", "")
-
-            return VideoRepresentation(
-                element=representation,
-                adaptation_set=adaptation_set,
-                period=period,
-                bandwidth=bandwidth,
-                width=width,
-                height=height,
-                frame_rate=frame_rate,
-                representation_id=representation_id,
-                period_id=period_id,
-                as_id=as_id
-            )
-        except (ValueError, AttributeError) as e:
-            logger.warning(f"Failed to parse video representation: {e}")
-            return None
 
     def _prepare_tree_and_extract_kids(self, root: ET.Element, mpd_base_url: str) -> Tuple[
         Set[str], Dict[str, str], Dict[str, str]]:
@@ -709,38 +467,6 @@ class MPDRewriter:
 
         if removed_count > 0:
             logger.info(f"Removed {removed_count} AdaptationSet(s) without available keys")
-
-    def _remove_all_encrypted_adaptationsets(self, root: ET.Element):
-        """Remove all encrypted AdaptationSets when no keys are available."""
-        removed_count = 0
-
-        for period in root.findall(".//mpd:Period", self.MPD_NAMESPACE):
-            adaptationsets_to_remove = []
-
-            for adaptation_set in period.findall("mpd:AdaptationSet", self.MPD_NAMESPACE):
-                # Check for ContentProtection
-                cp_elements = adaptation_set.findall("mpd:ContentProtection", self.MPD_NAMESPACE)
-                has_cp = len(cp_elements) > 0
-
-                # Also check Representation level
-                if not has_cp:
-                    for representation in adaptation_set.findall("mpd:Representation", self.MPD_NAMESPACE):
-                        rep_cp = representation.findall("mpd:ContentProtection", self.MPD_NAMESPACE)
-                        if rep_cp:
-                            has_cp = True
-                            break
-
-                if has_cp:
-                    as_id = adaptation_set.get("id", "unknown")
-                    logger.info(f"Removing encrypted AdaptationSet {as_id} - no keys available")
-                    adaptationsets_to_remove.append(adaptation_set)
-                    removed_count += 1
-
-            for adaptation_set in adaptationsets_to_remove:
-                period.remove(adaptation_set)
-
-        if removed_count > 0:
-            logger.info(f"Removed {removed_count} encrypted AdaptationSet(s)")
 
     def _remove_blocked_representations(self, root: ET.Element):
         """Remove representations that are blocklisted for this provider/channel."""
@@ -1030,19 +756,7 @@ class MPDRewriter:
             if root.attrib.get("type") == "dynamic":
                 update_period = root.attrib.get("minimumUpdatePeriod")
                 if update_period:
-                    return MPDRewriter._parse_iso_duration(update_period)
+                    return parse_iso_duration(update_period)
         except Exception:
             pass
         return None
-
-    @staticmethod
-    def _parse_iso_duration(duration: str) -> int:
-        match = ISO_8601_PERIOD_RE.match(duration)
-        if not match:
-            return 0
-        d = match.groupdict()
-        return int(
-            int(d["hours"] or 0) * 3600
-            + int(d["minutes"] or 0) * 60
-            + float(d["seconds"] or 0)
-        )

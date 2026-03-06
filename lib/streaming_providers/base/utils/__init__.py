@@ -10,6 +10,10 @@ from .vfs import VFS
 from .drm_extractor import DRMExtractor
 from .url_resolver import URLResolver
 from .manifest_utils import ManifestUtils
+from .drm_key_manager import KeyConfiguration
+from .representation_blocklist import RepresentationBlocklist
+from .video_quality import VideoQualityFilter, VideoRepresentation
+from .time_utils import parse_iso_duration
 
 __all__ = [
     "logger",
@@ -23,4 +27,9 @@ __all__ = [
     "DRMExtractor",
     "URLResolver",
     "ManifestUtils",
+    "KeyConfiguration",
+    "RepresentationBlocklist",
+    "VideoQualityFilter",
+    "VideoRepresentation",
+    "parse_iso_duration",
 ]
