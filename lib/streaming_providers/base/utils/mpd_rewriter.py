@@ -541,7 +541,6 @@ class MPDRewriter:
                 logger.debug(f"Period {period_id} BaseURL: {period_base_url}")
 
                 # Store period-level base URL in base_url_map with a special key
-                # This preserves the period base URL for use during rewriting
                 period_key = f"period_{period_id}" if period_id else "period_root"
                 base_url_map[period_key] = period_base_url
 
@@ -824,6 +823,14 @@ class MPDRewriter:
                 # Update base_url to the period-specific base URL
                 base_url = base_url_map[period_key]
 
+            # Process all children of this period
+            for child in list(element):
+                self._rewrite_node(
+                    child, base_url, encrypted_ids, as_id_to_kid, base_url_map,
+                    current_encrypted, current_kid, current_period_id, best_video_info
+                )
+            return  # Don't process further - we've handled all children
+
         # Update state when entering an AdaptationSet
         current_as_id = None
         current_rep_id = None
@@ -925,11 +932,11 @@ class MPDRewriter:
                 representation_id=current_rep_id
             )
 
-        # Recurse to children.
-        # For SegmentBase Representations, the BaseURL and Initialization children
-        # were already fully rewritten above at the Representation level, so when
-        # the recursion visits them they will be no-ops (no matching attributes).
+        # Recurse to children (but skip if we already handled Period children)
         for child in element:
+            # Skip if this is a Period element - we handle them separately at the top level
+            if child.tag.endswith("Period"):
+                continue
             self._rewrite_node(
                 child, base_url, encrypted_ids, as_id_to_kid, base_url_map,
                 current_encrypted, current_kid, current_period_id, best_video_info
