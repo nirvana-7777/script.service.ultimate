@@ -817,11 +817,12 @@ class MPDRewriter:
         if element.tag.endswith("Period"):
             current_period_id = element.get("id", "")
 
-            # CRITICAL FIX: When entering a new period, check if we have a period-level base URL stored
+            # When entering a new period, check if we have a period-level base URL stored
             period_key = f"period_{current_period_id}" if current_period_id else "period_root"
             if period_key in base_url_map:
                 # Update base_url to the period-specific base URL
                 base_url = base_url_map[period_key]
+                logger.debug(f"Period {current_period_id} using stored base URL: {base_url}")
 
             # Process all children of this period
             for child in list(element):
@@ -831,12 +832,14 @@ class MPDRewriter:
                 )
             return  # Don't process further - we've handled all children
 
-        # Update state when entering an AdaptationSet
-        current_as_id = None
+        # Track representation ID for template substitution
         current_rep_id = None
+        if element.tag.endswith("Representation"):
+            current_rep_id = element.get("id", "")
+
+        # Update state when entering an AdaptationSet
         if element.tag.endswith("AdaptationSet"):
             as_id = element.get("id", str(id(element)))
-            current_as_id = as_id
             # Use same unique ID logic as _prepare_tree_and_extract_kids
             unique_id = f"{current_period_id}_{as_id}" if current_period_id else as_id
             current_encrypted = unique_id in encrypted_ids
@@ -844,28 +847,28 @@ class MPDRewriter:
             # Update base_url to the AdaptationSet-specific base URL
             if unique_id in base_url_map:
                 base_url = base_url_map[unique_id]
+                logger.debug(f"AdaptationSet {unique_id} using stored base URL: {base_url}")
 
             # Get specific KID for this AdaptationSet (multi-key mode only)
             if current_encrypted and not self.key_config.single_key_mode:
                 current_kid = as_id_to_kid.get(unique_id)
 
-        # Handle BaseURL elements at any level
+        # Handle BaseURL elements - THESE MUST BE REWRITTEN TO PROXY URLS
         if element.tag.endswith("BaseURL") and element.text:
             raw_url = element.text.strip()
             if raw_url:
                 # Resolve the relative BaseURL against the current base
                 resolved_cdn_url = self._urljoin_preserve_query(base_url, raw_url)
+                logger.debug(f"Rewriting BaseURL: {raw_url} -> {resolved_cdn_url}")
 
                 # Rewrite the BaseURL text to a proxy URL
+                # In receiver-side clearkey mode, this will use /api/proxy/
                 element.text = self.build_proxy_url(
                     resolved_cdn_url, None, None,
                     current_encrypted, current_kid,
                     representation_id=current_rep_id
                 )
-
-        # Track representation ID for template substitution.
-        if element.tag.endswith("Representation"):
-            current_rep_id = element.get("id", "")
+                logger.debug(f"Proxied BaseURL: {element.text}")
 
         # ------------------------------------------------------------------
         # Standard SegmentTemplate / SegmentList attribute rewriting.
@@ -910,14 +913,6 @@ class MPDRewriter:
                 path, pattern, "media", current_encrypted, current_kid,
                 representation_id=current_rep_id
             )
-
-        # Handle any other URL-like attributes that might contain segment URLs
-        # This catches things like SegmentTemplate@index, etc.
-        url_attrs = ["index", "range", "indexRange"]
-        for attr in url_attrs:
-            if attr in element.attrib and element.attrib[attr] and not attr == "range" and not attr == "indexRange":
-                # These are usually just range values, not URLs, so skip
-                continue
 
         # Recurse to children (but skip if we already handled Period children)
         for child in element:
