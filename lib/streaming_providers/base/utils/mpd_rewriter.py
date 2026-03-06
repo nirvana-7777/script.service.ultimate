@@ -849,44 +849,23 @@ class MPDRewriter:
             if current_encrypted and not self.key_config.single_key_mode:
                 current_kid = as_id_to_kid.get(unique_id)
 
+        # Handle BaseURL elements at any level
+        if element.tag.endswith("BaseURL") and element.text:
+            raw_url = element.text.strip()
+            if raw_url:
+                # Resolve the relative BaseURL against the current base
+                resolved_cdn_url = self._urljoin_preserve_query(base_url, raw_url)
+
+                # Rewrite the BaseURL text to a proxy URL
+                element.text = self.build_proxy_url(
+                    resolved_cdn_url, None, None,
+                    current_encrypted, current_kid,
+                    representation_id=current_rep_id
+                )
+
         # Track representation ID for template substitution.
-        # For SegmentBase manifests, also handle <BaseURL> + <Initialization>
-        # together here at the Representation level, so both share the same
-        # resolved CDN URL without risk of double-proxying.
         if element.tag.endswith("Representation"):
             current_rep_id = element.get("id", "")
-
-            # Detect SegmentBase pattern: a Representation with a <BaseURL> child.
-            # We rewrite the <BaseURL> text to a proxy URL here at the Representation
-            # level so we have control over the resolved CDN URL before recursion
-            # descends into children.
-            base_url_child = None
-            for child in element:
-                if child.tag.endswith("BaseURL") and child.text:
-                    base_url_child = child
-                    break
-
-            if base_url_child is not None:
-                raw_url = base_url_child.text.strip()
-                if raw_url:
-                    # Resolve the relative BaseURL against the current base.
-                    resolved_cdn_url = self._urljoin_preserve_query(base_url, raw_url)
-
-                    # Rewrite the <BaseURL> text to a proxy URL.
-                    # For SegmentBase manifests the player uses <BaseURL> for ALL
-                    # requests (init segment, index, and media), issuing HTTP Range
-                    # requests as directed by indexRange / <Initialization range="…"/>.
-                    # No sourceURL is needed — the range attribute on <Initialization>
-                    # stays untouched and the player combines it with the proxied
-                    # <BaseURL> automatically.
-                    base_url_child.text = self.build_proxy_url(
-                        resolved_cdn_url, None, None,
-                        current_encrypted, current_kid,
-                        representation_id=current_rep_id,
-                    )
-
-                    # Update base_url for any further descendants.
-                    base_url = resolved_cdn_url
 
         # ------------------------------------------------------------------
         # Standard SegmentTemplate / SegmentList attribute rewriting.
@@ -931,6 +910,14 @@ class MPDRewriter:
                 path, pattern, "media", current_encrypted, current_kid,
                 representation_id=current_rep_id
             )
+
+        # Handle any other URL-like attributes that might contain segment URLs
+        # This catches things like SegmentTemplate@index, etc.
+        url_attrs = ["index", "range", "indexRange"]
+        for attr in url_attrs:
+            if attr in element.attrib and element.attrib[attr] and not attr == "range" and not attr == "indexRange":
+                # These are usually just range values, not URLs, so skip
+                continue
 
         # Recurse to children (but skip if we already handled Period children)
         for child in element:
