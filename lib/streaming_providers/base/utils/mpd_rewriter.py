@@ -126,7 +126,7 @@ class MPDRewriter:
             if self.highest_quality_video_only and representation_id and "$RepresentationID$" in template_pattern:
                 template_pattern = template_pattern.replace("$RepresentationID$", representation_id)
 
-            proxy_url += f"/{quote(template_pattern, safe='.-_$')}"
+            proxy_url += f"/{quote(template_pattern, safe='.-_$%')}"
 
         return proxy_url
 
@@ -585,7 +585,6 @@ class MPDRewriter:
             if raw_url:
                 # Resolve the relative BaseURL against the current base
                 resolved_cdn_url = self._urljoin_preserve_query(base_url, raw_url)
-                logger.debug(f"Rewriting BaseURL: {raw_url} -> {resolved_cdn_url}")
 
                 # Rewrite the BaseURL text to a proxy URL
                 # In receiver-side clearkey mode, this will use /api/proxy/
@@ -594,7 +593,6 @@ class MPDRewriter:
                     current_encrypted, current_kid,
                     representation_id=current_rep_id
                 )
-                logger.debug(f"Proxied BaseURL: {element.text}")
 
         # ------------------------------------------------------------------
         # Standard SegmentTemplate / SegmentList attribute rewriting.
