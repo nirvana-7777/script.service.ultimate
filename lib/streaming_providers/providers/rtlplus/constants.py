@@ -183,6 +183,18 @@ class RTLPlusHeaders:
         }
 
     @staticmethod
+    def get_event_manifest_headers(access_token: str, user_agent: str = None) -> dict:
+        """Get headers for the event manifest endpoint (stus.player.streamingtech.de/liveevent).
+        Uses X-Auth-Token scheme as required by this endpoint."""
+        return {
+            "X-Auth-Token": access_token,
+            "Content-Type": "application/json",
+            "Origin": RTLPlusDefaults.BASE_WEBSITE.rstrip("/"),
+            "Referer": RTLPlusDefaults.BASE_WEBSITE,
+            "User-Agent": user_agent or RTLPlusDefaults.USER_AGENT,
+        }
+
+    @staticmethod
     def get_playready_drm_headers(access_token: str, device_id: str = None) -> dict:
         """Get headers for PlayReady DRM license acquisition (SOAP/XML)"""
         return {
@@ -269,6 +281,13 @@ class RTLPlusConfig:
         return RTLPlusHeaders.get_drm_headers(
             access_token=access_token,
             device_id=self.device_id,
+            user_agent=self.user_agent,
+        )
+
+    def get_event_manifest_headers(self, access_token: str) -> dict:
+        """Get event manifest headers with this config's settings."""
+        return RTLPlusHeaders.get_event_manifest_headers(
+            access_token=access_token,
             user_agent=self.user_agent,
         )
 

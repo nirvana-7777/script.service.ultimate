@@ -99,6 +99,10 @@ class RTLPlusProvider(StreamingProvider):
         bearer_token = self.authenticator.get_bearer_token(force_upgrade=True)
         return self.rtl_config.get_api_headers(access_token=bearer_token)
 
+    def _get_event_manifest_headers(self) -> Dict[str, str]:
+        access_token = self.authenticator.get_bearer_token()
+        return self.rtl_config.get_event_manifest_headers(access_token=access_token)
+
     def get_channels(self, **kwargs) -> List[StreamingChannel]:
         """
         Fetch channels from RTL+ GraphQL API with authentication
@@ -337,8 +341,7 @@ class RTLPlusProvider(StreamingProvider):
             logger.debug(f"RTL+ Manifest Request: GET {manifest_url}")
 
             if ":live-events:" in content_id:
-                access_token = self.authenticator.get_bearer_token()
-                headers = self.rtl_config.get_api_headers(access_token=access_token)
+                headers = self._get_event_manifest_headers()
             else:
                 headers = self.rtl_config.get_base_headers()
 
