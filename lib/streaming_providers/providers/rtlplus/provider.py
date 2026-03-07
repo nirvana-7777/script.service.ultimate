@@ -336,7 +336,12 @@ class RTLPlusProvider(StreamingProvider):
         try:
             logger.debug(f"RTL+ Manifest Request: GET {manifest_url}")
 
-            headers = self.rtl_config.get_base_headers()
+            if ":live-events:" in content_id:
+                access_token = self.authenticator.get_bearer_token()
+                headers = self.rtl_config.get_api_headers(access_token=access_token)
+            else:
+                headers = self.rtl_config.get_base_headers()
+
             response = self.http_manager.get(manifest_url, operation="manifest", headers=headers)
 
             logger.debug(f"RTL+ Manifest Response: Status={response.status_code}")
