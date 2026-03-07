@@ -1,7 +1,7 @@
 # lib/streaming_providers/providers/rtlplus/provider.py
 import json
 import datetime
-from typing import ClassVar, Dict, List, Optional
+from typing import ClassVar, Dict, List, Optional, Any
 
 import requests
 
@@ -11,6 +11,7 @@ from ...base.provider import StreamingProvider
 from ...base.utils import logger
 from .auth import RTLPlusAuthenticator
 from .constants import RTLPlusConfig, RTLPlusDefaults
+from .models import RTLPlusLiveEvent
 
 
 class RTLPlusProvider(StreamingProvider):
@@ -164,7 +165,78 @@ class RTLPlusProvider(StreamingProvider):
             end_time: Optional[datetime] = None,
             **kwargs,
     ) -> List[Event]:
-        return []
+        """
+        Fetch upcoming / live RTL+ events from the editorial GraphQL endpoint.
+
+        Filters by start_time / end_time if provided (both timezone-aware).
+        """
+        raw_events = self._fetch_live_events()
+        events: List[Event] = []
+
+        for raw in raw_events:
+            try:
+                event = raw.to_event(provider=self.provider_name)
+            except Exception as e:
+                logger.warning(f"RTL+: Could not convert event '{raw.id}': {e}")
+                continue
+
+            # Optional time-window filtering (delegate to caller semantics)
+            if start_time and event.end_time and event.end_time < start_time:
+                continue
+            if end_time and event.start_time and event.start_time > end_time:
+                continue
+
+            events.append(event)
+
+        logger.info(f"RTL+: Fetched {len(events)} events")
+        return events
+
+    def _fetch_live_events(self) -> List[RTLPlusLiveEvent]:
+        access_token = self.authenticator.get_bearer_token()
+        headers = self.rtl_config.get_events_headers(access_token=access_token)
+
+        try:
+            response = self.http_manager.get(
+                self.rtl_config.graphql_endpoint,
+                params=RTLPlusDefaults.EVENTS_QUERY_PARAMS,
+                headers=headers,
+                operation="api",
+            )
+            response.raise_for_status()
+        except Exception as e:
+            logger.error(f"RTL+: Failed to fetch events: {e}")
+            return []
+
+        return self._parse_live_events(response.json())
+
+    @staticmethod
+    def _parse_live_events(data: Dict[str, Any]) -> List[RTLPlusLiveEvent]:
+        """
+        Extract LiveEvent nodes from the GraphQL response.
+        Static so it's unit-testable without provider state.
+        """
+        events: List[RTLPlusLiveEvent] = []
+        widgets = (
+            data.get("data", {})
+            .get("editorialView", {})
+            .get("widgets", {})
+            .get("items", [])
+        )
+
+        for widget in widgets:
+            if widget.get("__typename") != "LiveEventWidget":
+                continue
+            for element in widget.get("elements", []):
+                if element is None:
+                    continue
+                if element.get("__typename") != "LiveEvent":
+                    continue  # skip ExternalTeaser etc.
+                try:
+                    events.append(RTLPlusLiveEvent.from_api_node(element))
+                except Exception as e:
+                    logger.warning(f"RTL+: Skipping malformed event node: {e}")
+
+        return events
 
     def _parse_station_to_channel(self, station: Dict) -> Optional[StreamingChannel]:
         """

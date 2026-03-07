@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional
 
 from ...base.auth.base_auth import BaseAuthToken
 from ...base.auth.credentials import ClientCredentials, UserPasswordCredentials
+from ...base.models import Event, ContentType
 from .constants import RTLPlusDefaults
 
 
@@ -178,6 +179,73 @@ class RTLPlusChannel:
             "sort_order": self.sort_order,
         }
 
+@dataclass
+class RTLPlusLiveEvent:
+    """
+    RTL+ API representation of a live event before conversion to the
+    domain Event model.  Keeps parsing logic isolated from the domain layer.
+    """
+    id: str
+    title: str
+    stream_start: str          # ISO string from API
+    stream_end: str            # ISO string from API
+    location: Optional[str]
+    event_category: str
+    event_sub_category: str
+    description: Optional[str]
+    short_description: Optional[str]
+    logo_url: Optional[str]
+    required_permission: str
+    watch_path: str
+
+    @classmethod
+    def from_api_node(cls, node: Dict[str, Any]) -> "RTLPlusLiveEvent":
+        """Parse a single LiveEvent GraphQL node."""
+        return cls(
+            id=node["id"],
+            title=node["title"],
+            stream_start=node["streamStart"],
+            stream_end=node["streamEnd"],
+            location=node.get("location"),
+            event_category=node.get("eventCategory", "GENERIC"),
+            event_sub_category=node.get("eventSubCategory", ""),
+            description=node.get("description"),
+            short_description=node.get("shortDescription"),
+            logo_url=(
+                node.get("liveImages", {})
+                    .get("artworkLandscape", {})
+                    .get("url")
+            ),
+            required_permission=node.get(
+                "requiredPermission", RTLPlusDefaults.PERMISSION_PAY_TV
+            ),
+            watch_path=node.get("urlData", {}).get("watchPath", ""),
+        )
+
+    def to_event(self, provider: str = "rtlplus") -> "Event":
+        """Convert to the domain Event model."""
+        from dateutil.parser import isoparse   # already likely a dep; fallback below
+
+        start = isoparse(self.stream_start)
+        end   = isoparse(self.stream_end)
+
+        # Derive a stable content_id from the RRN  (last segment after last colon)
+        content_id = self.id.split(":")[-1]
+
+        return Event(
+            name=self.title,
+            content_id=content_id,
+            provider=provider,
+            start_time=start,
+            end_time=end,
+            logo_url=self.logo_url,
+            description=self.description,
+            genre=self.event_sub_category,
+            content_type=ContentType.LIVE,   # always live for RTL+ events
+            language="de",
+            country="DE",
+            venue=self.location,
+        )
 
 @dataclass
 class RTLPlusStreamInfo:

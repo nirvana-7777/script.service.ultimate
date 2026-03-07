@@ -47,12 +47,30 @@ class RTLPlusDefaults:
     # HTTP settings
     DEFAULT_TIMEOUT = 30
 
-    # GraphQL query parameters
+    # GraphQL query parameters — live TV channels
     CHANNELS_QUERY_PARAMS = {
         "operationName": "LiveTvStations",
         "variables": '{"epgCount":4,"filter":{"channelTypes":["BROADCAST","FAST"]}}',
         "extensions": '{"persistedQuery":{"version":1,"sha256Hash":"845cf56a2a78110a0f978c1a2af2bc7f9a1c937d0f324ffaf852a9a4414c8485"}}',
     }
+
+    # GraphQL query parameters — editorial home view (contains LiveEventWidget nodes)
+    EVENTS_QUERY_PARAMS = {
+        "operationName": "ExploreWidgetWatch",
+        "variables": '{"area":"home","offset":0,"take":15}',
+        "extensions": '{"persistedQuery":{"version":1,"sha256Hash":"724f21ab86aa3f8c57673a3b346cf119f6a155bf82bb0201fd3b18e28e44f1ed"}}',
+    }
+
+    # Custom header carrying the signed profile JWT (required by the events endpoint)
+    PROFILE_HEADER = "Rtlplus-Profile"
+
+    # requiredPermission values returned by the events API
+    PERMISSION_FREE_TV = "liveeventAccessToFreeTv"
+    PERMISSION_PAY_TV = "liveeventAccessToPayTv"
+
+    # GraphQL __typename values used during response parsing
+    TYPENAME_LIVE_EVENT_WIDGET = "LiveEventWidget"
+    TYPENAME_LIVE_EVENT = "LiveEvent"
 
 
 class RTLPlusHeaders:
@@ -107,6 +125,45 @@ class RTLPlusHeaders:
 
         if device_id:
             headers["X-Device-Id"] = device_id
+
+        return headers
+
+    @staticmethod
+    def get_events_headers(
+        access_token: str,
+        profile_token: str = None,
+        device_id: str = None,
+        client_version: str = None,
+        user_agent: str = None,
+    ) -> dict:
+        """
+        Get headers for the editorial GraphQL endpoint (events / ExploreWidgetWatch).
+
+        Extends the standard API headers with the optional ``Rtlplus-Profile``
+        JWT that the browser sends when a user profile is active.  The header
+        is omitted when *profile_token* is ``None`` so that anonymous / client-
+        credential sessions work without modification.
+
+        Args:
+            access_token:   Bearer token from the auth endpoint.
+            profile_token:  Signed profile JWT (``Rtlplus-Profile`` header).
+                            Pass ``None`` for anonymous / client-credential sessions.
+            device_id:      Device UUID forwarded as ``X-Device-Id``.
+            client_version: Client version string; falls back to the default.
+            user_agent:     UA string; falls back to the default.
+
+        Returns:
+            dict of HTTP headers ready for use with the GraphQL endpoint.
+        """
+        headers = RTLPlusHeaders.get_api_headers(
+            access_token=access_token,
+            device_id=device_id,
+            client_version=client_version,
+            user_agent=user_agent,
+        )
+
+        if profile_token:
+            headers[RTLPlusDefaults.PROFILE_HEADER] = profile_token
 
         return headers
 
@@ -178,6 +235,25 @@ class RTLPlusConfig:
         """Get API headers with this config's settings"""
         return RTLPlusHeaders.get_api_headers(
             access_token=access_token,
+            device_id=self.device_id,
+            client_version=self.client_version,
+            user_agent=self.user_agent,
+        )
+
+    def get_events_headers(self, access_token: str, profile_token: str = None) -> dict:
+        """
+        Get headers for the editorial GraphQL endpoint with this config's settings.
+
+        Args:
+            access_token:  Bearer token from the auth endpoint.
+            profile_token: Optional signed profile JWT (``Rtlplus-Profile``).
+
+        Returns:
+            dict of HTTP headers.
+        """
+        return RTLPlusHeaders.get_events_headers(
+            access_token=access_token,
+            profile_token=profile_token,
             device_id=self.device_id,
             client_version=self.client_version,
             user_agent=self.user_agent,
