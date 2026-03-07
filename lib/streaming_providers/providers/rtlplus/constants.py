@@ -37,6 +37,9 @@ class RTLPlusDefaults:
     MANIFEST_ENDPOINT = (
         "https://stus.player.streamingtech.de/livestream/linear/{channel_id}?platform=web"
     )
+    EVENT_MANIFEST_ENDPOINT = (
+        "https://stus.player.streamingtech.de/liveevent/{content_id}?platform=web"
+    )
     BASE_WEBSITE = "https://plus.rtl.de/"
     CONFIG_ENDPOINT = "https://plus.rtl.de/assets/config/config.json"
 
@@ -213,15 +216,17 @@ class RTLPlusConfig:
         self.auth_endpoint = config.get("auth_endpoint", RTLPlusDefaults.AUTH_ENDPOINT)
         self.graphql_endpoint = config.get("graphql_endpoint", RTLPlusDefaults.GRAPHQL_ENDPOINT)
         self.manifest_endpoint = config.get("manifest_endpoint", RTLPlusDefaults.MANIFEST_ENDPOINT)
+        self.event_manifest_endpoint = config.get("event_manifest_endpoint", RTLPlusDefaults.EVENT_MANIFEST_ENDPOINT)
         self.base_website = config.get("base_website", RTLPlusDefaults.BASE_WEBSITE)
         self.config_endpoint = config.get("config_endpoint", RTLPlusDefaults.CONFIG_ENDPOINT)
 
         # HTTP settings
         self.timeout = config.get("timeout", RTLPlusDefaults.DEFAULT_TIMEOUT)
 
-    def get_manifest_url(self, channel_id: str) -> str:
-        """Get manifest URL for a specific channel"""
-        return self.manifest_endpoint.format(channel_id=channel_id)
+    def get_manifest_url(self, content_id: str) -> str:
+        if "live-events" in content_id:
+            return self.event_manifest_endpoint.format(content_id=content_id)
+        return self.manifest_endpoint.format(channel_id=content_id)
 
     def get_base_headers(self) -> dict:
         """Get base headers with this config's user agent"""

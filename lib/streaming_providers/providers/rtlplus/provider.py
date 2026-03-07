@@ -348,7 +348,7 @@ class RTLPlusProvider(StreamingProvider):
             logger.debug(f"RTL+ Manifest Data: {self._sanitize_manifest_log(manifest_data)}")
 
             # Process manifest data
-            quality_preference = ["dashhd", "dashsd"]
+            quality_preference = ["dashhd", "dashfree", "dashsd"]
 
             for quality in quality_preference:
                 for stream in manifest_data:

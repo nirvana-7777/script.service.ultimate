@@ -229,12 +229,9 @@ class RTLPlusLiveEvent:
         start = isoparse(self.stream_start)
         end   = isoparse(self.stream_end)
 
-        # Derive a stable content_id from the RRN  (last segment after last colon)
-        content_id = self.id.split(":")[-1]
-
         return Event(
             name=self.title,
-            content_id=content_id,
+            content_id=self.id,
             provider=provider,
             start_time=start,
             end_time=end,
