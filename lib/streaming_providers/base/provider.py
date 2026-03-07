@@ -187,31 +187,14 @@ class StreamingProvider(ABC):
         return self.get_static_auth_types()
 
     @property
-    @abstractmethod
     def uses_dynamic_manifests(self) -> bool:
         """Return True if provider uses truly dynamic manifests"""
-        pass
+        return False
 
-    @property
-    @abstractmethod
-    def implements_epg(self) -> bool:
-        """
-        Indicates whether this provider has its own EPG implementation.
-        If False, the generic EPG manager will be used.
-
-        Override in subclass and return True if provider has native EPG.
-
-        Returns:
-            True if provider implements its own EPG, False to use generic EPG
-        """
-        pass
-
-    @abstractmethod
     def get_channels(self, **kwargs) -> List[StreamingChannel]:
         """Fetch channels from the provider"""
-        pass
+        return []
 
-    @abstractmethod
     def get_events(
         self,
         start_time: Optional[datetime] = None,
@@ -232,7 +215,6 @@ class StreamingProvider(ABC):
         """
         return []
 
-    @abstractmethod
     def get_drm(self, content_id: str, **kwargs) -> List[DRMConfig]:
         """Get all DRM configurations for a channel by ID"""
         return []
@@ -1126,12 +1108,6 @@ class StreamingProvider(ABC):
         return requirements
 
     # ===== AUTHENTICATION PROPERTIES AND METHODS =====
-
-    @property
-    @abstractmethod
-    def supported_auth_types(self) -> List[str]:
-        """List of authentication types this provider supports."""
-        pass
 
     @property
     def preferred_auth_type(self) -> str:
