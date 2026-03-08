@@ -12,7 +12,7 @@ class RTLPlusDefaults:
     # Client and version information
     CLIENT_VERSION = "2025.6.26.0"
     CHROME_VERSION = "121.0.0.0"
-    CLIENT_ID = "rci:rtlplus:web"
+    CLIENT_ID = "rtlplus-web"
 
     # Device information
     DEVICE_ID = "8c3f37cc-13a3-4141-bd0f-e4b3673fe5e4"

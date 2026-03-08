@@ -64,7 +64,7 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
 
     @property
     def oauth_scope(self) -> str:
-        return "openid email"
+        return "openid email profile"
 
     @property
     def oauth_redirect_uri(self) -> str:
@@ -186,12 +186,16 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
         RTL+ specific OAuth2 authorization code flow with PKCE
         Uses base class generic form login
         """
+        import uuid
         return self._perform_generic_form_login(
             username=username,
             password=password,
             form_selector_pattern=r'<form id="rtlplus-form-login" action="([^"]*)"',
             login_fields={"username": "username", "password": "password"},
-            extra_params={"prompt": "login"},
+            extra_params={
+                "prompt": "login",
+                "nonce": str(uuid.uuid4()),
+            },
             additional_form_data={"credentialId": "", "rememberMe": "on"},
         )
 
