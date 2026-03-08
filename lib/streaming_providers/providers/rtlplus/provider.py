@@ -293,47 +293,6 @@ class RTLPlusProvider(StreamingProvider):
             logger.warning(f"Error parsing station {station}: {e}")
             return None
 
-    def enrich_channel_data(
-        self, channel: StreamingChannel, **kwargs
-    ) -> Optional[StreamingChannel]:
-        """
-        Enrich channel with manifest URL and additional data
-        """
-        try:
-            # Fetch manifest URL for this channel
-            manifest_url = self.get_manifest(channel.channel_id, **kwargs)
-
-            if manifest_url:
-                # Set the manifest URL - RTL+ provides relatively stable URLs
-                channel.set_static_manifest(manifest_url)
-
-                # Check if this channel has DRM
-                drm_configs = self.get_drm(channel.channel_id, **kwargs)
-                if drm_configs:
-                    # Set DRM configuration
-                    channel.use_cdm = True
-                    channel.cdm_type = "widevine"  # Default to Widevine
-
-                    # Set license URL from first Widevine config
-                    for config in drm_configs:
-                        if config.system == DRMSystem.WIDEVINE:
-                            channel.license_url = config.license.server_url
-                            break
-                else:
-                    channel.use_cdm = False
-                    channel.cdm_type = None
-
-                return channel
-            else:
-                logger.warning(
-                    f"Could not fetch manifest for channel {channel.name} ({channel.channel_id})"
-                )
-                return channel
-
-        except Exception as e:
-            logger.error(f"Error enriching channel data for {channel.name}: {e}")
-            return channel
-
     def get_manifest(self, content_id: str, **kwargs) -> Optional[str]:
         manifest_url = self.rtl_config.get_manifest_url(content_id)
 
@@ -419,10 +378,14 @@ class RTLPlusProvider(StreamingProvider):
         Get DRM configurations for a channel from RTL+ streaming API
         """
         try:
-            # Fetch manifest data to get license information
             manifest_url = self.rtl_config.get_manifest_url(content_id)
 
-            response = self.http_manager.get(manifest_url, operation="manifest")
+            if ":live-events:" in content_id:
+                headers = self._get_event_manifest_headers()
+            else:
+                headers = self.rtl_config.get_base_headers()
+
+            response = self.http_manager.get(manifest_url, operation="manifest", headers=headers)
             response.raise_for_status()
             manifest_data = response.json()
 
