@@ -420,7 +420,7 @@ class RTLPlusProvider(StreamingProvider):
                             drm_configs.append(
                                 create_drm_config(
                                     DRMSystem.WIDEVINE,
-                                    1,
+                                    2,
                                     license_url,
                                     self.rtl_config.get_drm_headers(access_token),
                                 )
@@ -429,7 +429,7 @@ class RTLPlusProvider(StreamingProvider):
                             drm_configs.append(
                                 create_drm_config(
                                     DRMSystem.PLAYREADY,
-                                    2,
+                                    1,
                                     license_url,
                                     self.rtl_config.get_playready_drm_headers(access_token),
                                 )
