@@ -172,14 +172,17 @@ class RTLPlusHeaders:
 
     @staticmethod
     def get_drm_headers(access_token: str, device_id: str = None, user_agent: str = None) -> dict:
-        """Get headers for Widevine/FairPlay DRM license requests"""
         return {
+            "Accept": "*/*",
+            "Accept-Encoding": "gzip, deflate, br, zstd",
+            "Accept-Language": "de-DE,de;q=0.9",
+            "Cache-Control": "no-cache",
+            "Origin": RTLPlusDefaults.BASE_WEBSITE.rstrip("/"),
+            "Referer": RTLPlusDefaults.BASE_WEBSITE,
+            "User-Agent": user_agent or RTLPlusDefaults.USER_AGENT,
             "X-Auth-Token": access_token,
             "X-Device-Id": device_id or RTLPlusDefaults.DEVICE_ID,
             "X-Device-Name": RTLPlusDefaults.DEVICE_NAME,
-            "User-Agent": user_agent or RTLPlusDefaults.USER_AGENT,
-            "Origin": RTLPlusDefaults.BASE_WEBSITE.rstrip("/"),
-            "Referer": RTLPlusDefaults.BASE_WEBSITE,
         }
 
     @staticmethod
