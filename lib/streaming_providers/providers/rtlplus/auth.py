@@ -111,6 +111,20 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
             scope=response_data.get("scope", ""),
         )
 
+    def get_current_token_level(self) -> "TokenAuthLevel":
+        """
+        Return the auth level of whichever token the base class currently holds.
+
+        Walks the common attribute names used by BaseOAuth2Authenticator to
+        store the active token, classifies it via _classify_token, and returns
+        UNKNOWN if no token is found.
+        """
+        for attr in ("token", "_token", "current_token", "_current_token", "_access_token"):
+            tok = getattr(self, attr, None)
+            if tok is not None:
+                return self._classify_token(tok)
+        return TokenAuthLevel.UNKNOWN
+
     def get_fallback_credentials(self):
         """Get fallback credentials (anonymous client credentials)"""
         return self._get_default_credentials()

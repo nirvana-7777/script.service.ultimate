@@ -104,7 +104,28 @@ class RTLPlusVodManager:
         Depth 2, series-genre → Series VodItems for a genre (OverviewPage SERIES)
         Depth 2, topic        → Season list for a Format
         Depth 3               → Episode list for a Season
+
+        Path normalisation
+        ------------------
+        Callers may pass the watch-path either as a single element
+        ("/video-tv/serien") or pre-split without a leading slash
+        (["video-tv", "serien"]).  We reassemble and re-prefix so that all
+        downstream checks see a consistent leading-slash watch-path in [0].
         """
+        # Reassemble paths that were split on "/" without a leading slash,
+        # e.g. ["video-tv", "serien"] → ["/video-tv/serien"]
+        # Leave RRNs ("rrn:…") and already-slash-prefixed paths untouched.
+        if (
+            category_path
+            and not category_path[0].startswith("/")
+            and not category_path[0].startswith("rrn:")
+            and not category_path[0].startswith("season:")
+            and not category_path[0].startswith("movies-genre:")
+            and not category_path[0].startswith("series-genre:")
+        ):
+            # Rejoin all segments as a single watch-path element
+            category_path = ["/" + "/".join(category_path)]
+
         depth = len(category_path)
 
         if depth == 0:
