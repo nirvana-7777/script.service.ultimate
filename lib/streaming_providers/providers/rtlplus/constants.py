@@ -103,9 +103,37 @@ class RTLPlusDefaults:
 
     # ---------------------------------------------------------------------------
     # VOD — root category definition
-    # TopicWorlds is the real browse API — slug "topic-worlds" maps to the root
     # ---------------------------------------------------------------------------
     VOD_ROOT_SLUG = "topic-worlds"
+
+    # Movies root / genre constants
+    VOD_MOVIES_ROOT_WATCH_PATH  = "/video-tv/filme"
+    VOD_MOVIES_GENRE_WATCH_PATH = "/video-tv/filme/genre"
+    VOD_MOVIES_ROOT_ID          = "movies-genre:/video-tv/filme"
+    VOD_MOVIES_GENRE_PREFIX     = "movies-genre:"
+
+    VOD_MOVIE_GENRE_SLUGS = [
+        "action", "abenteuer", "animation", "comedy", "dokumentation",
+        "drama", "fantasy", "horror", "kinder", "krimi",
+        "liebesfilm", "science-fiction", "thriller",
+    ]
+
+    # Series root / genre constants
+    VOD_SERIES_ROOT_WATCH_PATH  = "/video-tv/serien"
+    VOD_SERIES_GENRE_WATCH_PATH = "/video-tv/serien/genre"
+    VOD_SERIES_ROOT_ID          = "series-genre:/video-tv/serien"
+    VOD_SERIES_GENRE_PREFIX     = "series-genre:"
+
+    VOD_SERIES_GENRE_SLUGS = [
+        "action", "animation", "comedy", "crime", "dokumentation",
+        "drama", "fantasy", "horror", "kinder", "reality",
+        "romance", "science-fiction", "thriller",
+    ]
+
+    # OverviewPage elementType values and pagination
+    VOD_ELEMENT_TYPE_MOVIE  = "MOVIE"
+    VOD_ELEMENT_TYPE_SERIES = "SERIES"
+    VOD_OVERVIEW_PAGE_LIMIT = 48
 
     # ---------------------------------------------------------------------------
     # VOD — persisted-query hashes (captured from browser network traffic)
@@ -125,6 +153,12 @@ class RTLPlusDefaults:
 
     # WatchPlayerConfigV3 — stream + DRM config; variables: { platform, id }
     VOD_HASH_WATCH_PLAYER  = "fea0311fb572b6fded60c5a1a9d652f97f55d182bc4cedbdad676354a8d2797c"
+
+    # SeoUrlData — resolve watch-path to hierarchy; variables: { watchPath }
+    VOD_HASH_SEO_URL_DATA  = "fcc4a812d6b93496f00c3068234db7722f553032bb760e09e5e6c74586c86f8d"
+
+    # OverviewPage — paginated grid for MOVIE or SERIES; variables: { pagination, filter }
+    VOD_HASH_OVERVIEW_PAGE = "28aad4e992bb63330bfcd40a6906af3119d8a2612fa9fd28dae9c19127e247ca"
 
 
 class RTLPlusHeaders:
@@ -442,5 +476,46 @@ class RTLPlusConfig:
             "extensions": (
                 '{"persistedQuery":{"version":1,"sha256Hash":'
                 f'"{RTLPlusDefaults.VOD_HASH_WATCH_PLAYER}"}}}}'
+            ),
+        }
+
+    @staticmethod
+    def get_vod_seo_url_data_params(watch_path: str) -> dict:
+        """SeoUrlData — resolve a watch-path to its hierarchy. variables: { watchPath }"""
+        return {
+            "operationName": "SeoUrlData",
+            "variables": f'{{"watchPath":"{watch_path}"}}',
+            "extensions": (
+                '{"persistedQuery":{"version":1,"sha256Hash":' +
+                f'"{RTLPlusDefaults.VOD_HASH_SEO_URL_DATA}"}}}}'
+            ),
+        }
+
+    @staticmethod
+    def get_vod_overview_page_params(
+        element_type: str,
+        genres: list = None,
+        offset: int = 0,
+        limit: int = None,
+    ) -> dict:
+        """OverviewPage — paginated grid for MOVIE or SERIES with optional genre filter."""
+        if limit is None:
+            limit = RTLPlusDefaults.VOD_OVERVIEW_PAGE_LIMIT
+
+        filter_parts = [f'"elementType":"{element_type}"']
+        if genres:
+            genres_json = "[" + ",".join(f'"{g}"' for g in genres) + "]"
+            filter_parts.append(f'"genres":{genres_json}')
+
+        variables = (
+            f'{{"pagination":{{"offset":{offset},"limit":{limit}}},' +
+            f'"filter":{{{",".join(filter_parts)}}}}}'
+        )
+        return {
+            "operationName": "OverviewPage",
+            "variables": variables,
+            "extensions": (
+                '{"persistedQuery":{"version":1,"sha256Hash":' +
+                f'"{RTLPlusDefaults.VOD_HASH_OVERVIEW_PAGE}"}}}}'
             ),
         }
