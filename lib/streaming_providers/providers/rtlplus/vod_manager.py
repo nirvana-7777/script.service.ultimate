@@ -110,16 +110,16 @@ class RTLPlusVodManager:
         if depth == 0:
             return self._list_root()
 
-        # Movies branch
+        # Movies branch — watch-path based IDs
         if category_path[0].startswith(RTLPlusDefaults.VOD_MOVIES_ROOT_WATCH_PATH):
             return self._dispatch_movies(category_path)
 
-        # Series branch
+        # Series branch — watch-path based IDs
         if category_path[0].startswith(RTLPlusDefaults.VOD_SERIES_ROOT_WATCH_PATH):
             return self._dispatch_series(category_path)
 
-        # TopicWorlds branch
-        if depth == 1:
+        # TopicWorlds branch — server RRNs only (rrn:multipurpose:...)
+        if depth == 1 and category_path[0].startswith("rrn:"):
             return self._list_formats_for_topic(category_path[0])
 
         if depth == 2:
