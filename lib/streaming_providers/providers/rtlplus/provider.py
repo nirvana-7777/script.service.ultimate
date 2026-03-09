@@ -12,6 +12,7 @@ from ...base.utils import logger
 from .auth import RTLPlusAuthenticator
 from .constants import RTLPlusConfig, RTLPlusDefaults
 from .models import RTLPlusLiveEvent
+from .vod_manager import RTLPlusVodManager
 
 
 class RTLPlusProvider(StreamingProvider):
@@ -61,6 +62,8 @@ class RTLPlusProvider(StreamingProvider):
         except Exception as e:
             logger.warning(f"RTL+ could not authenticate during initialization: {e}")
             self.bearer_token = None
+
+        self._vod_manager = RTLPlusVodManager(self)
 
     @property
     def provider_name(self) -> str:
@@ -242,6 +245,10 @@ class RTLPlusProvider(StreamingProvider):
 
         return events
 
+    def get_vod_category(self, category_path, **kwargs):
+        """Delegate VOD browsing to RTLPlusVodManager."""
+        return self._vod_manager.get_vod_category(category_path, **kwargs)
+
     def _parse_station_to_channel(self, station: Dict) -> Optional[StreamingChannel]:
         """
         Parse a station object from RTL+ API to StreamingChannel
@@ -292,6 +299,16 @@ class RTLPlusProvider(StreamingProvider):
         except Exception as e:
             logger.warning(f"Error parsing station {station}: {e}")
             return None
+
+    @staticmethod
+    def _is_vod_rrn(content_id: str) -> bool:
+        """True for episode / movie / clip RRNs from the videohub namespace."""
+        return (
+                content_id.startswith("rrn:watch:videohub:episode:")
+                or content_id.startswith("rrn:watch:videohub:movie:")
+                or content_id.startswith("rrn:watch:videohub:clip:")
+        )
+
 
     def get_manifest(self, content_id: str, **kwargs) -> Optional[str]:
         manifest_url = self.rtl_config.get_manifest_url(content_id)

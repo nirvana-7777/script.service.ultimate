@@ -34,7 +34,7 @@ class RTLPlusDefaults:
     PLATFORM_ANDROID = "android"
     PLATFORM_IOS = "ios"
     PLATFORM_SMART_TV = "smarttv"
-    PLATFORM_DEFAULT = PLATFORM_ANDROID
+    PLATFORM_DEFAULT = PLATFORM_WEB
 
     # API endpoints
     AUTH_BASE_URL = "https://auth.rtl.de/auth/realms/rtlplus/protocol/openid-connect"
@@ -46,6 +46,9 @@ class RTLPlusDefaults:
     )
     EVENT_MANIFEST_ENDPOINT = (
         "https://stus.player.streamingtech.de/liveevent/{content_id}?platform={platform}"
+    )
+    VOD_PLAYOUT_ENDPOINT = (
+        "https://stus.player.streamingtech.de/watch-playout-variants/{content_id}?platform={platform}"
     )
     BASE_WEBSITE = "https://plus.rtl.de/"
     CONFIG_ENDPOINT = "https://plus.rtl.de/assets/config/config.json"
@@ -82,6 +85,116 @@ class RTLPlusDefaults:
     TYPENAME_LIVE_EVENT_WIDGET = "LiveEventWidget"
     TYPENAME_LIVE_EVENT = "LiveEvent"
 
+    # ---------------------------------------------------------------------------
+    # VOD — stream config endpoints
+    # ---------------------------------------------------------------------------
+
+    # Preferred stream-variant order for VOD (first match wins)
+    VOD_PREFERRED_VARIANTS = ["dashhd", "dashsd", "hlsfairplayhd", "hlsfairplaysd"]
+
+    # WatchPlayerConfigV3 returns stream URLs + DRM config directly from GraphQL
+    # (replaces the watch-playout-variants REST endpoint for VOD)
+    VOD_PLATFORM_GRAPHQL = "WEB"
+
+    # Wurstland — secondary stream resolver, returns DASH/HLS URLs
+    # GET /config/{rrn}/{platform}
+    VOD_WURSTLAND_CONFIG_URL = "https://wurstland.plus.rtl.de/config/{rrn}/{platform}"
+    VOD_WURSTLAND_PLATFORM   = "WEB"
+
+    # ---------------------------------------------------------------------------
+    # VOD — root category definition
+    # ---------------------------------------------------------------------------
+
+    # TopicWorlds is the series/show browse API — slug "topic-worlds" maps to the root
+    VOD_ROOT_SLUG = "topic-worlds"
+
+    # ---------------------------------------------------------------------------
+    # VOD — persisted-query hashes (captured from browser network traffic)
+    # ---------------------------------------------------------------------------
+
+    # TopicWorlds — browse all genre/topic worlds; variables: { take, offset, filterForSearchGrid }
+    VOD_HASH_TOPIC_WORLDS  = "3dbde4c45532f4bdb0a1d7c210db43f0888f8a82f4aab43f7a90f3c4762d8ff7"
+
+    # Format — full format detail by RRN; variables: { id }
+    VOD_HASH_FORMAT        = "d112638c0184ab5698af7b69532dfe2f12973f7af9cb137b9f70278130b1eafa"
+
+    # MRE (More / Related Episodes) — seasons + episodes for a Format; variables: { id }
+    VOD_HASH_MRE           = "0c77404637570adff548e329a48654498c54ce1c36a459d72586ff18999bebaa"
+
+    # Episode — full episode detail by RRN; variables: { rrn }
+    VOD_HASH_EPISODE       = "87dbde15a0d269b11606f5ff458d555e98eb493bb4fb6ddc150d812d5e9a9cf8"
+
+    # WatchPlayerConfigV3 — stream URL + DRM config; variables: { platform, id }
+    VOD_HASH_WATCH_PLAYER  = "fea0311fb572b6fded60c5a1a9d652f97f55d182bc4cedbdad676354a8d2797c"
+
+    # SeoUrlData — resolve watch-path hierarchy (breadcrumbs + RRI page-type)
+    # Used to enumerate genre slugs under /video-tv/filme/genre/* and
+    # /video-tv/serien/genre/*
+    # variables: { watchPath }
+    VOD_HASH_SEO_URL_DATA  = "fcc4a812d6b93496f00c3068234db7722f553032bb760e09e5e6c74586c86f8d"
+
+    # OverviewPage — paginated grid for both movies AND series, filtered by
+    # elementType ("MOVIE" | "SERIES") and optional genres list.
+    # variables: { pagination: { offset, limit }, filter: { elementType, genres? } }
+    VOD_HASH_OVERVIEW_PAGE = "28aad4e992bb63330bfcd40a6906af3119d8a2612fa9fd28dae9c19127e247ca"
+
+    # OverviewPage elementType values
+    VOD_ELEMENT_TYPE_MOVIE  = "MOVIE"
+    VOD_ELEMENT_TYPE_SERIES = "SERIES"
+
+    # Default page size for OverviewPage pagination
+    VOD_OVERVIEW_PAGE_LIMIT = 48
+
+    # ---------------------------------------------------------------------------
+    # VOD — Movies root / genre constants
+    # ---------------------------------------------------------------------------
+    VOD_MOVIES_ROOT_WATCH_PATH = "/video-tv/filme"
+    VOD_MOVIES_GENRE_WATCH_PATH = "/video-tv/filme/genre"
+    VOD_MOVIES_ROOT_ID = "movies-genre:/video-tv/filme"
+    VOD_MOVIES_GENRE_PREFIX = "movies-genre:"
+
+    # Known movie genre slugs (seed list; validated at runtime via SeoUrlData)
+    VOD_MOVIE_GENRE_SLUGS = [
+        "action",
+        "abenteuer",
+        "animation",
+        "comedy",
+        "dokumentation",
+        "drama",
+        "fantasy",
+        "horror",
+        "kinder",
+        "krimi",
+        "liebesfilm",
+        "science-fiction",
+        "thriller",
+    ]
+
+    # ---------------------------------------------------------------------------
+    # VOD — Series root / genre constants
+    # ---------------------------------------------------------------------------
+    VOD_SERIES_ROOT_WATCH_PATH = "/video-tv/serien"
+    VOD_SERIES_GENRE_WATCH_PATH = "/video-tv/serien/genre"
+    VOD_SERIES_ROOT_ID = "series-genre:/video-tv/serien"
+    VOD_SERIES_GENRE_PREFIX = "series-genre:"
+
+    # Known series genre slugs (seed list; validated at runtime via SeoUrlData)
+    VOD_SERIES_GENRE_SLUGS = [
+        "action",
+        "animation",
+        "comedy",
+        "crime",
+        "dokumentation",
+        "drama",
+        "fantasy",
+        "horror",
+        "kinder",
+        "reality",
+        "romance",
+        "science-fiction",
+        "thriller",
+    ]
+
 
 class RTLPlusHeaders:
     """Standard header configurations for RTL+ requests"""
@@ -92,11 +205,6 @@ class RTLPlusHeaders:
         return {
             "User-Agent": user_agent or RTLPlusDefaults.USER_AGENT,
             "Accept": "application/json",
-            #            'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8',
-            #            'Accept-Encoding': 'gzip, deflate, br',
-            #            'DNT': '1',
-            #            'Connection': 'keep-alive',
-            #           'Upgrade-Insecure-Requests': '1'
         }
 
     @staticmethod
@@ -146,25 +254,6 @@ class RTLPlusHeaders:
         client_version: str = None,
         user_agent: str = None,
     ) -> dict:
-        """
-        Get headers for the editorial GraphQL endpoint (events / ExploreWidgetWatch).
-
-        Extends the standard API headers with the optional ``Rtlplus-Profile``
-        JWT that the browser sends when a user profile is active.  The header
-        is omitted when *profile_token* is ``None`` so that anonymous / client-
-        credential sessions work without modification.
-
-        Args:
-            access_token:   Bearer token from the auth endpoint.
-            profile_token:  Signed profile JWT (``Rtlplus-Profile`` header).
-                            Pass ``None`` for anonymous / client-credential sessions.
-            device_id:      Device UUID forwarded as ``X-Device-Id``.
-            client_version: Client version string; falls back to the default.
-            user_agent:     UA string; falls back to the default.
-
-        Returns:
-            dict of HTTP headers ready for use with the GraphQL endpoint.
-        """
         headers = RTLPlusHeaders.get_api_headers(
             access_token=access_token,
             device_id=device_id,
@@ -194,8 +283,6 @@ class RTLPlusHeaders:
 
     @staticmethod
     def get_event_manifest_headers(access_token: str, user_agent: str = None) -> dict:
-        """Get headers for the event manifest endpoint (stus.player.streamingtech.de/liveevent).
-        Uses X-Auth-Token scheme as required by this endpoint."""
         return {
             "X-Auth-Token": access_token,
             "Content-Type": "application/json",
@@ -240,6 +327,7 @@ class RTLPlusConfig:
         self.graphql_endpoint = config.get("graphql_endpoint", RTLPlusDefaults.GRAPHQL_ENDPOINT)
         self.manifest_endpoint = config.get("manifest_endpoint", RTLPlusDefaults.MANIFEST_ENDPOINT)
         self.event_manifest_endpoint = config.get("event_manifest_endpoint", RTLPlusDefaults.EVENT_MANIFEST_ENDPOINT)
+        self.vod_playout_endpoint = config.get("vod_playout_endpoint", RTLPlusDefaults.VOD_PLAYOUT_ENDPOINT)
         self.base_website = config.get("base_website", RTLPlusDefaults.BASE_WEBSITE)
         self.config_endpoint = config.get("config_endpoint", RTLPlusDefaults.CONFIG_ENDPOINT)
 
@@ -247,6 +335,8 @@ class RTLPlusConfig:
         self.timeout = config.get("timeout", RTLPlusDefaults.DEFAULT_TIMEOUT)
 
     def get_manifest_url(self, content_id: str) -> str:
+        if content_id.startswith("rrn:watch:videohub:"):
+            return self.vod_playout_endpoint.format(rrn=content_id, platform=self.platform)
         if "live-events" in content_id:
             return self.event_manifest_endpoint.format(
                 content_id=content_id, platform=self.platform
@@ -254,15 +344,12 @@ class RTLPlusConfig:
         return self.manifest_endpoint.format(channel_id=content_id, platform=self.platform)
 
     def get_base_headers(self) -> dict:
-        """Get base headers with this config's user agent"""
         return RTLPlusHeaders.get_base_headers(self.user_agent)
 
     def get_auth_headers(self) -> dict:
-        """Get auth headers with this config's settings"""
         return RTLPlusHeaders.get_auth_headers(self.user_agent)
 
     def get_api_headers(self, access_token: str = None) -> dict:
-        """Get API headers with this config's settings"""
         return RTLPlusHeaders.get_api_headers(
             access_token=access_token,
             device_id=self.device_id,
@@ -271,16 +358,6 @@ class RTLPlusConfig:
         )
 
     def get_events_headers(self, access_token: str, profile_token: str = None) -> dict:
-        """
-        Get headers for the editorial GraphQL endpoint with this config's settings.
-
-        Args:
-            access_token:  Bearer token from the auth endpoint.
-            profile_token: Optional signed profile JWT (``Rtlplus-Profile``).
-
-        Returns:
-            dict of HTTP headers.
-        """
         return RTLPlusHeaders.get_events_headers(
             access_token=access_token,
             profile_token=profile_token,
@@ -290,7 +367,6 @@ class RTLPlusConfig:
         )
 
     def get_drm_headers(self, access_token: str) -> dict:
-        """Get DRM headers with this config's settings"""
         return RTLPlusHeaders.get_drm_headers(
             access_token=access_token,
             device_id=self.device_id,
@@ -298,15 +374,150 @@ class RTLPlusConfig:
         )
 
     def get_event_manifest_headers(self, access_token: str) -> dict:
-        """Get event manifest headers with this config's settings."""
         return RTLPlusHeaders.get_event_manifest_headers(
             access_token=access_token,
             user_agent=self.user_agent,
         )
 
     def get_playready_drm_headers(self, access_token: str) -> dict:
-        """Get PlayReady-specific DRM headers (Edge UA, SOAP content-type)"""
         return RTLPlusHeaders.get_playready_drm_headers(
             access_token=access_token,
             device_id=self.device_id,
         )
+
+    # ---------------------------------------------------------------------------
+    # VOD helpers
+    # ---------------------------------------------------------------------------
+
+    @staticmethod
+    def get_vod_wurstland_url(rrn: str) -> str:
+        """Return the Wurstland config URL for a VOD RRN."""
+        return RTLPlusDefaults.VOD_WURSTLAND_CONFIG_URL.format(
+            rrn=rrn, platform=RTLPlusDefaults.VOD_WURSTLAND_PLATFORM
+        )
+
+    @staticmethod
+    def get_vod_topic_worlds_params(take: int = 100, offset: int = 0) -> dict:
+        return {
+            "operationName": "TopicWorlds",
+            "variables": f'{{"take":{take},"offset":{offset},"filterForSearchGrid":true}}',
+            "extensions": (
+                '{"persistedQuery":{"version":1,"sha256Hash":'
+                f'"{RTLPlusDefaults.VOD_HASH_TOPIC_WORLDS}"}}'
+            ),
+        }
+
+    @staticmethod
+    def get_vod_format_params(format_rrn: str) -> dict:
+        return {
+            "operationName": "Format",
+            "variables": f'{{"id":"{format_rrn}"}}',
+            "extensions": (
+                '{"persistedQuery":{"version":1,"sha256Hash":'
+                f'"{RTLPlusDefaults.VOD_HASH_FORMAT}"}}'
+            ),
+        }
+
+    @staticmethod
+    def get_vod_mre_params(format_rrn: str) -> dict:
+        return {
+            "operationName": "MRE",
+            "variables": f'{{"id":"{format_rrn}"}}',
+            "extensions": (
+                '{"persistedQuery":{"version":1,"sha256Hash":'
+                f'"{RTLPlusDefaults.VOD_HASH_MRE}"}}'
+            ),
+        }
+
+    @staticmethod
+    def get_vod_episode_params(episode_rrn: str) -> dict:
+        return {
+            "operationName": "Episode",
+            "variables": f'{{"rrn":"{episode_rrn}"}}',
+            "extensions": (
+                '{"persistedQuery":{"version":1,"sha256Hash":'
+                f'"{RTLPlusDefaults.VOD_HASH_EPISODE}"}}'
+            ),
+        }
+
+    @staticmethod
+    def get_vod_watch_player_params(rrn: str) -> dict:
+        """WatchPlayerConfigV3 — stream URL + DRM config for an episode or movie."""
+        return {
+            "operationName": "WatchPlayerConfigV3",
+            "variables": (
+                f'{{"platform":"{RTLPlusDefaults.VOD_PLATFORM_GRAPHQL}",'
+                f'"id":"{rrn}"}}'
+            ),
+            "extensions": (
+                '{"persistedQuery":{"version":1,"sha256Hash":'
+                f'"{RTLPlusDefaults.VOD_HASH_WATCH_PLAYER}"}}'
+            ),
+        }
+
+    @staticmethod
+    def get_vod_seo_url_data_params(watch_path: str) -> dict:
+        """
+        SeoUrlData — resolve a watch-path to its hierarchy + RRI page-type.
+
+        Works for any watch-path:
+            /video-tv/filme
+            /video-tv/filme/genre/action
+            /video-tv/serien
+            /video-tv/serien/genre/drama
+
+        variables: { watchPath }
+        """
+        return {
+            "operationName": "SeoUrlData",
+            "variables": f'{{"watchPath":"{watch_path}"}}',
+            "extensions": (
+                '{"persistedQuery":{"version":1,"sha256Hash":'
+                f'"{RTLPlusDefaults.VOD_HASH_SEO_URL_DATA}"}}'
+            ),
+        }
+
+    @staticmethod
+    def get_vod_overview_page_params(
+        element_type: str,
+        genres: list = None,
+        offset: int = 0,
+        limit: int = None,
+    ) -> dict:
+        """
+        OverviewPage — paginated grid for movies or series with optional genre filter.
+
+        This single query covers both the MovieGrid and SeriesGrid use-cases:
+            element_type = RTLPlusDefaults.VOD_ELEMENT_TYPE_MOVIE   → movies
+            element_type = RTLPlusDefaults.VOD_ELEMENT_TYPE_SERIES  → series
+
+        Args:
+            element_type: "MOVIE" or "SERIES"
+            genres:       Optional list of genre slug strings, e.g. ["drama"].
+                          Pass None / [] to fetch all genres.
+            offset:       Pagination offset (0-based).
+            limit:        Page size (defaults to VOD_OVERVIEW_PAGE_LIMIT).
+
+        variables: { pagination: { offset, limit }, filter: { elementType, genres? } }
+        """
+        if limit is None:
+            limit = RTLPlusDefaults.VOD_OVERVIEW_PAGE_LIMIT
+
+        filter_parts = [f'"elementType":"{element_type}"']
+        if genres:
+            genres_json = "[" + ",".join(f'"{g}"' for g in genres) + "]"
+            filter_parts.append(f'"genres":{genres_json}')
+
+        variables = (
+            f'{{"pagination":{{"offset":{offset},"limit":{limit}}},'
+            f'"filter":{{{",".join(filter_parts)}}}}}'
+        )
+
+        return {
+            "operationName": "OverviewPage",
+            "variables": variables,
+            "extensions": (
+                '{"persistedQuery":{"version":1,"sha256Hash":'
+                f'"{RTLPlusDefaults.VOD_HASH_OVERVIEW_PAGE}"}}'
+            ),
+        }
