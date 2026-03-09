@@ -29,16 +29,23 @@ class RTLPlusDefaults:
     # PlayReady SOAP action for license acquisition
     PLAYREADY_SOAP_ACTION = "http://schemas.microsoft.com/DRM/2007/03/protocols/AcquireLicense"
 
+    # Supported platform identifiers
+    PLATFORM_WEB = "web"
+    PLATFORM_ANDROID = "android"
+    PLATFORM_IOS = "ios"
+    PLATFORM_SMART_TV = "smarttv"
+    PLATFORM_DEFAULT = PLATFORM_ANDROID
+
     # API endpoints
     AUTH_BASE_URL = "https://auth.rtl.de/auth/realms/rtlplus/protocol/openid-connect"
     AUTH_ENDPOINT = f"{AUTH_BASE_URL}/token"
     AUTH_AUTHORIZE_ENDPOINT = f"{AUTH_BASE_URL}/auth"
     GRAPHQL_ENDPOINT = "https://cdn.gateway.now-plus-prod.aws-cbc.cloud/graphql"
     MANIFEST_ENDPOINT = (
-        "https://stus.player.streamingtech.de/livestream/linear/{channel_id}?platform=web"
+        "https://stus.player.streamingtech.de/livestream/linear/{channel_id}?platform={platform}"
     )
     EVENT_MANIFEST_ENDPOINT = (
-        "https://stus.player.streamingtech.de/liveevent/{content_id}?platform=web"
+        "https://stus.player.streamingtech.de/liveevent/{content_id}?platform={platform}"
     )
     BASE_WEBSITE = "https://plus.rtl.de/"
     CONFIG_ENDPOINT = "https://plus.rtl.de/assets/config/config.json"
@@ -226,6 +233,7 @@ class RTLPlusConfig:
         self.chrome_version = config.get("chrome_version", RTLPlusDefaults.CHROME_VERSION)
         self.device_id = config.get("device_id", RTLPlusDefaults.DEVICE_ID)
         self.user_agent = config.get("user_agent", RTLPlusDefaults.USER_AGENT)
+        self.platform = config.get("platform", RTLPlusDefaults.PLATFORM_DEFAULT)
 
         # API endpoints (can be overridden for testing)
         self.auth_endpoint = config.get("auth_endpoint", RTLPlusDefaults.AUTH_ENDPOINT)
@@ -240,8 +248,10 @@ class RTLPlusConfig:
 
     def get_manifest_url(self, content_id: str) -> str:
         if "live-events" in content_id:
-            return self.event_manifest_endpoint.format(content_id=content_id)
-        return self.manifest_endpoint.format(channel_id=content_id)
+            return self.event_manifest_endpoint.format(
+                content_id=content_id, platform=self.platform
+            )
+        return self.manifest_endpoint.format(channel_id=content_id, platform=self.platform)
 
     def get_base_headers(self) -> dict:
         """Get base headers with this config's user agent"""
