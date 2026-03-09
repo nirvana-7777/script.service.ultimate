@@ -31,10 +31,10 @@ content_id conventions
                 discriminator = ordinal string for ORDINAL, YYYYMM for ANNUAL
 - Episodes:     rrn:watch:videohub:episode:{id}                            → VodItem
 - Movies:       rrn:watch:videohub:movie:{id}                              → VodItem
-- Movie root:   "movies-genre:/video-tv/filme"                             → VodCategory
-- Movie genre:  "movies-genre:/video-tv/filme/genre/<slug>"                → VodCategory
-- Series root:  "series-genre:/video-tv/serien"                            → VodCategory
-- Series genre: "series-genre:/video-tv/serien/genre/<slug>"               → VodCategory
+- Movie root:   "/video-tv/filme"                                          → VodCategory
+- Movie genre:  "/video-tv/filme/genre/<slug>"                             → VodCategory
+- Series root:  "/video-tv/serien"                                         → VodCategory
+- Series genre: "/video-tv/serien/genre/<slug>"                            → VodCategory
 
 Stream resolution
 -----------------
@@ -111,11 +111,11 @@ class RTLPlusVodManager:
             return self._list_root()
 
         # Movies branch
-        if category_path[0].startswith(RTLPlusDefaults.VOD_MOVIES_GENRE_PREFIX):
+        if category_path[0].startswith(RTLPlusDefaults.VOD_MOVIES_ROOT_WATCH_PATH):
             return self._dispatch_movies(category_path)
 
         # Series branch
-        if category_path[0].startswith(RTLPlusDefaults.VOD_SERIES_GENRE_PREFIX):
+        if category_path[0].startswith(RTLPlusDefaults.VOD_SERIES_ROOT_WATCH_PATH):
             return self._dispatch_series(category_path)
 
         # TopicWorlds branch
@@ -148,13 +148,13 @@ class RTLPlusVodManager:
         results: List[Union[VodCategory, VodItem]] = [
             VodCategory(
                 name="Filme",
-                content_id=RTLPlusDefaults.VOD_MOVIES_ROOT_ID,
+                content_id=RTLPlusDefaults.VOD_MOVIES_ROOT_WATCH_PATH,
                 provider="rtlplus",
                 description="Filme & Dokumentationen auf RTL+",
             ),
             VodCategory(
                 name="Serien",
-                content_id=RTLPlusDefaults.VOD_SERIES_ROOT_ID,
+                content_id=RTLPlusDefaults.VOD_SERIES_ROOT_WATCH_PATH,
                 provider="rtlplus",
                 description="Serien auf RTL+",
             ),
@@ -175,11 +175,9 @@ class RTLPlusVodManager:
             return self._list_genres(
                 root_watch_path=RTLPlusDefaults.VOD_MOVIES_ROOT_WATCH_PATH,
                 genre_slugs=RTLPlusDefaults.VOD_MOVIE_GENRE_SLUGS,
-                id_prefix=RTLPlusDefaults.VOD_MOVIES_GENRE_PREFIX,
             )
         if depth == 2:
-            watch_path = category_path[1].removeprefix(RTLPlusDefaults.VOD_MOVIES_GENRE_PREFIX)
-            genre_slug = watch_path.rsplit("/", 1)[-1]
+            genre_slug = category_path[1].rsplit("/", 1)[-1]
             return self._list_overview_page_items(
                 element_type=RTLPlusDefaults.VOD_ELEMENT_TYPE_MOVIE,
                 genre_slug=genre_slug,
@@ -199,11 +197,9 @@ class RTLPlusVodManager:
             return self._list_genres(
                 root_watch_path=RTLPlusDefaults.VOD_SERIES_ROOT_WATCH_PATH,
                 genre_slugs=RTLPlusDefaults.VOD_SERIES_GENRE_SLUGS,
-                id_prefix=RTLPlusDefaults.VOD_SERIES_GENRE_PREFIX,
             )
         if depth == 2:
-            watch_path = category_path[1].removeprefix(RTLPlusDefaults.VOD_SERIES_GENRE_PREFIX)
-            genre_slug = watch_path.rsplit("/", 1)[-1]
+            genre_slug = category_path[1].rsplit("/", 1)[-1]
             return self._list_overview_page_items(
                 element_type=RTLPlusDefaults.VOD_ELEMENT_TYPE_SERIES,
                 genre_slug=genre_slug,
@@ -219,7 +215,6 @@ class RTLPlusVodManager:
         self,
         root_watch_path: str,
         genre_slugs: List[str],
-        id_prefix: str,
     ) -> List[VodCategory]:
         """
         Build VodCategory nodes for each genre under *root_watch_path*.
@@ -240,7 +235,7 @@ class RTLPlusVodManager:
             results.append(
                 VodCategory(
                     name=title,
-                    content_id=f"{id_prefix}{watch_path}",
+                    content_id=watch_path,
                     provider="rtlplus",
                 )
             )

@@ -109,8 +109,7 @@ class RTLPlusDefaults:
     # Movies root / genre constants
     VOD_MOVIES_ROOT_WATCH_PATH  = "/video-tv/filme"
     VOD_MOVIES_GENRE_WATCH_PATH = "/video-tv/filme/genre"
-    VOD_MOVIES_ROOT_ID          = "movies-genre:/video-tv/filme"
-    VOD_MOVIES_GENRE_PREFIX     = "movies-genre:"
+    VOD_MOVIES_ROOT_ID          = "/video-tv/filme"
 
     VOD_MOVIE_GENRE_SLUGS = [
         "action", "abenteuer", "animation", "comedy", "dokumentation",
@@ -121,8 +120,7 @@ class RTLPlusDefaults:
     # Series root / genre constants
     VOD_SERIES_ROOT_WATCH_PATH  = "/video-tv/serien"
     VOD_SERIES_GENRE_WATCH_PATH = "/video-tv/serien/genre"
-    VOD_SERIES_ROOT_ID          = "series-genre:/video-tv/serien"
-    VOD_SERIES_GENRE_PREFIX     = "series-genre:"
+    VOD_SERIES_ROOT_ID          = "/video-tv/serien"
 
     VOD_SERIES_GENRE_SLUGS = [
         "action", "animation", "comedy", "crime", "dokumentation",
