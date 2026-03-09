@@ -335,13 +335,12 @@ class RTLPlusConfig:
         self.timeout = config.get("timeout", RTLPlusDefaults.DEFAULT_TIMEOUT)
 
     def get_manifest_url(self, content_id: str) -> str:
-        if content_id.startswith("rrn:watch:videohub:"):
-            return self.vod_playout_endpoint.format(rrn=content_id, platform=self.platform)
-        if "live-events" in content_id:
-            return self.event_manifest_endpoint.format(
-                content_id=content_id, platform=self.platform
-            )
-        return self.manifest_endpoint.format(channel_id=content_id, platform=self.platform)
+        if "live-events" in content_id:  # rrn:watch:live-events:*:{id}
+            return self.event_manifest_endpoint.format(content_id=content_id, platform=self.platform)
+        if content_id.startswith("rrn:watch:videohub:station:"):
+            return self.manifest_endpoint.format(channel_id=content_id, platform=self.platform)
+        # episode, movie, clip — full RRN passed directly
+        return self.vod_playout_endpoint.format(content_id=content_id, platform=self.platform)
 
     def get_base_headers(self) -> dict:
         return RTLPlusHeaders.get_base_headers(self.user_agent)
