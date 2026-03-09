@@ -124,10 +124,22 @@ class RTLPlusVodManager:
 
         if depth == 2:
             format_rrn = self._to_format_rrn(category_path[1])
+            if not format_rrn.startswith("rrn:"):
+                logger.warning(
+                    f"RTLPlusVodManager: invalid format RRN at depth 2: {format_rrn!r} "
+                    f"(path={category_path!r}) — skipping"
+                )
+                return []
             return self._list_seasons(format_rrn)
 
         if depth == 3:
             format_rrn = self._to_format_rrn(category_path[1])
+            if not format_rrn.startswith("rrn:"):
+                logger.warning(
+                    f"RTLPlusVodManager: invalid format RRN at depth 3: {format_rrn!r} "
+                    f"(path={category_path!r}) — skipping"
+                )
+                return []
             season_key = category_path[2]
             return self._list_episodes(format_rrn, season_key)
 

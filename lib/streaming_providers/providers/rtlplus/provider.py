@@ -95,11 +95,31 @@ class RTLPlusProvider(StreamingProvider):
     # ============================================================================
     def _get_rtlplus_authenticated_headers(self) -> Dict[str, str]:
         """
-        Get headers with authentication and RTL+ specific headers
+        Get headers with authentication and RTL+ specific headers.
 
-        This will automatically upgrade from anonymous to user token if possible
+        Upgrades from anonymous to user token only when user credentials are
+        configured but a user-level token has not yet been obtained, preventing
+        redundant re-authentication on every subsequent request.
         """
-        bearer_token = self.authenticator.get_bearer_token(force_upgrade=True)
+        from ...base.auth.base_auth import TokenAuthLevel
+
+        # Determine whether an upgrade attempt is warranted:
+        # - User credentials are stored → we *want* a user token
+        # - Current token is not yet at user level → upgrade is needed
+        # Once a user token is live, _classify_token returns USER_AUTHENTICATED
+        # and we skip the expensive re-auth entirely.
+        current_token = getattr(self.authenticator, "token", None) or \
+                        getattr(self.authenticator, "_token", None)
+        current_level = (
+            self.authenticator._classify_token(current_token)
+            if current_token
+            else TokenAuthLevel.UNKNOWN
+        )
+        force_upgrade = (
+            self.authenticator.has_user_credentials()
+            and current_level != TokenAuthLevel.USER_AUTHENTICATED
+        )
+        bearer_token = self.authenticator.get_bearer_token(force_upgrade=force_upgrade)
         return self.rtl_config.get_api_headers(access_token=bearer_token)
 
     def _get_event_manifest_headers(self) -> Dict[str, str]:
