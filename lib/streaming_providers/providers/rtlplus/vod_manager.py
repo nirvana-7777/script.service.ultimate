@@ -139,6 +139,10 @@ class RTLPlusVodManager:
         if category_path[0].startswith(RTLPlusDefaults.VOD_SERIES_ROOT_WATCH_PATH):
             return self._dispatch_series(category_path)
 
+        # Shows branch — watch-path based IDs
+        if category_path[0].startswith(RTLPlusDefaults.VOD_SHOWS_ROOT_WATCH_PATH):
+            return self._dispatch_shows(category_path)
+
         # TopicWorlds branch — server RRNs only (rrn:multipurpose:...)
         if depth == 1 and category_path[0].startswith("rrn:"):
             return self._list_formats_for_topic(category_path[0])
@@ -191,6 +195,12 @@ class RTLPlusVodManager:
                 provider="rtlplus",
                 description="Serien auf RTL+",
             ),
+            VodCategory(
+                name="Shows",
+                content_id=RTLPlusDefaults.VOD_SHOWS_ROOT_WATCH_PATH,
+                provider="rtlplus",
+                description="Shows auf RTL+",
+            ),
         ]
         results.extend(self._list_topic_worlds())
         logger.debug(f"RTLPlusVodManager: _list_root() → {len(results)} nodes")
@@ -215,10 +225,14 @@ class RTLPlusVodManager:
                     element_type=RTLPlusDefaults.VOD_ELEMENT_TYPE_MOVIE,
                     genre_slug=genre_slug,
                 )
-            return self._list_genres(
+            genres = self._list_genres(
                 root_watch_path=RTLPlusDefaults.VOD_MOVIES_ROOT_WATCH_PATH,
                 genre_slugs=RTLPlusDefaults.VOD_MOVIE_GENRE_SLUGS,
             )
+            items = self._list_overview_page_items(
+                element_type=RTLPlusDefaults.VOD_ELEMENT_TYPE_MOVIE,
+            )
+            return genres + items
         if depth == 2:
             genre_slug = category_path[1].rsplit("/", 1)[-1]
             return self._list_overview_page_items(
@@ -245,10 +259,14 @@ class RTLPlusVodManager:
                     element_type=RTLPlusDefaults.VOD_ELEMENT_TYPE_SERIES,
                     genre_slug=genre_slug,
                 )
-            return self._list_genres(
+            genres = self._list_genres(
                 root_watch_path=RTLPlusDefaults.VOD_SERIES_ROOT_WATCH_PATH,
                 genre_slugs=RTLPlusDefaults.VOD_SERIES_GENRE_SLUGS,
             )
+            items = self._list_overview_page_items(
+                element_type=RTLPlusDefaults.VOD_ELEMENT_TYPE_SERIES,
+            )
+            return genres + items
         if depth == 2:
             genre_slug = category_path[1].rsplit("/", 1)[-1]
             return self._list_overview_page_items(
@@ -256,6 +274,39 @@ class RTLPlusVodManager:
                 genre_slug=genre_slug,
             )
         logger.warning(f"RTLPlusVodManager: series path too deep: {category_path!r}")
+        return []
+
+    # ------------------------------------------------------------------
+    # Shows branch dispatcher
+    # ------------------------------------------------------------------
+
+    def _dispatch_shows(
+        self, category_path: List[str]
+    ) -> List[Union[VodCategory, VodItem]]:
+        depth = len(category_path)
+        if depth == 1:
+            genre_prefix = RTLPlusDefaults.VOD_SHOWS_ROOT_WATCH_PATH + "/genre/"
+            if category_path[0].startswith(genre_prefix):
+                genre_slug = category_path[0][len(genre_prefix):].split("/")[0]
+                return self._list_overview_page_items(
+                    element_type=RTLPlusDefaults.VOD_ELEMENT_TYPE_SHOW,
+                    genre_slug=genre_slug,
+                )
+            genres = self._list_genres(
+                root_watch_path=RTLPlusDefaults.VOD_SHOWS_ROOT_WATCH_PATH,
+                genre_slugs=RTLPlusDefaults.VOD_SHOW_GENRE_SLUGS,
+            )
+            items = self._list_overview_page_items(
+                element_type=RTLPlusDefaults.VOD_ELEMENT_TYPE_SHOW,
+            )
+            return genres + items
+        if depth == 2:
+            genre_slug = category_path[1].rsplit("/", 1)[-1]
+            return self._list_overview_page_items(
+                element_type=RTLPlusDefaults.VOD_ELEMENT_TYPE_SHOW,
+                genre_slug=genre_slug,
+            )
+        logger.warning(f"RTLPlusVodManager: shows path too deep: {category_path!r}")
         return []
 
     # ------------------------------------------------------------------
@@ -323,13 +374,13 @@ class RTLPlusVodManager:
     def _list_overview_page_items(
         self,
         element_type: str,
-        genre_slug: str,
+        genre_slug: Optional[str] = None,
     ) -> List[Union[VodCategory, VodItem]]:
         """
-        Paginate OverviewPage for a single genre slug.
+        Paginate OverviewPage for an element type, optionally filtered by genre.
 
         element_type: RTLPlusDefaults.VOD_ELEMENT_TYPE_MOVIE  or  …SERIES
-        genre_slug:   e.g. "drama", "action"
+        genre_slug:   e.g. "drama", "action" — omit for unfiltered (all items)
 
         Series items at this level are returned as VodCategory nodes (each
         wraps a Format RRN) so the caller can drill into seasons/episodes via
@@ -344,7 +395,7 @@ class RTLPlusVodManager:
         while True:
             params = RTLPlusGraphQL.overview_page(
                 element_type=element_type,
-                genres=[genre_slug],
+                genres=[genre_slug] if genre_slug else None,
                 offset=offset,
                 limit=limit,
             )
@@ -390,7 +441,7 @@ class RTLPlusVodManager:
 
         logger.debug(
             f"RTLPlusVodManager: _list_overview_page_items"
-            f"({element_type}, {genre_slug}) → {len(results)} items"
+            f"({element_type}, genre={genre_slug}) → {len(results)} items"
         )
         return results
 

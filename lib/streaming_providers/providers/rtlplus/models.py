@@ -200,21 +200,22 @@ class RTLPlusLiveEvent:
 
     @classmethod
     def from_api_node(cls, node: Dict[str, Any]) -> "RTLPlusLiveEvent":
-        """Parse a single LiveEvent GraphQL node."""
+        """Parse a single LiveEvent GraphQL node from LiveEventsOverview."""
+        details = node.get("details") or {}
+        images  = node.get("images") or {}
         return cls(
             id=node["id"],
             title=node["title"],
             stream_start=node["streamStart"],
             stream_end=node["streamEnd"],
-            location=node.get("location"),
+            location=details.get("stadium"),
             event_category=node.get("eventCategory", "GENERIC"),
             event_sub_category=node.get("eventSubCategory", ""),
             description=node.get("description"),
-            short_description=node.get("shortDescription"),
+            short_description=None,
             logo_url=(
-                node.get("liveImages", {})
-                    .get("artworkLandscape", {})
-                    .get("url")
+                images.get("artworkLandscape", {}).get("url")
+                or images.get("artworkPortrait", {}).get("url")
             ),
             required_permission=node.get(
                 "requiredPermission", RTLPlusDefaults.PERMISSION_PAY_TV

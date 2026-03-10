@@ -114,9 +114,20 @@ class RTLPlusDefaults:
         "romance", "science-fiction", "thriller",
     ]
 
+    # Shows root / genre constants
+    VOD_SHOWS_ROOT_WATCH_PATH  = "/video-tv/shows"
+    VOD_SHOWS_GENRE_WATCH_PATH = "/video-tv/shows/genre"
+    VOD_SHOWS_ROOT_ID          = "/video-tv/shows"
+
+    VOD_SHOW_GENRE_SLUGS = [
+        "action", "comedy", "crime", "dokumentation",
+        "drama", "kinder", "reality", "romance", "thriller",
+    ]
+
     # OverviewPage elementType values and pagination
     VOD_ELEMENT_TYPE_MOVIE  = "MOVIE"
     VOD_ELEMENT_TYPE_SERIES = "SERIES"
+    VOD_ELEMENT_TYPE_SHOW   = "SHOW"
     VOD_OVERVIEW_PAGE_LIMIT = 48
 
 
@@ -139,8 +150,9 @@ class RTLPlusGraphQL:
         "MRE":                "0c77404637570adff548e329a48654498c54ce1c36a459d72586ff18999bebaa",
         "Episode":            "87dbde15a0d269b11606f5ff458d555e98eb493bb4fb6ddc150d812d5e9a9cf8",
         "WatchPlayerConfigV3":"fea0311fb572b6fded60c5a1a9d652f97f55d182bc4cedbdad676354a8d2797c",
-        "SeoUrlData":         "fcc4a812d6b93496f00c3068234db7722f553032bb760e09e5e6c74586c86f8d",
-        "OverviewPage":       "28aad4e992bb63330bfcd40a6906af3119d8a2612fa9fd28dae9c19127e247ca",
+        "SeoUrlData":             "fcc4a812d6b93496f00c3068234db7722f553032bb760e09e5e6c74586c86f8d",
+        "OverviewPage":           "28aad4e992bb63330bfcd40a6906af3119d8a2612fa9fd28dae9c19127e247ca",
+        "LiveEventsOverview":     "77a8f26d5de76daf801fcd7ae54bebd0ecabbeeb3ecb90889bc4a2e5590b7d20",
     }
 
     @classmethod
@@ -171,6 +183,11 @@ class RTLPlusGraphQL:
             "ExploreWidgetWatch",
             f'{{"area":"{area}","offset":{offset},"take":{take}}}',
         )
+
+    @classmethod
+    def live_events_overview_page(cls) -> dict:
+        """LiveEventsOverview — all upcoming/live events grouped by teaserRows."""
+        return cls._build("LiveEventsOverview", "{}")
 
     # --- VOD ---
 

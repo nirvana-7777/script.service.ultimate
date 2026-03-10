@@ -209,13 +209,12 @@ class RTLPlusProvider(StreamingProvider):
         return events
 
     def _fetch_live_events(self) -> List[RTLPlusLiveEvent]:
-        access_token = self.authenticator.get_bearer_token()
-        headers = self.rtl_config.get_events_headers(access_token=access_token)
+        headers = self._get_rtlplus_authenticated_headers()
 
         try:
             response = self.http_manager.get(
                 self.rtl_config.graphql_endpoint,
-                params=RTLPlusGraphQL.explore_widget_watch(),
+                params=RTLPlusGraphQL.live_events_overview_page(),
                 headers=headers,
                 operation="api",
             )
@@ -229,25 +228,30 @@ class RTLPlusProvider(StreamingProvider):
     @staticmethod
     def _parse_live_events(data: Dict[str, Any]) -> List[RTLPlusLiveEvent]:
         """
-        Extract LiveEvent nodes from the GraphQL response.
+        Extract LiveEvent nodes from the LiveEventsOverview GraphQL response.
+
+        Response shape: data.liveEventsOverview.teaserRows[].events[]
         Static so it's unit-testable without provider state.
         """
         events: List[RTLPlusLiveEvent] = []
-        widgets = (
+        seen: set = set()
+
+        teaser_rows = (
             data.get("data", {})
-            .get("editorialView", {})
-            .get("widgets", {})
-            .get("items", [])
+            .get("liveEventsOverview", {})
+            .get("teaserRows", [])
         )
 
-        for widget in widgets:
-            if widget.get("__typename") != "LiveEventWidget":
-                continue
-            for element in widget.get("elements", []):
+        for row in teaser_rows:
+            for element in (row.get("events") or []):
                 if element is None:
                     continue
                 if element.get("__typename") != "LiveEvent":
-                    continue  # skip ExternalTeaser etc.
+                    continue
+                event_id = element.get("id", "")
+                if not event_id or event_id in seen:
+                    continue
+                seen.add(event_id)
                 try:
                     events.append(RTLPlusLiveEvent.from_api_node(element))
                 except Exception as e:
