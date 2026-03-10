@@ -326,11 +326,7 @@ class RTLPlusProvider(StreamingProvider):
         try:
             logger.debug(f"RTL+ Manifest Request: GET {manifest_url}")
 
-            if ":live-events:" in content_id:
-                headers = self._get_event_manifest_headers()
-            else:
-                headers = self.rtl_config.get_base_headers()
-
+            headers = self._get_event_manifest_headers()
             response = self.http_manager.get(manifest_url, operation="manifest", headers=headers)
 
             logger.debug(f"RTL+ Manifest Response: Status={response.status_code}")
@@ -407,11 +403,7 @@ class RTLPlusProvider(StreamingProvider):
         try:
             manifest_url = self.rtl_config.get_manifest_url(content_id)
 
-            if ":live-events:" in content_id:
-                headers = self._get_event_manifest_headers()
-            else:
-                headers = self.rtl_config.get_base_headers()
-
+            headers = self._get_event_manifest_headers()
             response = self.http_manager.get(manifest_url, operation="manifest", headers=headers)
             response.raise_for_status()
             manifest_data = response.json()
