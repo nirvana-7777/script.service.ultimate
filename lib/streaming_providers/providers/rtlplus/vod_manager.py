@@ -205,6 +205,16 @@ class RTLPlusVodManager:
     ) -> List[Union[VodCategory, VodItem]]:
         depth = len(category_path)
         if depth == 1:
+            # The normaliser may have collapsed e.g. ["video-tv","filme","genre","action"]
+            # into a single element ["/video-tv/filme/genre/action"].  Detect this by
+            # checking whether the path already contains "/genre/".
+            genre_prefix = RTLPlusDefaults.VOD_MOVIES_ROOT_WATCH_PATH + "/genre/"
+            if category_path[0].startswith(genre_prefix):
+                genre_slug = category_path[0][len(genre_prefix):].split("/")[0]
+                return self._list_overview_page_items(
+                    element_type=RTLPlusDefaults.VOD_ELEMENT_TYPE_MOVIE,
+                    genre_slug=genre_slug,
+                )
             return self._list_genres(
                 root_watch_path=RTLPlusDefaults.VOD_MOVIES_ROOT_WATCH_PATH,
                 genre_slugs=RTLPlusDefaults.VOD_MOVIE_GENRE_SLUGS,
@@ -227,6 +237,14 @@ class RTLPlusVodManager:
     ) -> List[Union[VodCategory, VodItem]]:
         depth = len(category_path)
         if depth == 1:
+            # Same collapsed-path case as _dispatch_movies: detect a full genre URL.
+            genre_prefix = RTLPlusDefaults.VOD_SERIES_ROOT_WATCH_PATH + "/genre/"
+            if category_path[0].startswith(genre_prefix):
+                genre_slug = category_path[0][len(genre_prefix):].split("/")[0]
+                return self._list_overview_page_items(
+                    element_type=RTLPlusDefaults.VOD_ELEMENT_TYPE_SERIES,
+                    genre_slug=genre_slug,
+                )
             return self._list_genres(
                 root_watch_path=RTLPlusDefaults.VOD_SERIES_ROOT_WATCH_PATH,
                 genre_slugs=RTLPlusDefaults.VOD_SERIES_GENRE_SLUGS,
