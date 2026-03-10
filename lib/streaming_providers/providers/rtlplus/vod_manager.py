@@ -352,9 +352,10 @@ class RTLPlusVodManager:
             if not data:
                 break
 
-            # Response key is "overviewPage" (adapt if live data differs)
+            # Response key varies: live data uses "watchOverviewPage"
             page = (
-                data.get("data", {}).get("overviewPage")
+                data.get("data", {}).get("watchOverviewPage")
+                or data.get("data", {}).get("overviewPage")
                 or data.get("data", {}).get("OverviewPage")
                 or {}
             )
