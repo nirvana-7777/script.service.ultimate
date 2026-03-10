@@ -410,7 +410,7 @@ class DRMPluginManager:
             # Merge all ClearKey results into one config by combining keyids
             if clearkey_results:
                 merged_keyids: dict[str, str] = {}
-                highest_priority = 0
+                highest_priority = 1
                 for ck in clearkey_results:
                     if ck.license and ck.license.keyids:
                         merged_keyids.update(ck.license.keyids)
