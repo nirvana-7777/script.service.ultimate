@@ -432,15 +432,22 @@ class RTLPlusVodManager:
                     continue
                 seen.add(node_id)
 
-                if element_type == RTLPlusDefaults.VOD_ELEMENT_TYPE_MOVIE:
-                    vod = self._movie_to_item(node)
-                    if vod:
-                        results.append(vod)
-                else:
-                    # Series → VodCategory so the user can drill to seasons
-                    cat = self._format_to_category(node)
-                    if cat:
-                        results.append(cat)
+                try:
+                    if element_type == RTLPlusDefaults.VOD_ELEMENT_TYPE_MOVIE:
+                        vod = self._movie_to_item(node)
+                        if vod:
+                            results.append(vod)
+                    else:
+                        # Series → VodCategory so the user can drill to seasons
+                        cat = self._format_to_category(node)
+                        if cat:
+                            results.append(cat)
+                except Exception as _node_err:
+                    import traceback as _tb
+                    logger.error(
+                        "RTLPlusVodManager: node parse error (%r) node=%r\n%s"
+                        % (_node_err, node, _tb.format_exc())
+                    )
 
             page_info = page.get("pageInfo") or page.get("pagination") or {}
             has_next = (
