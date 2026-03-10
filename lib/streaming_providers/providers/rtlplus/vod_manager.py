@@ -796,8 +796,8 @@ class RTLPlusVodManager:
         if not rrn or not title:
             return None
         logo_url = (
-            node.get("watchImages", {}).get("artworkLandscape", {}).get("absoluteUri")
-            or node.get("watchImages", {}).get("artworkPortrait", {}).get("absoluteUri")
+            (node.get("watchImages") or {}).get("artworkLandscape", {}).get("absoluteUri")
+            or (node.get("watchImages") or {}).get("artworkPortrait", {}).get("absoluteUri")
         )
         return VodCategory(
             name=title,
@@ -880,8 +880,8 @@ class RTLPlusVodManager:
             season_number = None
 
         logo_url = (
-            node.get("watchImages", {}).get("default", {}).get("absoluteUri")
-            or node.get("watchImages", {}).get("portrait", {}).get("absoluteUri")
+            (node.get("watchImages") or {}).get("default", {}).get("absoluteUri")
+            or (node.get("watchImages") or {}).get("portrait", {}).get("absoluteUri")
         )
 
         vod = VodItem.create_episode(
@@ -906,8 +906,8 @@ class RTLPlusVodManager:
             return None
 
         logo_url = (
-            node.get("watchImages", {}).get("artworkLandscape", {}).get("absoluteUri")
-            or node.get("watchImages", {}).get("artworkPortrait", {}).get("absoluteUri")
+            (node.get("watchImages") or {}).get("artworkLandscape", {}).get("absoluteUri")
+            or (node.get("watchImages") or {}).get("artworkPortrait", {}).get("absoluteUri")
         )
         genres = node.get("genres", [])
 
