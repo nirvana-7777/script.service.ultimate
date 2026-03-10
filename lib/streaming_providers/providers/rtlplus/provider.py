@@ -238,7 +238,7 @@ class RTLPlusProvider(StreamingProvider):
 
         teaser_rows = (
             data.get("data", {})
-            .get("liveEventsOverviewPage", {})
+            .get("liveEventsOverview", {})
             .get("teaserRows", [])
         )
 
