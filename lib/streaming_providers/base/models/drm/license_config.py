@@ -38,7 +38,7 @@ class LicenseUnwrapperParams:
     non-standard license server responses.
 
     Attributes:
-        path_data: JSON/XML path to license data (e.g., "license.data")
+        path_data: JSON/XML path to license data (e.g., "licenseresponse/data")
         path_data_traverse: Whether to traverse nested structures for data
         path_hdcp_res: JSON/XML path to HDCP resolution restriction
         path_hdcp_res_traverse: Whether to traverse for HDCP resolution
@@ -77,17 +77,37 @@ class LicenseConfig:
     including server URLs, certificates, request customization, and
     response processing.
 
+    All fields map directly to ISA (inputstream.adaptive) license parameters.
+    The to_dict() output can be used as-is inside the inputstream.adaptive.drm
+    JSON property — no further transformation is required.
+
     Attributes:
-        server_url: License server URL
-        server_certificate: Base64-encoded server certificate (for FairPlay, etc.)
-        use_http_get_request: Use GET instead of POST for license requests
-        req_headers: Custom HTTP headers as JSON string
-        req_params: URL query parameters as JSON string
-        req_data: Base64-encoded custom request body data
-        wrapper: Request body wrapper type
-        unwrapper: Response unwrapper type
-        unwrapper_params: Parameters for response unwrapping
-        keyids: ClearKey key mappings (KID -> Key in hex)
+        server_url: License server URL. For Widevine, supports placeholders
+            to inject the DRM challenge: {CHA-B64U}, {CHA-MD5}.
+            For ClearKey, also accepts a URI "data" scheme:
+            "data:application/json;base64,<base64>"
+        server_certificate: Base64-encoded server certificate
+            (Widevine, FairPlay).
+        use_http_get_request: Force HTTP GET for the license request instead
+            of the default POST (Widevine, PlayReady, Wiseplay only).
+        req_headers: Custom HTTP headers as a URL-encoded string.
+            Format: "Header1=Value1&Header2=Value2" where values are
+            URL-encoded (use urllib.parse.urlencode() or quote_plus()).
+            Example: "Content-Type=application%2Foctet-stream&User-Agent=Mozilla%2F5.0"
+        req_params: Path extension or parameters appended to the license URL.
+            Example: "/one/two/three-path"
+        req_data: Base64-encoded custom request body template.
+            Supports ISA placeholders: {CHA-RAW}, {CHA-B64}, {CHA-B64U},
+            {CHA-DEC}, {SID-RAW}, {SID-B64}, {SID-B64U}, {KID-UUID},
+            {KID-HEX}, {PSSH-B64}, {PSSH-B64U}.
+        wrapper: Request body wrapper flags, comma-separated:
+            "base64" | "urlenc" | "none"
+        unwrapper: Response unwrapper flags, comma-separated:
+            "auto" | "base64" | "json" | "xml" | "none"
+        unwrapper_params: Parameters for JSON/XML response unwrapping
+            (required when unwrapper includes "json" or "xml").
+        keyids: ClearKey only. Map of KID -> Key pairs in hex format
+            (32 hex chars each).
     """
 
     server_url: Optional[str] = None
@@ -104,7 +124,6 @@ class LicenseConfig:
     def __post_init__(self):
         """Normalize key IDs in keyids mapping."""
         if self.keyids:
-            # Normalize all KIDs and keys to lowercase hex
             normalized_keyids = {}
             for kid, key in self.keyids.items():
                 try:
@@ -112,7 +131,6 @@ class LicenseConfig:
                     norm_key = key.lower().replace("-", "")
                     normalized_keyids[norm_kid] = norm_key
                 except Exception:
-                    # Skip invalid entries
                     pass
             self.keyids = normalized_keyids
 
@@ -123,7 +141,6 @@ class LicenseConfig:
         Raises:
             LicenseConfigError: If configuration is invalid
         """
-        # Validate server_certificate if present
         if self.server_certificate:
             try:
                 safe_base64_decode(self.server_certificate)
@@ -132,7 +149,6 @@ class LicenseConfig:
                     f"server_certificate must be valid base64: {e}"
                 ) from e
 
-        # Validate req_data if present
         if self.req_data:
             try:
                 safe_base64_decode(self.req_data)
@@ -141,7 +157,14 @@ class LicenseConfig:
                     f"req_data must be valid base64: {e}"
                 ) from e
 
-        # Validate keyids format (for ClearKey)
+        # req_headers must be a URL-encoded string, NOT a JSON dict
+        if self.req_headers and self.req_headers.strip().startswith("{"):
+            raise LicenseConfigError(
+                "req_headers must be a URL-encoded string "
+                "(e.g. 'Content-Type=application%2Foctet-stream'), not a JSON dict. "
+                "Use urllib.parse.urlencode() to encode headers."
+            )
+
         if self.keyids:
             for kid, key in self.keyids.items():
                 if len(kid) != 32:
@@ -165,7 +188,8 @@ class LicenseConfig:
         Helper to create LicenseConfig with base64-encoded req_data.
 
         Args:
-            req_data_template: Plain text request data template
+            req_data_template: Plain text request data template (may contain
+                ISA placeholders like {CHA-B64}, {SID-RAW}, {KID-HEX}, etc.)
             **kwargs: Other LicenseConfig parameters
 
         Returns:
@@ -187,10 +211,13 @@ class LicenseConfig:
 
     def to_dict(self) -> dict:
         """
-        Convert to dictionary, excluding None/empty values.
+        Convert to dictionary ready for the inputstream.adaptive.drm JSON payload.
+
+        Output maps directly to ISA license parameters — no further
+        transformation is needed before json.dumps().
 
         Returns:
-            Dictionary representation
+            Dictionary with only non-empty/non-False values included.
         """
         result = {}
 
