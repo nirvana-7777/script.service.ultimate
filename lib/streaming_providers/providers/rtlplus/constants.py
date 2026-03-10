@@ -44,7 +44,7 @@ class RTLPlusDefaults:
     PLATFORM_ANDROID = "android"
     PLATFORM_IOS = "ios"
     PLATFORM_SMART_TV = "smarttv"
-    PLATFORM_DEFAULT = PLATFORM_ANDROID
+    PLATFORM_DEFAULT = PLATFORM_WEB
 
     # Client and version information
     CLIENT_VERSION = _RTLPLUS_CLIENT_VERSION
