@@ -3,28 +3,38 @@
 RTL+ provider constants and default configurations
 """
 
+from ..globals import get_user_agent
+
+import json
+import urllib.request
+from ...base.utils.logger import logger
+
+# Fetch RTL+ client version once at import time.
+_RTLPLUS_CONFIG_URL = "https://plus.rtl.de/assets/config/config.json"
+_RTLPLUS_CLIENT_VERSION_FALLBACK = "2025.6.26.0"
+try:
+    with urllib.request.urlopen(_RTLPLUS_CONFIG_URL, timeout=4) as _resp:
+        _RTLPLUS_CLIENT_VERSION = json.loads(_resp.read().decode())["version"]
+    logger.debug(f"Fetched RTL+ client version: {_RTLPLUS_CLIENT_VERSION}")
+except Exception as _exc:
+    logger.warning(f"Could not fetch RTL+ client version ({_exc}); using fallback {_RTLPLUS_CLIENT_VERSION_FALLBACK}")
+    _RTLPLUS_CLIENT_VERSION = _RTLPLUS_CLIENT_VERSION_FALLBACK
 
 class RTLPlusDefaults:
     """Default values for RTL+ provider"""
 
     RTLPLUS_LOGO = "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f4/RTL%2B_Logo_2021.svg/2560px-RTL%2B_Logo_2021.svg.png"
 
-    # Client and version information
-    CLIENT_VERSION = "2025.6.26.0"
-    CHROME_VERSION = "121.0.0.0"
-    CLIENT_ID = "rtlplus-web"
-
     # Device information
     DEVICE_ID = "8c3f37cc-13a3-4141-bd0f-e4b3673fe5e4"
     DEVICE_NAME = "Linux Chrome"
     PLAYREADY_DEVICE_NAME = "Windows Edge"
 
-    # User Agent components
-    USER_AGENT = f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_VERSION} Safari/537.36"
-
-    # PlayReady-specific user agent (Edge/Windows as seen in license acquisition requests)
-    PLAYREADY_EDGE_VERSION = "145.0.0.0"
-    PLAYREADY_USER_AGENT = f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{PLAYREADY_EDGE_VERSION} Safari/537.36 Edg/{PLAYREADY_EDGE_VERSION}"
+    # User agents — sourced from globals.get_user_agent() so versions stay current.
+    # Windows Chrome is used for standard requests; Windows Edge for PlayReady
+    # license acquisition (SOAP/XML), which requires an Edge UA.
+    USER_AGENT = get_user_agent("windows", "chrome")
+    PLAYREADY_USER_AGENT = get_user_agent("windows", "edge")
 
     # PlayReady SOAP action for license acquisition
     PLAYREADY_SOAP_ACTION = "http://schemas.microsoft.com/DRM/2007/03/protocols/AcquireLicense"
@@ -34,7 +44,11 @@ class RTLPlusDefaults:
     PLATFORM_ANDROID = "android"
     PLATFORM_IOS = "ios"
     PLATFORM_SMART_TV = "smarttv"
-    PLATFORM_DEFAULT = PLATFORM_WEB
+    PLATFORM_DEFAULT = PLATFORM_ANDROID
+
+    # Client and version information
+    CLIENT_VERSION = _RTLPLUS_CLIENT_VERSION
+    CLIENT_ID = f"rtlplus-{PLATFORM_DEFAULT}"
 
     # API endpoints
     AUTH_BASE_URL = "https://auth.rtl.de/auth/realms/rtlplus/protocol/openid-connect"
@@ -80,12 +94,12 @@ class RTLPlusDefaults:
 
     # WatchPlayerConfigV3 returns stream URLs + DRM config directly from GraphQL
     # (replaces the watch-playout-variants REST endpoint for VOD)
-    VOD_PLATFORM_GRAPHQL = "WEB"
+    VOD_PLATFORM_GRAPHQL = PLATFORM_DEFAULT.upper()
 
     # Wurstland — secondary stream resolver, returns DASH/HLS URLs
     # GET /config/{rrn}/{platform}
     VOD_WURSTLAND_CONFIG_URL = "https://wurstland.plus.rtl.de/config/{rrn}/{platform}"
-    VOD_WURSTLAND_PLATFORM   = "WEB"
+    VOD_WURSTLAND_PLATFORM   = PLATFORM_DEFAULT.upper()
 
     # ---------------------------------------------------------------------------
     # VOD — root category definition
@@ -143,6 +157,7 @@ class RTLPlusGraphQL:
 
     # sha256 hashes keyed by operationName (captured from browser network traffic)
     HASHES: dict[str, str] = {
+
         "LiveTvStations":     "845cf56a2a78110a0f978c1a2af2bc7f9a1c937d0f324ffaf852a9a4414c8485",
         "ExploreWidgetWatch": "724f21ab86aa3f8c57673a3b346cf119f6a155bf82bb0201fd3b18e28e44f1ed",
         "TopicWorlds":        "3dbde4c45532f4bdb0a1d7c210db43f0888f8a82f4aab43f7a90f3c4762d8ff7",
@@ -202,8 +217,7 @@ class RTLPlusGraphQL:
 
     @classmethod
     def topic_worlds(cls, take: int = 100, offset: int = 0) -> dict:
-        """
-        TopicWorlds — browse all genre/topic worlds.
+        """TopicWorlds — browse all genre/topic worlds.
 
         Confirmed from live traffic:
           response key:  data.topicWorldsV2.elements[]   (NOT topicWorlds.items[])
@@ -275,11 +289,6 @@ class RTLPlusHeaders:
         return {
             "User-Agent": user_agent or RTLPlusDefaults.USER_AGENT,
             "Accept": "application/json",
-            #            'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8',
-            #            'Accept-Encoding': 'gzip, deflate, br',
-            #            'DNT': '1',
-            #            'Connection': 'keep-alive',
-            #           'Upgrade-Insecure-Requests': '1'
         }
 
     @staticmethod
@@ -307,7 +316,7 @@ class RTLPlusHeaders:
         headers.update(
             {
                 "Content-Type": "application/json",
-                "Rtlplus-Client-Id": RTLPlusDefaults.CLIENT_ID,
+                "Rtlplus-Client-Id": f"rci:rtlplus:{RTLPlusDefaults.PLATFORM_DEFAULT}",
                 "Rtlplus-Referrer": "",
                 "Rtlplus-Client-Version": client_version or RTLPlusDefaults.CLIENT_VERSION,
             }
@@ -329,8 +338,7 @@ class RTLPlusHeaders:
         client_version: str = None,
         user_agent: str = None,
     ) -> dict:
-        """
-        Get headers for the editorial GraphQL endpoint (events / ExploreWidgetWatch).
+        """Get headers for the editorial GraphQL endpoint (events / ExploreWidgetWatch).
 
         Extends the standard API headers with the optional ``Rtlplus-Profile``
         JWT that the browser sends when a user profile is active.  The header
@@ -413,7 +421,6 @@ class RTLPlusConfig:
 
         # Core settings (can be overridden)
         self.client_version = config.get("client_version", RTLPlusDefaults.CLIENT_VERSION)
-        self.chrome_version = config.get("chrome_version", RTLPlusDefaults.CHROME_VERSION)
         self.device_id = config.get("device_id", RTLPlusDefaults.DEVICE_ID)
         self.user_agent = config.get("user_agent", RTLPlusDefaults.USER_AGENT)
         self.platform = config.get("platform", RTLPlusDefaults.PLATFORM_DEFAULT)
@@ -439,7 +446,6 @@ class RTLPlusConfig:
             return self.manifest_endpoint.format(
                 channel_id=content_id, platform=self.platform
             )
-        # episode, movie, clip — full RRN passed directly
         return self.vod_playout_endpoint.format(
             content_id=content_id, platform=self.platform
         )
