@@ -143,9 +143,21 @@ class RTLPlusVodManager:
         if category_path[0].startswith(RTLPlusDefaults.VOD_SHOWS_ROOT_WATCH_PATH):
             return self._dispatch_shows(category_path)
 
-        # TopicWorlds branch — server RRNs only (rrn:multipurpose:...)
-        if depth == 1 and category_path[0].startswith("rrn:"):
-            return self._list_formats_for_topic(category_path[0])
+        # RRN-namespace routing — dispatch by the kind of RRN, not depth.
+        # This handles format/season RRNs returned by OverviewPage for
+        # shows and serien (content_id = rrn:watch:videohub:format:* or season:*).
+        first = category_path[0]
+        if first.startswith("rrn:watch:videohub:format:"):
+            # Format RRN → list seasons
+            return self._list_seasons(first)
+
+        if first.startswith("rrn:watch:videohub:season:"):
+            # Season RRN → list episodes via SeasonWithFormatAndEpisodes
+            return self._list_episodes_for_season(first)
+
+        # TopicWorlds branch — rrn:multipurpose:* at depth 1
+        if depth == 1 and first.startswith("rrn:"):
+            return self._list_formats_for_topic(first)
 
         if depth == 2:
             format_rrn = self._to_format_rrn(category_path[1])
@@ -542,6 +554,54 @@ class RTLPlusVodManager:
         return results
 
     # ------------------------------------------------------------------
+    # Season RRN → Episodes  (SeasonWithFormatAndEpisodes)
+    # ------------------------------------------------------------------
+
+    def _list_episodes_for_season(self, season_rrn: str) -> List[VodItem]:
+        """
+        Fetch episodes for a season identified directly by its RRN.
+        Uses SeasonWithFormatAndEpisodes (paginated).
+        Response shape: data.season.episodes[]
+        """
+        results: List[VodItem] = []
+        seen: set = set()
+        offset = 0
+        limit = 48
+
+        while True:
+            data = self._graphql_get(
+                RTLPlusGraphQL.season_with_episodes(season_rrn, offset=offset, limit=limit)
+            )
+            if not data:
+                break
+
+            season = data.get("data", {}).get("season", {}) or {}
+            episodes = season.get("episodes", [])
+
+            for ep in episodes:
+                if not ep:
+                    continue
+                ep_id = ep.get("id", "")
+                if not ep_id or ep_id in seen:
+                    continue
+                seen.add(ep_id)
+                vod = self._episode_to_item(ep)
+                if vod:
+                    results.append(vod)
+
+            # SeasonWithFormatAndEpisodes doesn't paginate via pageInfo;
+            # stop when we receive fewer items than requested.
+            if len(episodes) < limit:
+                break
+            offset += limit
+
+        logger.debug(
+            f"RTLPlusVodManager: _list_episodes_for_season({season_rrn}) "
+            f"→ {len(results)} episodes"
+        )
+        return results
+
+    # ------------------------------------------------------------------
     # Depth 2 (series) — Seasons for a Format
     # ------------------------------------------------------------------
 
@@ -586,11 +646,11 @@ class RTLPlusVodManager:
     def _extract_seasons_from_format(data: dict) -> list:
         d = data.get("data", {})
         fmt = d.get("format", {}) or d.get("Format", {}) or {}
-        return (
-            fmt.get("seasons", {}).get("items", [])
-            or fmt.get("seasons", [])
-            or []
-        )
+        seasons = fmt.get("seasons", [])
+        # seasons may be a list directly or {"items": [...]}
+        if isinstance(seasons, dict):
+            seasons = seasons.get("items", [])
+        return seasons or []
 
     # ------------------------------------------------------------------
     # Depth 3 (series) — Episodes for a Season
@@ -786,10 +846,17 @@ class RTLPlusVodManager:
             discriminator = server_id
             title = title or server_id
 
+        # Prefer the real season RRN when available (from Format.seasons[].id)
+        # so the client can pass it back and route via _list_episodes_for_season.
+        # Fall back to synthetic key for MRE nodes that lack an explicit id.
+        season_rrn = node.get("id", "")
+        content_id = season_rrn if season_rrn.startswith("rrn:watch:videohub:season:") else f"season:{discriminator}@{format_rrn}"
+
         return VodCategory(
             name=title,
-            content_id=f"season:{discriminator}@{format_rrn}",
+            content_id=content_id,
             provider="rtlplus",
+            child_count=node.get("numberOfEpisodes"),
         )
 
     @staticmethod

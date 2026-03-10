@@ -152,7 +152,8 @@ class RTLPlusGraphQL:
         "WatchPlayerConfigV3":"fea0311fb572b6fded60c5a1a9d652f97f55d182bc4cedbdad676354a8d2797c",
         "SeoUrlData":             "fcc4a812d6b93496f00c3068234db7722f553032bb760e09e5e6c74586c86f8d",
         "OverviewPage":           "28aad4e992bb63330bfcd40a6906af3119d8a2612fa9fd28dae9c19127e247ca",
-        "LiveEventsOverview":     "77a8f26d5de76daf801fcd7ae54bebd0ecabbeeb3ecb90889bc4a2e5590b7d20",
+        "LiveEventsOverviewPage":       "77a8f26d5de76daf801fcd7ae54bebd0ecabbeeb3ecb90889bc4a2e5590b7d20",
+        "SeasonWithFormatAndEpisodes":  "cc0fbbe17143f549a35efa6f8665ceb9b1cfae44b590f0b2381a9a304304c584",
     }
 
     @classmethod
@@ -185,9 +186,17 @@ class RTLPlusGraphQL:
         )
 
     @classmethod
+    def season_with_episodes(cls, season_rrn: str, offset: int = 0, limit: int = 48) -> dict:
+        """SeasonWithFormatAndEpisodes — episodes for a specific season RRN."""
+        return cls._build(
+            "SeasonWithFormatAndEpisodes",
+            f'{{"seasonId":"{season_rrn}","offset":{offset},"limit":{limit}}}',
+        )
+
+    @classmethod
     def live_events_overview_page(cls) -> dict:
         """LiveEventsOverview — all upcoming/live events grouped by teaserRows."""
-        return cls._build("LiveEventsOverview", "{}")
+        return cls._build("LiveEventsOverviewPage", "{}")
 
     # --- VOD ---
 
