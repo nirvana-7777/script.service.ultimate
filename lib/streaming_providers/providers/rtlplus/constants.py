@@ -60,20 +60,6 @@ class RTLPlusDefaults:
     # HTTP settings
     DEFAULT_TIMEOUT = 30
 
-    # GraphQL query parameters — live TV channels
-    CHANNELS_QUERY_PARAMS = {
-        "operationName": "LiveTvStations",
-        "variables": '{"epgCount":4,"filter":{"channelTypes":["BROADCAST","FAST"]}}',
-        "extensions": '{"persistedQuery":{"version":1,"sha256Hash":"845cf56a2a78110a0f978c1a2af2bc7f9a1c937d0f324ffaf852a9a4414c8485"}}',
-    }
-
-    # GraphQL query parameters — editorial home view (contains LiveEventWidget nodes)
-    EVENTS_QUERY_PARAMS = {
-        "operationName": "ExploreWidgetWatch",
-        "variables": '{"area":"home","offset":0,"take":15}',
-        "extensions": '{"persistedQuery":{"version":1,"sha256Hash":"724f21ab86aa3f8c57673a3b346cf119f6a155bf82bb0201fd3b18e28e44f1ed"}}',
-    }
-
     # Custom header carrying the signed profile JWT (required by the events endpoint)
     PROFILE_HEADER = "Rtlplus-Profile"
 
@@ -133,30 +119,125 @@ class RTLPlusDefaults:
     VOD_ELEMENT_TYPE_SERIES = "SERIES"
     VOD_OVERVIEW_PAGE_LIMIT = 48
 
-    # ---------------------------------------------------------------------------
-    # VOD — persisted-query hashes (captured from browser network traffic)
-    # ---------------------------------------------------------------------------
 
-    # TopicWorlds — browse all genre/topic worlds; variables: { take, offset, filterForSearchGrid }
-    VOD_HASH_TOPIC_WORLDS  = "3dbde4c45532f4bdb0a1d7c210db43f0888f8a82f4aab43f7a90f3c4762d8ff7"
+class RTLPlusGraphQL:
+    """
+    Persisted-query hashes and parameter builders for all RTL+ GraphQL operations.
 
-    # Format — full format detail by RRN; variables: { id }
-    VOD_HASH_FORMAT        = "d112638c0184ab5698af7b69532dfe2f12973f7af9cb137b9f70278130b1eafa"
+    The HASHES dict maps each GraphQL operationName to its sha256 hash as
+    captured from live browser network traffic.  Every builder method calls
+    _build(), which assembles the standard persisted-query envelope so that
+    the boilerplate never has to be repeated.
+    """
 
-    # MRE (More / Related Episodes) — seasons + episodes for a Format; variables: { id }
-    VOD_HASH_MRE           = "0c77404637570adff548e329a48654498c54ce1c36a459d72586ff18999bebaa"
+    # sha256 hashes keyed by operationName (captured from browser network traffic)
+    HASHES: dict[str, str] = {
+        "LiveTvStations":     "845cf56a2a78110a0f978c1a2af2bc7f9a1c937d0f324ffaf852a9a4414c8485",
+        "ExploreWidgetWatch": "724f21ab86aa3f8c57673a3b346cf119f6a155bf82bb0201fd3b18e28e44f1ed",
+        "TopicWorlds":        "3dbde4c45532f4bdb0a1d7c210db43f0888f8a82f4aab43f7a90f3c4762d8ff7",
+        "Format":             "d112638c0184ab5698af7b69532dfe2f12973f7af9cb137b9f70278130b1eafa",
+        "MRE":                "0c77404637570adff548e329a48654498c54ce1c36a459d72586ff18999bebaa",
+        "Episode":            "87dbde15a0d269b11606f5ff458d555e98eb493bb4fb6ddc150d812d5e9a9cf8",
+        "WatchPlayerConfigV3":"fea0311fb572b6fded60c5a1a9d652f97f55d182bc4cedbdad676354a8d2797c",
+        "SeoUrlData":         "fcc4a812d6b93496f00c3068234db7722f553032bb760e09e5e6c74586c86f8d",
+        "OverviewPage":       "28aad4e992bb63330bfcd40a6906af3119d8a2612fa9fd28dae9c19127e247ca",
+    }
 
-    # Episode — full episode detail by RRN; variables: { rrn }
-    VOD_HASH_EPISODE       = "87dbde15a0d269b11606f5ff458d555e98eb493bb4fb6ddc150d812d5e9a9cf8"
+    @classmethod
+    def _build(cls, operation: str, variables: str) -> dict:
+        """Assemble a persisted-query parameter dict for *operation*."""
+        return {
+            "operationName": operation,
+            "variables": variables,
+            "extensions": (
+                f'{{"persistedQuery":{{"version":1,"sha256Hash":"{cls.HASHES[operation]}"}}}}'
+            ),
+        }
 
-    # WatchPlayerConfigV3 — stream + DRM config; variables: { platform, id }
-    VOD_HASH_WATCH_PLAYER  = "fea0311fb572b6fded60c5a1a9d652f97f55d182bc4cedbdad676354a8d2797c"
+    # --- Live TV / Events ---
 
-    # SeoUrlData — resolve watch-path to hierarchy; variables: { watchPath }
-    VOD_HASH_SEO_URL_DATA  = "fcc4a812d6b93496f00c3068234db7722f553032bb760e09e5e6c74586c86f8d"
+    @classmethod
+    def live_tv_stations(cls, epg_count: int = 4) -> dict:
+        """LiveTvStations — all broadcast + FAST channels with EPG slots."""
+        return cls._build(
+            "LiveTvStations",
+            f'{{"epgCount":{epg_count},"filter":{{"channelTypes":["BROADCAST","FAST"]}}}}',
+        )
 
-    # OverviewPage — paginated grid for MOVIE or SERIES; variables: { pagination, filter }
-    VOD_HASH_OVERVIEW_PAGE = "28aad4e992bb63330bfcd40a6906af3119d8a2612fa9fd28dae9c19127e247ca"
+    @classmethod
+    def explore_widget_watch(cls, area: str = "home", offset: int = 0, take: int = 15) -> dict:
+        """ExploreWidgetWatch — editorial home view containing LiveEventWidget nodes."""
+        return cls._build(
+            "ExploreWidgetWatch",
+            f'{{"area":"{area}","offset":{offset},"take":{take}}}',
+        )
+
+    # --- VOD ---
+
+    @classmethod
+    def topic_worlds(cls, take: int = 100, offset: int = 0) -> dict:
+        """
+        TopicWorlds — browse all genre/topic worlds.
+
+        Confirmed from live traffic:
+          response key:  data.topicWorldsV2.elements[]   (NOT topicWorlds.items[])
+          pagination:    data.topicWorldsV2.pageInfo.hasNextPage
+        """
+        return cls._build(
+            "TopicWorlds",
+            f'{{"take":{take},"offset":{offset},"filterForSearchGrid":true}}',
+        )
+
+    @classmethod
+    def format(cls, format_rrn: str) -> dict:
+        """Format — full format detail (seasons, metadata) by RRN."""
+        return cls._build("Format", f'{{"id":"{format_rrn}"}}')
+
+    @classmethod
+    def mre(cls, format_rrn: str) -> dict:
+        """MRE — seasons + related episodes for a Format."""
+        return cls._build("MRE", f'{{"id":"{format_rrn}"}}')
+
+    @classmethod
+    def episode(cls, episode_rrn: str) -> dict:
+        """Episode — full episode detail by RRN."""
+        return cls._build("Episode", f'{{"rrn":"{episode_rrn}"}}')
+
+    @classmethod
+    def watch_player_config(cls, rrn: str) -> dict:
+        """WatchPlayerConfigV3 — stream URL + DRM config for an episode or movie."""
+        return cls._build(
+            "WatchPlayerConfigV3",
+            f'{{"platform":"{RTLPlusDefaults.VOD_PLATFORM_GRAPHQL}","id":"{rrn}"}}',
+        )
+
+    @classmethod
+    def seo_url_data(cls, watch_path: str) -> dict:
+        """SeoUrlData — resolve a watch-path to its content hierarchy."""
+        return cls._build("SeoUrlData", f'{{"watchPath":"{watch_path}"}}')
+
+    @classmethod
+    def overview_page(
+        cls,
+        element_type: str,
+        genres: list = None,
+        offset: int = 0,
+        limit: int = None,
+    ) -> dict:
+        """OverviewPage — paginated grid for MOVIE or SERIES with optional genre filter."""
+        if limit is None:
+            limit = RTLPlusDefaults.VOD_OVERVIEW_PAGE_LIMIT
+
+        filter_parts = [f'"elementType":"{element_type}"']
+        if genres:
+            genres_json = "[" + ",".join(f'"{g}"' for g in genres) + "]"
+            filter_parts.append(f'"genres":{genres_json}')
+
+        variables = (
+            f'{{"pagination":{{"offset":{offset},"limit":{limit}}},'
+            f'"filter":{{{",".join(filter_parts)}}}}}'
+        )
+        return cls._build("OverviewPage", variables)
 
 
 class RTLPlusHeaders:
@@ -405,115 +486,3 @@ class RTLPlusConfig:
         return RTLPlusDefaults.VOD_WURSTLAND_CONFIG_URL.format(
             rrn=rrn, platform=RTLPlusDefaults.VOD_WURSTLAND_PLATFORM
         )
-
-    @staticmethod
-    def get_vod_topic_worlds_params(take: int = 100, offset: int = 0) -> dict:
-        """
-        TopicWorlds — browse all genre/topic worlds.
-
-        Confirmed from live traffic:
-          operationName: TopicWorlds
-          variables:     { take, offset, filterForSearchGrid: true }
-          response key:  data.topicWorldsV2.elements[]   (NOT topicWorlds.items[])
-          pagination:    data.topicWorldsV2.pageInfo.hasNextPage
-        """
-        return {
-            "operationName": "TopicWorlds",
-            "variables": f'{{"take":{take},"offset":{offset},"filterForSearchGrid":true}}',
-            "extensions": (
-                '{"persistedQuery":{"version":1,"sha256Hash":'
-                f'"{RTLPlusDefaults.VOD_HASH_TOPIC_WORLDS}"}}}}'
-            ),
-        }
-
-    @staticmethod
-    def get_vod_format_params(format_rrn: str) -> dict:
-        """Format — full format detail (seasons, metadata) by RRN."""
-        return {
-            "operationName": "Format",
-            "variables": f'{{"id":"{format_rrn}"}}',
-            "extensions": (
-                '{"persistedQuery":{"version":1,"sha256Hash":'
-                f'"{RTLPlusDefaults.VOD_HASH_FORMAT}"}}}}'
-            ),
-        }
-
-    @staticmethod
-    def get_vod_mre_params(format_rrn: str) -> dict:
-        """MRE — seasons + related episodes for a Format."""
-        return {
-            "operationName": "MRE",
-            "variables": f'{{"id":"{format_rrn}"}}',
-            "extensions": (
-                '{"persistedQuery":{"version":1,"sha256Hash":'
-                f'"{RTLPlusDefaults.VOD_HASH_MRE}"}}}}'
-            ),
-        }
-
-    @staticmethod
-    def get_vod_episode_params(episode_rrn: str) -> dict:
-        """Episode — full episode detail by RRN."""
-        return {
-            "operationName": "Episode",
-            "variables": f'{{"rrn":"{episode_rrn}"}}',
-            "extensions": (
-                '{"persistedQuery":{"version":1,"sha256Hash":'
-                f'"{RTLPlusDefaults.VOD_HASH_EPISODE}"}}}}'
-            ),
-        }
-
-    @staticmethod
-    def get_vod_watch_player_params(rrn: str) -> dict:
-        """WatchPlayerConfigV3 — stream URL + DRM config for an episode or movie."""
-        return {
-            "operationName": "WatchPlayerConfigV3",
-            "variables": (
-                f'{{"platform":"{RTLPlusDefaults.VOD_PLATFORM_GRAPHQL}",'
-                f'"id":"{rrn}"}}'
-            ),
-            "extensions": (
-                '{"persistedQuery":{"version":1,"sha256Hash":'
-                f'"{RTLPlusDefaults.VOD_HASH_WATCH_PLAYER}"}}}}'
-            ),
-        }
-
-    @staticmethod
-    def get_vod_seo_url_data_params(watch_path: str) -> dict:
-        """SeoUrlData — resolve a watch-path to its hierarchy. variables: { watchPath }"""
-        return {
-            "operationName": "SeoUrlData",
-            "variables": f'{{"watchPath":"{watch_path}"}}',
-            "extensions": (
-                '{"persistedQuery":{"version":1,"sha256Hash":' +
-                f'"{RTLPlusDefaults.VOD_HASH_SEO_URL_DATA}"}}}}'
-            ),
-        }
-
-    @staticmethod
-    def get_vod_overview_page_params(
-        element_type: str,
-        genres: list = None,
-        offset: int = 0,
-        limit: int = None,
-    ) -> dict:
-        """OverviewPage — paginated grid for MOVIE or SERIES with optional genre filter."""
-        if limit is None:
-            limit = RTLPlusDefaults.VOD_OVERVIEW_PAGE_LIMIT
-
-        filter_parts = [f'"elementType":"{element_type}"']
-        if genres:
-            genres_json = "[" + ",".join(f'"{g}"' for g in genres) + "]"
-            filter_parts.append(f'"genres":{genres_json}')
-
-        variables = (
-            f'{{"pagination":{{"offset":{offset},"limit":{limit}}},' +
-            f'"filter":{{{",".join(filter_parts)}}}}}'
-        )
-        return {
-            "operationName": "OverviewPage",
-            "variables": variables,
-            "extensions": (
-                '{"persistedQuery":{"version":1,"sha256Hash":' +
-                f'"{RTLPlusDefaults.VOD_HASH_OVERVIEW_PAGE}"}}}}'
-            ),
-        }

@@ -45,7 +45,7 @@ This manager never performs stream or DRM fetches directly.
 GraphQL note
 -------------
 RTL+ uses persisted queries exclusively.  All operation names and hashes live
-in RTLPlusDefaults / RTLPlusConfig so this file contains zero magic strings.
+in RTLPlusGraphQL so this file contains zero magic strings.
 Partial-data (valueCompletion) responses are handled defensively throughout.
 """
 
@@ -54,7 +54,7 @@ from typing import List, Optional, Union
 
 from ...base.models.vod import VodCategory, VodItem
 from ...base.utils.logger import logger
-from .constants import RTLPlusConfig, RTLPlusDefaults
+from .constants import RTLPlusConfig, RTLPlusDefaults, RTLPlusGraphQL
 
 
 class RTLPlusVodManager:
@@ -287,8 +287,7 @@ class RTLPlusVodManager:
         Response shape (confirmed from live data):
             data.urlDataByWatchPath.hierarchy.entries[-1].metadata.breadcrumbTitle
         """
-        params = RTLPlusConfig.get_vod_seo_url_data_params(watch_path)
-        data = self._graphql_get(params)
+        data = self._graphql_get(RTLPlusGraphQL.seo_url_data(watch_path))
         if not data:
             return None
         try:
@@ -325,7 +324,7 @@ class RTLPlusVodManager:
         limit = RTLPlusDefaults.VOD_OVERVIEW_PAGE_LIMIT
 
         while True:
-            params = RTLPlusConfig.get_vod_overview_page_params(
+            params = RTLPlusGraphQL.overview_page(
                 element_type=element_type,
                 genres=[genre_slug],
                 offset=offset,
@@ -346,7 +345,6 @@ class RTLPlusVodManager:
             for node in items:
                 if not node:
                     continue
-                typename = node.get("__typename", "")
                 node_id = node.get("id", "")
                 if not node_id or node_id in seen:
                     continue
@@ -395,8 +393,7 @@ class RTLPlusVodManager:
         take = 100
 
         while True:
-            params = RTLPlusConfig.get_vod_topic_worlds_params(take=take, offset=offset)
-            data = self._graphql_get(params)
+            data = self._graphql_get(RTLPlusGraphQL.topic_worlds(take=take, offset=offset))
             if not data:
                 break
 
@@ -432,8 +429,7 @@ class RTLPlusVodManager:
         We re-fetch TopicWorlds and locate the matching world, then iterate
         its content items which may be Format or Movie nodes.
         """
-        params = RTLPlusConfig.get_vod_topic_worlds_params(take=100, offset=0)
-        data = self._graphql_get(params)
+        data = self._graphql_get(RTLPlusGraphQL.topic_worlds(take=100, offset=0))
         if not data:
             return []
 
@@ -482,7 +478,7 @@ class RTLPlusVodManager:
     def _list_seasons(self, format_rrn: str) -> List[VodCategory]:
         """Fetch seasons using MRE first, falling back to the Format query."""
         # Primary: MRE
-        data = self._graphql_get(RTLPlusConfig.get_vod_mre_params(format_rrn))
+        data = self._graphql_get(RTLPlusGraphQL.mre(format_rrn))
         seasons = self._extract_seasons_from_mre(data) if data else []
 
         # Fallback: Format detail
@@ -490,7 +486,7 @@ class RTLPlusVodManager:
             logger.debug(
                 f"RTLPlusVodManager: MRE empty → Format fallback for '{format_rrn}'"
             )
-            data = self._graphql_get(RTLPlusConfig.get_vod_format_params(format_rrn))
+            data = self._graphql_get(RTLPlusGraphQL.format(format_rrn))
             seasons = self._extract_seasons_from_format(data) if data else []
 
         results: List[VodCategory] = []
@@ -539,7 +535,7 @@ class RTLPlusVodManager:
         """
         discriminator = season_key.split("@")[0].replace("season:", "")
 
-        data = self._graphql_get(RTLPlusConfig.get_vod_mre_params(format_rrn))
+        data = self._graphql_get(RTLPlusGraphQL.mre(format_rrn))
         episodes_raw = (
             self._extract_episodes_from_mre(data, discriminator) if data else []
         )
@@ -548,7 +544,7 @@ class RTLPlusVodManager:
             logger.debug(
                 f"RTLPlusVodManager: MRE episodes empty → Format fallback for '{format_rrn}'"
             )
-            data = self._graphql_get(RTLPlusConfig.get_vod_format_params(format_rrn))
+            data = self._graphql_get(RTLPlusGraphQL.format(format_rrn))
             episodes_raw = (
                 self._extract_episodes_from_format(data, discriminator) if data else []
             )

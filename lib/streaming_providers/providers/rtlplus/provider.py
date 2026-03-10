@@ -10,7 +10,7 @@ from ...base.models.proxy_models import ProxyConfig
 from ...base.provider import StreamingProvider
 from ...base.utils import logger
 from .auth import RTLPlusAuthenticator
-from .constants import RTLPlusConfig, RTLPlusDefaults
+from .constants import RTLPlusConfig, RTLPlusDefaults, RTLPlusGraphQL
 from .models import RTLPlusLiveEvent
 from .vod_manager import RTLPlusVodManager
 
@@ -34,7 +34,7 @@ class RTLPlusProvider(StreamingProvider):
 
         # Initialize configuration
         self.rtl_config = RTLPlusConfig(config)
-        self.channels_query_params = RTLPlusDefaults.CHANNELS_QUERY_PARAMS
+        self.channels_query_params = RTLPlusGraphQL.live_tv_stations()
 
         # ✅ Using HTTP manager abstraction
         self.http_manager = self._setup_http_manager(
@@ -215,7 +215,7 @@ class RTLPlusProvider(StreamingProvider):
         try:
             response = self.http_manager.get(
                 self.rtl_config.graphql_endpoint,
-                params=RTLPlusDefaults.EVENTS_QUERY_PARAMS,
+                params=RTLPlusGraphQL.explore_widget_watch(),
                 headers=headers,
                 operation="api",
             )
