@@ -438,19 +438,15 @@ class ProviderConfig:
 
         return feed_template.replace("{MpxAccountPid}", self.manifest.mpx.account_pid)
 
-    def get_resolved_tvhub_url(
-        self, hub_name: str, client_model: Optional[str] = None
-    ) -> Optional[str]:
-        """Get resolved TV Hub URL with client model substitution"""
-        if not self.manifest:
+    def get_resolved_tvhub_url(self, hub_name: str) -> Optional[str]:
+        template = self.manifest.tv_hubs.base_urls.get(hub_name)
+        if not template or not self.bootstrap.client_model:
             return None
-
-        hub_template = self.manifest.tv_hubs.base_urls.get(hub_name)
-        if not hub_template:
-            return None
-
-        resolved_client_model = client_model or self.bootstrap.client_model
-        return hub_template.replace("{clientModel}", resolved_client_model)
+        return (
+            template
+            .replace("{clientModel}", self.bootstrap.client_model)
+            .replace("{client_model}", self.bootstrap.client_model)
+        )
 
     def get_tvhubs_base_url(self, client_model: Optional[str] = None) -> Optional[str]:
         """
