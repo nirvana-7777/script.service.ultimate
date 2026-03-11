@@ -15,6 +15,7 @@ from ...base.models.proxy_models import ProxyConfig
 from ...base.network import HTTPManagerFactory, ProxyConfigManager
 from ...base.provider import StreamingProvider
 from ...base.utils.logger import logger
+from .vod_manager import VodManager
 from .auth import Magenta2Authenticator, Magenta2Credentials, Magenta2UserCredentials
 from .config_models import ProviderConfig
 from .constants import (
@@ -112,6 +113,14 @@ class Magenta2Provider(StreamingProvider):
         # Initialize endpoint manager (will be populated after discovery)
         self.endpoint_manager: Optional[EndpointManager] = None
         self.provider_config: Optional[ProviderConfig] = None
+
+        self._vod_manager = VodManager(
+            http_manager=self.http_manager,
+            provider_name=self.provider_name,
+            bootstrap=self.endpoint_manager.config.bootstrap,
+            provider_config=self.endpoint_manager.config,
+            session_id=self.authenticator._session_id,
+        )
 
         # 🚨 INITIALIZE AUTHENTICATOR FIRST (with minimal config)
         # Use fallback client IDs initially
@@ -1099,6 +1108,13 @@ class Magenta2Provider(StreamingProvider):
         logger.info(f"  Total: {len(channels)}")
 
         return successful_channels
+
+    def get_vod_category(self, category_path, **kwargs):
+        """Delegate VOD catalogue browsing to VodManager."""
+        return self._vod_manager.get_children(
+            category_path=category_path,
+            **kwargs,
+        )
 
     def enrich_channel_data(
         self, channel: StreamingChannel, **kwargs

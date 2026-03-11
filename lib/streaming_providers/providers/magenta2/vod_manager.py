@@ -1,0 +1,619 @@
+# streaming_providers/providers/magenta2/vod_manager.py
+"""
+Magenta2 VOD Manager
+
+Handles VOD catalogue browsing for the Magenta2 provider.
+
+Browsing API hierarchy
+-----------------------
+    StructuredGrid/{VOD_FLEX_ID_HOME}                              → top-level lanes
+    UnstructuredGrid/{flex_id}                                     → paginated lane items
+    VodDetails/{VOD_FLEX_ID_DETAILS}/{gn_id}                      → series / movie / episode detail
+    VodDetails/{VOD_FLEX_ID_DETAILS}/GN_SEASON_{id}_DE_{n}        → season detail
+
+Playback chain  (implemented in provider.get_manifest)
+-------------------------------------------------------
+    1. VodDetails response  →  content.productInformationLink.href
+          (wcps .../uspip/.../vodproductinformation/.../GN_...)
+       Stored as VodItem.manifest_script at browse time.
+
+    2. Fetch productInformationLink  →  buttons.primary[]
+          Pick entry where rel=="player" AND instantUsable==true
+          (skip rel=="launchApp" -- those are external apps, not streams)
+          → href  = VodPlayer URL  (follow directly, do not construct)
+          → partnerId already in the URL as a query param
+
+    3. Fetch VodPlayer href  (append $redirect=false + sid from _base_params)
+          → content.playbackUrls[].href
+             (link.theplatform.eu/s/mdeprod/media/{mpx_id})
+          That MPX selector URL is the manifest -- identical format to live channels.
+
+    Bonus: buttons.secondary[] where rel=="trailer"
+          → href = trailer URL  (populate VodItem.trailer_url if desired)
+
+tvhubs base URL resolution order
+---------------------------------
+1. Manifest tv_hubs.base_urls  (via ProviderConfig.get_tvhubs_base_url)
+2. TVHUBS_BASE_URL constant    (fallback)
+
+Public interface
+-----------------
+    vod_manager.get_children(category_path, **kwargs)
+        -> List[VodCategory | VodItem]
+"""
+
+import time
+import logging
+from typing import Dict, List, Optional, Union
+
+from ...base.models.vod import VodCategory, VodItem
+
+from .constants import (
+    SUBSCRIBER_TYPES,
+    TVHUBS_BASE_URL,
+    VOD_DEFAULT_PAGE_SIZE,
+    VOD_FLEX_ID_DETAILS,
+    VOD_FLEX_ID_HOME,
+    VOD_PREFIX_EPISODE,
+    VOD_PREFIX_SEASON,
+    VOD_PREFIX_SERIES,
+    VOD_STREAMING_TILE_TITLE,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class VodManager:
+    """
+    Manages Magenta2 VOD catalogue traversal.
+
+    Args:
+        http_manager:    An HTTPManager instance (from the parent provider).
+        provider_name:   Provider identifier string (e.g. "magenta2").
+        bootstrap:       BootstrapConfig obtained from discovery.  Supplies all
+                         per-platform values (device_model, subscriber_type,
+                         client_model, profile_name, theme_id, home_url) so
+                         that platform identity does not need to be carried
+                         through this class at all.
+        provider_config: Optional ProviderConfig; when supplied the tvhubs base
+                         URL is resolved from the manifest instead of the
+                         TVHUBS_BASE_URL fallback constant.
+    """
+
+    def __init__(
+        self,
+        http_manager,
+        provider_name: str,
+        bootstrap=None,
+        provider_config=None,
+        session_id: Optional[str] = None,
+    ):
+        self._http = http_manager
+        self._provider = provider_name
+        self._provider_config = provider_config
+        self._session_id: str = session_id or ""
+
+        # All content values resolved from BootstrapConfig -- no platform needed.
+        self._home_url: Optional[str] = getattr(bootstrap, "home_url", None)
+        self._client_model: str = getattr(bootstrap, "client_model", None) or "ftv-web"
+        self._device_model: str = getattr(bootstrap, "device_model", None) or "WEB2_FTV"
+        self._profile_name: str = getattr(bootstrap, "profile_name", None) or "stageExt"
+        self._theme_id: str = getattr(bootstrap, "theme_id", None) or "hdr-ui2"
+        # subscriber_type is not in bootstrap; derive from platform once at init.
+        _platform = getattr(bootstrap, "platform", "")
+        self._subscriber_type: str = SUBSCRIBER_TYPES.get(_platform, "FTV_OTT_DT")
+
+    # =========================================================================
+    # Public API
+    # =========================================================================
+
+    def get_children(
+        self,
+        category_path: List[str],
+        *,
+        page_size: int = VOD_DEFAULT_PAGE_SIZE,
+        offset: int = 0,
+    ) -> List[Union[VodCategory, VodItem]]:
+        """
+        Return the children of a VOD tree node.
+
+        Args:
+            category_path: Ordered list of content_ids from root to the
+                           requested node, matching the provider's contract:
+                               []                       -> VOD home (top-level lanes)
+                               ["GN_SERIES_123"]        -> series (seasons)
+                               ["GN_SERIES_123",
+                                "GN_SEASON_123_DE_2"]   -> season (episodes)
+                               ["lane:326619"]           -> UnstructuredGrid lane
+            page_size:  Number of items to fetch per page (UnstructuredGrid).
+            offset:     Pagination offset (UnstructuredGrid).
+
+        Returns:
+            Mixed list of VodCategory and VodItem objects.
+        """
+        params = self._base_params()
+
+        if not category_path:
+            return self._fetch_home_lanes(params)
+
+        node_id = category_path[-1]
+
+        if node_id.startswith("lane:"):
+            flex_id = node_id[5:]
+            return self._fetch_lane_items(flex_id, params, page_size=page_size, offset=offset)
+
+        if node_id.startswith(VOD_PREFIX_SEASON):
+            return self._fetch_season_episodes(node_id, params)
+
+        if node_id.startswith(VOD_PREFIX_SERIES):
+            return self._fetch_series_seasons(node_id, params)
+
+        if node_id.startswith(VOD_PREFIX_EPISODE):
+            return self._fetch_single_episode(node_id, params)
+
+        # Movies (GN_MV, GN_SH) and any other leaf ID
+        return self._fetch_single_item(node_id, params)
+
+    # =========================================================================
+    # Private helpers – HTTP layer
+    # =========================================================================
+
+    def _base_params(self) -> Dict[str, str]:
+        """Build query parameters common to every VOD API request."""
+        return {
+            "$deviceModel": self._device_model,
+            "$profile": self._profile_name,
+            "$subscriberType": self._subscriber_type,
+            "$theme": self._theme_id,
+            "$redirect": "false",
+            "sid": self._session_id,
+            "t": str(int(time.time() * 1000)),
+        }
+
+    def _base_url(self) -> str:
+        """
+        Resolve the tvhubs root URL (https://host/v3/{clientModel}) with the
+        client model already substituted.
+
+        Resolution order:
+          1. ProviderConfig.get_tvhubs_base_url() — derives the root from hub
+             URLs already in the manifest, reusing data fetched for live TV.
+          2. TVHUBS_BASE_URL constant — fallback when manifest is unavailable.
+        """
+        if self._provider_config is not None:
+            resolved = self._provider_config.get_tvhubs_base_url(self._client_model)
+            if resolved:
+                return resolved
+
+        return TVHUBS_BASE_URL.format(client_model=self._client_model)
+
+    def _get(self, url: str, params: Dict) -> Optional[Dict]:
+        """Perform a GET request and return the parsed JSON body, or None on error."""
+        try:
+            response = self._http.get(url, params=params)
+            if response and response.status_code == 200:
+                return response.json()
+            logger.warning(
+                f"{self._provider}: VOD request failed "
+                f"[{response.status_code if response else 'no response'}] {url}"
+            )
+        except Exception as exc:
+            logger.error(f"{self._provider}: VOD request exception for {url}: {exc}")
+        return None
+
+    # =========================================================================
+    # Private helpers – Personal Bar Discovery
+    # =========================================================================
+
+    def _get_streaming_grid_url(self) -> Optional[str]:
+        """
+        Fetch the personal bar from homeUrl and extract the Streaming tile's
+        onFocus screen href, which contains the StructuredGrid URL for VOD.
+        """
+        if not self._home_url:
+            logger.debug(
+                f"{self._provider}: No homeUrl available; "
+                "skipping personal-bar VOD discovery"
+            )
+            return None
+
+        params = self._base_params()
+        # homeUrl needs the un-prefixed parameter names alongside the standard ones
+        params.update({
+            "deviceModel": self._device_model,
+            "profileName": self._profile_name,
+            "themeId": self._theme_id,
+        })
+
+        data = self._get(self._home_url, params)
+        if not data:
+            logger.error(f"{self._provider}: Failed to fetch personal bar from homeUrl")
+            return None
+
+        tiles = data.get("primary", {}).get("tiles", [])
+        for tile in tiles:
+            if tile.get("title") == VOD_STREAMING_TILE_TITLE:
+                href = tile.get("onFocus", {}).get("screen", {}).get("href")
+                if href:
+                    logger.debug(f"{self._provider}: Found Streaming grid URL: {href}")
+                    return href
+
+        logger.warning(
+            f"{self._provider}: '{VOD_STREAMING_TILE_TITLE}' tile not found in personal bar"
+        )
+        return None
+
+    # =========================================================================
+    # Private helpers – StructuredGrid (home)
+    # =========================================================================
+
+    def _fetch_home_lanes(self, params: Dict) -> List[VodCategory]:
+        """
+        Fetch the VOD home StructuredGrid and return each browsable lane as a
+        VodCategory. External-partner lanes (Disney+, RTL+, …) are skipped.
+        """
+        streaming_grid_url = self._get_streaming_grid_url()
+
+        if streaming_grid_url:
+            url = streaming_grid_url
+            logger.debug(f"{self._provider}: Using discovered VOD home URL: {url}")
+        else:
+            url = f"{self._base_url()}/StructuredGrid/{VOD_FLEX_ID_HOME}"
+            logger.warning(f"{self._provider}: Falling back to hardcoded VOD home URL: {url}")
+
+        data = self._get(url, params)
+        if not data:
+            return []
+
+        lanes = data.get("content", {}).get("lanes", [])
+        categories: List[VodCategory] = []
+
+        for lane in lanes:
+            lane_type = lane.get("type", "")
+            title = lane.get("title", "").strip()
+            flex_id = lane.get("flexId", "")
+
+            # Skip external partner lanes (e.g. action == "ChannelTuneOpenApp")
+            show_all = lane.get("showAllUrl", {})
+            action = show_all.get("action", "") if isinstance(show_all, dict) else ""
+            if action == "ChannelTuneOpenApp":
+                logger.debug(f"{self._provider}: Skipping external partner lane '{title}'")
+                continue
+
+            if lane_type != "UnstructuredGrid" or not flex_id or not title:
+                continue
+
+            categories.append(
+                VodCategory(
+                    name=title,
+                    content_id=f"lane:{flex_id}",
+                    provider=self._provider,
+                    child_count=lane.get("totalCount"),
+                )
+            )
+
+        logger.debug(f"{self._provider}: Found {len(categories)} VOD home lanes")
+        return categories
+
+    # =========================================================================
+    # Private helpers – UnstructuredGrid (lane items)
+    # =========================================================================
+
+    def _fetch_lane_items(
+        self,
+        flex_id: str,
+        params: Dict,
+        page_size: int = VOD_DEFAULT_PAGE_SIZE,
+        offset: int = 0,
+    ) -> List[Union[VodCategory, VodItem]]:
+        """
+        Fetch items from an UnstructuredGrid lane.  Movies → VodItem,
+        series → VodCategory (seasons/episodes require further drill-down).
+        """
+        url = f"{self._base_url()}/UnstructuredGrid/{flex_id}"
+        paged_params = dict(params)
+        paged_params["$size"] = str(page_size)
+        paged_params["$offset"] = str(offset)
+
+        data = self._get(url, paged_params)
+        if not data:
+            return []
+
+        content = data.get("content", {})
+        results: List[Union[VodCategory, VodItem]] = []
+        for item in content.get("items", []):
+            node = self._map_unstructured_item(item)
+            if node is not None:
+                results.append(node)
+
+        total = content.get("page", {}).get("total", len(results))
+        logger.debug(
+            f"{self._provider}: Lane {flex_id} – fetched {len(results)}/{total} items "
+            f"(offset={offset})"
+        )
+        return results
+
+    def _map_unstructured_item(
+        self, item: Dict
+    ) -> Optional[Union[VodCategory, VodItem]]:
+        """Map a single UnstructuredGrid item dict to a VodCategory or VodItem."""
+        content_id: str = item.get("id", "")
+        title: str = (item.get("title") or "").strip()
+        vod_type: str = item.get("vodType", "")
+        image_url: Optional[str] = (item.get("image") or {}).get("href")
+        description: Optional[str] = item.get("description")
+        year_raw = item.get("yearOfProduction")
+        release_year: Optional[int] = int(year_raw) if year_raw else None
+        genre: Optional[str] = item.get("mainGenre")
+        genres: Optional[List[str]] = item.get("genres") or None
+        duration_raw = item.get("duration")
+        seasons_available: Optional[int] = item.get("seasonsAvailable")
+        rating: Optional[str] = item.get("childProtectionId")
+
+        if not content_id or not title:
+            return None
+
+        if vod_type == "Series":
+            return VodCategory(
+                name=title,
+                content_id=content_id,
+                provider=self._provider,
+                logo_url=image_url,
+                description=description,
+                child_count=seasons_available,
+            )
+
+        duration_seconds: Optional[int] = int(duration_raw) * 60 if duration_raw else None
+        return VodItem.create_movie(
+            name=title,
+            content_id=content_id,
+            provider=self._provider,
+            logo_url=image_url,
+            description=description,
+            release_year=release_year,
+            genre=genre,
+            genres=genres,
+            duration_seconds=duration_seconds,
+            rating=rating,
+        )
+
+    # =========================================================================
+    # Private helpers – VodDetails (series → seasons)
+    # =========================================================================
+
+    def _fetch_series_seasons(self, content_id: str, params: Dict) -> List[VodCategory]:
+        """Fetch a series VodDetails page and return each season as a VodCategory."""
+        url = f"{self._base_url()}/VodDetails/{VOD_FLEX_ID_DETAILS}/{content_id}"
+        data = self._get(url, params)
+        if not data:
+            return []
+
+        content = data.get("content", {})
+        info = content.get("contentInformation", {})
+        series_title: str = info.get("seriesTitle") or info.get("title") or ""
+        series_num = content_id.replace(VOD_PREFIX_SERIES, "")
+
+        seasons: List[VodCategory] = []
+        for lane in content.get("lanes", []):
+            if lane.get("type") != "Season":
+                continue
+            season_num = lane.get("seasonNumber")
+            if season_num is None:
+                continue
+            season_title = lane.get("title") or f"Staffel {season_num}"
+            season_id = f"{VOD_PREFIX_SEASON}{series_num}_DE_{season_num}"
+            seasons.append(
+                VodCategory(
+                    name=season_title,
+                    content_id=season_id,
+                    provider=self._provider,
+                    description=f"{series_title} – {season_title}",
+                    child_count=lane.get("episodeCount") or lane.get("totalCount"),
+                )
+            )
+
+        # Fallback: build from seasonsAvailable count
+        if not seasons:
+            seasons_count = info.get("seasonsAvailable") or 0
+            for s in range(1, int(seasons_count) + 1):
+                season_id = f"{VOD_PREFIX_SEASON}{series_num}_DE_{s}"
+                seasons.append(
+                    VodCategory(
+                        name=f"Staffel {s}",
+                        content_id=season_id,
+                        provider=self._provider,
+                        description=f"{series_title} – Staffel {s}",
+                    )
+                )
+
+        logger.debug(f"{self._provider}: Series {content_id} → {len(seasons)} seasons")
+        return seasons
+
+    # =========================================================================
+    # Private helpers – VodDetails (season → episodes)
+    # =========================================================================
+
+    def _fetch_season_episodes(self, season_id: str, params: Dict) -> List[VodItem]:
+        """
+        Fetch episodes for a season.
+
+        The season VodDetails response does not embed episode items inline.
+        Instead each season lane carries a laneContentLink href that points to
+        an UnstructuredGrid endpoint listing the actual episodes.  We fetch
+        that endpoint for every Episode-type lane we find.
+        """
+        url = f"{self._base_url()}/VodDetails/{VOD_FLEX_ID_DETAILS}/{season_id}"
+        episode_params = dict(params)
+        episode_params["autofocus"] = "videoload"
+
+        data = self._get(url, episode_params)
+        if not data:
+            return []
+
+        content = data.get("content", {})
+        season_number: Optional[int] = self._extract_season_number(season_id)
+
+        episodes: List[VodItem] = []
+        for lane in content.get("lanes", []):
+            if lane.get("type") != "Episode":
+                continue
+            lane_url = (lane.get("laneContentLink") or {}).get("href")
+            if not lane_url:
+                continue
+            lane_data = self._get(lane_url, params)
+            if not lane_data:
+                continue
+            for ep in lane_data.get("content", {}).get("items", []):
+                node = self._map_episode_item(ep, season_number)
+                if node is not None:
+                    episodes.append(node)
+
+        logger.debug(f"{self._provider}: Season {season_id} → {len(episodes)} episodes")
+        return episodes
+
+    def _map_episode_item(
+        self,
+        ep: Dict,
+        season_number: Optional[int],
+    ) -> Optional[VodItem]:
+        """
+        Map an episode item from a season lane content response to a VodItem.
+
+        manifest_script is not set here — lane listings do not include
+        productInformationLink.  The provider's get_manifest(content_id) must
+        fetch VodDetails for the episode to obtain it.
+        """
+        content_id: str = ep.get("id", "")
+        if not content_id:
+            return None
+        ep_num: Optional[int] = ep.get("episodeNumber")
+        title: str = (ep.get("title") or f"Episode {ep_num}").strip()
+        image_url: Optional[str] = (ep.get("image") or {}).get("href")
+        description: Optional[str] = ep.get("description")
+        duration_raw = ep.get("duration")
+        duration_seconds: Optional[int] = int(duration_raw) * 60 if duration_raw else None
+        genre: Optional[str] = ep.get("mainGenre")
+        genres: Optional[List[str]] = ep.get("genres") or None
+        rating: Optional[str] = ep.get("childProtectionId")
+
+        return VodItem.create_episode(
+            name=title,
+            content_id=content_id,
+            provider=self._provider,
+            season_number=season_number or 0,
+            episode_number=ep_num or 0,
+            logo_url=image_url,
+            description=description,
+            duration_seconds=duration_seconds,
+            genre=genre,
+            genres=genres,
+            rating=rating,
+        )
+
+    def _fetch_single_episode(self, content_id: str, params: Dict) -> List[VodItem]:
+        """
+        Fetch a single episode by content_id.
+
+        The VodDetails response for an episode has the metadata directly in
+        contentInformation — there are no inline episode items in the lanes.
+        The lanes only contain Person and recommendation (UnstructuredGrid)
+        rows, neither of which are relevant here.
+        """
+        episode_params = dict(params)
+        episode_params["autofocus"] = "videoload"
+        url = f"{self._base_url()}/VodDetails/{VOD_FLEX_ID_DETAILS}/{content_id}"
+        data = self._get(url, episode_params)
+        if not data:
+            return []
+
+        content_block = data.get("content", {})
+        info = content_block.get("contentInformation", {})
+        ep_num: Optional[int] = info.get("episodeNumber")
+        title: str = (info.get("title") or f"Episode {ep_num}").strip()
+        if not title:
+            return []
+
+        duration_seconds: Optional[int] = (
+            int(info["runtime"]) * 60 if info.get("runtime") else None
+        )
+        product_url: Optional[str] = (
+            content_block.get("productInformationLink") or {}
+        ).get("href")
+        return [VodItem.create_episode(
+            name=title,
+            content_id=content_id,
+            provider=self._provider,
+            season_number=info.get("seasonNumber") or 0,
+            episode_number=ep_num or 0,
+            logo_url=(info.get("image") or {}).get("href"),
+            description=info.get("description"),
+            long_description=info.get("longDescription"),
+            original_title=info.get("originalTitle"),
+            genre=info.get("mainGenre"),
+            genres=info.get("genres") or None,
+            duration_seconds=duration_seconds,
+            rating=info.get("childProtectionId"),
+            series_id=info.get("seriesId"),
+            series_title=info.get("seriesTitle"),
+            manifest_script=product_url,
+            session_manifest=product_url is not None,
+        )]
+
+    def _fetch_single_item(self, content_id: str, params: Dict) -> List[VodItem]:
+        """
+        Fetch a movie (or unknown leaf) by content_id.
+
+        Metadata comes directly from contentInformation.  The lanes in the
+        real API response only contain Person and recommendation rows — there
+        are no playable child items to recurse into.
+        """
+        url = f"{self._base_url()}/VodDetails/{VOD_FLEX_ID_DETAILS}/{content_id}"
+        data = self._get(url, params)
+        if not data:
+            return []
+
+        content_block = data.get("content", {})
+        info = content_block.get("contentInformation", {})
+        title: str = (info.get("title") or "").strip()
+        if not title:
+            return []
+
+        duration_seconds: Optional[int] = (
+            int(info["runtime"]) * 60 if info.get("runtime") else None
+        )
+        year_raw = info.get("yearFrom")
+        product_url: Optional[str] = (
+            content_block.get("productInformationLink") or {}
+        ).get("href")
+        return [VodItem.create_movie(
+            name=title,
+            content_id=content_id,
+            provider=self._provider,
+            logo_url=(info.get("image") or {}).get("href"),
+            description=info.get("description"),
+            long_description=info.get("longDescription"),
+            original_title=info.get("originalTitle"),
+            release_year=int(year_raw) if year_raw else None,
+            genre=info.get("mainGenre"),
+            genres=info.get("genres") or None,
+            duration_seconds=duration_seconds,
+            rating=info.get("childProtectionId"),
+            manifest_script=product_url,
+            session_manifest=product_url is not None,
+        )]
+
+    # =========================================================================
+    # Utilities
+    # =========================================================================
+
+    @staticmethod
+    def _extract_season_number(season_id: str) -> Optional[int]:
+        """
+        Parse the season number from a season content_id.
+
+        e.g. "GN_SEASON_184925_DE_3" → 3
+        """
+        try:
+            return int(season_id.rsplit("_DE_", 1)[-1])
+        except (ValueError, IndexError):
+            return None

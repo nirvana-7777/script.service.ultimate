@@ -266,3 +266,35 @@ TAA_REQUEST_TEMPLATE = {
 BOOTSTRAP_PARAMS = {"$redirect": "false"}
 
 # REMOVED: Old BOOTSTRAP_KEYS - now handled in config_models.py
+
+# ============================================================================
+# VOD Configuration
+# ============================================================================
+
+# tvhubs base URL template — {client_model} is resolved at runtime from
+# CLIENT_MODEL_MAPPINGS.  This is a fallback; the live value should come
+# from the manifest's tv_hubs.base_urls["ftv"] (or equivalent) via
+# ProviderConfig.get_resolved_tvhub_url().
+TVHUBS_BASE_URL = "https://tvhubs.t-online.de/v3/{client_model}"
+
+# Flex IDs for the VOD catalogue.
+# FLEX_ID_VOD_HOME is only used when personal-bar discovery fails (i.e. no
+# homeUrl was obtained from bootstrap/manifest).
+# FLEX_ID_VOD_DETAILS is stable across platforms — no discovery equivalent.
+VOD_FLEX_ID_HOME = "164035"      # StructuredGrid fallback for VOD home screen
+VOD_FLEX_ID_DETAILS = "202887"   # VodDetails flex ID
+VOD_FLEX_ID_PLAYER = "202889"    # VodPlayer flex ID
+
+# Pagination default for UnstructuredGrid lane requests
+VOD_DEFAULT_PAGE_SIZE = 36
+
+# Content-ID prefixes — used to route get_children() to the correct handler
+VOD_PREFIX_SERIES = "GN_SERIES_"
+VOD_PREFIX_SEASON = "GN_SEASON_"
+VOD_PREFIX_EPISODE = "GN_EP"
+VOD_PREFIX_MOVIE_MV = "GN_MV"
+VOD_PREFIX_MOVIE_SH = "GN_SH"
+
+# Name of the personal-bar tile that leads to the VOD StructuredGrid.
+# Looked up by exact title match in the primary.tiles list returned by homeUrl.
+VOD_STREAMING_TILE_TITLE = "Streaming"

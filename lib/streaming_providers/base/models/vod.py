@@ -157,7 +157,13 @@ class VodItem(Content):
 
     # Classification
     rating: Optional[str] = None          # e.g. "FSK 12", "PG-13", "TV-MA"
-    genre: Optional[str] = None           # already on Content but repeated for clarity
+    genre: Optional[str] = None           # primary genre (mainGenre)
+    genres: Optional[List[str]] = None    # full genre list
+
+    # Extended descriptions
+    # description (short) is inherited from Content
+    long_description: Optional[str] = None    # longDescription from contentInformation
+    original_title: Optional[str] = None      # originalTitle — important for localised content
 
     # People
     cast: Optional[List[str]] = None
@@ -166,6 +172,9 @@ class VodItem(Content):
     # Series / episode context (None for standalone movies / documentaries)
     season_number: Optional[int] = None
     episode_number: Optional[int] = None
+    # Back-references for episodes — lets the UI navigate up without re-parsing IDs
+    series_id: Optional[str] = None       # e.g. "GN_SERIES_184925"
+    series_title: Optional[str] = None    # e.g. "Two and a Half Men"
 
     # Promotional
     trailer_url: Optional[str] = None
@@ -215,10 +224,16 @@ class VodItem(Content):
             "duration_minutes": self.duration_minutes,
             "release_year": self.release_year,
             "rating": self.rating,
+            "genre": self.genre,
+            "genres": self.genres,
+            "long_description": self.long_description,
+            "original_title": self.original_title,
             "cast": self.cast,
             "director": self.director,
             "season_number": self.season_number,
             "episode_number": self.episode_number,
+            "series_id": self.series_id,
+            "series_title": self.series_title,
             "trailer_url": self.trailer_url,
         })
         return result

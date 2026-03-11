@@ -10,6 +10,7 @@ class BootstrapConfig:
 
     client_model: str
     device_model: str
+    subscriber_type: str = "FTV_OTT_DT"  # resolved from platform via SUBSCRIBER_TYPES
     sam3_client_id: Optional[str] = None
     taa_url: Optional[str] = None
     device_tokens_url: Optional[str] = None
@@ -19,16 +20,23 @@ class BootstrapConfig:
     account_base_url: Optional[str] = None
     consumer_accounts_url: Optional[str] = None
     login_qr_code_url: Optional[str] = None
+    # VOD / personal-bar fields from baseSettings
+    home_url: Optional[str] = None       # baseSettings.homeUrl
+    profile_name: Optional[str] = None  # baseSettings.profileName
+    theme_id: Optional[str] = None      # baseSettings.themeId
     raw_data: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_api_response(cls, bootstrap_data: Dict[str, Any], platform: str) -> "BootstrapConfig":
         """Create BootstrapConfig from API response"""
+        from .constants import SUBSCRIBER_TYPES
+
         base_settings = bootstrap_data.get("baseSettings", {})
 
         return cls(
             client_model=base_settings.get("clientModel", f"ftv-{platform}"),
             device_model=base_settings.get("deviceModel", f"{platform.upper()}_FTV"),
+            subscriber_type=SUBSCRIBER_TYPES.get(platform, "FTV_OTT_DT"),
             sam3_client_id=base_settings.get("sam3ClientId"),
             taa_url=base_settings.get("taaUrl"),
             device_tokens_url=base_settings.get("deviceTokensUrl"),
@@ -38,6 +46,9 @@ class BootstrapConfig:
             account_base_url=base_settings.get("accountBaseUrl"),
             consumer_accounts_url=base_settings.get("consumerAccountsBaseUrl"),
             login_qr_code_url=base_settings.get("loginQrCodeUrl"),
+            home_url=base_settings.get("homeUrl"),
+            profile_name=base_settings.get("profileName"),
+            theme_id=base_settings.get("themeId"),
             raw_data=bootstrap_data,
         )
 
@@ -440,6 +451,32 @@ class ProviderConfig:
 
         resolved_client_model = client_model or self.bootstrap.client_model
         return hub_template.replace("{clientModel}", resolved_client_model)
+
+    def get_tvhubs_base_url(self, client_model: Optional[str] = None) -> Optional[str]:
+        """
+        Return the tvhubs root URL (scheme + host + /v3/{clientModel}) with
+        the client model already substituted.
+
+        Derived from the first available hub URL in the manifest by stripping
+        everything after /v3/{clientModel}/.  Used by VodManager to build
+        StructuredGrid / UnstructuredGrid / VodDetails endpoints without
+        hardcoding the host.
+        """
+        if not self.manifest:
+            return None
+
+        resolved_client_model = client_model or self.bootstrap.client_model
+
+        for hub_template in self.manifest.tv_hubs.base_urls.values():
+            resolved = hub_template.replace("{clientModel}", resolved_client_model)
+            # All tvhubs URLs follow: https://host/v3/{clientModel}/...
+            # Split off everything after the client-model path segment.
+            marker = f"/v3/{resolved_client_model}"
+            idx = resolved.find(marker)
+            if idx != -1:
+                return resolved[: idx + len(marker)]
+
+        return None
 
     def get_mpx_account_uri(self) -> Optional[str]:
         """NEW: Get MPX account URI for persona token composition"""
