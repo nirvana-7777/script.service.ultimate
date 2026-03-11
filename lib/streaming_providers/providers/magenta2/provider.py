@@ -113,14 +113,7 @@ class Magenta2Provider(StreamingProvider):
         # Initialize endpoint manager (will be populated after discovery)
         self.endpoint_manager: Optional[EndpointManager] = None
         self.provider_config: Optional[ProviderConfig] = None
-
-        self._vod_manager = VodManager(
-            http_manager=self.http_manager,
-            provider_name=self.provider_name,
-            bootstrap=self.endpoint_manager.config.bootstrap,
-            provider_config=self.endpoint_manager.config,
-            session_id=self.authenticator._session_id,
-        )
+        self._vod_manager: Optional[VodManager] = None
 
         # 🚨 INITIALIZE AUTHENTICATOR FIRST (with minimal config)
         # Use fallback client IDs initially
@@ -275,6 +268,17 @@ class Magenta2Provider(StreamingProvider):
                         logger.info("✓ Successfully updated SAM3 client with QR code URL")
                     else:
                         logger.warning("✗ Failed to update SAM3 client with QR code URL")
+
+        # Initialize VodManager now that config is discovered
+        if self.provider_config and self.endpoint_manager:
+            self._vod_manager = VodManager(
+                http_manager=self.http_manager,
+                provider_name=self.provider_name,
+                bootstrap=self.endpoint_manager.config.bootstrap,
+                provider_config=self.endpoint_manager.config,
+                session_id=self.session_id,
+            )
+            logger.info("✓ VodManager initialized with discovered config")
 
         # Initialize auth tokens (lazy - populated on first use)
         self.device_token = None
@@ -1110,11 +1114,9 @@ class Magenta2Provider(StreamingProvider):
         return successful_channels
 
     def get_vod_category(self, category_path, **kwargs):
-        """Delegate VOD catalogue browsing to VodManager."""
-        return self._vod_manager.get_children(
-            category_path=category_path,
-            **kwargs,
-        )
+        if not self._vod_manager:
+            raise RuntimeError("VodManager not available - configuration discovery may have failed")
+        return self._vod_manager.get_children(category_path=category_path, **kwargs)
 
     def enrich_channel_data(
         self, channel: StreamingChannel, **kwargs
