@@ -1,5 +1,6 @@
 # lib/streaming_providers/providers/rtlplus/provider.py
 import json
+import time
 import datetime
 from typing import ClassVar, Dict, List, Optional, Any
 
@@ -13,6 +14,8 @@ from .auth import RTLPlusAuthenticator
 from .constants import RTLPlusConfig, RTLPlusDefaults, RTLPlusGraphQL
 from .models import RTLPlusLiveEvent
 from .vod_manager import RTLPlusVodManager
+
+_MANIFEST_CACHE_TTL = 86400  # 1 day in seconds
 
 
 class RTLPlusProvider(StreamingProvider):
@@ -64,6 +67,9 @@ class RTLPlusProvider(StreamingProvider):
             self.bearer_token = None
 
         self._vod_manager = RTLPlusVodManager(self)
+
+        # Manifest cache: content_id -> (data, timestamp)
+        self._manifest_cache: Dict[str, tuple] = {}
 
     @property
     def provider_name(self) -> str:
@@ -323,25 +329,43 @@ class RTLPlusProvider(StreamingProvider):
                 or content_id.startswith("rrn:watch:videohub:clip:")
         )
 
+    def _fetch_manifest_data(self, content_id: str) -> Optional[list]:
+        """
+        Fetch raw manifest data for a given content_id, with a 1-day in-memory cache.
+
+        Both get_manifest() and get_drm() call this method so the endpoint is
+        only hit once per content_id per day, regardless of call order.
+        """
+        now = time.monotonic()
+        cached = self._manifest_cache.get(content_id)
+        if cached is not None:
+            data, ts = cached
+            if (now - ts) < _MANIFEST_CACHE_TTL:
+                logger.debug(f"RTL+ Manifest cache hit for {content_id}")
+                return data
+
+        manifest_url = self.rtl_config.get_manifest_url(content_id)
+        logger.debug(f"RTL+ Manifest Request: GET {manifest_url}")
+
+        headers = self._get_event_manifest_headers()
+        response = self.http_manager.get(manifest_url, operation="manifest", headers=headers)
+
+        logger.debug(f"RTL+ Manifest Response: Status={response.status_code}")
+        logger.debug(f"RTL+ Response Headers: {dict(response.headers)}")
+
+        response.raise_for_status()
+        data = response.json()
+
+        logger.debug(f"RTL+ Manifest Data: {self._sanitize_manifest_log(data)}")
+        self._manifest_cache[content_id] = (data, now)
+        return data
 
     def get_manifest(self, content_id: str, **kwargs) -> Optional[str]:
-        manifest_url = self.rtl_config.get_manifest_url(content_id)
-
         try:
-            logger.debug(f"RTL+ Manifest Request: GET {manifest_url}")
+            manifest_data = self._fetch_manifest_data(content_id)
+            if manifest_data is None:
+                return None
 
-            headers = self._get_event_manifest_headers()
-            response = self.http_manager.get(manifest_url, operation="manifest", headers=headers)
-
-            logger.debug(f"RTL+ Manifest Response: Status={response.status_code}")
-            logger.debug(f"RTL+ Response Headers: {dict(response.headers)}")
-
-            response.raise_for_status()
-            manifest_data = response.json()
-
-            logger.debug(f"RTL+ Manifest Data: {self._sanitize_manifest_log(manifest_data)}")
-
-            # Process manifest data
             quality_preference = ["dashhd", "dashfree", "dashsd"]
 
             for quality in quality_preference:
@@ -405,12 +429,9 @@ class RTLPlusProvider(StreamingProvider):
         Get DRM configurations for a channel from RTL+ streaming API
         """
         try:
-            manifest_url = self.rtl_config.get_manifest_url(content_id)
-
-            headers = self._get_event_manifest_headers()
-            response = self.http_manager.get(manifest_url, operation="manifest", headers=headers)
-            response.raise_for_status()
-            manifest_data = response.json()
+            manifest_data = self._fetch_manifest_data(content_id)
+            if manifest_data is None:
+                return []
 
             drm_configs = []
 
@@ -443,7 +464,7 @@ class RTLPlusProvider(StreamingProvider):
                             drm_configs.append(
                                 create_drm_config(
                                     DRMSystem.WIDEVINE,
-                                    2,
+                                    3,
                                     license_url,
                                     self.rtl_config.get_drm_headers(access_token),
                                 )
@@ -452,7 +473,7 @@ class RTLPlusProvider(StreamingProvider):
                             drm_configs.append(
                                 create_drm_config(
                                     DRMSystem.PLAYREADY,
-                                    1,
+                                    2,
                                     license_url,
                                     self.rtl_config.get_playready_drm_headers(access_token),
                                 )
@@ -461,7 +482,7 @@ class RTLPlusProvider(StreamingProvider):
                             drm_configs.append(
                                 create_drm_config(
                                     DRMSystem.FAIRPLAY,
-                                    3,
+                                    4,
                                     license_url,
                                     self.rtl_config.get_drm_headers(access_token),
                                 )
