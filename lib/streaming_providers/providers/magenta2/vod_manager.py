@@ -361,7 +361,10 @@ class VodManager:
         image_url: Optional[str] = (item.get("image") or {}).get("href")
         description: Optional[str] = item.get("description")
         year_raw = item.get("yearOfProduction")
-        release_year: Optional[int] = int(year_raw) if year_raw else None
+        try:
+            release_year: Optional[int] = int(str(year_raw).split("-")[0]) if year_raw else None
+        except (ValueError, TypeError):
+            release_year = None
         genre: Optional[str] = item.get("mainGenre")
         genres: Optional[List[str]] = item.get("genres") or None
         duration_raw = item.get("duration")
@@ -610,6 +613,10 @@ class VodManager:
             int(info["runtime"]) * 60 if info.get("runtime") else None
         )
         year_raw = info.get("yearFrom")
+        try:
+            release_year_item: Optional[int] = int(str(year_raw).split("-")[0]) if year_raw else None
+        except (ValueError, TypeError):
+            release_year_item = None
         product_url: Optional[str] = (
             content_block.get("productInformationLink") or {}
         ).get("href")
@@ -621,7 +628,7 @@ class VodManager:
             description=info.get("description"),
             long_description=info.get("longDescription"),
             original_title=info.get("originalTitle"),
-            release_year=int(year_raw) if year_raw else None,
+            release_year=release_year_item,
             genre=info.get("mainGenre"),
             genres=info.get("genres") or None,
             duration_seconds=duration_seconds,
