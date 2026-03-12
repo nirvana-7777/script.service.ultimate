@@ -138,9 +138,15 @@ class VodManager:
 
         node_id = category_path[-1]
 
-        if node_id.startswith("lane:"):
-            flex_id = node_id[5:]
+        if node_id.startswith("UnstructuredGrid/"):
+            flex_id = node_id[len("UnstructuredGrid/"):]
             return self._fetch_lane_items(flex_id, params, page_size=page_size, offset=offset)
+
+        if node_id.startswith("VodDetails/"):
+            # e.g. "VodDetails/202887/GN_SERIES_9370385" → extract the GN id
+            parts = node_id.split("/")
+            gn_id = parts[-1]  # last segment is always the GN content id
+            node_id = gn_id
 
         if node_id.startswith(VOD_PREFIX_SEASON):
             return self._fetch_season_episodes(node_id, params)
@@ -283,12 +289,22 @@ class VodManager:
             if lane_type != "UnstructuredGrid" or not flex_id or not title:
                 continue
 
+            # Prefer showAllUrl as the canonical fetch href; fall back to
+            # constructing it from the flex_id.
+            show_all_href = (lane.get("showAllUrl") or {}).get("href") or None
+            content_id = (
+                f"UnstructuredGrid/{show_all_href.rstrip('/').rsplit('/UnstructuredGrid/', 1)[-1]}"
+                if show_all_href and "/UnstructuredGrid/" in show_all_href
+                else f"UnstructuredGrid/{flex_id}"
+            )
+
             categories.append(
                 VodCategory(
                     name=title,
-                    content_id=f"lane:{flex_id}",
+                    content_id=content_id,
                     provider=self._provider,
                     child_count=lane.get("totalCount"),
+                    details_url=show_all_href,
                 )
             )
 
@@ -354,13 +370,23 @@ class VodManager:
             return None
 
         if vod_type == "Series":
+            details_href = (item.get("details") or {}).get("href") or None
+            # Extract the path after the base URL, e.g.
+            # "https://.../VodDetails/202887/GN_SERIES_9370385"
+            # → "VodDetails/202887/GN_SERIES_9370385"
+            series_content_id = (
+                details_href.split("/v3/")[1].split("?")[0].split("/", 1)[1]
+                if details_href and "/v3/" in details_href
+                else content_id
+            )
             return VodCategory(
                 name=title,
-                content_id=content_id,
+                content_id=series_content_id,
                 provider=self._provider,
                 logo_url=image_url,
                 description=description,
                 child_count=seasons_available,
+                details_url=details_href,
             )
 
         duration_seconds: Optional[int] = int(duration_raw) * 60 if duration_raw else None

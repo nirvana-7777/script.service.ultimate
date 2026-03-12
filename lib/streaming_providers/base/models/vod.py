@@ -110,6 +110,10 @@ class VodCategory:
     # Hint about how many children this node has (may be None if unknown)
     child_count: Optional[int] = None
 
+    # Full API href this category was derived from (e.g. showAllUrl or details.href).
+    # Stored for convenience / debugging; the content_id already encodes the path.
+    details_url: Optional[str] = None
+
     # Cached slug (computed lazily if not set)
     _slug: Optional[str] = field(default=None, repr=False)
 
@@ -133,6 +137,7 @@ class VodCategory:
             "logo_url": self.logo_url,
             "description": self.description,
             "child_count": self.child_count,
+            "details_url": self.details_url,
         }
 
 
