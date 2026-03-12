@@ -136,7 +136,11 @@ class VodManager:
         if not category_path:
             return self._fetch_home_lanes(params)
 
-        node_id = category_path[-1]
+        # Reconstruct the full content_id from the path segments.
+        # The caller splits on "/" so "UnstructuredGrid/357162" arrives as
+        # ["UnstructuredGrid", "357162"] and "VodDetails/202887/GN_SERIES_9370385"
+        # arrives as ["VodDetails", "202887", "GN_SERIES_9370385"].
+        node_id = "/".join(category_path)
 
         if node_id.startswith("UnstructuredGrid/"):
             flex_id = node_id[len("UnstructuredGrid/"):]
@@ -144,9 +148,7 @@ class VodManager:
 
         if node_id.startswith("VodDetails/"):
             # e.g. "VodDetails/202887/GN_SERIES_9370385" → extract the GN id
-            parts = node_id.split("/")
-            gn_id = parts[-1]  # last segment is always the GN content id
-            node_id = gn_id
+            node_id = node_id.split("/")[-1]
 
         if node_id.startswith(VOD_PREFIX_SEASON):
             return self._fetch_season_episodes(node_id, params)
