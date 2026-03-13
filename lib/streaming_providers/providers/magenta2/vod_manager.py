@@ -264,6 +264,38 @@ class VodManager:
             )
         return None
 
+    def _get_with_serial(
+        self, url: str, params: Dict, serial_number: str
+    ) -> Optional[Dict]:
+        """
+        Perform an authenticated GET and inject ``x-stbserialnumber`` alongside
+        the standard Bearer / x-mpx-authorization headers.
+
+        The personal-bar (DocumentGroupRedirect → PersonalBar) endpoints require
+        the device serial number header in addition to the Bearer token — omitting
+        it causes the server to return an empty or error response.
+        """
+        headers: Dict[str, str] = {}
+        if self._auth_headers_callback:
+            try:
+                headers = dict(self._auth_headers_callback())
+            except Exception as exc:
+                logger.warning(f"{self._provider}: auth_headers_callback failed: {exc}")
+        headers["x-stbserialnumber"] = serial_number
+        try:
+            response = self._http.get(url, params=params, headers=headers)
+            if response and response.status_code == 200:
+                return response.json()
+            logger.warning(
+                f"{self._provider}: VOD request (with serial) failed "
+                f"[{response.status_code if response else 'no response'}] {url}"
+            )
+        except Exception as exc:
+            logger.error(
+                f"{self._provider}: VOD request (with serial) exception for {url}: {exc}"
+            )
+        return None
+
     # =========================================================================
     # Private helpers – Personal Bar Discovery
     # =========================================================================
@@ -273,17 +305,22 @@ class VodManager:
         Fetch the personal bar and extract the Streaming tile's StructuredGrid URL.
 
         Flow:
-          1. Build the DocumentGroupRedirect URL using ftv-web client model
-             (non-web client models get a different/empty personal bar).
-          2. Follow the redirect — the API returns {"$type":"redirect","redirectUrl":"..."}
-             rather than performing an HTTP redirect.
-          3. Fetch the redirectUrl to get the PersonalBar with its tiles.
-          4. Find the tile whose title matches VOD_STREAMING_TILE_TITLE and
+          1. Build the DocumentGroupRedirect URL using the platform's client model
+             (e.g. ftv-androidtv for Android TV) substituted into home_url.
+          2. Send an authenticated GET (Bearer + x-stbserialnumber) with params
+             matching the real device call: $previewAutoMode, $deviceModel,
+             $cid (dt-session-id::dt-call-id), $theme, $profile, $redirect.
+          3. Follow the API-level redirect — the server returns
+             {"$type":"redirect","redirectUrl":"..."} instead of an HTTP redirect.
+          4. Fetch the redirectUrl (authenticated) to get the PersonalBar tiles.
+          5. Find the tile whose title matches VOD_STREAMING_TILE_TITLE and
              return its onFocus.screen.href.
 
         Falls back gracefully at each step so the hardcoded StructuredGrid URL
         is used when discovery fails.
         """
+        import uuid as _uuid
+
         if not self._home_url:
             logger.debug(
                 f"{self._provider}: No homeUrl available; "
@@ -291,39 +328,41 @@ class VodManager:
             )
             return None
 
-        # Always use ftv-web for personal-bar discovery — other client models
-        # return an empty or different bar that does not contain the Streaming tile.
-        resolved_home_url = (
-            self._home_url
-            .replace("{clientModel}", self._client_model)
-        )
+        # Substitute the platform's actual client model into the home_url template
+        # (e.g. ftv-androidtv for Android TV, ftv-web for web).
+        resolved_home_url = self._home_url.replace("{clientModel}", self._client_model)
 
-        # Personal-bar discovery is unauthenticated — no Bearer / x-mpx-authorization
-        # headers are attached (see _get_no_auth).  All other params match the
-        # real browser call, including the actual subscriber type.
+        # Compose $cid as "dt-session-id::dt-call-id" — both are random UUIDs
+        # generated fresh for each request, matching the real device behaviour.
+        dt_session_id = str(_uuid.uuid4())
+        dt_call_id = str(_uuid.uuid4())
+        cid = f"{dt_session_id}::{dt_call_id}"
+
+        # Random serial number UUID, as the real device sends its hardware serial.
+        serial_number = str(_uuid.uuid4())
+
+        # Params mirror the real Android TV DocumentGroupRedirect request exactly.
+        # Note: $subscriberType and $reloadAfterChange are NOT sent by real devices;
+        # $previewAutoMode and $cid are required instead.
         discovery_params = {
-            "$reloadAfterChange": "false",
+            "$previewAutoMode": "false",
             "$deviceModel": self._device_model,
-            "$profile": self._profile_name,
-            "$subscriberType": self._subscriber_type,
-            "$theme": self._theme_id,
+            "$cid": cid,
             "$redirect": "false",
-            "sid": self._session_id,
-            "t": str(int(__import__("time").time() * 1000)),
+            "$theme": self._theme_id,
+            "$profile": self._profile_name,
         }
 
-        logger.debug(
-            f"{self._provider}: home_url raw: {self._home_url}"
+        logger.debug(f"{self._provider}: home_url raw: {self._home_url}")
+        logger.debug(f"{self._provider}: DocumentGroupRedirect URL: {resolved_home_url}")
+        logger.debug(f"{self._provider}: DocumentGroupRedirect params: {discovery_params}")
+
+        # The DocumentGroupRedirect endpoint requires authentication — real device
+        # sends Bearer token + x-stbserialnumber.  Inject the serial number as an
+        # extra header on top of whatever auth_headers_callback provides.
+        redirect_data = self._get_with_serial(
+            resolved_home_url, discovery_params, serial_number
         )
-        logger.debug(
-            f"{self._provider}: DocumentGroupRedirect params: {discovery_params}"
-        )
-        logger.debug(
-            f"{self._provider}: Fetching personal bar from: {resolved_home_url}"
-        )
-        # Use _get_no_auth so that no Bearer / x-mpx-authorization headers are
-        # attached — the PersonalBar endpoints reject authenticated requests.
-        redirect_data = self._get_no_auth(resolved_home_url, discovery_params)
         if not redirect_data:
             logger.error(f"{self._provider}: Failed to fetch DocumentGroupRedirect")
             return None
@@ -333,16 +372,16 @@ class VodManager:
         )
 
         # Step 2: follow the API-level redirect.
-        # The redirectUrl already contains all required query parameters as
-        # built server-side — do NOT merge our params on top of it, that would
-        # duplicate or override values (e.g. sid, t) already present in the URL.
+        # The redirectUrl already contains all required query parameters built
+        # server-side — do NOT merge our params on top of it to avoid duplicating
+        # or overriding values already present in the URL.
         if redirect_data.get("$type") == "redirect":
             redirect_url = redirect_data.get("redirectUrl")
             if not redirect_url:
                 logger.error(f"{self._provider}: Redirect response missing redirectUrl")
                 return None
             logger.debug(f"{self._provider}: Following personal-bar redirect: {redirect_url}")
-            bar_data = self._get_no_auth(redirect_url, {})
+            bar_data = self._get_with_serial(redirect_url, {}, serial_number)
             if not bar_data:
                 logger.error(f"{self._provider}: Failed to fetch PersonalBar from redirectUrl")
                 return None
