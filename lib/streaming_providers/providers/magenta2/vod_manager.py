@@ -43,8 +43,8 @@ Public interface
 """
 
 import time
-import logging
 from typing import Dict, List, Optional, Union
+from ...base.utils.logger import logger
 
 from ...base.models.vod import VodCategory, VodItem
 
@@ -59,11 +59,6 @@ from .constants import (
     VOD_PREFIX_SERIES,
     VOD_STREAMING_TILE_TITLE,
 )
-
-
-
-logger = logging.getLogger(__name__)
-
 
 class VodManager:
     """
