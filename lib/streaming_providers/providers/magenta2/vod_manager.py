@@ -891,9 +891,14 @@ class VodManager:
         #                            instantUsable==true] → VodPlayer URL
         #   VodPlayer response     → content.playbackUrls  → pick by quality
         #
-        # The resolved MPX mediaId becomes content_id so that get_manifest
-        # receives it directly (e.g. "QflsaCy6P3Sc" not "GN_MV019524240000").
-        # The GN content_id is preserved inside the manifest_script href.
+        # When resolved:
+        #   content_id      = MPX mediaId (e.g. "QflsaCy6P3Sc")
+        #   manifest_script = full theplatform href (stored for reference)
+        #   session_manifest = True  → provider._get_smil_content(content_id)
+        #                              builds the correct SMIL URL automatically
+        #
+        # When resolution fails, fall back to GN content_id + productInformationLink
+        # so the existing session-manifest path still has a chance to work.
         # ------------------------------------------------------------------
         product_url: Optional[str] = (
             content_block.get("productInformationLink") or {}
@@ -906,18 +911,24 @@ class VodManager:
                 product_url, params
             )
 
-        # Use the MPX mediaId as content_id when available so playback works.
-        # Fall back to the GN id only if resolution failed entirely.
-        effective_content_id = playback_media_id or content_id
-
-        # manifest_script: use the resolved theplatform href when available,
-        # otherwise fall back to productInformationLink for the session path.
-        manifest: Optional[str] = playback_href or product_url
-
-        if effective_content_id != content_id:
+        if playback_media_id:
+            # Happy path: use the MPX mediaId so _get_smil_content builds the
+            # right URL: selector_service + account_pid + "/media/" + mediaId
+            effective_content_id = playback_media_id
+            manifest_script = playback_href      # theplatform href for reference
+            session_manifest = True
             logger.debug(
-                f"{self._provider}: Movie content_id remapped "
-                f"{content_id} → {effective_content_id}"
+                f"{self._provider}: Movie {content_id} → "
+                f"resolved mediaId={playback_media_id}"
+            )
+        else:
+            # Fallback: keep GN id + productInformationLink
+            effective_content_id = content_id
+            manifest_script = product_url
+            session_manifest = product_url is not None
+            logger.warning(
+                f"{self._provider}: Could not resolve MPX mediaId for {content_id}; "
+                f"falling back to GN id + productInformationLink"
             )
 
         return [VodItem.create_movie(
@@ -933,8 +944,8 @@ class VodManager:
             genres=info.get("genres") or None,
             duration_seconds=duration_seconds,
             rating=info.get("childProtectionId"),
-            manifest_script=manifest,
-            session_manifest=manifest is not None,
+            manifest_script=manifest_script,
+            session_manifest=session_manifest,
         )]
 
     def _resolve_movie_playback_href(
