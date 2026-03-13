@@ -376,6 +376,21 @@ class VodManager:
         logger.debug(f"{self._provider}: DocumentGroupRedirect URL: {resolved_home_url}")
         logger.debug(f"{self._provider}: DocumentGroupRedirect params: {discovery_params}")
 
+        # Build and log the full header set for the first call so we can verify
+        # the Bearer token, session ID, call ID and serial are all correct.
+        _preview_headers: Dict[str, str] = {}
+        if self._auth_headers_callback:
+            try:
+                _preview_headers = dict(self._auth_headers_callback())
+            except Exception as exc:
+                logger.warning(f"{self._provider}: auth_headers_callback failed (preview): {exc}")
+        _preview_headers["x-stbserialnumber"] = serial_number
+        _preview_headers["dt-session-id"] = dt_session_id
+        _preview_headers["dt-call-id"] = dt_call_id_1
+        logger.debug(
+            f"{self._provider}: DocumentGroupRedirect headers: {_preview_headers}"
+        )
+
         # The DocumentGroupRedirect endpoint requires authentication — real device
         # sends Bearer token + x-stbserialnumber + dt-session-id + dt-call-id.
         redirect_data = self._get_with_serial(
