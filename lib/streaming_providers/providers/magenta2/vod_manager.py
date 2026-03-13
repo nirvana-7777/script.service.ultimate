@@ -299,6 +299,10 @@ class VodManager:
             logger.error(f"{self._provider}: Failed to fetch DocumentGroupRedirect")
             return None
 
+        logger.debug(
+            f"{self._provider}: DocumentGroupRedirect response: {redirect_data}"
+        )
+
         # Step 2: follow the API-level redirect
         if redirect_data.get("$type") == "redirect":
             redirect_url = redirect_data.get("redirectUrl")
@@ -311,6 +315,9 @@ class VodManager:
             if not bar_data:
                 logger.error(f"{self._provider}: Failed to fetch PersonalBar from redirectUrl")
                 return None
+            logger.debug(
+                f"{self._provider}: PersonalBar response keys: {list(bar_data.keys())}"
+            )
         else:
             # Response was the bar itself (no redirect needed)
             bar_data = redirect_data
