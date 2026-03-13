@@ -60,6 +60,16 @@ from .constants import (
     VOD_STREAMING_TILE_TITLE,
 )
 
+# VOD playback resolution always uses ftv-web client model and partner map.
+# The productInformationLink embedded in VodDetails responses is built server-side
+# from the requesting clientModel.  Non-web client models get partnerMapId=ftv-3rdparty
+# which returns only "subscriptionMissing" buttons.  ftv-web always returns proper
+# rel="player" buttons with instantUsable=true for entitled content.
+_VOD_PLAYBACK_CLIENT_MODEL = "ftv-web"
+_VOD_PLAYBACK_DEVICE_MODEL = "WEB2_FTV"
+_VOD_PLAYBACK_SUBSCRIBER_TYPE = "WEB_OTT_DT"
+_VOD_PLAYBACK_PARTNER_MAP_ID = "ftv-web"
+
 logger = logging.getLogger(__name__)
 
 
@@ -214,8 +224,20 @@ class VodManager:
 
         return TVHUBS_BASE_URL.format(client_model=self._client_model)
 
-    def _get(self, url: str, params: Dict, headers: Optional[Dict] = None) -> Optional[Dict]:
-        """Perform a GET request and return the parsed JSON body, or None on error."""
+    def _get(self, url: str, params: Dict) -> Optional[Dict]:
+        """
+        Perform a GET request and return the parsed JSON body, or None on error.
+
+        Auth headers are injected automatically when auth_headers_callback is
+        set — all tvhubs and wcps VOD endpoints require the same Bearer +
+        x-mpx-authorization headers.
+        """
+        headers = None
+        if self._auth_headers_callback:
+            try:
+                headers = self._auth_headers_callback()
+            except Exception as exc:
+                logger.warning(f"{self._provider}: auth_headers_callback failed: {exc}")
         try:
             response = self._http.get(url, params=params, headers=headers)
             if response and response.status_code == 200:
@@ -228,31 +250,9 @@ class VodManager:
             logger.error(f"{self._provider}: VOD request exception for {url}: {exc}")
         return None
 
-    def _auth_headers(self) -> Optional[Dict]:
-        """
-        Return authentication headers for protected VOD endpoints, or None.
-
-        The callback is supplied by the provider at VodManager construction time
-        and encapsulates persona-token retrieval so VodManager stays decoupled
-        from the authenticator.
-
-        Required headers for wcps vodproductinformation / VodPlayer:
-            Authorization:        Bearer <persona_jwt>
-            x-mpx-authorization:  Basic <persona_token>   (account_uri:jwt b64)
-            x-dt-session-id:      <session_id>
-            x-dt-call-id:         <uuid>
-        """
-        if not self._auth_headers_callback:
-            return None
-        try:
-            return self._auth_headers_callback()
-        except Exception as exc:
-            logger.warning(f"{self._provider}: auth_headers_callback failed: {exc}")
-            return None
-
     def _get_auth(self, url: str, params: Dict) -> Optional[Dict]:
-        """Like _get but injects auth headers from the callback."""
-        return self._get(url, params, headers=self._auth_headers())
+        """Alias for _get — auth is now always injected when callback is set."""
+        return self._get(url, params)
 
     # =========================================================================
     # Private helpers – Personal Bar Discovery
@@ -987,6 +987,45 @@ class VodManager:
             session_manifest=session_manifest,
         )]
 
+    @staticmethod
+    def _normalise_product_url(url: str) -> str:
+        """
+        Rewrite a productInformationLink URL to use the ftv-web client model
+        and partnerMapId so that the response contains proper player buttons.
+
+        The URL is built server-side from the requesting clientModel, e.g.:
+          .../ftv-androidtv/vodproductinformation/...?partnerMapId=ftv-3rdparty&...
+        We replace both the path segment and the query param with ftv-web values.
+        """
+        from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
+
+        for non_web in ("ftv-androidtv", "ftv-android", "ftv-ios"):
+            url = url.replace(f"/{non_web}/", f"/{_VOD_PLAYBACK_CLIENT_MODEL}/")
+
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query, keep_blank_values=True)
+        if "partnerMapId" in qs:
+            qs["partnerMapId"] = [_VOD_PLAYBACK_PARTNER_MAP_ID]
+        new_query = urlencode({k: v[0] for k, v in qs.items()})
+        return urlunparse(parsed._replace(query=new_query))
+
+    def _playback_params(self) -> Dict:
+        """
+        Query parameters for vodproductinformation / VodPlayer requests.
+        Always uses the ftv-web device model and subscriber type regardless of
+        the platform the VodManager was initialised with.
+        """
+        import time
+        return {
+            "$deviceModel": _VOD_PLAYBACK_DEVICE_MODEL,
+            "$profile": self._profile_name,
+            "$subscriberType": _VOD_PLAYBACK_SUBSCRIBER_TYPE,
+            "$theme": self._theme_id,
+            "$redirect": "false",
+            "sid": self._session_id,
+            "t": str(int(time.time() * 1000)),
+        }
+
     def _resolve_movie_playback_href(
         self,
         product_url: str,
@@ -1004,7 +1043,16 @@ class VodManager:
         Returns:
             (theplatform_href, media_id) on success, or (None, None) on any failure.
         """
-        prod_data = self._get_auth(product_url, params)
+        # Normalise URL to ftv-web so we get proper player buttons, and use
+        # web-flavoured params (deviceModel, subscriberType) to match.
+        web_url = self._normalise_product_url(product_url)
+        web_params = self._playback_params()
+        if web_url != product_url:
+            logger.debug(
+                f"{self._provider}: Normalised productInformation URL: {web_url}"
+            )
+
+        prod_data = self._get_auth(web_url, web_params)
         if not prod_data:
             return None, None
 
@@ -1042,7 +1090,7 @@ class VodManager:
             )
             return None, None
 
-        vod_player_data = self._get_auth(vod_player_url, params)
+        vod_player_data = self._get_auth(vod_player_url, web_params)
         if not vod_player_data:
             return None, None
 
