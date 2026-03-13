@@ -277,6 +277,7 @@ class Magenta2Provider(StreamingProvider):
                 bootstrap=self.endpoint_manager.config.bootstrap,
                 provider_config=self.endpoint_manager.config,
                 session_id=self.session_id,
+                auth_headers_callback=self._vod_auth_headers,
             )
             logger.info("✓ VodManager initialized with discovered config")
 
@@ -1112,6 +1113,41 @@ class Magenta2Provider(StreamingProvider):
         logger.info(f"  Total: {len(channels)}")
 
         return successful_channels
+
+    def _vod_auth_headers(self) -> Dict[str, str]:
+        """
+        Build authentication headers required by authenticated VOD endpoints:
+            vodproductinformation  (wcps.t-online.de/uspip/...)
+            VodPlayer              (wcps.t-online.de/vops/...)
+
+        Required headers (observed from browser traffic):
+            Authorization:        Bearer <persona_jwt>
+            x-mpx-authorization:  Basic <persona_token>   (account_uri:jwt b64)
+            x-dt-session-id:      <session_id>
+            x-dt-call-id:         <fresh uuid per request>
+            origin / referer:     magenta.tv
+        """
+        persona_token = self._ensure_authenticated()
+        # The persona_token is already Base64(account_uri:jwt) — used as-is
+        # for x-mpx-authorization.  For Authorization we need just the raw JWT.
+        persona_jwt = self._extract_persona_jwt_from_token(persona_token)
+
+        headers = {
+            "x-mpx-authorization": f"Basic {persona_token}",
+            "x-dt-session-id": self.session_id,
+            "x-dt-call-id": self._generate_call_id(),
+            "origin": "https://www.magenta.tv",
+            "referer": "https://www.magenta.tv/",
+            "User-Agent": self.platform_config["user_agent"],
+            "Accept": "application/json",
+            "x-permissionflagpersonalizeduireco": "false",
+        }
+        if persona_jwt:
+            headers["Authorization"] = f"Bearer {persona_jwt}"
+        else:
+            # Fallback: some endpoints accept Basic auth too
+            headers["Authorization"] = f"Basic {persona_token}"
+        return headers
 
     def get_vod_category(self, category_path, **kwargs):
         if not self._vod_manager:

@@ -98,6 +98,7 @@ class VodManager:
         provider_config=None,
         session_id: Optional[str] = None,
         preferred_quality: str = "HD",
+        auth_headers_callback=None,
     ):
         self._http = http_manager
         self._provider = provider_name
@@ -106,6 +107,10 @@ class VodManager:
         # Normalise to uppercase; fall back to "HD" for unknown values.
         _q = (preferred_quality or "HD").upper()
         self._preferred_quality: str = _q if _q in self._QUALITY_FALLBACK else "HD"
+        # Optional callable() -> Dict[str, str] returning auth headers for
+        # authenticated VOD endpoints (vodproductinformation, VodPlayer).
+        # When None, requests are sent without auth (browsing/catalogue only).
+        self._auth_headers_callback = auth_headers_callback
 
         # All content values resolved from BootstrapConfig -- no platform needed.
         self._home_url: Optional[str] = getattr(bootstrap, "home_url", None)
@@ -209,10 +214,10 @@ class VodManager:
 
         return TVHUBS_BASE_URL.format(client_model=self._client_model)
 
-    def _get(self, url: str, params: Dict) -> Optional[Dict]:
+    def _get(self, url: str, params: Dict, headers: Optional[Dict] = None) -> Optional[Dict]:
         """Perform a GET request and return the parsed JSON body, or None on error."""
         try:
-            response = self._http.get(url, params=params)
+            response = self._http.get(url, params=params, headers=headers)
             if response and response.status_code == 200:
                 return response.json()
             logger.warning(
@@ -222,6 +227,32 @@ class VodManager:
         except Exception as exc:
             logger.error(f"{self._provider}: VOD request exception for {url}: {exc}")
         return None
+
+    def _auth_headers(self) -> Optional[Dict]:
+        """
+        Return authentication headers for protected VOD endpoints, or None.
+
+        The callback is supplied by the provider at VodManager construction time
+        and encapsulates persona-token retrieval so VodManager stays decoupled
+        from the authenticator.
+
+        Required headers for wcps vodproductinformation / VodPlayer:
+            Authorization:        Bearer <persona_jwt>
+            x-mpx-authorization:  Basic <persona_token>   (account_uri:jwt b64)
+            x-dt-session-id:      <session_id>
+            x-dt-call-id:         <uuid>
+        """
+        if not self._auth_headers_callback:
+            return None
+        try:
+            return self._auth_headers_callback()
+        except Exception as exc:
+            logger.warning(f"{self._provider}: auth_headers_callback failed: {exc}")
+            return None
+
+    def _get_auth(self, url: str, params: Dict) -> Optional[Dict]:
+        """Like _get but injects auth headers from the callback."""
+        return self._get(url, params, headers=self._auth_headers())
 
     # =========================================================================
     # Private helpers – Personal Bar Discovery
@@ -965,7 +996,7 @@ class VodManager:
         Returns:
             (theplatform_href, media_id) on success, or (None, None) on any failure.
         """
-        prod_data = self._get(product_url, params)
+        prod_data = self._get_auth(product_url, params)
         if not prod_data:
             return None, None
 
@@ -987,7 +1018,7 @@ class VodManager:
             )
             return None, None
 
-        vod_player_data = self._get(vod_player_url, params)
+        vod_player_data = self._get_auth(vod_player_url, params)
         if not vod_player_data:
             return None, None
 
