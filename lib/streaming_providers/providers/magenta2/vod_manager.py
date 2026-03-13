@@ -354,7 +354,7 @@ class VodManager:
         content = data.get("content", {})
         results: List[Union[VodCategory, VodItem]] = []
         for item in content.get("items", []):
-            node = self._map_unstructured_item(item)
+            node = self._map_unstructured_item(item, paged_params)
             if node is not None:
                 results.append(node)
 
@@ -366,33 +366,28 @@ class VodManager:
         return results
 
     def _map_unstructured_item(
-        self, item: Dict
+        self, item: Dict, params: Dict
     ) -> Optional[Union[VodCategory, VodItem]]:
-        """Map a single UnstructuredGrid item dict to a VodCategory or VodItem."""
+        """
+        Map a single UnstructuredGrid item dict to a VodCategory or VodItem.
+
+        Series → VodCategory (no playback needed, user navigates deeper).
+        Movies → delegate to _fetch_single_item so the full playback chain
+                 (VodDetails → productInformationLink → VodPlayer → playbackUrls)
+                 is resolved and the correct MPX mediaId is stored as content_id.
+        """
         content_id: str = item.get("id", "")
         title: str = (item.get("title") or "").strip()
         vod_type: str = item.get("vodType", "")
         image_url: Optional[str] = (item.get("image") or {}).get("href")
         description: Optional[str] = item.get("description")
-        year_raw = item.get("yearOfProduction")
-        try:
-            release_year: Optional[int] = int(str(year_raw).split("-")[0]) if year_raw else None
-        except (ValueError, TypeError):
-            release_year = None
-        genre: Optional[str] = item.get("mainGenre")
-        genres: Optional[List[str]] = item.get("genres") or None
-        duration_raw = item.get("duration")
         seasons_available: Optional[int] = item.get("seasonsAvailable")
-        rating: Optional[str] = item.get("childProtectionId")
 
         if not content_id or not title:
             return None
 
         if vod_type == "Series":
             details_href = (item.get("details") or {}).get("href") or None
-            # Extract the path after the base URL, e.g.
-            # "https://.../VodDetails/202887/GN_SERIES_9370385"
-            # → "VodDetails/202887/GN_SERIES_9370385"
             series_content_id = (
                 details_href.split("/v3/")[1].split("?")[0].split("/", 1)[1]
                 if details_href and "/v3/" in details_href
@@ -408,7 +403,25 @@ class VodManager:
                 details_url=details_href,
             )
 
-        duration_seconds: Optional[int] = int(duration_raw) * 60 if duration_raw else None
+        # Movie (or unknown leaf): resolve via _fetch_single_item so we get
+        # the correct MPX mediaId as content_id and a ready manifest_script.
+        items = self._fetch_single_item(content_id, params)
+        if items:
+            return items[0]
+
+        # _fetch_single_item failed — return a minimal unresolved VodItem so
+        # the lane listing still shows the title/artwork, even if playback
+        # will fail later.
+        logger.warning(
+            f"{self._provider}: Could not resolve playback for movie "
+            f"'{title}' ({content_id}); returning unresolved item."
+        )
+        year_raw = item.get("yearOfProduction")
+        try:
+            release_year: Optional[int] = int(str(year_raw).split("-")[0]) if year_raw else None
+        except (ValueError, TypeError):
+            release_year = None
+        duration_raw = item.get("duration")
         return VodItem.create_movie(
             name=title,
             content_id=content_id,
@@ -416,10 +429,10 @@ class VodManager:
             logo_url=image_url,
             description=description,
             release_year=release_year,
-            genre=genre,
-            genres=genres,
-            duration_seconds=duration_seconds,
-            rating=rating,
+            genre=item.get("mainGenre"),
+            genres=item.get("genres") or None,
+            duration_seconds=int(duration_raw) * 60 if duration_raw else None,
+            rating=item.get("childProtectionId"),
         )
 
     # =========================================================================
