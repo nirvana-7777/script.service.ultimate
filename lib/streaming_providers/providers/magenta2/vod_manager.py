@@ -246,6 +246,29 @@ class VodManager:
         """Alias for _get — auth is now always injected when callback is set."""
         return self._get(url, params)
 
+    def _get_no_auth(self, url: str, params: Dict) -> Optional[Dict]:
+        """
+        Perform a GET request *without* auth headers, regardless of whether
+        auth_headers_callback is set.
+
+        Used for unauthenticated endpoints such as PersonalBar discovery, where
+        attaching Bearer / x-mpx-authorization headers causes the server to
+        return a different or empty response.
+        """
+        try:
+            response = self._http.get(url, params=params, headers=None)
+            if response and response.status_code == 200:
+                return response.json()
+            logger.warning(
+                f"{self._provider}: VOD request (no-auth) failed "
+                f"[{response.status_code if response else 'no response'}] {url}"
+            )
+        except Exception as exc:
+            logger.error(
+                f"{self._provider}: VOD request (no-auth) exception for {url}: {exc}"
+            )
+        return None
+
     # =========================================================================
     # Private helpers – Personal Bar Discovery
     # =========================================================================
@@ -280,13 +303,16 @@ class VodManager:
             .replace("{clientModel}", self._client_model)
         )
 
-        params = {
+        # Personal-bar discovery is unauthenticated — no Bearer / x-mpx-authorization
+        # headers are attached (see _get_no_auth).  All other params match the
+        # real browser call, including the actual subscriber type.
+        discovery_params = {
+            "$reloadAfterChange": "false",
             "$deviceModel": self._device_model,
             "$profile": self._profile_name,
             "$subscriberType": self._subscriber_type,
             "$theme": self._theme_id,
             "$redirect": "false",
-            "$reloadAfterChange": "false",
             "sid": self._session_id,
             "t": str(int(__import__("time").time() * 1000)),
         }
@@ -295,26 +321,33 @@ class VodManager:
             f"{self._provider}: home_url raw: {self._home_url}"
         )
         logger.debug(
+            f"{self._provider}: DocumentGroupRedirect params: {discovery_params}"
+        )
+        logger.debug(
             f"{self._provider}: Fetching personal bar from: {resolved_home_url}"
         )
-        redirect_data = self._get(resolved_home_url, params)
+        # Use _get_no_auth so that no Bearer / x-mpx-authorization headers are
+        # attached — the PersonalBar endpoints reject authenticated requests.
+        redirect_data = self._get_no_auth(resolved_home_url, discovery_params)
         if not redirect_data:
             logger.error(f"{self._provider}: Failed to fetch DocumentGroupRedirect")
             return None
 
-        logger.warning(
+        logger.debug(
             f"{self._provider}: DocumentGroupRedirect response: {redirect_data}"
         )
 
-        # Step 2: follow the API-level redirect
+        # Step 2: follow the API-level redirect.
+        # The redirectUrl already contains all required query parameters as
+        # built server-side — do NOT merge our params on top of it, that would
+        # duplicate or override values (e.g. sid, t) already present in the URL.
         if redirect_data.get("$type") == "redirect":
             redirect_url = redirect_data.get("redirectUrl")
             if not redirect_url:
                 logger.error(f"{self._provider}: Redirect response missing redirectUrl")
                 return None
             logger.debug(f"{self._provider}: Following personal-bar redirect: {redirect_url}")
-            # redirectUrl already contains all params — fetch without extra params
-            bar_data = self._get(redirect_url, {})
+            bar_data = self._get_no_auth(redirect_url, {})
             if not bar_data:
                 logger.error(f"{self._provider}: Failed to fetch PersonalBar from redirectUrl")
                 return None
