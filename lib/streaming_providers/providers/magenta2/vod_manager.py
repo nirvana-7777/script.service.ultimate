@@ -292,6 +292,9 @@ class VodManager:
         }
 
         logger.debug(
+            f"{self._provider}: home_url raw: {self._home_url}"
+        )
+        logger.debug(
             f"{self._provider}: Fetching personal bar from: {resolved_home_url}"
         )
         redirect_data = self._get(resolved_home_url, params)
@@ -299,7 +302,7 @@ class VodManager:
             logger.error(f"{self._provider}: Failed to fetch DocumentGroupRedirect")
             return None
 
-        logger.debug(
+        logger.warning(
             f"{self._provider}: DocumentGroupRedirect response: {redirect_data}"
         )
 
