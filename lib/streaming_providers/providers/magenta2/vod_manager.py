@@ -265,15 +265,24 @@ class VodManager:
         return None
 
     def _get_with_serial(
-        self, url: str, params: Dict, serial_number: str
+        self,
+        url: str,
+        params: Dict,
+        serial_number: str,
+        dt_session_id: str = "",
+        dt_call_id: str = "",
     ) -> Optional[Dict]:
         """
-        Perform an authenticated GET and inject ``x-stbserialnumber`` alongside
-        the standard Bearer / x-mpx-authorization headers.
+        Perform an authenticated GET injecting the full set of device-identity
+        headers required by the personal-bar endpoints:
 
-        The personal-bar (DocumentGroupRedirect → PersonalBar) endpoints require
-        the device serial number header in addition to the Bearer token — omitting
-        it causes the server to return an empty or error response.
+            x-stbserialnumber   — device hardware serial (random UUID)
+            dt-session-id       — stable across the discovery sequence
+            dt-call-id          — fresh UUID per individual request
+
+        These are sent in addition to the standard Bearer token from
+        auth_headers_callback.  Omitting any of them causes the server to
+        return an empty or unexpected response.
         """
         headers: Dict[str, str] = {}
         if self._auth_headers_callback:
@@ -282,6 +291,10 @@ class VodManager:
             except Exception as exc:
                 logger.warning(f"{self._provider}: auth_headers_callback failed: {exc}")
         headers["x-stbserialnumber"] = serial_number
+        if dt_session_id:
+            headers["dt-session-id"] = dt_session_id
+        if dt_call_id:
+            headers["dt-call-id"] = dt_call_id
         try:
             response = self._http.get(url, params=params, headers=headers)
             if response and response.status_code == 200:
@@ -307,12 +320,14 @@ class VodManager:
         Flow:
           1. Build the DocumentGroupRedirect URL using the platform's client model
              (e.g. ftv-androidtv for Android TV) substituted into home_url.
-          2. Send an authenticated GET (Bearer + x-stbserialnumber) with params
-             matching the real device call: $previewAutoMode, $deviceModel,
-             $cid (dt-session-id::dt-call-id), $theme, $profile, $redirect.
+          2. Send an authenticated GET (Bearer + x-stbserialnumber + dt-session-id
+             + dt-call-id) with params matching the real device call:
+             $previewAutoMode, $deviceModel, $cid (dt-session-id::dt-call-id),
+             $theme, $profile, $redirect.
           3. Follow the API-level redirect — the server returns
              {"$type":"redirect","redirectUrl":"..."} instead of an HTTP redirect.
-          4. Fetch the redirectUrl (authenticated) to get the PersonalBar tiles.
+          4. Fetch the redirectUrl authenticated with the same serial + session ID
+             but a fresh dt-call-id (matching real device behaviour).
           5. Find the tile whose title matches VOD_STREAMING_TILE_TITLE and
              return its onFocus.screen.href.
 
@@ -335,8 +350,8 @@ class VodManager:
         # Compose $cid as "dt-session-id::dt-call-id" — both are random UUIDs
         # generated fresh for each request, matching the real device behaviour.
         dt_session_id = str(_uuid.uuid4())
-        dt_call_id = str(_uuid.uuid4())
-        cid = f"{dt_session_id}::{dt_call_id}"
+        dt_call_id_1 = str(_uuid.uuid4())
+        cid = f"{dt_session_id}::{dt_call_id_1}"
 
         # Random serial number UUID, as the real device sends its hardware serial.
         serial_number = str(_uuid.uuid4())
@@ -358,10 +373,10 @@ class VodManager:
         logger.debug(f"{self._provider}: DocumentGroupRedirect params: {discovery_params}")
 
         # The DocumentGroupRedirect endpoint requires authentication — real device
-        # sends Bearer token + x-stbserialnumber.  Inject the serial number as an
-        # extra header on top of whatever auth_headers_callback provides.
+        # sends Bearer token + x-stbserialnumber + dt-session-id + dt-call-id.
         redirect_data = self._get_with_serial(
-            resolved_home_url, discovery_params, serial_number
+            resolved_home_url, discovery_params, serial_number,
+            dt_session_id=dt_session_id, dt_call_id=dt_call_id_1,
         )
         if not redirect_data:
             logger.error(f"{self._provider}: Failed to fetch DocumentGroupRedirect")
@@ -380,8 +395,14 @@ class VodManager:
             if not redirect_url:
                 logger.error(f"{self._provider}: Redirect response missing redirectUrl")
                 return None
+            # The PersonalBar fetch reuses the same dt-session-id but gets a fresh
+            # dt-call-id, matching the real device behaviour seen in the logs.
+            dt_call_id_2 = str(_uuid.uuid4())
             logger.debug(f"{self._provider}: Following personal-bar redirect: {redirect_url}")
-            bar_data = self._get_with_serial(redirect_url, {}, serial_number)
+            bar_data = self._get_with_serial(
+                redirect_url, {}, serial_number,
+                dt_session_id=dt_session_id, dt_call_id=dt_call_id_2,
+            )
             if not bar_data:
                 logger.error(f"{self._provider}: Failed to fetch PersonalBar from redirectUrl")
                 return None
