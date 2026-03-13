@@ -60,15 +60,7 @@ from .constants import (
     VOD_STREAMING_TILE_TITLE,
 )
 
-# VOD playback resolution always uses ftv-web client model and partner map.
-# The productInformationLink embedded in VodDetails responses is built server-side
-# from the requesting clientModel.  Non-web client models get partnerMapId=ftv-3rdparty
-# which returns only "subscriptionMissing" buttons.  ftv-web always returns proper
-# rel="player" buttons with instantUsable=true for entitled content.
-_VOD_PLAYBACK_CLIENT_MODEL = "ftv-web"
-_VOD_PLAYBACK_DEVICE_MODEL = "WEB2_FTV"
-_VOD_PLAYBACK_SUBSCRIBER_TYPE = "WEB_OTT_DT"
-_VOD_PLAYBACK_PARTNER_MAP_ID = "ftv-web"
+
 
 logger = logging.getLogger(__name__)
 
@@ -260,8 +252,19 @@ class VodManager:
 
     def _get_streaming_grid_url(self) -> Optional[str]:
         """
-        Fetch the personal bar from homeUrl and extract the Streaming tile's
-        onFocus screen href, which contains the StructuredGrid URL for VOD.
+        Fetch the personal bar and extract the Streaming tile's StructuredGrid URL.
+
+        Flow:
+          1. Build the DocumentGroupRedirect URL using ftv-web client model
+             (non-web client models get a different/empty personal bar).
+          2. Follow the redirect — the API returns {"$type":"redirect","redirectUrl":"..."}
+             rather than performing an HTTP redirect.
+          3. Fetch the redirectUrl to get the PersonalBar with its tiles.
+          4. Find the tile whose title matches VOD_STREAMING_TILE_TITLE and
+             return its onFocus.screen.href.
+
+        Falls back gracefully at each step so the hardcoded StructuredGrid URL
+        is used when discovery fails.
         """
         if not self._home_url:
             logger.debug(
@@ -270,28 +273,53 @@ class VodManager:
             )
             return None
 
-        params = self._base_params()
-        # homeUrl needs the un-prefixed parameter names alongside the standard ones
-        params.update({
-            "deviceModel": self._device_model,
-            "profileName": self._profile_name,
-            "themeId": self._theme_id,
-        })
+        # Always use ftv-web for personal-bar discovery — other client models
+        # return an empty or different bar that does not contain the Streaming tile.
+        resolved_home_url = (
+            self._home_url
+            .replace("{clientModel}", self._client_model)
+        )
 
-        # The home_url from bootstrap may contain a literal "{clientModel}"
-        # placeholder that must be substituted before use.
-        resolved_home_url = self._home_url.replace("{clientModel}", self._client_model)
-        if resolved_home_url != self._home_url:
-            logger.debug(
-                f"{self._provider}: Substituted clientModel in homeUrl: {resolved_home_url}"
-            )
+        params = {
+            "$deviceModel": self._device_model,
+            "$profile": self._profile_name,
+            "$subscriberType": self._subscriber_type,
+            "$theme": self._theme_id,
+            "$redirect": "false",
+            "$reloadAfterChange": "false",
+            "sid": self._session_id,
+            "t": str(int(__import__("time").time() * 1000)),
+        }
 
-        data = self._get(resolved_home_url, params)
-        if not data:
-            logger.error(f"{self._provider}: Failed to fetch personal bar from homeUrl")
+        logger.debug(
+            f"{self._provider}: Fetching personal bar from: {resolved_home_url}"
+        )
+        redirect_data = self._get(resolved_home_url, params)
+        if not redirect_data:
+            logger.error(f"{self._provider}: Failed to fetch DocumentGroupRedirect")
             return None
 
-        tiles = data.get("primary", {}).get("tiles", [])
+        # Step 2: follow the API-level redirect
+        if redirect_data.get("$type") == "redirect":
+            redirect_url = redirect_data.get("redirectUrl")
+            if not redirect_url:
+                logger.error(f"{self._provider}: Redirect response missing redirectUrl")
+                return None
+            logger.debug(f"{self._provider}: Following personal-bar redirect: {redirect_url}")
+            # redirectUrl already contains all params — fetch without extra params
+            bar_data = self._get(redirect_url, {})
+            if not bar_data:
+                logger.error(f"{self._provider}: Failed to fetch PersonalBar from redirectUrl")
+                return None
+        else:
+            # Response was the bar itself (no redirect needed)
+            bar_data = redirect_data
+
+        tiles = bar_data.get("primary", {}).get("tiles", [])
+        logger.debug(
+            f"{self._provider}: Personal bar tiles: "
+            f"{[t.get('title') for t in tiles]}"
+        )
         for tile in tiles:
             if tile.get("title") == VOD_STREAMING_TILE_TITLE:
                 href = tile.get("onFocus", {}).get("screen", {}).get("href")
@@ -987,39 +1015,35 @@ class VodManager:
             session_manifest=session_manifest,
         )]
 
-    @staticmethod
-    def _normalise_product_url(url: str) -> str:
+    def _normalise_product_url(self, url: str) -> str:
         """
-        Rewrite a productInformationLink URL to use the ftv-web client model
+        Rewrite a productInformationLink URL to use the correct client model
         and partnerMapId so that the response contains proper player buttons.
 
         The URL is built server-side from the requesting clientModel, e.g.:
           .../ftv-androidtv/vodproductinformation/...?partnerMapId=ftv-3rdparty&...
-        We replace both the path segment and the query param with ftv-web values.
+        We replace both the path segment and the query param with our values.
         """
         from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 
-        for non_web in ("ftv-androidtv", "ftv-android", "ftv-ios"):
-            url = url.replace(f"/{non_web}/", f"/{_VOD_PLAYBACK_CLIENT_MODEL}/")
+        for other in ("ftv-androidtv", "ftv-android", "ftv-ios", "ftv-web"):
+            if other != self._client_model:
+                url = url.replace(f"/{other}/", f"/{self._client_model}/")
 
         parsed = urlparse(url)
         qs = parse_qs(parsed.query, keep_blank_values=True)
         if "partnerMapId" in qs:
-            qs["partnerMapId"] = [_VOD_PLAYBACK_PARTNER_MAP_ID]
+            qs["partnerMapId"] = [self._client_model]
         new_query = urlencode({k: v[0] for k, v in qs.items()})
         return urlunparse(parsed._replace(query=new_query))
 
     def _playback_params(self) -> Dict:
-        """
-        Query parameters for vodproductinformation / VodPlayer requests.
-        Always uses the ftv-web device model and subscriber type regardless of
-        the platform the VodManager was initialised with.
-        """
+        """Query parameters for vodproductinformation / VodPlayer requests."""
         import time
         return {
-            "$deviceModel": _VOD_PLAYBACK_DEVICE_MODEL,
+            "$deviceModel": self._device_model,
             "$profile": self._profile_name,
-            "$subscriberType": _VOD_PLAYBACK_SUBSCRIBER_TYPE,
+            "$subscriberType": self._subscriber_type,
             "$theme": self._theme_id,
             "$redirect": "false",
             "sid": self._session_id,
