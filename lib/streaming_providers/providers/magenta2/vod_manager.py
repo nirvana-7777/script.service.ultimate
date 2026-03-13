@@ -335,7 +335,7 @@ class VodManager:
         is used when discovery fails.
         """
         import uuid as _uuid
-        from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
+        from urllib.parse import urlparse, urlunparse, parse_qs, urlencode, quote
 
         if not self._home_url:
             logger.debug(
@@ -421,8 +421,17 @@ class VodManager:
             parsed = urlparse(redirect_url)
             qs = parse_qs(parsed.query, keep_blank_values=True)
             qs["$cid"] = [cid_2]
+            # Use quote_via=quote with safe='$:' so that $ signs in
+            # parameter names and :: in the cid value are NOT percent-
+            # encoded (%24). The server requires literal $ characters.
             redirect_url_with_cid = urlunparse(
-                parsed._replace(query=urlencode({k: v[0] for k, v in qs.items()}))
+                parsed._replace(
+                    query=urlencode(
+                        {k: v[0] for k, v in qs.items()},
+                        quote_via=quote,
+                        safe="$:",
+                    )
+                )
             )
 
             logger.debug(
