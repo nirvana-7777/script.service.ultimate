@@ -80,6 +80,16 @@ class VodManager:
                          TVHUBS_BASE_URL fallback constant.
     """
 
+    # Quality preference order: each entry is the desired quality, followed by
+    # progressively lower fallbacks.  The first quality in the list that exists
+    # in a playbackUrls response is used.
+    _QUALITY_FALLBACK: Dict[str, List[str]] = {
+        "UHDHDR": ["UHDHDR", "UHD", "HD", "SD"],
+        "UHD":    ["UHD",    "HD",  "SD"],
+        "HD":     ["HD",     "SD"],
+        "SD":     ["SD"],
+    }
+
     def __init__(
         self,
         http_manager,
@@ -87,11 +97,15 @@ class VodManager:
         bootstrap=None,
         provider_config=None,
         session_id: Optional[str] = None,
+        preferred_quality: str = "HD",
     ):
         self._http = http_manager
         self._provider = provider_name
         self._provider_config = provider_config
         self._session_id: str = session_id or ""
+        # Normalise to uppercase; fall back to "HD" for unknown values.
+        _q = (preferred_quality or "HD").upper()
+        self._preferred_quality: str = _q if _q in self._QUALITY_FALLBACK else "HD"
 
         # All content values resolved from BootstrapConfig -- no platform needed.
         self._home_url: Optional[str] = getattr(bootstrap, "home_url", None)
@@ -702,7 +716,9 @@ class VodManager:
         ep_num: Optional[int] = ep.get("episodeNumber")
         title: str = (ep.get("title") or f"Episode {ep_num}").strip()
         image_url: Optional[str] = (ep.get("image") or {}).get("href")
-        description: Optional[str] = ep.get("description")
+        # Lane listings rarely include a description for episodes; try both
+        # fields so we surface whatever the API returns.
+        description: Optional[str] = ep.get("description") or ep.get("longDescription")
         duration_raw = ep.get("duration")
         duration_seconds: Optional[int] = int(duration_raw) * 60 if duration_raw else None
         genre: Optional[str] = ep.get("mainGenre")
@@ -772,6 +788,49 @@ class VodManager:
             session_manifest=product_url is not None,
         )]
 
+    def _pick_playback_media_id(self, playback_urls: List[Dict]) -> Optional[str]:
+        """
+        Select the best mediaId from a VodPlayer ``content.playbackUrls`` list.
+
+        The quality is chosen by walking ``_QUALITY_FALLBACK[self._preferred_quality]``
+        in order and returning the first ``mediaId`` whose ``quality`` matches.
+        If no entry in the fallback chain matches, the first entry in the list is
+        returned as a last resort (mirrors legacy behaviour).
+
+        Args:
+            playback_urls: List of dicts, each with at least ``quality`` and
+                           ``mediaId`` keys, as found in the VodPlayer response.
+
+        Returns:
+            The selected ``mediaId`` string, or ``None`` if the list is empty.
+        """
+        if not playback_urls:
+            return None
+
+        # Build a quality → mediaId lookup from the response.
+        quality_map: Dict[str, str] = {
+            entry["quality"]: entry["mediaId"]
+            for entry in playback_urls
+            if entry.get("quality") and entry.get("mediaId")
+        }
+
+        for q in self._QUALITY_FALLBACK.get(self._preferred_quality, ["HD", "SD"]):
+            if q in quality_map:
+                logger.debug(
+                    f"{self._provider}: Selected quality '{q}' "
+                    f"(preferred: '{self._preferred_quality}'), "
+                    f"mediaId={quality_map[q]}"
+                )
+                return quality_map[q]
+
+        # Absolute fallback: first entry in the list.
+        fallback_id: str = playback_urls[0].get("mediaId", "")
+        logger.warning(
+            f"{self._provider}: No matching quality for '{self._preferred_quality}'; "
+            f"falling back to first entry mediaId={fallback_id}"
+        )
+        return fallback_id or None
+
     def _fetch_single_item(self, content_id: str, params: Dict) -> List[VodItem]:
         """
         Fetch a movie (or unknown leaf) by content_id.
@@ -779,6 +838,17 @@ class VodManager:
         Metadata comes directly from contentInformation.  The lanes in the
         real API response only contain Person and recommendation rows — there
         are no playable child items to recurse into.
+
+        Playback ID resolution
+        ----------------------
+        The VodPlayer response (step 3 of the playback chain) exposes
+        ``content.playbackUrls`` — a list of quality-tagged theplatform hrefs
+        and their MPX ``mediaId`` values.  We resolve the best mediaId here
+        (using ``_pick_playback_media_id``) so that the provider's
+        ``get_manifest`` receives the correct MPX ID, not the raw GN content ID.
+
+        The resolved theplatform href is stored as ``manifest_script`` so that
+        the existing playback chain in the provider needs no changes.
         """
         url = f"{self._base_url()}/VodDetails/{VOD_FLEX_ID_DETAILS}/{content_id}"
         data = self._get(url, params)
@@ -799,9 +869,27 @@ class VodManager:
             release_year_item: Optional[int] = int(str(year_raw).split("-")[0]) if year_raw else None
         except (ValueError, TypeError):
             release_year_item = None
+
+        # ------------------------------------------------------------------
+        # Resolve the VodPlayer URL and pick the correct theplatform href.
+        #
+        # Flow:
+        #   productInformationLink → buttons.primary[rel=="player",
+        #                            instantUsable==true] → VodPlayer URL
+        #   VodPlayer response     → content.playbackUrls  → pick by quality
+        # ------------------------------------------------------------------
         product_url: Optional[str] = (
             content_block.get("productInformationLink") or {}
         ).get("href")
+
+        playback_href: Optional[str] = None
+        if product_url:
+            playback_href = self._resolve_movie_playback_href(product_url, params)
+
+        # Fall back to storing productInformationLink so the provider can still
+        # attempt playback via the normal session-manifest path.
+        manifest: Optional[str] = playback_href or product_url
+
         return [VodItem.create_movie(
             name=title,
             content_id=content_id,
@@ -815,9 +903,78 @@ class VodManager:
             genres=info.get("genres") or None,
             duration_seconds=duration_seconds,
             rating=info.get("childProtectionId"),
-            manifest_script=product_url,
-            session_manifest=product_url is not None,
+            manifest_script=manifest,
+            session_manifest=manifest is not None,
         )]
+
+    def _resolve_movie_playback_href(
+        self,
+        product_url: str,
+        params: Dict,
+    ) -> Optional[str]:
+        """
+        Walk the playback chain for a movie and return the quality-selected
+        theplatform href.
+
+        Steps:
+          1. Fetch productInformationLink.
+          2. Pick buttons.primary[] where rel=="player" AND instantUsable==true.
+             (Entries with rel=="launchApp" are external apps — skip them.)
+          3. Fetch the VodPlayer URL ($redirect=false + sid already in params).
+          4. Extract content.playbackUrls and call _pick_playback_media_id to
+             select the best mediaId, then return the matching href.
+
+        Returns ``None`` if any step fails, allowing the caller to fall back
+        to the raw productInformationLink.
+        """
+        prod_data = self._get(product_url, params)
+        if not prod_data:
+            return None
+
+        # Step 2: find the native player button.
+        vod_player_url: Optional[str] = None
+        for btn in (prod_data.get("buttons") or {}).get("primary", []):
+            if btn.get("rel") != "player":
+                continue
+            if not btn.get("instantUsable", False):
+                continue
+            href = btn.get("href")
+            if href:
+                vod_player_url = href
+                break
+
+        if not vod_player_url:
+            logger.debug(
+                f"{self._provider}: No instantUsable player button found "
+                f"in productInformation; cannot resolve mediaId."
+            )
+            return None
+
+        # Step 3: fetch the VodPlayer response ($redirect=false + sid are
+        # already present in params from _base_params()).
+        vod_player_data = self._get(vod_player_url, params)
+        if not vod_player_data:
+            return None
+
+        # Step 4: pick the best playback URL.
+        playback_urls: List[Dict] = (
+            (vod_player_data.get("content") or {}).get("playbackUrls") or []
+        )
+        media_id = self._pick_playback_media_id(playback_urls)
+        if not media_id:
+            return None
+
+        # Return the href that matches the chosen mediaId.
+        for entry in playback_urls:
+            if entry.get("mediaId") == media_id:
+                href = entry.get("href")
+                logger.debug(
+                    f"{self._provider}: Resolved movie playback href "
+                    f"(quality={entry.get('quality')}, mediaId={media_id}): {href}"
+                )
+                return href
+
+        return None
 
     # =========================================================================
     # Utilities
