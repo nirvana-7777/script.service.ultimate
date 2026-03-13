@@ -413,7 +413,21 @@ class VodManager:
     # =========================================================================
 
     def _fetch_series_seasons(self, content_id: str, params: Dict) -> List[VodCategory]:
-        """Fetch a series VodDetails page and return each season as a VodCategory."""
+        """
+        Fetch seasons for a series.
+
+        Flow:
+          1. Fetch VodDetails for the series.
+          2. Follow productInformationLink to get the partner/button list.
+          3. Pick the best primary button that has a subAssetLane (prefer
+             'videoload', otherwise first with a laneContentLink href).
+          4. Fetch that subAssetLane laneContentLink → items where
+             vodType == "Season" become VodCategory entries.
+
+        Fallback (old behaviour):
+          If productInformationLink is absent or yields nothing, fall back to
+          Season-typed lanes in the VodDetails response itself.
+        """
         url = f"{self._base_url()}/VodDetails/{VOD_FLEX_ID_DETAILS}/{content_id}"
         data = self._get(url, params)
         if not data:
@@ -422,9 +436,30 @@ class VodManager:
         content = data.get("content", {})
         info = content.get("contentInformation", {})
         series_title: str = info.get("seriesTitle") or info.get("title") or ""
-        series_num = content_id.replace(VOD_PREFIX_SERIES, "")
 
-        seasons: List[VodCategory] = []
+        # ------------------------------------------------------------------
+        # Primary path: productInformationLink → subAssetLane
+        # ------------------------------------------------------------------
+        product_url: Optional[str] = (
+            content.get("productInformationLink") or {}
+        ).get("href")
+
+        if product_url:
+            seasons = self._fetch_seasons_via_product_info(
+                product_url, series_title, params
+            )
+            if seasons:
+                logger.debug(
+                    f"{self._provider}: Series {content_id} → "
+                    f"{len(seasons)} seasons (via subAssetLane)"
+                )
+                return seasons
+
+        # ------------------------------------------------------------------
+        # Fallback: Season lanes embedded in the VodDetails response
+        # ------------------------------------------------------------------
+        series_num = content_id.replace(VOD_PREFIX_SERIES, "")
+        seasons = []
         for lane in content.get("lanes", []):
             if lane.get("type") != "Season":
                 continue
@@ -443,22 +478,94 @@ class VodManager:
                 )
             )
 
-        # Fallback: build from seasonsAvailable count
-        if not seasons:
-            seasons_count = info.get("seasonsAvailable") or 0
-            for s in range(1, int(seasons_count) + 1):
-                season_id = f"{VOD_PREFIX_SEASON}{series_num}_DE_{s}"
+        logger.debug(
+            f"{self._provider}: Series {content_id} → "
+            f"{len(seasons)} seasons (via VodDetails lanes)"
+        )
+        return seasons
+
+    def _fetch_seasons_via_product_info(
+        self,
+        product_url: str,
+        series_title: str,
+        params: Dict,
+    ) -> List[VodCategory]:
+        """
+        Fetch the productInformation endpoint and resolve seasons from the
+        first usable subAssetLane.
+
+        Partner preference order:
+          1. 'videoload'  (native Magenta VOD, always present)
+          2. First primary button that has a subAssetLane with a
+             laneContentLink href (regardless of instantUsable).
+        """
+        prod_data = self._get(product_url, params)
+        if not prod_data:
+            return []
+
+        primary_buttons = (prod_data.get("buttons") or {}).get("primary", [])
+
+        # Build an ordered candidate list: videoload first, then others
+        candidates = []
+        for btn in primary_buttons:
+            lane_list = btn.get("subAssetLane") or []
+            for lane in lane_list:
+                href = (lane.get("laneContentLink") or {}).get("href")
+                if not href:
+                    continue
+                if btn.get("partnerId") == "videoload":
+                    candidates.insert(0, href)
+                else:
+                    candidates.append(href)
+
+        for lane_href in candidates:
+            lane_data = self._get(lane_href, params)
+            if not lane_data:
+                continue
+            seasons = []
+            for item in (lane_data.get("content") or {}).get("items", []):
+                if item.get("vodType") != "Season":
+                    continue
+                season_id = item.get("id", "")
+                title = (item.get("title") or item.get("seasonTitle") or "").strip()
+                if not season_id or not title:
+                    continue
+                details_href: Optional[str] = (
+                    item.get("details") or {}
+                ).get("href")
+                # content_id: strip base URL and query string from details href
+                # e.g. "https://.../VodDetails/202887/GN_SEASON_184925_DE_1?..."
+                # → "VodDetails/202887/GN_SEASON_184925_DE_1"
+                if details_href and "/v3/" in details_href:
+                    content_id = (
+                        details_href.split("/v3/")[1]
+                        .split("?")[0]
+                        .split("/", 1)[1]
+                    )
+                else:
+                    content_id = season_id
+
+                image_url: Optional[str] = (item.get("image") or {}).get("href")
+                description: Optional[str] = (
+                    item.get("description") or item.get("longDescription")
+                )
+                episode_count: Optional[int] = item.get("episodesProduced")
+
                 seasons.append(
                     VodCategory(
-                        name=f"Staffel {s}",
-                        content_id=season_id,
+                        name=title,
+                        content_id=content_id,
                         provider=self._provider,
-                        description=f"{series_title} – Staffel {s}",
+                        logo_url=image_url,
+                        description=description or f"{series_title} – {title}",
+                        child_count=episode_count,
+                        details_url=details_href,
                     )
                 )
+            if seasons:
+                return seasons
 
-        logger.debug(f"{self._provider}: Series {content_id} → {len(seasons)} seasons")
-        return seasons
+        return []
 
     # =========================================================================
     # Private helpers – VodDetails (season → episodes)
