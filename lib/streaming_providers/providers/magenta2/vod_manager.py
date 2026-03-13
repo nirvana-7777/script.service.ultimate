@@ -575,10 +575,15 @@ class VodManager:
         """
         Fetch episodes for a season.
 
-        The season VodDetails response does not embed episode items inline.
-        Instead each season lane carries a laneContentLink href that points to
-        an UnstructuredGrid endpoint listing the actual episodes.  We fetch
-        that endpoint for every Episode-type lane we find.
+        Flow:
+          1. Fetch the season VodDetails page.
+          2. Follow productInformationLink → pick a primary button with a
+             subAssetLane (prefer videoload).
+          3. Fetch that subAssetLane → items where vodType == "Episode".
+
+        Fallback:
+          If productInformationLink is absent or yields nothing, fall back to
+          Episode-typed lanes embedded in the VodDetails response.
         """
         url = f"{self._base_url()}/VodDetails/{VOD_FLEX_ID_DETAILS}/{season_id}"
         episode_params = dict(params)
@@ -591,7 +596,28 @@ class VodManager:
         content = data.get("content", {})
         season_number: Optional[int] = self._extract_season_number(season_id)
 
-        episodes: List[VodItem] = []
+        # ------------------------------------------------------------------
+        # Primary path: productInformationLink → subAssetLane
+        # ------------------------------------------------------------------
+        product_url: Optional[str] = (
+            content.get("productInformationLink") or {}
+        ).get("href")
+
+        if product_url:
+            episodes = self._fetch_episodes_via_product_info(
+                product_url, season_number, params
+            )
+            if episodes:
+                logger.debug(
+                    f"{self._provider}: Season {season_id} → "
+                    f"{len(episodes)} episodes (via subAssetLane)"
+                )
+                return episodes
+
+        # ------------------------------------------------------------------
+        # Fallback: Episode lanes embedded in the VodDetails response
+        # ------------------------------------------------------------------
+        episodes = []
         for lane in content.get("lanes", []):
             if lane.get("type") != "Episode":
                 continue
@@ -606,8 +632,57 @@ class VodManager:
                 if node is not None:
                     episodes.append(node)
 
-        logger.debug(f"{self._provider}: Season {season_id} → {len(episodes)} episodes")
+        logger.debug(
+            f"{self._provider}: Season {season_id} → "
+            f"{len(episodes)} episodes (via VodDetails lanes)"
+        )
         return episodes
+
+    def _fetch_episodes_via_product_info(
+        self,
+        product_url: str,
+        season_number: Optional[int],
+        params: Dict,
+    ) -> List[VodItem]:
+        """
+        Resolve the episode list from the productInformation subAssetLane.
+
+        Partner preference: videoload first, then any other with a
+        laneContentLink href.
+        """
+        prod_data = self._get(product_url, params)
+        if not prod_data:
+            return []
+
+        primary_buttons = (prod_data.get("buttons") or {}).get("primary", [])
+
+        candidates = []
+        for btn in primary_buttons:
+            lane_list = btn.get("subAssetLane") or []
+            for lane in lane_list:
+                href = (lane.get("laneContentLink") or {}).get("href")
+                if not href:
+                    continue
+                if btn.get("partnerId") == "videoload":
+                    candidates.insert(0, href)
+                else:
+                    candidates.append(href)
+
+        for lane_href in candidates:
+            lane_data = self._get(lane_href, params)
+            if not lane_data:
+                continue
+            episodes = []
+            for ep in (lane_data.get("content") or {}).get("items", []):
+                if ep.get("vodType") != "Episode":
+                    continue
+                node = self._map_episode_item(ep, season_number)
+                if node is not None:
+                    episodes.append(node)
+            if episodes:
+                return episodes
+
+        return []
 
     def _map_episode_item(
         self,
