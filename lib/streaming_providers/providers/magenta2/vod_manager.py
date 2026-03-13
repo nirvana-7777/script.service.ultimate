@@ -335,6 +335,7 @@ class VodManager:
         is used when discovery fails.
         """
         import uuid as _uuid
+        from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 
         if not self._home_url:
             logger.debug(
@@ -347,13 +348,16 @@ class VodManager:
         # (e.g. ftv-androidtv for Android TV, ftv-web for web).
         resolved_home_url = self._home_url.replace("{clientModel}", self._client_model)
 
-        # Compose $cid as "dt-session-id::dt-call-id" — both are random UUIDs
-        # generated fresh for each request, matching the real device behaviour.
-        dt_session_id = str(_uuid.uuid4())
+        # Use the provider's persistent session_id (same one used everywhere else)
+        # rather than generating a random one — the server uses this to personalise
+        # the bar, which is why the wrong session ID returns generic tiles instead
+        # of the user's personalised view including the "Streaming" tile.
+        dt_session_id = self._session_id
         dt_call_id_1 = str(_uuid.uuid4())
         cid = f"{dt_session_id}::{dt_call_id_1}"
 
-        # Random serial number UUID, as the real device sends its hardware serial.
+        # Random serial number UUID — the real device sends its hardware serial,
+        # but any stable UUID is accepted.
         serial_number = str(_uuid.uuid4())
 
         # Params mirror the real Android TV DocumentGroupRedirect request exactly.
@@ -387,20 +391,31 @@ class VodManager:
         )
 
         # Step 2: follow the API-level redirect.
-        # The redirectUrl already contains all required query parameters built
-        # server-side — do NOT merge our params on top of it to avoid duplicating
-        # or overriding values already present in the URL.
+        # The server-built redirectUrl omits $cid — append it with a fresh call ID
+        # so the PersonalBar endpoint can correlate the session and return the
+        # correct personalised tile set (including "Streaming").
         if redirect_data.get("$type") == "redirect":
             redirect_url = redirect_data.get("redirectUrl")
             if not redirect_url:
                 logger.error(f"{self._provider}: Redirect response missing redirectUrl")
                 return None
-            # The PersonalBar fetch reuses the same dt-session-id but gets a fresh
-            # dt-call-id, matching the real device behaviour seen in the logs.
+
+            # Inject $cid into the redirectUrl (fresh call ID, same session ID).
             dt_call_id_2 = str(_uuid.uuid4())
-            logger.debug(f"{self._provider}: Following personal-bar redirect: {redirect_url}")
+            cid_2 = f"{dt_session_id}::{dt_call_id_2}"
+            parsed = urlparse(redirect_url)
+            qs = parse_qs(parsed.query, keep_blank_values=True)
+            qs["$cid"] = [cid_2]
+            redirect_url_with_cid = urlunparse(
+                parsed._replace(query=urlencode({k: v[0] for k, v in qs.items()}))
+            )
+
+            logger.debug(
+                f"{self._provider}: Following personal-bar redirect "
+                f"(with $cid): {redirect_url_with_cid}"
+            )
             bar_data = self._get_with_serial(
-                redirect_url, {}, serial_number,
+                redirect_url_with_cid, {}, serial_number,
                 dt_session_id=dt_session_id, dt_call_id=dt_call_id_2,
             )
             if not bar_data:
