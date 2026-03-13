@@ -278,7 +278,15 @@ class VodManager:
             "themeId": self._theme_id,
         })
 
-        data = self._get(self._home_url, params)
+        # The home_url from bootstrap may contain a literal "{clientModel}"
+        # placeholder that must be substituted before use.
+        resolved_home_url = self._home_url.replace("{clientModel}", self._client_model)
+        if resolved_home_url != self._home_url:
+            logger.debug(
+                f"{self._provider}: Substituted clientModel in homeUrl: {resolved_home_url}"
+            )
+
+        data = self._get(resolved_home_url, params)
         if not data:
             logger.error(f"{self._provider}: Failed to fetch personal bar from homeUrl")
             return None
@@ -1000,8 +1008,23 @@ class VodManager:
         if not prod_data:
             return None, None
 
+        # Log all primary buttons so we can diagnose auth / partner issues.
+        primary_buttons = (prod_data.get("buttons") or {}).get("primary", [])
+        logger.debug(
+            f"{self._provider}: productInformation primary buttons: "
+            + str([
+                {
+                    "rel": b.get("rel"),
+                    "partnerId": b.get("partnerId"),
+                    "instantUsable": b.get("instantUsable"),
+                    "href_tail": (b.get("href") or "")[-60:],
+                }
+                for b in primary_buttons
+            ])
+        )
+
         vod_player_url: Optional[str] = None
-        for btn in (prod_data.get("buttons") or {}).get("primary", []):
+        for btn in primary_buttons:
             if btn.get("rel") != "player":
                 continue
             if not btn.get("instantUsable", False):
@@ -1012,9 +1035,10 @@ class VodManager:
                 break
 
         if not vod_player_url:
-            logger.debug(
+            logger.warning(
                 f"{self._provider}: No instantUsable player button found "
-                f"in productInformation; cannot resolve mediaId."
+                f"in productInformation for {product_url}. "
+                f"Buttons present: {[b.get('rel') for b in primary_buttons]}"
             )
             return None, None
 
