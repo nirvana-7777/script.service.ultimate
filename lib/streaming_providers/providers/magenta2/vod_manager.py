@@ -94,7 +94,6 @@ class VodManager:
         bootstrap=None,
         provider_config=None,
         session_id: Optional[str] = None,
-        serial_number: Optional[str] = None,
         preferred_quality: str = "HD",
         auth_headers_callback=None,
     ):
@@ -102,12 +101,6 @@ class VodManager:
         self._provider = provider_name
         self._provider_config = provider_config
         self._session_id: str = session_id or ""
-        # Stable serial number for the lifetime of this manager instance.
-        # Passed in from the provider so it stays consistent across all
-        # requests (auth headers callback, _get_with_serial calls, etc.).
-        # Falls back to a fresh UUID only when not supplied (e.g. unit tests).
-        import uuid as _uuid_mod
-        self._serial_number: str = serial_number or str(_uuid_mod.uuid4())
         # Normalise to uppercase; fall back to "HD" for unknown values.
         _q = (preferred_quality or "HD").upper()
         self._preferred_quality: str = _q if _q in self._QUALITY_FALLBACK else "HD"
@@ -363,10 +356,9 @@ class VodManager:
         dt_call_id_1 = str(_uuid.uuid4())
         cid = f"{dt_session_id}::{dt_call_id_1}"
 
-        # Use the stable serial number that was set at construction time.
-        # Generating a new UUID here on every call would cause the server to
-        # treat each request as a different device, breaking session correlation.
-        serial_number = self._serial_number
+        # Random serial number UUID — the real device sends its hardware serial,
+        # but any stable UUID is accepted.
+        serial_number = str(_uuid.uuid4())
 
         # Params mirror the real Android TV DocumentGroupRedirect request exactly.
         # Note: $subscriberType and $reloadAfterChange are NOT sent by real devices;
@@ -1001,9 +993,41 @@ class VodManager:
         product_url: Optional[str] = (
             content_block.get("productInformationLink") or {}
         ).get("href")
+
+        # Walk the full playback chain to resolve a real MPX mediaId, just
+        # like _fetch_single_item() does for movies.  Without this step the
+        # content_id stays as a GN_EP* Gracenote id which the manifest/DRM
+        # layer cannot use.
+        playback_href: Optional[str] = None
+        playback_media_id: Optional[str] = None
+        if product_url:
+            playback_href, playback_media_id = self._resolve_movie_playback_href(
+                product_url, self._playback_params()
+            )
+
+        if playback_media_id:
+            effective_content_id = playback_media_id
+            manifest_script = playback_href
+            session_manifest = True
+            logger.debug(
+                f"{self._provider}: Episode {content_id} → "
+                f"resolved mediaId={playback_media_id}"
+            )
+        else:
+            # Fallback: keep GN id + productInformationLink so the existing
+            # session-manifest path still has a chance to work.
+            effective_content_id = content_id
+            manifest_script = product_url
+            session_manifest = product_url is not None
+            if product_url:
+                logger.warning(
+                    f"{self._provider}: Could not resolve MPX mediaId for "
+                    f"episode {content_id}; falling back to GN id"
+                )
+
         return [VodItem.create_episode(
             name=title,
-            content_id=content_id,
+            content_id=effective_content_id,
             provider=self._provider,
             season_number=info.get("seasonNumber") or 0,
             episode_number=ep_num or 0,
@@ -1017,8 +1041,8 @@ class VodManager:
             rating=info.get("childProtectionId"),
             series_id=info.get("seriesId"),
             series_title=info.get("seriesTitle"),
-            manifest_script=product_url,
-            session_manifest=product_url is not None,
+            manifest_script=manifest_script,
+            session_manifest=session_manifest,
         )]
 
     def _pick_playback_media_id(self, playback_urls: List[Dict]) -> Optional[str]:
