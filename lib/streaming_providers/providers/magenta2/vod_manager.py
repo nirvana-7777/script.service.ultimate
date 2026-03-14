@@ -94,6 +94,7 @@ class VodManager:
         bootstrap=None,
         provider_config=None,
         session_id: Optional[str] = None,
+        serial_number: Optional[str] = None,
         preferred_quality: str = "HD",
         auth_headers_callback=None,
     ):
@@ -101,6 +102,11 @@ class VodManager:
         self._provider = provider_name
         self._provider_config = provider_config
         self._session_id: str = session_id or ""
+        # Stable serial number for the lifetime of this manager instance.
+        # Passed in from the provider so it stays consistent across all
+        # requests. Falls back to a fresh UUID only when not supplied (e.g. tests).
+        import uuid as _uuid_mod
+        self._serial_number: str = serial_number or str(_uuid_mod.uuid4())
         # Normalise to uppercase; fall back to "HD" for unknown values.
         _q = (preferred_quality or "HD").upper()
         self._preferred_quality: str = _q if _q in self._QUALITY_FALLBACK else "HD"
@@ -356,9 +362,10 @@ class VodManager:
         dt_call_id_1 = str(_uuid.uuid4())
         cid = f"{dt_session_id}::{dt_call_id_1}"
 
-        # Random serial number UUID — the real device sends its hardware serial,
-        # but any stable UUID is accepted.
-        serial_number = str(_uuid.uuid4())
+        # Use the stable serial number set at construction time rather than
+        # generating a fresh UUID on every call — the server uses it to
+        # correlate requests within the same session.
+        serial_number = self._serial_number
 
         # Params mirror the real Android TV DocumentGroupRedirect request exactly.
         # Note: $subscriberType and $reloadAfterChange are NOT sent by real devices;
