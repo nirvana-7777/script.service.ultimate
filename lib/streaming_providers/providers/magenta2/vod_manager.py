@@ -57,7 +57,7 @@ from .constants import (
     VOD_PREFIX_EPISODE,
     VOD_PREFIX_SEASON,
     VOD_PREFIX_SERIES,
-    VOD_STREAMING_TILE_TITLE,
+    VOD_STREAMING_TILE_TITLES,
 )
 
 class VodManager:
@@ -94,6 +94,7 @@ class VodManager:
         bootstrap=None,
         provider_config=None,
         session_id: Optional[str] = None,
+        serial_number: Optional[str] = None,
         preferred_quality: str = "HD",
         auth_headers_callback=None,
     ):
@@ -101,6 +102,12 @@ class VodManager:
         self._provider = provider_name
         self._provider_config = provider_config
         self._session_id: str = session_id or ""
+        # Stable serial number for the lifetime of this manager instance.
+        # Passed in from the provider so it stays consistent across all
+        # requests (auth headers callback, _get_with_serial calls, etc.).
+        # Falls back to a fresh UUID only when not supplied (e.g. unit tests).
+        import uuid as _uuid_mod
+        self._serial_number: str = serial_number or str(_uuid_mod.uuid4())
         # Normalise to uppercase; fall back to "HD" for unknown values.
         _q = (preferred_quality or "HD").upper()
         self._preferred_quality: str = _q if _q in self._QUALITY_FALLBACK else "HD"
@@ -356,9 +363,10 @@ class VodManager:
         dt_call_id_1 = str(_uuid.uuid4())
         cid = f"{dt_session_id}::{dt_call_id_1}"
 
-        # Random serial number UUID — the real device sends its hardware serial,
-        # but any stable UUID is accepted.
-        serial_number = str(_uuid.uuid4())
+        # Use the stable serial number that was set at construction time.
+        # Generating a new UUID here on every call would cause the server to
+        # treat each request as a different device, breaking session correlation.
+        serial_number = self._serial_number
 
         # Params mirror the real Android TV DocumentGroupRedirect request exactly.
         # Note: $subscriberType and $reloadAfterChange are NOT sent by real devices;
@@ -457,15 +465,23 @@ class VodManager:
             f"{self._provider}: Personal bar tiles: "
             f"{[t.get('title') for t in tiles]}"
         )
-        for tile in tiles:
-            if tile.get("title") == VOD_STREAMING_TILE_TITLE:
+        # Build a lookup so we can find the first matching tile by title
+        # regardless of which subscription/locale variant the user has.
+        tile_by_title = {t.get("title"): t for t in tiles}
+        for candidate in VOD_STREAMING_TILE_TITLES:
+            tile = tile_by_title.get(candidate)
+            if tile:
                 href = tile.get("onFocus", {}).get("screen", {}).get("href")
                 if href:
-                    logger.debug(f"{self._provider}: Found Streaming grid URL: {href}")
+                    logger.debug(
+                        f"{self._provider}: Found VOD grid tile '{candidate}': {href}"
+                    )
                     return href
 
         logger.warning(
-            f"{self._provider}: '{VOD_STREAMING_TILE_TITLE}' tile not found in personal bar"
+            f"{self._provider}: No VOD tile found in personal bar "
+            f"(tried: {VOD_STREAMING_TILE_TITLES}); "
+            f"available: {list(tile_by_title.keys())}"
         )
         return None
 

@@ -297,4 +297,15 @@ VOD_PREFIX_MOVIE_SH = "GN_SH"
 
 # Name of the personal-bar tile that leads to the VOD StructuredGrid.
 # Looked up by exact title match in the primary.tiles list returned by homeUrl.
-VOD_STREAMING_TILE_TITLE = "Streaming"
+# Ordered list of personal-bar tile titles that lead to the VOD StructuredGrid.
+# Tried in order — first match wins.  Different user subscriptions/locales
+# may show different tile names (e.g. "MagentaTV+" instead of "Streaming").
+VOD_STREAMING_TILE_TITLES = [
+    "Streaming",      # Default / standard subscription
+    "MagentaTV+",     # Alternative name observed in some accounts
+    "Heimkino",       # Fallback seen in basic-tier bars
+]
+
+# Keep the singular alias for backwards compatibility with any external code
+# that still imports VOD_STREAMING_TILE_TITLE directly.
+VOD_STREAMING_TILE_TITLE = VOD_STREAMING_TILE_TITLES[0]

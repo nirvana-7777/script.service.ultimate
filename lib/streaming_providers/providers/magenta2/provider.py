@@ -75,9 +75,13 @@ class Magenta2Provider(StreamingProvider):
         )
         self.terminal_type = self.platform_config["terminal_type"]
 
-        # Generate session ID and device ID
+        # Generate session ID, device ID, and serial number.
+        # serial_number is stable for the lifetime of this provider instance —
+        # it mimics the hardware serial that a real device would send and must
+        # be consistent across all requests in the same session.
         self.session_id = self._generate_uuid()
         self.device_id = self._generate_device_id()
+        self.serial_number = self._generate_uuid()
 
         # Setup proxy configuration
         self.proxy_config = (
@@ -277,6 +281,7 @@ class Magenta2Provider(StreamingProvider):
                 bootstrap=self.endpoint_manager.config.bootstrap,
                 provider_config=self.endpoint_manager.config,
                 session_id=self.session_id,
+                serial_number=self.serial_number,
                 auth_headers_callback=self._vod_auth_headers,
             )
             logger.info("✓ VodManager initialized with discovered config")
@@ -1116,37 +1121,81 @@ class Magenta2Provider(StreamingProvider):
 
     def _vod_auth_headers(self) -> Dict[str, str]:
         """
-        Build authentication headers required by authenticated VOD endpoints:
-            vodproductinformation  (wcps.t-online.de/uspip/...)
-            VodPlayer              (wcps.t-online.de/vops/...)
+        Build authentication headers required by authenticated VOD endpoints
+        (vodproductinformation, VodPlayer, PersonalBar).
 
-        Required headers (observed from browser traffic):
-            Authorization:        Bearer <persona_jwt>
-            x-mpx-authorization:  Basic <persona_token>   (account_uri:jwt b64)
-            x-dt-session-id:      <session_id>
-            x-dt-call-id:         <fresh uuid per request>
-            origin / referer:     magenta.tv
+        Headers are platform-dependent:
+
+        ftv-web
+        -------
+            Authorization:                      Bearer <persona_jwt>
+            x-mpx-authorization:                Basic <persona_token>
+            x-dt-session-id:                    <session_id>
+            x-dt-call-id:                       <fresh uuid per request>
+            origin:                             https://www.magenta.tv
+            referer:                            https://www.magenta.tv/
+            user-agent:                         <web UA>
+            x-permissionflagpersonalizeduireco: false
+
+        ftv-android / ftv-androidtv (and variants)
+        -------------------------------------------
+            Authorization:      Bearer <persona_jwt>
+            x-mpx-authorization: Basic <persona_token>
+            x-stbserialnumber:  <stable serial UUID>
+            dt-session-id:      <session_id>          (no x- prefix)
+            dt-call-id:         <fresh uuid per request>  (no x- prefix)
+            user-agent:         <android UA>
+            accept-encoding:    gzip
+
+        Note: _get_with_serial() in VodManager may further override dt-call-id
+        and x-stbserialnumber per-request; the values set here act as a
+        sensible default for plain _get() / _get_auth() calls.
         """
         persona_token = self._ensure_authenticated()
-        # The persona_token is already Base64(account_uri:jwt) — used as-is
-        # for x-mpx-authorization.  For Authorization we need just the raw JWT.
+        # persona_token is Base64(account_uri:jwt) — used as-is for
+        # x-mpx-authorization.  Strip to just the raw JWT for Authorization.
         persona_jwt = self._extract_persona_jwt_from_token(persona_token)
 
-        headers = {
-            "x-mpx-authorization": f"Basic {persona_token}",
-            "x-dt-session-id": self.session_id,
-            "x-dt-call-id": self._generate_call_id(),
-            "origin": "https://www.magenta.tv",
-            "referer": "https://www.magenta.tv/",
-            "User-Agent": self.platform_config["user_agent"],
-            "Accept": "application/json",
-            "x-permissionflagpersonalizeduireco": "false",
-        }
-        if persona_jwt:
-            headers["Authorization"] = f"Bearer {persona_jwt}"
+        auth_value = (
+            f"Bearer {persona_jwt}" if persona_jwt else f"Basic {persona_token}"
+        )
+
+        # Determine which header flavour to use based on the client_model
+        # resolved at init time (ftv-web vs everything else).
+        client_model: str = (
+            self.provider_config.bootstrap.client_model
+            if self.provider_config and self.provider_config.bootstrap
+            else f"ftv-{self.platform}"
+        )
+        is_web = client_model == "ftv-web"
+
+        if is_web:
+            headers: Dict[str, str] = {
+                "Authorization": auth_value,
+                "x-mpx-authorization": f"Basic {persona_token}",
+                "x-dt-session-id": self.session_id,
+                "x-dt-call-id": self._generate_call_id(),
+                "origin": "https://www.magenta.tv",
+                "referer": "https://www.magenta.tv/",
+                "user-agent": self.platform_config["user_agent"],
+                "accept": "*/*",
+                "accept-encoding": "gzip, deflate, br, zstd",
+                "accept-language": "de-DE,de;q=0.9",
+                "x-permissionflagpersonalizeduireco": "false",
+            }
         else:
-            # Fallback: some endpoints accept Basic auth too
-            headers["Authorization"] = f"Basic {persona_token}"
+            # Android TV / Android Mobile / ATV-Launcher / iOS all use the
+            # non-prefixed dt-* header names and expose the serial number.
+            headers = {
+                "Authorization": auth_value,
+                "x-mpx-authorization": f"Basic {persona_token}",
+                "x-stbserialnumber": self.serial_number,
+                "dt-session-id": self.session_id,
+                "dt-call-id": self._generate_call_id(),
+                "user-agent": self.platform_config["user_agent"],
+                "accept-encoding": "gzip",
+            }
+
         return headers
 
     def get_vod_category(self, category_path, **kwargs):
