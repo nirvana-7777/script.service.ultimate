@@ -44,7 +44,7 @@ Public interface
 
 import time
 import uuid as _uuid_mod
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 from ...base.utils.logger import logger
 
 from ...base.models.vod import VodCategory, VodItem
@@ -113,9 +113,22 @@ class VodManager:
         self._device_model: str = getattr(bootstrap, "device_model", None) or "WEB2_FTV"
         self._profile_name: str = getattr(bootstrap, "profile_name", None) or "stageExt"
         self._theme_id: str = getattr(bootstrap, "theme_id", None) or "hdr-ui2"
+        # white_label_id scopes all tvhubs/wcps requests to the correct portal.
+        # Comes from bootstrap (e.g. "megathek"); falls back to no param when absent
+        # so existing behaviour is preserved for accounts that don't use white-labelling.
+        self._white_label_id: Optional[str] = getattr(bootstrap, "white_label_id", None)
         # subscriber_type is not in bootstrap; derive from platform once at init.
         _platform = getattr(bootstrap, "platform", "")
         self._subscriber_type: str = SUBSCRIBER_TYPES.get(_platform, "FTV_OTT_DT")
+
+        # Short-lived in-memory cache for VodDetails responses (content_id → data).
+        # Prevents redundant network round-trips when the same content_id is
+        # looked up multiple times within a single get_children() call chain
+        # (e.g. _map_unstructured_item → _fetch_single_item for every lane movie,
+        # then the provider calling get_children([gn_id]) directly to resolve
+        # the MPX mediaId for playback).  Entries are keyed by the content_id
+        # string and are not persisted across VodManager instances.
+        self._vod_details_cache: Dict[str, Any] = {}
 
     # =========================================================================
     # Public API
@@ -180,9 +193,28 @@ class VodManager:
     # Private helpers – HTTP layer
     # =========================================================================
 
+    def _get_vod_details(self, content_id: str, params: Dict) -> Optional[Dict]:
+        """
+        Fetch (and cache) a VodDetails response for *content_id*.
+
+        The cache is keyed by content_id and lives for the lifetime of the
+        VodManager instance.  This prevents duplicate network round-trips when
+        the same content_id is resolved more than once within a single browsing
+        session (e.g. lane enumeration followed by playback resolution).
+        """
+        if content_id in self._vod_details_cache:
+            logger.debug(f"{self._provider}: VodDetails cache hit for {content_id}")
+            return self._vod_details_cache[content_id]
+
+        url = f"{self._base_url()}/VodDetails/{VOD_FLEX_ID_DETAILS}/{content_id}"
+        data = self._get(url, params)
+        if data:
+            self._vod_details_cache[content_id] = data
+        return data
+
     def _base_params(self) -> Dict[str, str]:
         """Build query parameters common to every VOD API request."""
-        return {
+        params: Dict[str, str] = {
             "$deviceModel": self._device_model,
             "$profile": self._profile_name,
             "$subscriberType": self._subscriber_type,
@@ -191,6 +223,9 @@ class VodManager:
             "sid": self._session_id,
             "t": str(int(time.time() * 1000)),
         }
+        if self._white_label_id:
+            params["whiteLabelId"] = self._white_label_id
+        return params
 
     def _base_url(self) -> str:
         """
@@ -666,8 +701,7 @@ class VodManager:
           If productInformationLink is absent or yields nothing, fall back to
           Season-typed lanes in the VodDetails response itself.
         """
-        url = f"{self._base_url()}/VodDetails/{VOD_FLEX_ID_DETAILS}/{content_id}"
-        data = self._get(url, params)
+        data = self._get_vod_details(content_id, params)
         if not data:
             return []
 
@@ -823,11 +857,10 @@ class VodManager:
           If productInformationLink is absent or yields nothing, fall back to
           Episode-typed lanes embedded in the VodDetails response.
         """
-        url = f"{self._base_url()}/VodDetails/{VOD_FLEX_ID_DETAILS}/{season_id}"
         episode_params = dict(params)
         episode_params["autofocus"] = "videoload"
 
-        data = self._get(url, episode_params)
+        data = self._get_vod_details(season_id, episode_params)
         if not data:
             return []
 
@@ -974,8 +1007,7 @@ class VodManager:
         """
         episode_params = dict(params)
         episode_params["autofocus"] = "videoload"
-        url = f"{self._base_url()}/VodDetails/{VOD_FLEX_ID_DETAILS}/{content_id}"
-        data = self._get(url, episode_params)
+        data = self._get_vod_details(content_id, episode_params)
         if not data:
             return []
 
@@ -1106,8 +1138,7 @@ class VodManager:
         The resolved theplatform href is stored as ``manifest_script`` so that
         the existing playback chain in the provider needs no changes.
         """
-        url = f"{self._base_url()}/VodDetails/{VOD_FLEX_ID_DETAILS}/{content_id}"
-        data = self._get(url, params)
+        data = self._get_vod_details(content_id, params)
         if not data:
             return []
 
@@ -1194,11 +1225,14 @@ class VodManager:
     def _normalise_product_url(self, url: str) -> str:
         """
         Rewrite a productInformationLink URL to use the correct client model
-        and partnerMapId so that the response contains proper player buttons.
+        so that the response contains proper player buttons.
 
-        The URL is built server-side from the requesting clientModel, e.g.:
-          .../ftv-androidtv/vodproductinformation/...?partnerMapId=ftv-3rdparty&...
-        We replace both the path segment and the query param with our values.
+        The path segment (e.g. /ftv-androidtv/) is replaced with our actual
+        client model.  The partnerMapId query parameter is intentionally left
+        untouched — the server sets it to a portal-specific value such as
+        "wl_megathek" that must be preserved for the correct button set to be
+        returned.  Overwriting it with our client model would corrupt the
+        partner scope and yield empty or wrong primary buttons.
         """
         from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 
@@ -1206,16 +1240,16 @@ class VodManager:
             if other != self._client_model:
                 url = url.replace(f"/{other}/", f"/{self._client_model}/")
 
+        # Re-encode the query string without touching any of its values —
+        # in particular partnerMapId, appMapId, channelMapId stay as-is.
         parsed = urlparse(url)
         qs = parse_qs(parsed.query, keep_blank_values=True)
-        if "partnerMapId" in qs:
-            qs["partnerMapId"] = [self._client_model]
         new_query = urlencode({k: v[0] for k, v in qs.items()})
         return urlunparse(parsed._replace(query=new_query))
 
     def _playback_params(self) -> Dict:
         """Query parameters for vodproductinformation / VodPlayer requests."""
-        return {
+        params: Dict[str, str] = {
             "$deviceModel": self._device_model,
             "$profile": self._profile_name,
             "$subscriberType": self._subscriber_type,
@@ -1224,6 +1258,9 @@ class VodManager:
             "sid": self._session_id,
             "t": str(int(time.time() * 1000)),
         }
+        if self._white_label_id:
+            params["whiteLabelId"] = self._white_label_id
+        return params
 
     def _resolve_movie_playback_href(
         self,
