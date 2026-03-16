@@ -95,7 +95,7 @@ class VodManager:
         provider_config=None,
         session_id: Optional[str] = None,
         serial_number: Optional[str] = None,
-        preferred_quality: str = "HD",
+        preferred_quality: str = "UHD",
         auth_headers_callback=None,
     ):
         self._http = http_manager
