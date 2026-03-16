@@ -1379,23 +1379,37 @@ class Magenta2Provider(StreamingProvider):
 
     def _resolve_gn_id_to_media_id(self, gn_id: str) -> Optional[str]:
         """
-        Resolve a Gracenote content id (GN_EP*, GN_MV*, GN_SH*) to a real
-        MPX mediaId by walking the VodDetails → productInformationLink →
-        VodPlayer → playbackUrls chain via the VodManager.
+        Resolve a Gracenote content id (GN_EP*, GN_MV*, GN_SH*) to the MPX
+        guid needed by the SMIL selector URL (.../media/{guid}).
 
-        Returns the MPX mediaId string on success, or None if resolution fails.
+        The VodItem returned by _fetch_single_episode stores:
+            content_id    = numeric mediaId  (e.g. 1904600133178)
+            manifest_script = theplatform href  (e.g. .../media/zRPPGLNGgPa1)
+
+        The SMIL endpoint requires the alphanumeric guid from the href, not
+        the numeric mediaId.
         """
         if not self._vod_manager:
             logger.warning(f"Cannot resolve GN id {gn_id}: VodManager not available")
             return None
         try:
             items = self._vod_manager.get_children([gn_id])
-            if items and hasattr(items[0], "content_id"):
-                resolved = items[0].content_id
+            if items:
+                item = items[0]
+                # Prefer the guid extracted from manifest_script href
+                manifest_script = getattr(item, "manifest_script", None)
+                if manifest_script:
+                    # href format: https://link.theplatform.eu/s/mdeprod/media/zRPPGLNGgPa1
+                    guid = manifest_script.rstrip("/").rsplit("/media/", 1)[-1].split("?")[0]
+                    if guid and guid != manifest_script:
+                        logger.debug(f"Resolved GN id {gn_id} → guid {guid}")
+                        return guid
+                # Fallback to content_id if manifest_script is absent
+                resolved = getattr(item, "content_id", None)
                 if resolved and resolved != gn_id:
-                    logger.debug(f"Resolved GN id {gn_id} → mediaId {resolved}")
+                    logger.debug(f"Resolved GN id {gn_id} → content_id {resolved}")
                     return resolved
-            logger.warning(f"GN id {gn_id} resolution returned no usable mediaId")
+            logger.warning(f"GN id {gn_id} resolution returned no usable id")
         except Exception as exc:
             logger.warning(f"GN id {gn_id} resolution failed: {exc}")
         return None
