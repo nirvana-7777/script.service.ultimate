@@ -155,6 +155,9 @@ MAGENTA2_CLIENT_IDS = {
     "ios": "21218403-52ec-4a65-abf4-f36a0eadd631",
 }
 
+# Client ID used for SMIL/selector manifest requests
+SMIL_CLIENT_ID = "a8198f31-b406-4177-8dee-f6216c356c75"
+
 # OAuth2 scopes
 MAGENTA2_OAUTH_SCOPE = "openid profile offline_access tvhubs"
 
@@ -228,9 +231,10 @@ DEFAULT_MAX_RETRIES = 3
 DEFAULT_EPG_WINDOW_HOURS = 3
 
 # Cache durations (seconds)
-BOOTSTRAP_CACHE_DURATION = 3600  # 1 hour
+BOOTSTRAP_CACHE_DURATION = 3600   # 1 hour
 OPENID_CONFIG_CACHE_DURATION = 86400  # 24 hours
-MANIFEST_CACHE_DURATION = 7200  # 2 hours
+MANIFEST_CACHE_DURATION = 7200    # 2 hours
+SMIL_CACHE_DURATION = 3600        # 1 hour
 
 # ============================================================================
 # Error Codes
@@ -266,6 +270,29 @@ TAA_REQUEST_TEMPLATE = {
 BOOTSTRAP_PARAMS = {"$redirect": "false"}
 
 # REMOVED: Old BOOTSTRAP_KEYS - now handled in config_models.py
+
+# ============================================================================
+# Quality Configuration
+# ============================================================================
+
+# Ordered quality preference fallback chains used by both live-channel selection
+# and VOD playback.  Key = desired quality; value = ordered list to try.
+QUALITY_FALLBACK: dict = {
+    "UHDHDR": ["UHDHDR", "UHD", "HD", "SD"],
+    "UHD":    ["UHD",    "HD",  "SD"],
+    "HD":     ["HD",     "SD"],
+    "SD":     ["SD"],
+}
+
+# Integer rank per quality label — used for fast channel deduplication when
+# multiple entries share the same display number (keep the highest-ranked one).
+QUALITY_RANK: dict = {
+    "SD":     1,
+    "HD":     2,
+    "UHD":    3,
+    "UHDHDR": 4,
+    "4K":     3,  # treat 4K as equivalent to UHD for ranking purposes
+}
 
 # ============================================================================
 # VOD Configuration

@@ -4,9 +4,9 @@ import base64
 import json
 import re
 import time
-import datetime
 import uuid
 from datetime import datetime, timedelta
+from urllib.parse import quote
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 from ...base.models import DRMConfig, DRMSystem, LicenseConfig, StreamingChannel, Event
@@ -20,7 +20,6 @@ from .auth import Magenta2Authenticator, Magenta2Credentials, Magenta2UserCreden
 from .config_models import ProviderConfig
 from .constants import (
     CONTENT_TYPE_LIVE,
-    CONTENT_TYPE_VOD,
     DEFAULT_COUNTRY,
     DEFAULT_EPG_WINDOW_HOURS,
     DEFAULT_MAX_RETRIES,
@@ -30,11 +29,17 @@ from .constants import (
     DRM_SYSTEM_WIDEVINE,
     ERROR_CODES,
     MAGENTA2_CLIENT_IDS,
+    MAGENTA2_FALLBACK_ACCOUNT_URI,
     MAGENTA2_LOGO,
     MAGENTA2_PLATFORMS,
     MODE_LIVE,
-    MODE_VOD,
+    QUALITY_RANK,
+    SMIL_CACHE_DURATION,
+    SMIL_CLIENT_ID,
     SUPPORTED_COUNTRIES,
+    VOD_PREFIX_EPISODE,
+    VOD_PREFIX_MOVIE_MV,
+    VOD_PREFIX_MOVIE_SH,
 )
 from .discovery import DiscoveryService
 from .endpoint_manager import EndpointManager
@@ -78,7 +83,7 @@ class Magenta2Provider(StreamingProvider):
         # Generate session ID, device ID, and serial number.
         # serial_number is stable for the lifetime of this provider instance.
         self.session_id = self._generate_uuid()
-        self.device_id = self._generate_device_id()
+        self.device_id = self._generate_uuid()
         self.serial_number = self._generate_uuid()
 
         # Setup proxy configuration
@@ -288,26 +293,18 @@ class Magenta2Provider(StreamingProvider):
         self.device_token = None
         self._persona_cache: Optional[PersonaResult] = None
         self._smil_cache: Dict[str, Tuple[float, Dict]] = {}  # channel_id -> (timestamp, smil_data)
-        self._smil_cache_ttl = 3600
-
-        logger.info("Magenta2 provider initialization completed successfully")
+        self._smil_cache_ttl = SMIL_CACHE_DURATION
 
         logger.info("Magenta2 provider initialization completed successfully")
 
     @staticmethod
     def _generate_uuid() -> str:
-        """Generate UUID for session"""
+        """Generate a UUID string. Used for session IDs, device IDs, and call IDs."""
         return str(uuid.uuid4())
 
-    @staticmethod
-    def _generate_device_id() -> str:
-        """Generate device ID"""
-        return str(uuid.uuid4())
-
-    @staticmethod
-    def _generate_call_id() -> str:
-        """Generate call ID for requests"""
-        return str(uuid.uuid4())
+    def _generate_call_id(self) -> str:
+        """Generate a fresh call ID for each individual request."""
+        return self._generate_uuid()
 
     def _load_proxy_from_manager(self, config_dir: Optional[str]) -> Optional[ProxyConfig]:
         """Load proxy configuration from ProxyConfigManager"""
@@ -461,11 +458,11 @@ class Magenta2Provider(StreamingProvider):
 
     @property
     def supported_auth_types(self) -> List[str]:
-        return ["network_based"]  # ← Change 1
+        return ["network_based"]
 
     @property
     def primary_token_scope(self) -> Optional[str]:
-        return "persona"  # ← Keep this
+        return "persona"
 
     @property
     def token_scopes(self) -> List[str]:
@@ -662,7 +659,7 @@ class Magenta2Provider(StreamingProvider):
         }
 
         # Build query string
-        query_string = "&".join([f"{k}={self._url_encode(v)}" for k, v in params.items()])
+        query_string = "&".join([f"{k}={quote(v, safe='')}" for k, v in params.items()])
 
         return f"{base_url}/iss?{query_string}"
 
@@ -674,7 +671,6 @@ class Magenta2Provider(StreamingProvider):
         if "entries" not in response_data:
             return []
 
-        quality_rank = {"SD": 1, "HD": 2, "UHD": 3, "4K": 3}
         best_entries = {}
         channels = []
 
@@ -694,9 +690,9 @@ class Magenta2Provider(StreamingProvider):
                         channels.append(channel)
                     continue
 
-                # Extract quality for comparison
+                # Extract quality for comparison using the shared QUALITY_RANK constant
                 quality = station_info.get("dt$quality", "SD")
-                current_rank = quality_rank.get(quality, 1)
+                current_rank = QUALITY_RANK.get(quality, 1)
 
                 # Check if we need to replace existing entry
                 existing = best_entries.get(display_number)
@@ -802,7 +798,6 @@ class Magenta2Provider(StreamingProvider):
             response.raise_for_status()
             channels_data = response.json()
 
-            # ✅ USE OPTIMIZED SINGLE-PASS PROCESSING
             channels = self._process_channel_stations_response_optimized(
                 channels_data, prefer_highest_quality
             )
@@ -823,130 +818,6 @@ class Magenta2Provider(StreamingProvider):
             **kwargs,
     ) -> List[Event]:
         return []
-
-    def _get_channels_from_mpx_feeds(self) -> List[StreamingChannel]:
-        """Get channels from MPX feeds discovered in manifest"""
-        try:
-            if not self.endpoint_manager:
-                return []
-
-            entitled_channels_url = self.endpoint_manager.get_endpoint(
-                "mpx_feed_entitledChannelsFeed"
-            )
-            if not entitled_channels_url:
-                return []
-
-            self._ensure_authenticated()
-
-            headers = self._get_api_headers(require_auth=True)
-            response = self.http_manager.get(
-                entitled_channels_url,
-                operation="mpx_feed",
-                headers=headers,
-                timeout=DEFAULT_REQUEST_TIMEOUT,
-            )
-            response.raise_for_status()
-
-            feed_data = response.json()
-            return self._parse_mpx_feed_response(feed_data)
-
-        except Exception as e:
-            logger.warning(f"Failed to get channels from MPX feed: {e}")
-            return []
-
-    def _parse_mpx_feed_response(self, feed_data: Dict) -> List[StreamingChannel]:
-        """Parse MPX feed response into channels"""
-        channels = []
-        entries = feed_data.get("entries", [])
-
-        for entry in entries:
-            try:
-                title = entry.get("title", "Unknown")
-                channel_id = entry.get("guid", "").split("/")[-1] if entry.get("guid") else ""
-
-                if not channel_id:
-                    continue
-
-                channel = Magenta2Channel(
-                    name=title,
-                    channel_id=channel_id,
-                    content_type=CONTENT_TYPE_LIVE,
-                    country=self.country,
-                    raw_data=entry,
-                )
-
-                streaming_channel = channel.to_streaming_channel(provider_name=self.provider_name)
-                channels.append(streaming_channel)
-
-            except Exception as e:
-                logger.warning(f"Error parsing MPX channel entry: {e}")
-
-        return channels
-
-    def _process_channels_response(self, response_data: Dict) -> List[StreamingChannel]:
-        """Process API response and convert to StreamingChannel objects"""
-        channels = []
-
-        if isinstance(response_data, list):
-            channel_list = response_data
-        elif isinstance(response_data, dict):
-            if "channels" in response_data:
-                channel_list = response_data["channels"]
-            elif "data" in response_data:
-                channel_list = response_data["data"]
-            else:
-                channel_list = [response_data]
-        else:
-            logger.warning("Unexpected channel response format")
-            return channels
-
-        for channel_data in channel_list:
-            try:
-                channel_id = channel_data.get("id", channel_data.get("channelId", ""))
-                if not channel_id:
-                    logger.warning("Channel missing ID, skipping")
-                    continue
-
-                title = channel_data.get("title", channel_data.get("name", "Unknown Channel"))
-                stream_type = channel_data.get("type", "LIVE")
-                quality = channel_data.get("quality", "")
-
-                logo_url = None
-                if "logo" in channel_data:
-                    if isinstance(channel_data["logo"], dict) and "url" in channel_data["logo"]:
-                        logo_url = channel_data["logo"]["url"]
-                    elif isinstance(channel_data["logo"], str):
-                        logo_url = channel_data["logo"]
-                elif "image" in channel_data:
-                    logo_url = channel_data["image"]
-
-                content_type = (
-                    CONTENT_TYPE_LIVE if stream_type.upper() == "LIVE" else CONTENT_TYPE_VOD
-                )
-                mode = MODE_LIVE if stream_type.upper() == "LIVE" else MODE_VOD
-
-                magenta2_channel = Magenta2Channel(
-                    name=title,
-                    channel_id=channel_id,
-                    logo_url=logo_url,
-                    mode=mode,
-                    content_type=content_type,
-                    country=self.country,
-                    raw_data=channel_data,
-                )
-
-                if quality:
-                    magenta2_channel.name = f"{title} ({quality})"
-
-                streaming_channel = magenta2_channel.to_streaming_channel(
-                    provider_name=self.provider_name
-                )
-                channels.append(streaming_channel)
-
-            except Exception as e:
-                logger.warning(f"Error processing channel data: {e}")
-
-        return channels
 
     def get_entitlement_token(self, content_id: str, content_type: str = CONTENT_TYPE_LIVE) -> str:
         """
@@ -1310,7 +1181,6 @@ class Magenta2Provider(StreamingProvider):
             # If we get here, no MPD URL was found
             logger.warning(f"No MPD URL found in SMIL response for channel {channel_id}")
 
-            # Log the full SMIL content for debugging in case of unexpected format
             if len(smil_content) < 1000:  # Only log if it's reasonably short
                 logger.debug(f"Full SMIL content: {smil_content}")
             else:
@@ -1419,7 +1289,6 @@ class Magenta2Provider(StreamingProvider):
         # If the caller passed a Gracenote content id (GN_EP*, GN_MV*, GN_SH*)
         # rather than a real MPX mediaId, resolve it first.  The SMIL/selector
         # endpoint only accepts MPX mediaIds.
-        from .constants import VOD_PREFIX_EPISODE, VOD_PREFIX_MOVIE_MV, VOD_PREFIX_MOVIE_SH
         if (
             channel_id.startswith(VOD_PREFIX_EPISODE)
             or channel_id.startswith(VOD_PREFIX_MOVIE_MV)
@@ -1451,7 +1320,6 @@ class Magenta2Provider(StreamingProvider):
                 logger.error(f"No SMIL content received for channel {channel_id}")
                 return None
 
-            # 🚨 ADD VALIDATION: Check if we got actual SMIL content
             if len(smil_content.strip()) == 0:
                 logger.error(f"Empty SMIL content for channel {channel_id}")
                 return None
@@ -1508,13 +1376,14 @@ class Magenta2Provider(StreamingProvider):
                 logger.error(f"No account pid!:")
                 return None
 
-            # Use the same client_id as in the original SMIL request
-            client_id = "a8198f31-b406-4177-8dee-f6216c356c75"
-            smil_url = f"{selector_service}{account_pid}/media/{channel_id}?format=smil&formats=MPEG-DASH&tracking=true&clientId={client_id}"
+            smil_url = (
+                f"{selector_service}{account_pid}/media/{channel_id}"
+                f"?format=smil&formats=MPEG-DASH&tracking=true&clientId={SMIL_CLIENT_ID}"
+            )
 
             headers = {
                 "Authorization": f"Basic {persona_token}",
-                "User-Agent": self.platform_config["user_agent"],  # Platform user agent
+                "User-Agent": self.platform_config["user_agent"],
                 "Accept": "application/smil+xml, application/xml;q=0.9, */*;q=0.8",
             }
 
@@ -1522,14 +1391,12 @@ class Magenta2Provider(StreamingProvider):
             logger.debug(f"SMIL Request Headers:")
             for key, value in headers.items():
                 if key == "Authorization":
-                    # Don't log full auth token for security, but show it exists
                     logger.debug(f"  {key}: Basic [REDACTED] (length: {len(persona_token)})")
                 else:
                     logger.debug(f"  {key}: {value}")
 
             # Also debug the persona token structure
             try:
-                # Try to decode to see what's in there
                 decoded = base64.b64decode(persona_token).decode("utf-8")
                 logger.debug(f"Decoded persona token preview: {decoded[:100]}...")
             except Exception as decode_error:
@@ -1555,8 +1422,8 @@ class Magenta2Provider(StreamingProvider):
                 extract_and_release_lock(
                     smil_content,
                     self.http_manager,
-                    client_id=client_id,  # Use the same client_id as SMIL request
-                    user_agent=self.platform_config["user_agent"],  # Platform user agent
+                    client_id=SMIL_CLIENT_ID,
+                    user_agent=self.platform_config["user_agent"],
                 )
 
                 return smil_content
@@ -1567,13 +1434,6 @@ class Magenta2Provider(StreamingProvider):
         except Exception as e:
             logger.error(f"Error getting SMIL content for DRM: {e}")
             return None
-
-    @staticmethod
-    def _url_encode(value: str) -> str:
-        """URL encode a string"""
-        from urllib.parse import quote
-
-        return quote(value, safe="")
 
     @staticmethod
     def _extract_release_pid_from_smil(smil_content: str) -> Optional[str]:
@@ -1622,7 +1482,7 @@ class Magenta2Provider(StreamingProvider):
                 logger.error("No colon found in decoded persona token")
                 return None
 
-            persona_jwt = decoded[last_colon_index + 1 :]
+            persona_jwt = decoded[last_colon_index + 1:]
 
             if not persona_jwt.startswith("eyJ"):
                 logger.error(f"Extracted token doesn't look like a JWT")
@@ -1645,7 +1505,6 @@ class Magenta2Provider(StreamingProvider):
 
             if not smil_data.get("release_pid"):
                 logger.error(f"No releasePid found in SMIL for channel {content_id}")
-                # Debug what we do have
                 logger.debug(f"SMIL data keys: {list(smil_data.keys())}")
                 if "content" in smil_data and smil_data["content"]:
                     logger.debug(f"SMIL content preview: {smil_data['content'][:500]}...")
@@ -1670,7 +1529,7 @@ class Magenta2Provider(StreamingProvider):
 
             # Get account URI
             account_uri = self._get_account_uri()
-            encoded_account_uri = self._url_encode(account_uri)
+            encoded_account_uri = quote(account_uri, safe="")
 
             # Build license URL with the extracted JWT
             license_url = (
@@ -1715,8 +1574,7 @@ class Magenta2Provider(StreamingProvider):
             if account_uri:
                 return account_uri
 
-        # Fallback
-        return "http://access.auth.theplatform.com/data/Account/2709353023"
+        return MAGENTA2_FALLBACK_ACCOUNT_URI
 
     def get_epg(
         self,
@@ -1765,10 +1623,6 @@ class Magenta2Provider(StreamingProvider):
         Custom auth state calculation for Magenta2.
         Checks persona token with its special structure.
         """
-        import time
-
-        from ...base.models.auth import AuthState
-
         # Get persona token data
         persona_token = context.get_token(self.provider_name, "persona", self.country)
 
@@ -1802,8 +1656,6 @@ class Magenta2Provider(StreamingProvider):
         Custom readiness calculation for Magenta2.
         Ready if we have a valid persona token.
         """
-        import time
-
         # Get persona token data
         persona_token = context.get_token(self.provider_name, "persona", self.country)
 
@@ -1853,8 +1705,6 @@ class Magenta2Provider(StreamingProvider):
         Provide Magenta2-specific auth details.
         Shows status of all token scopes.
         """
-        import time
-
         details = {}
 
         # Check all token scopes

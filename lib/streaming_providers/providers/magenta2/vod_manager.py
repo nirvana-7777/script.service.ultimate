@@ -43,12 +43,14 @@ Public interface
 """
 
 import time
+import uuid as _uuid_mod
 from typing import Dict, List, Optional, Union
 from ...base.utils.logger import logger
 
 from ...base.models.vod import VodCategory, VodItem
 
 from .constants import (
+    QUALITY_FALLBACK,
     SUBSCRIBER_TYPES,
     TVHUBS_BASE_URL,
     VOD_DEFAULT_PAGE_SIZE,
@@ -59,6 +61,7 @@ from .constants import (
     VOD_PREFIX_SERIES,
     VOD_STREAMING_TILE_TITLES,
 )
+
 
 class VodManager:
     """
@@ -76,16 +79,6 @@ class VodManager:
                          URL is resolved from the manifest instead of the
                          TVHUBS_BASE_URL fallback constant.
     """
-
-    # Quality preference order: each entry is the desired quality, followed by
-    # progressively lower fallbacks.  The first quality in the list that exists
-    # in a playbackUrls response is used.
-    _QUALITY_FALLBACK: Dict[str, List[str]] = {
-        "UHDHDR": ["UHDHDR", "UHD", "HD", "SD"],
-        "UHD":    ["UHD",    "HD",  "SD"],
-        "HD":     ["HD",     "SD"],
-        "SD":     ["SD"],
-    }
 
     def __init__(
         self,
@@ -105,11 +98,10 @@ class VodManager:
         # Stable serial number for the lifetime of this manager instance.
         # Passed in from the provider so it stays consistent across all
         # requests. Falls back to a fresh UUID only when not supplied (e.g. tests).
-        import uuid as _uuid_mod
         self._serial_number: str = serial_number or str(_uuid_mod.uuid4())
         # Normalise to uppercase; fall back to "HD" for unknown values.
         _q = (preferred_quality or "HD").upper()
-        self._preferred_quality: str = _q if _q in self._QUALITY_FALLBACK else "HD"
+        self._preferred_quality: str = _q if _q in QUALITY_FALLBACK else "HD"
         # Optional callable() -> Dict[str, str] returning auth headers for
         # authenticated VOD endpoints (vodproductinformation, VodPlayer).
         # When None, requests are sent without auth (browsing/catalogue only).
@@ -1056,7 +1048,7 @@ class VodManager:
         """
         Select the best mediaId from a VodPlayer ``content.playbackUrls`` list.
 
-        The quality is chosen by walking ``_QUALITY_FALLBACK[self._preferred_quality]``
+        The quality is chosen by walking ``QUALITY_FALLBACK[self._preferred_quality]``
         in order and returning the first ``mediaId`` whose ``quality`` matches.
         If no entry in the fallback chain matches, the first entry in the list is
         returned as a last resort (mirrors legacy behaviour).
@@ -1078,7 +1070,7 @@ class VodManager:
             if entry.get("quality") and entry.get("mediaId")
         }
 
-        for q in self._QUALITY_FALLBACK.get(self._preferred_quality, ["HD", "SD"]):
+        for q in QUALITY_FALLBACK.get(self._preferred_quality, ["HD", "SD"]):
             if q in quality_map:
                 logger.debug(
                     f"{self._provider}: Selected quality '{q}' "
@@ -1223,7 +1215,6 @@ class VodManager:
 
     def _playback_params(self) -> Dict:
         """Query parameters for vodproductinformation / VodPlayer requests."""
-        import time
         return {
             "$deviceModel": self._device_model,
             "$profile": self._profile_name,
