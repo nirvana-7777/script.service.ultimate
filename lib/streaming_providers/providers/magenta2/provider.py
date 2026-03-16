@@ -76,9 +76,7 @@ class Magenta2Provider(StreamingProvider):
         self.terminal_type = self.platform_config["terminal_type"]
 
         # Generate session ID, device ID, and serial number.
-        # serial_number is stable for the lifetime of this provider instance —
-        # it mimics the hardware serial that a real device would send and must
-        # be consistent across all requests in the same session.
+        # serial_number is stable for the lifetime of this provider instance.
         self.session_id = self._generate_uuid()
         self.device_id = self._generate_device_id()
         self.serial_number = self._generate_uuid()
@@ -1121,47 +1119,19 @@ class Magenta2Provider(StreamingProvider):
 
     def _vod_auth_headers(self) -> Dict[str, str]:
         """
-        Build authentication headers required by authenticated VOD endpoints
-        (vodproductinformation, VodPlayer, PersonalBar).
+        Build authentication headers for VOD endpoints, platform-aware.
 
-        Headers are platform-dependent:
-
-        ftv-web
-        -------
-            Authorization:                      Bearer <persona_jwt>
-            x-mpx-authorization:                Basic <persona_token>
-            x-dt-session-id:                    <session_id>
-            x-dt-call-id:                       <fresh uuid per request>
-            origin:                             https://www.magenta.tv
-            referer:                            https://www.magenta.tv/
-            user-agent:                         <web UA>
-            x-permissionflagpersonalizeduireco: false
-
-        ftv-android / ftv-androidtv (and variants)
-        -------------------------------------------
-            Authorization:      Bearer <persona_jwt>
-            x-mpx-authorization: Basic <persona_token>
-            x-stbserialnumber:  <stable serial UUID>
-            dt-session-id:      <session_id>          (no x- prefix)
-            dt-call-id:         <fresh uuid per request>  (no x- prefix)
-            user-agent:         <android UA>
-            accept-encoding:    gzip
-
-        Note: _get_with_serial() in VodManager may further override dt-call-id
-        and x-stbserialnumber per-request; the values set here act as a
-        sensible default for plain _get() / _get_auth() calls.
+        ftv-web:     x-dt-session-id / x-dt-call-id, origin, referer,
+                     x-permissionflagpersonalizeduireco
+        ftv-android: x-stbserialnumber, dt-session-id / dt-call-id (no x- prefix),
+                     accept-encoding: gzip
         """
         persona_token = self._ensure_authenticated()
-        # persona_token is Base64(account_uri:jwt) — used as-is for
-        # x-mpx-authorization.  Strip to just the raw JWT for Authorization.
         persona_jwt = self._extract_persona_jwt_from_token(persona_token)
-
         auth_value = (
             f"Bearer {persona_jwt}" if persona_jwt else f"Basic {persona_token}"
         )
 
-        # Determine which header flavour to use based on the client_model
-        # resolved at init time (ftv-web vs everything else).
         client_model: str = (
             self.provider_config.bootstrap.client_model
             if self.provider_config and self.provider_config.bootstrap
@@ -1170,7 +1140,7 @@ class Magenta2Provider(StreamingProvider):
         is_web = client_model == "ftv-web"
 
         if is_web:
-            headers: Dict[str, str] = {
+            return {
                 "Authorization": auth_value,
                 "x-mpx-authorization": f"Basic {persona_token}",
                 "x-dt-session-id": self.session_id,
@@ -1184,9 +1154,7 @@ class Magenta2Provider(StreamingProvider):
                 "x-permissionflagpersonalizeduireco": "false",
             }
         else:
-            # Android TV / Android Mobile / ATV-Launcher / iOS all use the
-            # non-prefixed dt-* header names and expose the serial number.
-            headers = {
+            return {
                 "Authorization": auth_value,
                 "x-mpx-authorization": f"Basic {persona_token}",
                 "x-stbserialnumber": self.serial_number,
@@ -1195,8 +1163,6 @@ class Magenta2Provider(StreamingProvider):
                 "user-agent": self.platform_config["user_agent"],
                 "accept-encoding": "gzip",
             }
-
-        return headers
 
     def get_vod_category(self, category_path, **kwargs):
         if not self._vod_manager:
@@ -1411,8 +1377,49 @@ class Magenta2Provider(StreamingProvider):
             logger.warning(f"Falling back to live manifest for channel {channel_id}")
             return base_manifest
 
+    def _resolve_gn_id_to_media_id(self, gn_id: str) -> Optional[str]:
+        """
+        Resolve a Gracenote content id (GN_EP*, GN_MV*, GN_SH*) to a real
+        MPX mediaId by walking the VodDetails → productInformationLink →
+        VodPlayer → playbackUrls chain via the VodManager.
+
+        Returns the MPX mediaId string on success, or None if resolution fails.
+        """
+        if not self._vod_manager:
+            logger.warning(f"Cannot resolve GN id {gn_id}: VodManager not available")
+            return None
+        try:
+            items = self._vod_manager.get_children([gn_id])
+            if items and hasattr(items[0], "content_id"):
+                resolved = items[0].content_id
+                if resolved and resolved != gn_id:
+                    logger.debug(f"Resolved GN id {gn_id} → mediaId {resolved}")
+                    return resolved
+            logger.warning(f"GN id {gn_id} resolution returned no usable mediaId")
+        except Exception as exc:
+            logger.warning(f"GN id {gn_id} resolution failed: {exc}")
+        return None
+
     def _get_smil_data(self, channel_id: str) -> Optional[Dict[str, Any]]:
         """Get complete SMIL data with caching"""
+        # If the caller passed a Gracenote content id (GN_EP*, GN_MV*, GN_SH*)
+        # rather than a real MPX mediaId, resolve it first.  The SMIL/selector
+        # endpoint only accepts MPX mediaIds.
+        from .constants import VOD_PREFIX_EPISODE, VOD_PREFIX_MOVIE_MV, VOD_PREFIX_MOVIE_SH
+        if (
+            channel_id.startswith(VOD_PREFIX_EPISODE)
+            or channel_id.startswith(VOD_PREFIX_MOVIE_MV)
+            or channel_id.startswith(VOD_PREFIX_MOVIE_SH)
+        ):
+            resolved = self._resolve_gn_id_to_media_id(channel_id)
+            if resolved:
+                channel_id = resolved
+            else:
+                logger.error(
+                    f"Cannot play {channel_id}: failed to resolve GN id to MPX mediaId"
+                )
+                return None
+
         # Check cache first
         now = time.time()
         if channel_id in self._smil_cache:
