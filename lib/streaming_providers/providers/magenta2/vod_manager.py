@@ -127,6 +127,11 @@ class VodManager:
         _platform = getattr(bootstrap, "platform", "")
         self._subscriber_type: str = SUBSCRIBER_TYPES.get(_platform, "FTV_OTT_DT")
 
+        # Mapping of UnstructuredGrid flex_id → extra query params (e.g. whiteLabelId)
+        # populated when lanes are parsed so that the params survive the caller's
+        # path-splitting which strips query strings from content_id segments.
+        self._lane_extra_params: Dict[str, Dict[str, str]] = {}
+
         # Short-lived in-memory cache for VodDetails responses (content_id → data).
         # Prevents redundant network round-trips when the same content_id is
         # looked up multiple times within a single get_children() call chain
@@ -695,6 +700,17 @@ class VodManager:
                 f"{self._provider}: Lane '{title}' → content_id={content_id!r}"
             )
 
+            # Store any query params (e.g. whiteLabelId) keyed by bare flex_id so
+            # _fetch_lane_items can recover them even after the caller strips the
+            # query string from the content_id path segments.
+            bare_flex_id = content_id.split("?")[0].split("/")[-1]
+            if "?" in content_id:
+                from urllib.parse import parse_qs
+                stored_qs = parse_qs(content_id.split("?", 1)[1])
+                self._lane_extra_params[bare_flex_id] = {
+                    k: v[0] for k, v in stored_qs.items()
+                }
+
             categories.append(
                 VodCategory(
                     name=title,
@@ -733,8 +749,14 @@ class VodManager:
         """
         url = f"{self._base_url()}/UnstructuredGrid/{flex_id}"
         paged_params = dict(params)
+        # Merge caller-supplied extra params first, then overlay with any
+        # params stored at lane-parse time (keyed by bare flex_id).  The
+        # stored params survive the caller's query-string stripping.
         if extra_params:
             paged_params.update(extra_params)
+        stored = self._lane_extra_params.get(flex_id)
+        if stored:
+            paged_params.update(stored)
         paged_params["$size"] = str(page_size)
         paged_params["$offset"] = str(offset)
 
