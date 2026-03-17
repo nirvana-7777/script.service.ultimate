@@ -117,6 +117,12 @@ class VodManager:
         # Comes from bootstrap (e.g. "megathek"); falls back to no param when absent
         # so existing behaviour is preserved for accounts that don't use white-labelling.
         self._white_label_id: Optional[str] = getattr(bootstrap, "white_label_id", None)
+        # partner_map_id is the "partnerMap" theme string from the StructuredGrid
+        # response (e.g. "wl_megathek").  It is discovered at browse time by
+        # _parse_theme_strings() and then injected into every vodproductinformation
+        # request via _playback_params().  Not available from bootstrap because it
+        # is portal-specific metadata returned by the server, not a device identity.
+        self._partner_map_id: Optional[str] = None
         # subscriber_type is not in bootstrap; derive from platform once at init.
         _platform = getattr(bootstrap, "platform", "")
         self._subscriber_type: str = SUBSCRIBER_TYPES.get(_platform, "FTV_OTT_DT")
@@ -527,6 +533,57 @@ class VodManager:
         )
         return None
 
+    def _parse_theme_strings(self, data: Dict) -> None:
+        """
+        Extract portal-scoping metadata from a StructuredGrid ``theme.strings``
+        block and store the values for later use in playback requests.
+
+        Keys consumed:
+            whiteLabel  → self._white_label_id  (e.g. "megathek")
+                          Only overwritten when not already set from bootstrap so
+                          that an explicit bootstrap value always wins.
+            partnerMap  → self._partner_map_id  (e.g. "wl_megathek")
+                          Always updated; this value is only available from the
+                          server response and is not present in bootstrap.
+
+        The ``portal`` string ("MagentaTV") is logged for diagnostics but not
+        stored — it is display-only and not needed as a request parameter.
+        """
+        strings: List[Dict] = (data.get("theme") or {}).get("strings") or []
+        theme: Dict[str, str] = {
+            entry["key"]: entry["value"]
+            for entry in strings
+            if "key" in entry and "value" in entry
+        }
+
+        if not theme:
+            return
+
+        white_label = theme.get("whiteLabel")
+        partner_map = theme.get("partnerMap")
+        portal      = theme.get("portal")
+
+        logger.debug(
+            f"{self._provider}: StructuredGrid theme strings — "
+            f"whiteLabel={white_label!r}, portal={portal!r}, partnerMap={partner_map!r}"
+        )
+
+        # Bootstrap value takes precedence for whiteLabelId (it may have been
+        # set from the manifest before this response was available).
+        if white_label and not self._white_label_id:
+            self._white_label_id = white_label
+            logger.debug(
+                f"{self._provider}: white_label_id set from theme strings: "
+                f"{self._white_label_id!r}"
+            )
+
+        if partner_map:
+            self._partner_map_id = partner_map
+            logger.debug(
+                f"{self._provider}: partner_map_id set from theme strings: "
+                f"{self._partner_map_id!r}"
+            )
+
     # =========================================================================
     # Private helpers – StructuredGrid (home)
     # =========================================================================
@@ -548,6 +605,10 @@ class VodManager:
         data = self._get(url, params)
         if not data:
             return []
+
+        # Extract portal-scoping values from the theme strings block.
+        # These are used in all subsequent vodproductinformation requests.
+        self._parse_theme_strings(data)
 
         lanes = data.get("content", {}).get("lanes", [])
         categories: List[VodCategory] = []
@@ -1291,6 +1352,8 @@ class VodManager:
         }
         if self._white_label_id:
             params["whiteLabelId"] = self._white_label_id
+        if self._partner_map_id:
+            params["partnerMapId"] = self._partner_map_id
         return params
 
     def _resolve_movie_playback_href(
