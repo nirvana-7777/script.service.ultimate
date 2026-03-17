@@ -170,8 +170,24 @@ class VodManager:
         node_id = "/".join(category_path)
 
         if node_id.startswith("UnstructuredGrid/"):
-            flex_id = node_id[len("UnstructuredGrid/"):]
-            return self._fetch_lane_items(flex_id, params, page_size=page_size, offset=offset)
+            # The tail after "UnstructuredGrid/" may include query params
+            # (e.g. "357162?whiteLabelId=megathek") that were preserved from
+            # the original laneContentLink.  Split them out so _fetch_lane_items
+            # can pass them as extra params rather than having them corrupt the
+            # flex_id path segment.
+            tail = node_id[len("UnstructuredGrid/"):]
+            if "?" in tail:
+                flex_id, qs_string = tail.split("?", 1)
+                from urllib.parse import parse_qs
+                extra = {k: v[0] for k, v in parse_qs(qs_string).items()}
+            else:
+                flex_id = tail
+                extra = {}
+            return self._fetch_lane_items(
+                flex_id, params,
+                page_size=page_size, offset=offset,
+                extra_params=extra,
+            )
 
         if node_id.startswith("VodDetails/"):
             # e.g. "VodDetails/202887/GN_SERIES_9370385" → extract the GN id
@@ -554,11 +570,16 @@ class VodManager:
             # Prefer showAllUrl as the canonical fetch href; fall back to
             # constructing it from the flex_id.
             show_all_href = (lane.get("showAllUrl") or {}).get("href") or None
-            content_id = (
-                f"UnstructuredGrid/{show_all_href.rstrip('/').rsplit('/UnstructuredGrid/', 1)[-1]}"
-                if show_all_href and "/UnstructuredGrid/" in show_all_href
-                else f"UnstructuredGrid/{flex_id}"
-            )
+            if show_all_href and "/UnstructuredGrid/" in show_all_href:
+                # Extract everything after /UnstructuredGrid/ — this preserves
+                # any query parameters (e.g. ?whiteLabelId=megathek) that are
+                # baked into the laneContentLink by the server.  They must be
+                # kept so that subsequent UnstructuredGrid fetches hit the
+                # correct portal scope.
+                tail = show_all_href.rstrip("/").split("/UnstructuredGrid/", 1)[1]
+                content_id = f"UnstructuredGrid/{tail}"
+            else:
+                content_id = f"UnstructuredGrid/{flex_id}"
 
             categories.append(
                 VodCategory(
@@ -583,13 +604,23 @@ class VodManager:
         params: Dict,
         page_size: int = VOD_DEFAULT_PAGE_SIZE,
         offset: int = 0,
+        extra_params: Optional[Dict] = None,
     ) -> List[Union[VodCategory, VodItem]]:
         """
         Fetch items from an UnstructuredGrid lane.  Movies → VodItem,
         series → VodCategory (seasons/episodes require further drill-down).
+
+        Args:
+            extra_params: Additional query parameters extracted from the
+                          content_id (e.g. {'whiteLabelId': 'megathek'}).
+                          These originate from the server-supplied laneContentLink
+                          and must be forwarded verbatim so the correct portal
+                          scope is applied.
         """
         url = f"{self._base_url()}/UnstructuredGrid/{flex_id}"
         paged_params = dict(params)
+        if extra_params:
+            paged_params.update(extra_params)
         paged_params["$size"] = str(page_size)
         paged_params["$offset"] = str(offset)
 
