@@ -164,6 +164,9 @@ class VodManager:
         Returns:
             Mixed list of VodCategory and VodItem objects.
         """
+        logger.debug(
+            f"{self._provider}: get_children called with category_path={category_path!r}"
+        )
         params = self._base_params()
 
         if not category_path:
@@ -658,17 +661,35 @@ class VodManager:
                 f"showAllUrl={show_all_href!r} laneContentLink={lane_content_href!r}"
             )
 
-            ref_href = None
-            if show_all_href and "/UnstructuredGrid/" in show_all_href:
-                ref_href = show_all_href
-            elif lane_content_href and "/UnstructuredGrid/" in lane_content_href:
-                ref_href = lane_content_href
+            # Strategy:
+            #   1. showAllUrl with /UnstructuredGrid/ → extract tail (id + query)
+            #   2. laneContentLink with /UnstructuredGrid/ → same
+            #   3. Either URL with ?whiteLabelId → use flex_id + carry whiteLabelId
+            #   4. Nothing → bare flex_id, no portal scoping
+            from urllib.parse import urlparse, parse_qs, urlencode
 
-            if ref_href:
-                tail = ref_href.rstrip("/").split("/UnstructuredGrid/", 1)[1]
+            def _qs_from_href(href):
+                """Return URL query string params as a dict (first value only)."""
+                if not href:
+                    return {}
+                return {k: v[0] for k, v in parse_qs(urlparse(href).query).items()}
+
+            if show_all_href and "/UnstructuredGrid/" in show_all_href:
+                tail = show_all_href.rstrip("/").split("/UnstructuredGrid/", 1)[1]
+                content_id = f"UnstructuredGrid/{tail}"
+            elif lane_content_href and "/UnstructuredGrid/" in lane_content_href:
+                tail = lane_content_href.rstrip("/").split("/UnstructuredGrid/", 1)[1]
                 content_id = f"UnstructuredGrid/{tail}"
             else:
-                content_id = f"UnstructuredGrid/{flex_id}"
+                # laneContentLink uses a different path shape (e.g. UnstructuredGridLane/)
+                # but may still carry ?whiteLabelId — extract it and append to flex_id.
+                qs_params = _qs_from_href(lane_content_href) or _qs_from_href(show_all_href)
+                scoping = {k: v for k, v in qs_params.items()
+                           if k in ("whiteLabelId",)}
+                if scoping:
+                    content_id = f"UnstructuredGrid/{flex_id}?{urlencode(scoping)}"
+                else:
+                    content_id = f"UnstructuredGrid/{flex_id}"
 
             logger.debug(
                 f"{self._provider}: Lane '{title}' → content_id={content_id!r}"
