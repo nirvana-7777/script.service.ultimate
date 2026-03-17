@@ -653,6 +653,11 @@ class VodManager:
             show_all_href = (lane.get("showAllUrl") or {}).get("href") or None
             lane_content_href = (lane.get("laneContentLink") or {}).get("href") or None
 
+            logger.debug(
+                f"{self._provider}: Lane '{title}' (flexId={flex_id}) "
+                f"showAllUrl={show_all_href!r} laneContentLink={lane_content_href!r}"
+            )
+
             ref_href = None
             if show_all_href and "/UnstructuredGrid/" in show_all_href:
                 ref_href = show_all_href
@@ -664,6 +669,10 @@ class VodManager:
                 content_id = f"UnstructuredGrid/{tail}"
             else:
                 content_id = f"UnstructuredGrid/{flex_id}"
+
+            logger.debug(
+                f"{self._provider}: Lane '{title}' → content_id={content_id!r}"
+            )
 
             categories.append(
                 VodCategory(
