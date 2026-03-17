@@ -127,11 +127,6 @@ class VodManager:
         _platform = getattr(bootstrap, "platform", "")
         self._subscriber_type: str = SUBSCRIBER_TYPES.get(_platform, "FTV_OTT_DT")
 
-        # Mapping of UnstructuredGrid flex_id → extra query params (e.g. whiteLabelId)
-        # populated when lanes are parsed so that the params survive the caller's
-        # path-splitting which strips query strings from content_id segments.
-        self._lane_extra_params: Dict[str, Dict[str, str]] = {}
-
         # Short-lived in-memory cache for VodDetails responses (content_id → data).
         # Prevents redundant network round-trips when the same content_id is
         # looked up multiple times within a single get_children() call chain
@@ -151,6 +146,7 @@ class VodManager:
         *,
         page_size: int = VOD_DEFAULT_PAGE_SIZE,
         offset: int = 0,
+        fetch_url: Optional[str] = None,
     ) -> List[Union[VodCategory, VodItem]]:
         """
         Return the children of a VOD tree node.
@@ -163,44 +159,34 @@ class VodManager:
                                ["GN_SERIES_123",
                                 "GN_SEASON_123_DE_2"]   -> season (episodes)
                                ["lane:326619"]           -> UnstructuredGrid lane
-            page_size:  Number of items to fetch per page (UnstructuredGrid).
-            offset:     Pagination offset (UnstructuredGrid).
+            page_size:   Number of items to fetch per page (UnstructuredGrid).
+            offset:      Pagination offset (UnstructuredGrid).
+            fetch_url:   Full URL (including portal-scoping query params such as
+                         ?whiteLabelId=megathek) to use for the fetch instead of
+                         reconstructing it from category_path.  Populated by the
+                         caller from VodCategory.fetch_url so that params survive
+                         the HTTP router's path-segment splitting.
 
         Returns:
             Mixed list of VodCategory and VodItem objects.
         """
         logger.debug(
-            f"{self._provider}: get_children called with category_path={category_path!r}"
+            f"{self._provider}: get_children called with "
+            f"category_path={category_path!r} fetch_url={fetch_url!r}"
         )
         params = self._base_params()
 
         if not category_path:
             return self._fetch_home_lanes(params)
 
-        # Reconstruct the full content_id from the path segments.
-        # The caller splits on "/" so "UnstructuredGrid/357162" arrives as
-        # ["UnstructuredGrid", "357162"] and "VodDetails/202887/GN_SERIES_9370385"
-        # arrives as ["VodDetails", "202887", "GN_SERIES_9370385"].
         node_id = "/".join(category_path)
 
         if node_id.startswith("UnstructuredGrid/"):
-            # The tail after "UnstructuredGrid/" may include query params
-            # (e.g. "357162?whiteLabelId=megathek") that were preserved from
-            # the original laneContentLink.  Split them out so _fetch_lane_items
-            # can pass them as extra params rather than having them corrupt the
-            # flex_id path segment.
-            tail = node_id[len("UnstructuredGrid/"):]
-            if "?" in tail:
-                flex_id, qs_string = tail.split("?", 1)
-                from urllib.parse import parse_qs
-                extra = {k: v[0] for k, v in parse_qs(qs_string).items()}
-            else:
-                flex_id = tail
-                extra = {}
+            flex_id = node_id[len("UnstructuredGrid/"):].split("?")[0]
             return self._fetch_lane_items(
                 flex_id, params,
                 page_size=page_size, offset=offset,
-                extra_params=extra,
+                fetch_url=fetch_url,
             )
 
         if node_id.startswith("VodDetails/"):
@@ -700,16 +686,10 @@ class VodManager:
                 f"{self._provider}: Lane '{title}' → content_id={content_id!r}"
             )
 
-            # Store any query params (e.g. whiteLabelId) keyed by bare flex_id so
-            # _fetch_lane_items can recover them even after the caller strips the
-            # query string from the content_id path segments.
-            bare_flex_id = content_id.split("?")[0].split("/")[-1]
-            if "?" in content_id:
-                from urllib.parse import parse_qs
-                stored_qs = parse_qs(content_id.split("?", 1)[1])
-                self._lane_extra_params[bare_flex_id] = {
-                    k: v[0] for k, v in stored_qs.items()
-                }
+            # Determine the best fetch_url for this lane — the full URL including
+            # ?whiteLabelId=... that the caller passes back via VodCategory.fetch_url.
+            # Priority: showAllUrl (paginated full grid) > laneContentLink (always present).
+            fetch_url = show_all_href or lane_content_href or None
 
             categories.append(
                 VodCategory(
@@ -718,6 +698,7 @@ class VodManager:
                     provider=self._provider,
                     child_count=lane.get("totalCount"),
                     details_url=show_all_href,
+                    fetch_url=fetch_url,
                 )
             )
 
@@ -734,32 +715,41 @@ class VodManager:
         params: Dict,
         page_size: int = VOD_DEFAULT_PAGE_SIZE,
         offset: int = 0,
-        extra_params: Optional[Dict] = None,
+        fetch_url: Optional[str] = None,
     ) -> List[Union[VodCategory, VodItem]]:
         """
         Fetch items from an UnstructuredGrid lane.  Movies → VodItem,
         series → VodCategory (seasons/episodes require further drill-down).
 
         Args:
-            extra_params: Additional query parameters extracted from the
-                          content_id (e.g. {'whiteLabelId': 'megathek'}).
-                          These originate from the server-supplied laneContentLink
-                          and must be forwarded verbatim so the correct portal
-                          scope is applied.
+            fetch_url: Full URL supplied by the caller from VodCategory.fetch_url,
+                       including portal-scoping query params (e.g. ?whiteLabelId=megathek).
+                       When present this is used as-is (base URL only, params merged
+                       separately); when absent the URL is constructed from flex_id.
         """
-        url = f"{self._base_url()}/UnstructuredGrid/{flex_id}"
+        from urllib.parse import urlparse, parse_qs, urlunparse
+
+        if fetch_url:
+            # Use the base path from fetch_url but merge its query params into
+            # paged_params so pagination ($size, $offset) and auth params are
+            # all sent together in one clean params dict.
+            parsed = urlparse(fetch_url)
+            url = urlunparse(parsed._replace(query=""))
+            url_params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+        else:
+            url = f"{self._base_url()}/UnstructuredGrid/{flex_id}"
+            url_params = {}
+
         paged_params = dict(params)
-        # Merge caller-supplied extra params first, then overlay with any
-        # params stored at lane-parse time (keyed by bare flex_id).  The
-        # stored params survive the caller's query-string stripping.
-        if extra_params:
-            paged_params.update(extra_params)
-        stored = self._lane_extra_params.get(flex_id)
-        if stored:
-            paged_params.update(stored)
+        if url_params:
+            paged_params.update(url_params)
         paged_params["$size"] = str(page_size)
         paged_params["$offset"] = str(offset)
 
+        logger.debug(
+            f"{self._provider}: _fetch_lane_items flex_id={flex_id!r} "
+            f"params={paged_params!r}"
+        )
         data = self._get(url, paged_params)
         if not data:
             return []

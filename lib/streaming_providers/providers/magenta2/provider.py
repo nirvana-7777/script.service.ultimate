@@ -1035,10 +1035,14 @@ class Magenta2Provider(StreamingProvider):
                 "accept-encoding": "gzip",
             }
 
-    def get_vod_category(self, category_path, **kwargs):
+    def get_vod_category(self, category_path, fetch_url=None, **kwargs):
         if not self._vod_manager:
             raise RuntimeError("VodManager not available - configuration discovery may have failed")
-        return self._vod_manager.get_children(category_path=category_path, **kwargs)
+        return self._vod_manager.get_children(
+            category_path=category_path,
+            fetch_url=fetch_url,
+            **kwargs,
+        )
 
     def enrich_channel_data(
         self, channel: StreamingChannel, **kwargs

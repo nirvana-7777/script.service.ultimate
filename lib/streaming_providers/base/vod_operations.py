@@ -70,6 +70,7 @@ class VodOperations:
         self,
         provider_name: str,
         slug_segments: List[str],
+        **kwargs,
     ) -> List[Union[VodCategory, VodItem]]:
         """
         Resolve a slug path and return the children of that node.
@@ -103,7 +104,12 @@ class VodOperations:
         # The old slug-walking approach (_resolve_path_to_ids) is bypassed
         # because it fetches every intermediate level unnecessarily and fails
         # when the provider's tree is too deep or slugs don't match exactly.
-        children = provider.get_vod_category(slug_segments)
+        #
+        # fetch_url: passed through from the VodCategory returned at the
+        # previous level so that portal-scoping query params (e.g.
+        # ?whiteLabelId=megathek) survive the HTTP router's path splitting.
+        fetch_url = kwargs.pop("fetch_url", None)
+        children = provider.get_vod_category(slug_segments, fetch_url=fetch_url)
 
         logger.info(
             f"Retrieved {len(children)} VOD entries from '{provider_name}' "

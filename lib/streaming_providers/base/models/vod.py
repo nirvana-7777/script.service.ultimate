@@ -114,6 +114,12 @@ class VodCategory:
     # Stored for convenience / debugging; the content_id already encodes the path.
     details_url: Optional[str] = None
 
+    # Full URL to use when fetching this category's children, including any
+    # portal-scoping query params (e.g. ?whiteLabelId=megathek).  When present,
+    # get_vod_category / _fetch_lane_items should use this URL directly instead
+    # of reconstructing it from content_id, which loses query params.
+    fetch_url: Optional[str] = None
+
     # Cached slug (computed lazily if not set)
     _slug: Optional[str] = field(default=None, repr=False)
 
@@ -138,6 +144,7 @@ class VodCategory:
             "description": self.description,
             "child_count": self.child_count,
             "details_url": self.details_url,
+            "fetch_url": self.fetch_url,
         }
 
 
