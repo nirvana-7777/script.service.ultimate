@@ -234,17 +234,30 @@ class VodManager:
             self._vod_details_cache[content_id] = data
         return data
 
+    def _is_androidtv(self) -> bool:
+        """Return True when the active client model is an Android TV variant."""
+        return self._client_model.endswith("-androidtv")
+
     def _base_params(self) -> Dict[str, str]:
-        """Build query parameters common to every VOD API request."""
+        """Build query parameters common to every tvhubs VOD API request.
+
+        Session correlation follows the platform convention:
+          - Android TV: ``$cid`` = ``<sessionId>::<callUUID>``  (no sid / t)
+          - Web / other: ``sid`` + ``t``                        (no $cid)
+        """
         params: Dict[str, str] = {
             "$deviceModel": self._device_model,
             "$profile": self._profile_name,
             "$subscriberType": self._subscriber_type,
             "$theme": self._theme_id,
             "$redirect": "false",
-            "sid": self._session_id,
-            "t": str(int(time.time() * 1000)),
         }
+        if self._is_androidtv():
+            call_id = str(_uuid_mod.uuid4())
+            params["$cid"] = f"{self._session_id}::{call_id}"
+        else:
+            params["sid"] = self._session_id
+            params["t"] = str(int(time.time() * 1000))
         if self._white_label_id:
             params["whiteLabelId"] = self._white_label_id
         return params
@@ -1340,16 +1353,25 @@ class VodManager:
         return urlunparse(parsed._replace(query=new_query))
 
     def _playback_params(self) -> Dict:
-        """Query parameters for vodproductinformation / VodPlayer requests."""
+        """Query parameters for vodproductinformation / VodPlayer requests.
+
+        Session correlation follows the same platform convention as _base_params:
+          - Android TV: ``$cid`` = ``<sessionId>::<callUUID>``  (no sid / t)
+          - Web / other: ``sid`` + ``t``                        (no $cid)
+        """
         params: Dict[str, str] = {
             "$deviceModel": self._device_model,
             "$profile": self._profile_name,
             "$subscriberType": self._subscriber_type,
             "$theme": self._theme_id,
             "$redirect": "false",
-            "sid": self._session_id,
-            "t": str(int(time.time() * 1000)),
         }
+        if self._is_androidtv():
+            call_id = str(_uuid_mod.uuid4())
+            params["$cid"] = f"{self._session_id}::{call_id}"
+        else:
+            params["sid"] = self._session_id
+            params["t"] = str(int(time.time() * 1000))
         if self._white_label_id:
             params["whiteLabelId"] = self._white_label_id
         if self._partner_map_id:
