@@ -641,16 +641,26 @@ class VodManager:
             if lane_type != "UnstructuredGrid" or not flex_id or not title:
                 continue
 
-            # Prefer showAllUrl as the canonical fetch href; fall back to
-            # constructing it from the flex_id.
+            # Build the content_id that will be used to fetch this lane later.
+            # Priority for sourcing the URL (highest to lowest):
+            #   1. showAllUrl.href        — canonical "show all" deep-link
+            #   2. laneContentLink.href   — always present, always has ?whiteLabelId=...
+            #   3. constructed from flex_id — last resort, no portal scoping params
+            #
+            # Whichever source we use, we extract everything after /UnstructuredGrid/
+            # (including any query string such as ?whiteLabelId=megathek) so that
+            # portal-scoping parameters are preserved through to the actual fetch.
             show_all_href = (lane.get("showAllUrl") or {}).get("href") or None
+            lane_content_href = (lane.get("laneContentLink") or {}).get("href") or None
+
+            ref_href = None
             if show_all_href and "/UnstructuredGrid/" in show_all_href:
-                # Extract everything after /UnstructuredGrid/ — this preserves
-                # any query parameters (e.g. ?whiteLabelId=megathek) that are
-                # baked into the laneContentLink by the server.  They must be
-                # kept so that subsequent UnstructuredGrid fetches hit the
-                # correct portal scope.
-                tail = show_all_href.rstrip("/").split("/UnstructuredGrid/", 1)[1]
+                ref_href = show_all_href
+            elif lane_content_href and "/UnstructuredGrid/" in lane_content_href:
+                ref_href = lane_content_href
+
+            if ref_href:
+                tail = ref_href.rstrip("/").split("/UnstructuredGrid/", 1)[1]
                 content_id = f"UnstructuredGrid/{tail}"
             else:
                 content_id = f"UnstructuredGrid/{flex_id}"
