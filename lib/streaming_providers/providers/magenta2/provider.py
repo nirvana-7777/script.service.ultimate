@@ -1271,7 +1271,7 @@ class Magenta2Provider(StreamingProvider):
             logger.warning(f"Cannot resolve GN id {gn_id}: VodManager not available")
             return None
         try:
-            items = self._vod_manager.get_children([gn_id])
+            items = self._vod_manager.get_children(gn_id)
             if items:
                 item = items[0]
                 # Prefer the guid extracted from manifest_script href
