@@ -72,6 +72,7 @@ def setup_vod_routes(app, manager):
         """
         if not content_id:
             return get_vod_root(provider)
+
         try:
             entries = manager.get_vod_node(
                 provider_name=provider,

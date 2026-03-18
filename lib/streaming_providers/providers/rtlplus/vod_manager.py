@@ -111,6 +111,12 @@ class RTLPlusVodManager:
         if not content_id:
             return self._list_root()
 
+        # Restore leading slash stripped by Bottle's :path wildcard for
+        # watch-path style IDs (e.g. "video-tv/filme" → "/video-tv/filme").
+        # Opaque IDs (rrn:, lane:, season: …) never start with "/" anyway.
+        if "/" in content_id and not content_id.startswith("/") and ":" not in content_id:
+            content_id = "/" + content_id
+
         if content_id.startswith(RTLPlusDefaults.VOD_MOVIES_ROOT_WATCH_PATH):
             return self._dispatch_movies([content_id])
 

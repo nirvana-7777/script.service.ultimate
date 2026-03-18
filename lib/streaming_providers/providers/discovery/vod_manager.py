@@ -93,6 +93,10 @@ class DiscoveryVodManager:
         if not content_id:
             return self._root()
 
+        # Restore leading slash stripped by Bottle's :path wildcard.
+        if "/" in content_id and not content_id.startswith("/") and ":" not in content_id:
+            content_id = "/" + content_id
+
         logger.debug(f"DiscoveryVodManager: get_vod_category({content_id!r})")
         return self._fetch_children(content_id)
 
