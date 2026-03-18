@@ -1459,7 +1459,7 @@ class VodManager:
         """
         if self._provider_config is not None:
             url = self._provider_config.get_resolved_tvhub_url(
-                "instantUsagePartners", self._client_model
+                "instantUsagePartners"
             )
             if url:
                 return url
