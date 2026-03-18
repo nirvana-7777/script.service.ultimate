@@ -236,8 +236,8 @@ class ProviderManager:
     # VOD OPERATIONS (delegate to VodOperations)
     # ==========================================================================
 
-    def get_vod_node(self, provider_name: str, slug_segments: list) -> list:
-        return self.vod_ops.get_vod_node(provider_name, slug_segments)
+    def get_vod_node(self, provider_name: str, content_id: str = "", **kwargs) -> list:
+        return self.vod_ops.get_vod_node(provider_name, content_id=content_id, **kwargs)
 
     def get_vod_manifest(self, provider_name: str, vod_id: str, **kwargs):
         return self.vod_ops.get_vod_manifest(provider_name, vod_id, **kwargs)
