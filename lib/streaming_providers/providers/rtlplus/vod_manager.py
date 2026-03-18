@@ -89,98 +89,58 @@ class RTLPlusVodManager:
     # ------------------------------------------------------------------
 
     def get_vod_category(
-        self, category_path: List[str], **kwargs
+        self, content_id: str = "", **kwargs
     ) -> List[Union[VodCategory, VodItem]]:
         """
-        Return the children of the VOD node identified by *category_path*.
+        Return the children of the VOD node identified by *content_id*.
 
-        Routing logic
-        -------------
-        Depth 0               → root: Movies node + Series node + TopicWorlds
-        Depth 1, movies       → Genre categories under /video-tv/filme
-        Depth 1, series       → Genre categories under /video-tv/serien
-        Depth 1, topic        → Format/Movie list for a TopicWorld
-        Depth 2, movies       → Movie VodItems for a genre (OverviewPage MOVIE)
-        Depth 2, series-genre → Series VodItems for a genre (OverviewPage SERIES)
-        Depth 2, topic        → Season list for a Format
-        Depth 3               → Episode list for a Season
+        content_id is a single opaque token — never split by the caller.
+        Dispatch is by prefix:
 
-        Path normalisation
-        ------------------
-        Callers may pass the watch-path either as a single element
-        ("/video-tv/serien") or pre-split without a leading slash
-        (["video-tv", "serien"]).  We reassemble and re-prefix so that all
-        downstream checks see a consistent leading-slash watch-path in [0].
+            ""                              → root
+            "/video-tv/filme"               → movies branch
+            "/video-tv/serien"              → series branch
+            "/video-tv/shows"               → shows branch
+            "rrn:watch:videohub:format:*"   → list seasons for format
+            "rrn:watch:videohub:season:*"   → list episodes for season
+            "rrn:multipurpose:*"            → list formats for topic world
+            "movies-genre:*"                → movie genre items
+            "series-genre:*"                → series genre items
+            "season:*"                      → episodes for season key
         """
-        # Reassemble paths that were split on "/" without a leading slash,
-        # e.g. ["video-tv", "serien"] → ["/video-tv/serien"]
-        # Leave RRNs ("rrn:…") and already-slash-prefixed paths untouched.
-        if (
-            category_path
-            and not category_path[0].startswith("/")
-            and not category_path[0].startswith("rrn:")
-            and not category_path[0].startswith("season:")
-            and not category_path[0].startswith("movies-genre:")
-            and not category_path[0].startswith("series-genre:")
-        ):
-            # Rejoin all segments as a single watch-path element
-            category_path = ["/" + "/".join(category_path)]
-
-        depth = len(category_path)
-
-        if depth == 0:
+        if not content_id:
             return self._list_root()
 
-        # Movies branch — watch-path based IDs
-        if category_path[0].startswith(RTLPlusDefaults.VOD_MOVIES_ROOT_WATCH_PATH):
-            return self._dispatch_movies(category_path)
+        if content_id.startswith(RTLPlusDefaults.VOD_MOVIES_ROOT_WATCH_PATH):
+            return self._dispatch_movies([content_id])
 
-        # Series branch — watch-path based IDs
-        if category_path[0].startswith(RTLPlusDefaults.VOD_SERIES_ROOT_WATCH_PATH):
-            return self._dispatch_series(category_path)
+        if content_id.startswith(RTLPlusDefaults.VOD_SERIES_ROOT_WATCH_PATH):
+            return self._dispatch_series([content_id])
 
-        # Shows branch — watch-path based IDs
-        if category_path[0].startswith(RTLPlusDefaults.VOD_SHOWS_ROOT_WATCH_PATH):
-            return self._dispatch_shows(category_path)
+        if content_id.startswith(RTLPlusDefaults.VOD_SHOWS_ROOT_WATCH_PATH):
+            return self._dispatch_shows([content_id])
 
-        # RRN-namespace routing — dispatch by the kind of RRN, not depth.
-        # This handles format/season RRNs returned by OverviewPage for
-        # shows and serien (content_id = rrn:watch:videohub:format:* or season:*).
-        first = category_path[0]
-        if first.startswith("rrn:watch:videohub:format:"):
-            # Format RRN → list seasons
-            return self._list_seasons(first)
+        if content_id.startswith("rrn:watch:videohub:format:"):
+            return self._list_seasons(content_id)
 
-        if first.startswith("rrn:watch:videohub:season:"):
-            # Season RRN → list episodes via SeasonWithFormatAndEpisodes
-            return self._list_episodes_for_season(first)
+        if content_id.startswith("rrn:watch:videohub:season:"):
+            return self._list_episodes_for_season(content_id)
 
-        # TopicWorlds branch — rrn:multipurpose:* at depth 1
-        if depth == 1 and first.startswith("rrn:"):
-            return self._list_formats_for_topic(first)
+        if content_id.startswith("rrn:"):
+            return self._list_formats_for_topic(content_id)
 
-        if depth == 2:
-            format_rrn = self._to_format_rrn(category_path[1])
-            if not format_rrn.startswith("rrn:"):
-                logger.warning(
-                    f"RTLPlusVodManager: invalid format RRN at depth 2: {format_rrn!r} "
-                    f"(path={category_path!r}) — skipping"
-                )
-                return []
-            return self._list_seasons(format_rrn)
+        if content_id.startswith("movies-genre:") or content_id.startswith("series-genre:"):
+            return self._dispatch_movies([content_id]) if content_id.startswith("movies-genre:")                 else self._dispatch_series([content_id])
 
-        if depth == 3:
-            format_rrn = self._to_format_rrn(category_path[1])
-            if not format_rrn.startswith("rrn:"):
-                logger.warning(
-                    f"RTLPlusVodManager: invalid format RRN at depth 3: {format_rrn!r} "
-                    f"(path={category_path!r}) — skipping"
-                )
-                return []
-            season_key = category_path[2]
-            return self._list_episodes(format_rrn, season_key)
+        if content_id.startswith("season:"):
+            # season:<format_rrn>/<season_key> — encoded as a single token
+            # e.g. "season:rrn:watch:videohub:format:123/s1"
+            rest = content_id[len("season:"):]
+            if "/" in rest:
+                format_rrn, season_key = rest.split("/", 1)
+                return self._list_episodes(format_rrn, season_key)
 
-        logger.warning(f"RTLPlusVodManager: path too deep: {category_path!r}")
+        logger.warning(f"RTLPlusVodManager: unrecognised content_id: {content_id!r}")
         return []
 
     # ------------------------------------------------------------------

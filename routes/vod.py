@@ -43,7 +43,7 @@ def setup_vod_routes(app, manager):
     @app.route("/api/providers/<provider>/vod", method="GET")
     def get_vod_root(provider):
         try:
-            entries = manager.get_vod_node(provider_name=provider, slug_segments=[])
+            entries = manager.get_vod_node(provider_name=provider, content_id="")
         except ValueError as e:
             response.status = 404
             return {"error": "Provider not found", "message": str(e), "provider": provider}
@@ -53,22 +53,35 @@ def setup_vod_routes(app, manager):
             return {"error": "Failed to get VOD entries", "message": str(e), "provider": provider}
         serialized = _serialize(entries)
         response.status = 200
-        return {"provider": provider, "path": "", "entries": serialized, "count": len(serialized)}
+        return {"provider": provider, "content_id": "", "entries": serialized, "count": len(serialized)}
 
-    @app.route("/api/providers/<provider>/vod/<path:path>", method="GET")
-    def get_vod_path(provider, path):
-        slug_segments = [s for s in path.split("/") if s]
-        if not slug_segments:
+    @app.route("/api/providers/<provider>/vod/<content_id>", method="GET")
+    def get_vod_node(provider, content_id):
+        """
+        Navigate to any VOD node by its opaque content_id.
+
+        content_id is treated as a single opaque token — never split or parsed.
+        It is the value returned in VodCategory.content_id from a previous response.
+
+        Examples:
+            GET /api/providers/magenta2/vod/lane%3A322341
+            GET /api/providers/magenta2/vod/series%3AGN_SERIES_20914057
+            GET /api/providers/discovery_de/vod/sports
+        """
+        if not content_id:
             return get_vod_root(provider)
         try:
-            entries = manager.get_vod_node(provider_name=provider, slug_segments=slug_segments)
+            entries = manager.get_vod_node(
+                provider_name=provider,
+                content_id=content_id,
+            )
         except ValueError as e:
             response.status = 404
-            return {"error": "Not found", "message": str(e), "provider": provider, "path": path}
+            return {"error": "Not found", "message": str(e), "provider": provider, "content_id": content_id}
         except Exception as e:
-            logger.error(f"Failed to get VOD path from provider: {e}")
+            logger.error(f"Failed to get VOD node from provider: {e}")
             response.status = 500
-            return {"error": "Failed to get VOD entries", "message": str(e), "provider": provider, "path": path}
+            return {"error": "Failed to get VOD entries", "message": str(e), "provider": provider, "content_id": content_id}
         serialized = _serialize(entries)
         response.status = 200
-        return {"provider": provider, "path": path, "entries": serialized, "count": len(serialized)}
+        return {"provider": provider, "content_id": content_id, "entries": serialized, "count": len(serialized)}

@@ -1035,14 +1035,18 @@ class Magenta2Provider(StreamingProvider):
                 "accept-encoding": "gzip",
             }
 
-    def get_vod_category(self, category_path, fetch_url=None, **kwargs):
+    def get_vod_category(self, content_id: str = "", **kwargs):
+        """
+        Return the children of a VOD node.
+
+        Args:
+            content_id: Opaque node identifier produced by a previous
+                        get_vod_category call (e.g. "lane:322341",
+                        "series:GN_SERIES_20914057").  Empty string → root.
+        """
         if not self._vod_manager:
             raise RuntimeError("VodManager not available - configuration discovery may have failed")
-        return self._vod_manager.get_children(
-            category_path=category_path,
-            fetch_url=fetch_url,
-            **kwargs,
-        )
+        return self._vod_manager.get_children(content_id=content_id, **kwargs)
 
     def enrich_channel_data(
         self, channel: StreamingChannel, **kwargs

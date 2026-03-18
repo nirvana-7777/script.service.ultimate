@@ -650,28 +650,15 @@ class StreamingProvider(ABC):
         """
         return False
 
-    def get_vod_category(
-            self,
-            category_path: List[str],
-            fetch_url: Optional[str] = None,
-            **kwargs
-    ) -> List:
+    def get_vod_category(self, content_id: str = "", **kwargs) -> List:
         """
         Return the children of a VOD tree node.
 
         Args:
-            category_path: Ordered list of content_ids from root to the node
-                           whose children are requested, e.g.:
-                               []                      -> root
-                               ["sports_id"]           -> top-level sports node
-                               ["sports_id", "golf_id"] -> golf sub-node
-                           The provider typically only needs category_path[-1]
-                           (the immediate parent id), but the full path is
-                           provided for providers that require ancestor context.
-            fetch_url:     Full URL (including portal-scoping query params such
-                           as ?whiteLabelId=megathek) to use for the fetch.
-                           Populated from VodCategory.fetch_url by the caller so
-                           that query params survive HTTP router path splitting.
+            content_id: Opaque node identifier returned by a previous
+                        get_vod_category call.  Empty string → root level.
+                        Providers define their own ID format; the caller
+                        treats it as an opaque token and never parses it.
 
         Returns:
             Mixed list of VodCategory and VodItem objects.

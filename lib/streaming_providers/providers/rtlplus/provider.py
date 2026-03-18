@@ -265,9 +265,9 @@ class RTLPlusProvider(StreamingProvider):
 
         return events
 
-    def get_vod_category(self, category_path, **kwargs):
+    def get_vod_category(self, content_id: str = "", **kwargs):
         """Delegate VOD browsing to RTLPlusVodManager."""
-        return self._vod_manager.get_vod_category(category_path, **kwargs)
+        return self._vod_manager.get_vod_category(content_id=content_id, **kwargs)
 
     def _parse_station_to_channel(self, station: Dict) -> Optional[StreamingChannel]:
         """

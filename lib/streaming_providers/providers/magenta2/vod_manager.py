@@ -38,7 +38,7 @@ tvhubs base URL resolution order
 
 Public interface
 -----------------
-    vod_manager.get_children(category_path, **kwargs)
+    vod_manager.get_children(content_id, **kwargs)
         -> List[VodCategory | VodItem]
 """
 
@@ -127,82 +127,132 @@ class VodManager:
         _platform = getattr(bootstrap, "platform", "")
         self._subscriber_type: str = SUBSCRIBER_TYPES.get(_platform, "FTV_OTT_DT")
 
+        # Node registry: opaque content_id → (fetch_url, extra_params)
+        # Populated when lanes/series/seasons are discovered so that
+        # get_children can look up the full fetch context without any
+        # URL reconstruction or query-string manipulation.
+        # Lives on the provider instance (long-lived) so it survives
+        # across individual request-scoped calls.
+        self._node_registry: Dict[str, Dict] = {}
+
         # Short-lived in-memory cache for VodDetails responses (content_id → data).
         # Prevents redundant network round-trips when the same content_id is
-        # looked up multiple times within a single get_children() call chain
-        # (e.g. _map_unstructured_item → _fetch_single_item for every lane movie,
-        # then the provider calling get_children([gn_id]) directly to resolve
-        # the MPX mediaId for playback).  Entries are keyed by the content_id
-        # string and are not persisted across VodManager instances.
+        # looked up multiple times within a single get_children() call chain.
         self._vod_details_cache: Dict[str, Any] = {}
 
     # =========================================================================
     # Public API
     # =========================================================================
 
+    def _register_node(
+        self,
+        content_id: str,
+        fetch_url: str,
+        extra_params: Optional[Dict] = None,
+    ) -> str:
+        """
+        Register a node in the registry and return its content_id.
+
+        Args:
+            content_id:   Opaque identifier (e.g. "lane:322341").
+            fetch_url:    Full URL to use when fetching children.
+            extra_params: Additional query params to merge (e.g. whiteLabelId).
+        """
+        self._node_registry[content_id] = {
+            "fetch_url": fetch_url,
+            "extra_params": extra_params or {},
+        }
+        return content_id
+
     def get_children(
         self,
-        category_path: List[str],
+        content_id: str,
         *,
         page_size: int = VOD_DEFAULT_PAGE_SIZE,
         offset: int = 0,
-        fetch_url: Optional[str] = None,
     ) -> List[Union[VodCategory, VodItem]]:
         """
-        Return the children of a VOD tree node.
+        Return the children of a VOD node identified by *content_id*.
+
+        content_id is always a single opaque token — never split on "/" by
+        the caller.  Dispatch is by prefix:
+
+            ""              → VOD home (top-level lanes)
+            "lane:<id>"     → UnstructuredGrid lane (via registry)
+            "series:<id>"   → GN_SERIES_… seasons
+            "season:<id>"   → GN_SEASON_… episodes
+            "episode:<id>"  → single episode detail
+            "movie:<id>"    → single movie detail
+            legacy GN_*     → backwards-compat fallback
 
         Args:
-            category_path: Ordered list of content_ids from root to the
-                           requested node, matching the provider's contract:
-                               []                       -> VOD home (top-level lanes)
-                               ["GN_SERIES_123"]        -> series (seasons)
-                               ["GN_SERIES_123",
-                                "GN_SEASON_123_DE_2"]   -> season (episodes)
-                               ["lane:326619"]           -> UnstructuredGrid lane
-            page_size:   Number of items to fetch per page (UnstructuredGrid).
-            offset:      Pagination offset (UnstructuredGrid).
-            fetch_url:   Full URL (including portal-scoping query params such as
-                         ?whiteLabelId=megathek) to use for the fetch instead of
-                         reconstructing it from category_path.  Populated by the
-                         caller from VodCategory.fetch_url so that params survive
-                         the HTTP router's path-segment splitting.
-
-        Returns:
-            Mixed list of VodCategory and VodItem objects.
+            content_id: Opaque node identifier.
+            page_size:  Items per page for lane fetches.
+            offset:     Pagination offset for lane fetches.
         """
-        logger.debug(
-            f"{self._provider}: get_children called with "
-            f"category_path={category_path!r} fetch_url={fetch_url!r}"
-        )
+        logger.debug(f"{self._provider}: get_children content_id={content_id!r}")
         params = self._base_params()
 
-        if not category_path:
+        if not content_id:
             return self._fetch_home_lanes(params)
 
-        node_id = "/".join(category_path)
-
-        if node_id.startswith("UnstructuredGrid/"):
-            flex_id = node_id[len("UnstructuredGrid/"):].split("?")[0]
+        # ── Lane (UnstructuredGrid) ──────────────────────────────────────
+        if content_id.startswith("lane:"):
+            node = self._node_registry.get(content_id)
+            if node:
+                return self._fetch_lane_items(
+                    content_id, params,
+                    page_size=page_size, offset=offset,
+                    fetch_url=node["fetch_url"],
+                    extra_params=node["extra_params"],
+                )
+            # Fallback: extract bare id and construct URL
+            bare = content_id[len("lane:"):]
             return self._fetch_lane_items(
-                flex_id, params,
+                content_id, params,
                 page_size=page_size, offset=offset,
-                fetch_url=fetch_url,
+                fetch_url=f"{self._base_url()}/UnstructuredGrid/{bare}",
             )
 
-        if node_id.startswith("VodDetails/"):
-            # e.g. "VodDetails/202887/GN_SERIES_9370385" → extract the GN id
-            node_id = node_id.split("/")[-1]
+        # ── Series ──────────────────────────────────────────────────────
+        if content_id.startswith("series:"):
+            gn_id = content_id[len("series:"):]
+            return self._fetch_series_seasons(gn_id, params)
 
+        # ── Season ──────────────────────────────────────────────────────
+        if content_id.startswith("season:"):
+            gn_id = content_id[len("season:"):]
+            return self._fetch_season_episodes(gn_id, params)
+
+        # ── Episode / Movie ─────────────────────────────────────────────
+        if content_id.startswith("episode:"):
+            gn_id = content_id[len("episode:"):]
+            return self._fetch_single_episode(gn_id, params)
+
+        if content_id.startswith("movie:"):
+            gn_id = content_id[len("movie:"):]
+            return self._fetch_single_item(gn_id, params)
+
+        # ── Legacy / backwards-compat ───────────────────────────────────
+        # Support old-style content_ids (GN_SERIES_*, GN_SEASON_*, etc.)
+        # and path-style IDs (UnstructuredGrid/*, VodDetails/*) so that
+        # existing cached references keep working during transition.
+        node_id = content_id
+        if node_id.startswith("UnstructuredGrid/"):
+            bare = node_id[len("UnstructuredGrid/"):].split("?")[0]
+            return self._fetch_lane_items(
+                f"lane:{bare}", params,
+                page_size=page_size, offset=offset,
+                fetch_url=f"{self._base_url()}/UnstructuredGrid/{bare}",
+            )
+        if node_id.startswith("VodDetails/"):
+            node_id = node_id.split("/")[-1]
         if node_id.startswith(VOD_PREFIX_SEASON):
             return self._fetch_season_episodes(node_id, params)
-
         if node_id.startswith(VOD_PREFIX_SERIES):
             return self._fetch_series_seasons(node_id, params)
-
         if node_id.startswith(VOD_PREFIX_EPISODE):
             return self._fetch_single_episode(node_id, params)
-
-        # Movies (GN_MV, GN_SH) and any other leaf ID
         return self._fetch_single_item(node_id, params)
 
     # =========================================================================
@@ -635,15 +685,6 @@ class VodManager:
             if lane_type != "UnstructuredGrid" or not flex_id or not title:
                 continue
 
-            # Build the content_id that will be used to fetch this lane later.
-            # Priority for sourcing the URL (highest to lowest):
-            #   1. showAllUrl.href        — canonical "show all" deep-link
-            #   2. laneContentLink.href   — always present, always has ?whiteLabelId=...
-            #   3. constructed from flex_id — last resort, no portal scoping params
-            #
-            # Whichever source we use, we extract everything after /UnstructuredGrid/
-            # (including any query string such as ?whiteLabelId=megathek) so that
-            # portal-scoping parameters are preserved through to the actual fetch.
             show_all_href = (lane.get("showAllUrl") or {}).get("href") or None
             lane_content_href = (lane.get("laneContentLink") or {}).get("href") or None
 
@@ -652,53 +693,29 @@ class VodManager:
                 f"showAllUrl={show_all_href!r} laneContentLink={lane_content_href!r}"
             )
 
-            # Strategy:
-            #   1. showAllUrl with /UnstructuredGrid/ → extract tail (id + query)
-            #   2. laneContentLink with /UnstructuredGrid/ → same
-            #   3. Either URL with ?whiteLabelId → use flex_id + carry whiteLabelId
-            #   4. Nothing → bare flex_id, no portal scoping
-            from urllib.parse import urlparse, parse_qs, urlencode
+            # Best fetch URL: showAllUrl is the paginated full grid (preferred);
+            # laneContentLink is the inline preview but always carries portal params.
+            best_fetch_url = show_all_href or lane_content_href or None
 
-            def _qs_from_href(href):
-                """Return URL query string params as a dict (first value only)."""
-                if not href:
-                    return {}
-                return {k: v[0] for k, v in parse_qs(urlparse(href).query).items()}
-
-            if show_all_href and "/UnstructuredGrid/" in show_all_href:
-                tail = show_all_href.rstrip("/").split("/UnstructuredGrid/", 1)[1]
-                content_id = f"UnstructuredGrid/{tail}"
-            elif lane_content_href and "/UnstructuredGrid/" in lane_content_href:
-                tail = lane_content_href.rstrip("/").split("/UnstructuredGrid/", 1)[1]
-                content_id = f"UnstructuredGrid/{tail}"
-            else:
-                # laneContentLink uses a different path shape (e.g. UnstructuredGridLane/)
-                # but may still carry ?whiteLabelId — extract it and append to flex_id.
-                qs_params = _qs_from_href(lane_content_href) or _qs_from_href(show_all_href)
-                scoping = {k: v for k, v in qs_params.items()
-                           if k in ("whiteLabelId",)}
-                if scoping:
-                    content_id = f"UnstructuredGrid/{flex_id}?{urlencode(scoping)}"
-                else:
-                    content_id = f"UnstructuredGrid/{flex_id}"
+            # Opaque content_id: "lane:<numeric_flex_id>" — router-safe, no slashes.
+            # The full fetch context lives in the registry, not in the ID.
+            opaque_id = f"lane:{flex_id}"
+            if best_fetch_url:
+                self._register_node(opaque_id, best_fetch_url)
 
             logger.debug(
-                f"{self._provider}: Lane '{title}' → content_id={content_id!r}"
+                f"{self._provider}: Lane '{title}' → content_id={opaque_id!r} "
+                f"fetch_url={best_fetch_url!r}"
             )
-
-            # Determine the best fetch_url for this lane — the full URL including
-            # ?whiteLabelId=... that the caller passes back via VodCategory.fetch_url.
-            # Priority: showAllUrl (paginated full grid) > laneContentLink (always present).
-            fetch_url = show_all_href or lane_content_href or None
 
             categories.append(
                 VodCategory(
                     name=title,
-                    content_id=content_id,
+                    content_id=opaque_id,
                     provider=self._provider,
                     child_count=lane.get("totalCount"),
                     details_url=show_all_href,
-                    fetch_url=fetch_url,
+                    fetch_url=best_fetch_url,
                 )
             )
 
@@ -711,44 +728,48 @@ class VodManager:
 
     def _fetch_lane_items(
         self,
-        flex_id: str,
+        content_id: str,
         params: Dict,
         page_size: int = VOD_DEFAULT_PAGE_SIZE,
         offset: int = 0,
         fetch_url: Optional[str] = None,
+        extra_params: Optional[Dict] = None,
     ) -> List[Union[VodCategory, VodItem]]:
         """
-        Fetch items from an UnstructuredGrid lane.  Movies → VodItem,
-        series → VodCategory (seasons/episodes require further drill-down).
+        Fetch items from an UnstructuredGrid lane.
 
         Args:
-            fetch_url: Full URL supplied by the caller from VodCategory.fetch_url,
-                       including portal-scoping query params (e.g. ?whiteLabelId=megathek).
-                       When present this is used as-is (base URL only, params merged
-                       separately); when absent the URL is constructed from flex_id.
+            content_id:   Opaque lane identifier (e.g. "lane:322341").
+            fetch_url:    Full URL from the registry, including portal-scoping
+                          query params.  The URL's own query string is split out
+                          and merged into paged_params so all params travel
+                          together in one clean dict.
+            extra_params: Additional params from the registry (merged after
+                          fetch_url params so they take precedence).
         """
         from urllib.parse import urlparse, parse_qs, urlunparse
 
         if fetch_url:
-            # Use the base path from fetch_url but merge its query params into
-            # paged_params so pagination ($size, $offset) and auth params are
-            # all sent together in one clean params dict.
             parsed = urlparse(fetch_url)
             url = urlunparse(parsed._replace(query=""))
             url_params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
         else:
-            url = f"{self._base_url()}/UnstructuredGrid/{flex_id}"
+            # Should not happen when registry is populated, but safe fallback.
+            bare = content_id.split(":")[-1] if ":" in content_id else content_id
+            url = f"{self._base_url()}/UnstructuredGrid/{bare}"
             url_params = {}
 
         paged_params = dict(params)
         if url_params:
             paged_params.update(url_params)
+        if extra_params:
+            paged_params.update(extra_params)
         paged_params["$size"] = str(page_size)
         paged_params["$offset"] = str(offset)
 
         logger.debug(
-            f"{self._provider}: _fetch_lane_items flex_id={flex_id!r} "
-            f"params={paged_params!r}"
+            f"{self._provider}: _fetch_lane_items {content_id!r} url={url!r} "
+            f"url_params={url_params!r}"
         )
         data = self._get(url, paged_params)
         if not data:
@@ -763,7 +784,7 @@ class VodManager:
 
         total = content.get("page", {}).get("total", len(results))
         logger.debug(
-            f"{self._provider}: Lane {flex_id} – fetched {len(results)}/{total} items "
+            f"{self._provider}: Lane {content_id} – fetched {len(results)}/{total} items "
             f"(offset={offset})"
         )
         return results
@@ -791,19 +812,20 @@ class VodManager:
 
         if vod_type == "Series":
             details_href = (item.get("details") or {}).get("href") or None
-            series_content_id = (
-                details_href.split("/v3/")[1].split("?")[0].split("/", 1)[1]
-                if details_href and "/v3/" in details_href
-                else content_id
-            )
+            # Use opaque "series:<GN_SERIES_id>" — no slashes, router-safe.
+            gn_series_id = content_id  # content_id from the lane item IS the GN id
+            opaque_series_id = f"series:{gn_series_id}"
+            if details_href:
+                self._register_node(opaque_series_id, details_href)
             return VodCategory(
                 name=title,
-                content_id=series_content_id,
+                content_id=opaque_series_id,
                 provider=self._provider,
                 logo_url=image_url,
                 description=description,
                 child_count=seasons_available,
                 details_url=details_href,
+                fetch_url=details_href,
             )
 
         # Movie (or unknown leaf): resolve via _fetch_single_item so we get
@@ -896,11 +918,12 @@ class VodManager:
             if season_num is None:
                 continue
             season_title = lane.get("title") or f"Staffel {season_num}"
-            season_id = f"{VOD_PREFIX_SEASON}{series_num}_DE_{season_num}"
+            gn_season_id = f"{VOD_PREFIX_SEASON}{series_num}_DE_{season_num}"
+            opaque_season_id = f"season:{gn_season_id}"
             seasons.append(
                 VodCategory(
                     name=season_title,
-                    content_id=season_id,
+                    content_id=opaque_season_id,
                     provider=self._provider,
                     description=f"{series_title} – {season_title}",
                     child_count=lane.get("episodeCount") or lane.get("totalCount"),
@@ -965,14 +988,10 @@ class VodManager:
                 # content_id: strip base URL and query string from details href
                 # e.g. "https://.../VodDetails/202887/GN_SEASON_184925_DE_1?..."
                 # → "VodDetails/202887/GN_SEASON_184925_DE_1"
-                if details_href and "/v3/" in details_href:
-                    content_id = (
-                        details_href.split("/v3/")[1]
-                        .split("?")[0]
-                        .split("/", 1)[1]
-                    )
-                else:
-                    content_id = season_id
+                # Opaque season ID — router-safe, no slashes.
+                opaque_season_id = f"season:{season_id}"
+                if details_href:
+                    self._register_node(opaque_season_id, details_href)
 
                 image_url: Optional[str] = (item.get("image") or {}).get("href")
                 description: Optional[str] = (
@@ -983,12 +1002,13 @@ class VodManager:
                 seasons.append(
                     VodCategory(
                         name=title,
-                        content_id=content_id,
+                        content_id=opaque_season_id,
                         provider=self._provider,
                         logo_url=image_url,
                         description=description or f"{series_title} – {title}",
                         child_count=episode_count,
                         details_url=details_href,
+                        fetch_url=details_href,
                     )
                 )
             if seasons:
