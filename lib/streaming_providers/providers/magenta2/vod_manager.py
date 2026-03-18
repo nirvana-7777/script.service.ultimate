@@ -325,18 +325,31 @@ class VodManager:
 
     def _get(self, url: str, params: Dict) -> Optional[Dict]:
         """
-        Perform a GET request and return the parsed JSON body, or None on error.
+        Perform an authenticated GET request, injecting all device-identity
+        headers on every call:
 
-        Auth headers are injected automatically when auth_headers_callback is
-        set — all tvhubs and wcps VOD endpoints require the same Bearer +
-        x-mpx-authorization headers.
+            Bearer + x-mpx-authorization  — from auth_headers_callback
+            x-stbserialnumber             — stable device serial
+            dt-session-id                 — stable session ID
+            dt-call-id                    — fresh UUID per request
+
+        The server uses all of these to scope responses (partner lists,
+        entitlements, personalisation) to the correct device session.
+        Omitting the serial/session headers causes the server to return
+        generic or reduced responses.
         """
-        headers = None
+        import uuid as _iuuid
+        headers: Dict[str, str] = {}
         if self._auth_headers_callback:
             try:
-                headers = self._auth_headers_callback()
+                headers = dict(self._auth_headers_callback())
             except Exception as exc:
                 logger.warning(f"{self._provider}: auth_headers_callback failed: {exc}")
+        if self._serial_number:
+            headers["x-stbserialnumber"] = self._serial_number
+        if self._session_id:
+            headers["dt-session-id"] = self._session_id
+            headers["dt-call-id"] = str(_iuuid.uuid4())
         try:
             response = self._http.get(url, params=params, headers=headers)
             if response and response.status_code == 200:
@@ -350,17 +363,15 @@ class VodManager:
         return None
 
     def _get_auth(self, url: str, params: Dict) -> Optional[Dict]:
-        """Alias for _get — auth is now always injected when callback is set."""
+        """Alias for _get."""
         return self._get(url, params)
 
     def _get_no_auth(self, url: str, params: Dict) -> Optional[Dict]:
         """
-        Perform a GET request *without* auth headers, regardless of whether
-        auth_headers_callback is set.
+        Perform a GET request *without* any auth or device-identity headers.
 
-        Used for unauthenticated endpoints such as PersonalBar discovery, where
-        attaching Bearer / x-mpx-authorization headers causes the server to
-        return a different or empty response.
+        Used for unauthenticated endpoints where attaching headers causes the
+        server to return a different or empty response.
         """
         try:
             response = self._http.get(url, params=params, headers=None)
@@ -385,16 +396,11 @@ class VodManager:
         dt_call_id: str = "",
     ) -> Optional[Dict]:
         """
-        Perform an authenticated GET injecting the full set of device-identity
-        headers required by the personal-bar endpoints:
+        Perform an authenticated GET with explicit serial/session headers.
 
-            x-stbserialnumber   — device hardware serial (random UUID)
-            dt-session-id       — stable across the discovery sequence
-            dt-call-id          — fresh UUID per individual request
-
-        These are sent in addition to the standard Bearer token from
-        auth_headers_callback.  Omitting any of them causes the server to
-        return an empty or unexpected response.
+        Used by PersonalBar discovery which needs to supply its own
+        dt-call-id and dt-session-id values per the discovery sequence.
+        For all other calls, use _get() which injects these automatically.
         """
         headers: Dict[str, str] = {}
         if self._auth_headers_callback:
@@ -1477,10 +1483,23 @@ class VodManager:
         """
         if getattr(self, "_instant_usage_fetched", False):
             return  # Only needed once per VodManager instance
-        iup_params = dict(params)
-        iup_params["$reloadAfterChange"] = "false"
-        iup_params.pop("$size", None)
-        iup_params.pop("$offset", None)
+        # Params mirror the real device call exactly — $cid (AndroidTV style),
+        # $reloadAfterChange, no whiteLabelId, no sid/t.
+        # Serial + session headers are injected automatically by _get().
+        iup_params: Dict[str, str] = {
+            "$deviceModel": self._device_model,
+            "$profile": self._profile_name,
+            "$subscriberType": self._subscriber_type,
+            "$theme": self._theme_id,
+            "$redirect": "false",
+            "$reloadAfterChange": "false",
+        }
+        if self._is_androidtv():
+            import uuid as _uuid
+            iup_params["$cid"] = f"{self._session_id}::{str(_uuid.uuid4())}"
+        else:
+            iup_params["sid"] = self._session_id
+            iup_params["t"] = str(int(time.time() * 1000))
         url = self._get_instant_usage_partners_url()
         data = self._get(url, iup_params)
         if data:
