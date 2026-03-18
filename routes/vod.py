@@ -55,18 +55,20 @@ def setup_vod_routes(app, manager):
         response.status = 200
         return {"provider": provider, "content_id": "", "entries": serialized, "count": len(serialized)}
 
-    @app.route("/api/providers/<provider>/vod/<content_id>", method="GET")
+    @app.route("/api/providers/<provider>/vod/<content_id:path>", method="GET")
     def get_vod_node(provider, content_id):
         """
         Navigate to any VOD node by its opaque content_id.
 
-        content_id is treated as a single opaque token — never split or parsed.
-        It is the value returned in VodCategory.content_id from a previous response.
+        Uses Bottle's :path wildcard so content_ids containing slashes
+        (e.g. "/video-tv/filme", "UnstructuredGrid/322341") are captured
+        in full without splitting.  Clients may also URL-encode slashes
+        (%2F) for extra safety — Bottle decodes them automatically.
 
         Examples:
+            GET /api/providers/rtlplus/vod/video-tv/filme
             GET /api/providers/magenta2/vod/lane%3A322341
-            GET /api/providers/magenta2/vod/series%3AGN_SERIES_20914057
-            GET /api/providers/discovery_de/vod/sports
+            GET /api/providers/discovery_de/vod/%2Fsports%2Fnordic-combined
         """
         if not content_id:
             return get_vod_root(provider)
