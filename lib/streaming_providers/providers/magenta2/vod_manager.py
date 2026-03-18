@@ -537,7 +537,7 @@ class VodManager:
             # Use quote_via=quote with safe='$:' so that $ signs in
             # parameter names and :: in the cid value are NOT percent-
             # encoded (%24). The server requires literal $ characters.
-            redirect_url_with_cid = urlunparse(
+            redirect_url_with_cid = str(urlunparse(
                 parsed._replace(
                     query=urlencode(
                         {k: v[0] for k, v in qs.items()},
@@ -545,7 +545,7 @@ class VodManager:
                         safe="$:",
                     )
                 )
-            )
+            ))
 
             logger.debug(
                 f"{self._provider}: Following personal-bar redirect "
@@ -1401,15 +1401,12 @@ class VodManager:
 
     def _normalise_product_url(self, url: str) -> str:
         """
-        Rewrite a productInformationLink URL to use the correct client model
+        Rewrite a productInformationLink URL to use our client model
         so that the response contains proper player buttons.
 
-        The path segment (e.g. /ftv-androidtv/) is replaced with our actual
-        client model.  The partnerMapId query parameter is intentionally left
-        untouched — the server sets it to a portal-specific value such as
-        "wl_megathek" that must be preserved for the correct button set to be
-        returned.  Overwriting it with our client model would corrupt the
-        partner scope and yield empty or wrong primary buttons.
+        The partnerMapId, appMapId and channelMapId query parameters are left
+        untouched — they are portal-specific values set by the server that must
+        be preserved for the correct button set to be returned.
         """
         from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 
@@ -1422,7 +1419,7 @@ class VodManager:
         parsed = urlparse(url)
         qs = parse_qs(parsed.query, keep_blank_values=True)
         new_query = urlencode({k: v[0] for k, v in qs.items()})
-        return urlunparse(parsed._replace(query=new_query))
+        return str(urlunparse(parsed._replace(query=new_query)))
 
     def _playback_params(self) -> Dict:
         """Query parameters for vodproductinformation / VodPlayer requests.
@@ -1450,6 +1447,54 @@ class VodManager:
             params["partnerMapId"] = self._partner_map_id
         return params
 
+    def _get_instant_usage_partners_url(self) -> str:
+        """
+        Resolve the instantusagepartners URL.
+
+        Resolution order:
+          1. ProviderConfig manifest tvHubUrls.instantUsagePartners with
+             {clientModel} substituted — discovered dynamically, never hardcoded.
+          2. Constructed from _base_url() — same host/path convention as all
+             other tvhubs endpoints, flex ID 83856 is stable.
+        """
+        if self._provider_config is not None:
+            url = self._provider_config.get_resolved_tvhub_url(
+                "instantUsagePartners", self._client_model
+            )
+            if url:
+                return url
+        return f"{self._base_url()}/instantusagepartners/83856"
+
+    def _fetch_instant_usage_partners(self, params: Dict) -> None:
+        """
+        Preflight call to instantusagepartners — mirrors what the real app
+        does before any vodproductinformation request.
+
+        The server uses this to establish which partners the account can access
+        instantly, and without it may return subscriptionMissing even for
+        entitled content.  The response is not used directly; the side-effect
+        on the server session is what matters.
+        """
+        if getattr(self, "_instant_usage_fetched", False):
+            return  # Only needed once per VodManager instance
+        iup_params = dict(params)
+        iup_params["$reloadAfterChange"] = "false"
+        iup_params.pop("$size", None)
+        iup_params.pop("$offset", None)
+        url = self._get_instant_usage_partners_url()
+        data = self._get(url, iup_params)
+        if data:
+            partners = data.get("partnerList", [])
+            logger.debug(
+                f"{self._provider}: instantusagepartners → "
+                f"{len(partners)} partners available"
+            )
+        else:
+            logger.warning(
+                f"{self._provider}: instantusagepartners fetch failed"
+            )
+        self._instant_usage_fetched = True
+
     def _resolve_movie_playback_href(
         self,
         product_url: str,
@@ -1467,16 +1512,18 @@ class VodManager:
         Returns:
             (theplatform_href, media_id) on success, or (None, None) on any failure.
         """
-        # Normalise URL to ftv-web so we get proper player buttons, and use
-        # web-flavoured params (deviceModel, subscriberType) to match.
-        web_url = self._normalise_product_url(product_url)
-        web_params = self._playback_params()
-        if web_url != product_url:
+        # Preflight: establish instant-usage partner session on the server
+        # before the vodproductinformation call.
+        self._fetch_instant_usage_partners(self._base_params())
+
+        url = self._normalise_product_url(product_url)
+        playback_params = self._playback_params()
+        if url != product_url:
             logger.debug(
-                f"{self._provider}: Normalised productInformation URL: {web_url}"
+                f"{self._provider}: Normalised productInformation URL: {url}"
             )
 
-        prod_data = self._get_auth(web_url, web_params)
+        prod_data = self._get_auth(url, playback_params)
         if not prod_data:
             return None, None
 
@@ -1514,7 +1561,7 @@ class VodManager:
             )
             return None, None
 
-        vod_player_data = self._get_auth(vod_player_url, web_params)
+        vod_player_data = self._get_auth(vod_player_url, playback_params)
         if not vod_player_data:
             return None, None
 
