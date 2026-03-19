@@ -1360,14 +1360,22 @@ class VodManager:
             )
 
         if playback_media_id:
-            # Happy path: use the MPX mediaId so _get_smil_content builds the
-            # right URL: selector_service + account_pid + "/media/" + mediaId
-            effective_content_id = playback_media_id
-            manifest_script = playback_href      # theplatform href for reference
+            # Extract the alphanumeric guid from the theplatform href —
+            # the SMIL selector requires the guid, not the numeric mediaId.
+            # e.g. "https://link.theplatform.eu/s/mdeprod/media/zRPPGLNGgPa1"
+            #      → guid = "zRPPGLNGgPa1"
+            guid: Optional[str] = None
+            if playback_href:
+                tail = playback_href.rstrip("/").rsplit("/media/", 1)
+                if len(tail) == 2:
+                    guid = tail[1].split("?")[0] or None
+
+            effective_content_id = guid if guid else playback_media_id
+            manifest_script = playback_href
             session_manifest = True
             logger.debug(
                 f"{self._provider}: Movie {content_id} → "
-                f"resolved mediaId={playback_media_id}"
+                f"mediaId={playback_media_id}, guid={guid or '(none, using mediaId)'}"
             )
         else:
             # Fallback: keep GN id + productInformationLink
