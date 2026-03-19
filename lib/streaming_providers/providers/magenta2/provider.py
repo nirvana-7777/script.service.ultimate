@@ -1015,13 +1015,27 @@ class Magenta2Provider(StreamingProvider):
                 # Still valid (with 60s safety margin)
                 return token_data["access_token"]
 
-            # Expired — refresh using the shared refresh_token
+            # Expired — refresh using the shared refresh_token.
+            # The refresh_token lives in top-level session data (shared across
+            # all subordinate tokens: tvhubs, taa, yo_digital).
             logger.debug("tvhubs token expired, refreshing via sam3_client")
             sam3 = tfm.sam3_client
-            if not sam3 or not sam3.refresh_token:
-                logger.warning("Cannot refresh tvhubs token: no refresh_token available")
+
+            # Load shared refresh_token from session storage if not on instance
+            shared_rt = (
+                sam3.refresh_token
+                if sam3 and sam3.refresh_token
+                else (
+                    (tfm.session_manager.load_session(self.provider_name, self.country) or {})
+                    .get("refresh_token")
+                )
+            )
+            if not shared_rt:
+                logger.warning("Cannot refresh tvhubs token: no shared refresh_token found")
                 return None
 
+            # Inject into sam3_client so refresh_access_token can use it
+            sam3.refresh_token = shared_rt
             new_token = sam3.refresh_access_token("tvhubs")
             if new_token:
                 # Persist the refreshed token
