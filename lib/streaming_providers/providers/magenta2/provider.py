@@ -990,21 +990,52 @@ class Magenta2Provider(StreamingProvider):
 
     def _get_tvhubs_bearer(self) -> Optional[str]:
         """
-        Return the tvhubs-scoped access_token for use as Bearer.
+        Return a valid tvhubs-scoped access_token for use as Bearer.
 
         The tvhubs token has audience "https://tvhubs.telekom.de" and is what
         the real device sends in Authorization: Bearer for all tvhubs/wcps calls.
-        Falls back to persona_jwt if the tvhubs token is unavailable.
+
+        If the stored token is expired, refreshes it automatically using the
+        shared refresh_token via sam3_client.refresh_access_token("tvhubs").
+        Falls back to None if unavailable (caller falls back to persona_jwt).
         """
+        import time as _time
         try:
             tfm = self.authenticator.token_flow_manager
             token_data = tfm.session_manager.load_scoped_token(
                 self.provider_name, "tvhubs", self.country
             )
-            if token_data and token_data.get("access_token"):
+            if not token_data or not token_data.get("access_token"):
+                return None
+
+            # Check if expired
+            issued_at = token_data.get("issued_at", 0)
+            expires_in = token_data.get("expires_in", 7200)
+            if _time.time() < issued_at + expires_in - 60:
+                # Still valid (with 60s safety margin)
                 return token_data["access_token"]
+
+            # Expired — refresh using the shared refresh_token
+            logger.debug("tvhubs token expired, refreshing via sam3_client")
+            sam3 = tfm.sam3_client
+            if not sam3 or not sam3.refresh_token:
+                logger.warning("Cannot refresh tvhubs token: no refresh_token available")
+                return None
+
+            new_token = sam3.refresh_access_token("tvhubs")
+            if new_token:
+                # Persist the refreshed token
+                tfm._save_tvhubs_token({
+                    "access_token": new_token,
+                    "token_type": "Bearer",
+                    "expires_in": 7200,
+                })
+                logger.debug("tvhubs token refreshed successfully")
+                return new_token
+
+            logger.warning("tvhubs token refresh failed")
         except Exception as exc:
-            logger.debug(f"Could not load tvhubs token: {exc}")
+            logger.debug(f"Could not load/refresh tvhubs token: {exc}")
         return None
 
     def _vod_auth_headers(self) -> Dict[str, str]:
