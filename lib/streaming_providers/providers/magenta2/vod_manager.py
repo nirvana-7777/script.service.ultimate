@@ -825,19 +825,10 @@ class VodManager:
                 fetch_url=details_href,
             )
 
-        # Movie (or unknown leaf): resolve via _fetch_single_item so we get
-        # the correct MPX mediaId as content_id and a ready manifest_script.
-        items = self._fetch_single_item(content_id, params)
-        if items:
-            return items[0]
-
-        # _fetch_single_item failed — return a minimal unresolved VodItem so
-        # the lane listing still shows the title/artwork, even if playback
-        # will fail later.
-        logger.warning(
-            f"{self._provider}: Could not resolve playback for movie "
-            f"'{title}' ({content_id}); returning unresolved item."
-        )
+        # Movie (or unknown leaf): store opaque "movie:GN_MV..." id.
+        # Playback resolution (VodDetails → productInformation → VodPlayer)
+        # is deferred to get_manifest() / get_drm() — only triggered when the
+        # user actually hits play, not during lane browsing.
         year_raw = item.get("yearOfProduction")
         try:
             release_year: Optional[int] = int(str(year_raw).split("-")[0]) if year_raw else None
@@ -846,7 +837,7 @@ class VodManager:
         duration_raw = item.get("duration")
         return VodItem.create_movie(
             name=title,
-            content_id=content_id,
+            content_id=f"movie:{content_id}",
             provider=self._provider,
             logo_url=image_url,
             description=description,
@@ -1158,7 +1149,7 @@ class VodManager:
 
         return VodItem.create_episode(
             name=title,
-            content_id=content_id,
+            content_id=f"episode:{content_id}",
             provider=self._provider,
             season_number=season_number or 0,
             episode_number=ep_num or 0,

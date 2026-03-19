@@ -1333,46 +1333,52 @@ class Magenta2Provider(StreamingProvider):
 
     def _resolve_gn_id_to_media_id(self, gn_id: str) -> Optional[str]:
         """
-        Resolve a Gracenote content id (GN_EP*, GN_MV*, GN_SH*) to the MPX
-        guid needed by the SMIL selector URL (.../media/{guid}).
+        Resolve a Gracenote content id (GN_EP*, GN_MV*, GN_SH*) to the
+        alphanumeric MPX guid needed by the SMIL selector URL (.../media/{guid}).
 
-        The VodItem returned by _fetch_single_episode stores:
-            content_id    = numeric mediaId  (e.g. 1904600133178)
-            manifest_script = theplatform href  (e.g. .../media/zRPPGLNGgPa1)
-
-        The SMIL endpoint requires the alphanumeric guid from the href, not
-        the numeric mediaId.
+        Called at play time only — never during browse.  Runs the full chain:
+            VodDetails → productInformationLink → VodPlayer → playbackUrls
+        and extracts the guid from the theplatform href in manifest_script.
         """
         if not self._vod_manager:
             logger.warning(f"Cannot resolve GN id {gn_id}: VodManager not available")
             return None
         try:
-            items = self._vod_manager.get_children(gn_id)
+            # Route to the correct resolver based on GN id prefix.
+            # get_children with the opaque prefix triggers full resolution.
+            if gn_id.startswith(VOD_PREFIX_EPISODE):
+                items = self._vod_manager.get_children(f"episode:{gn_id}")
+            elif gn_id.startswith(VOD_PREFIX_MOVIE_MV) or gn_id.startswith(VOD_PREFIX_MOVIE_SH):
+                items = self._vod_manager.get_children(f"movie:{gn_id}")
+            else:
+                items = self._vod_manager.get_children(gn_id)
+
             if items:
                 item = items[0]
                 manifest_script = getattr(item, "manifest_script", None)
 
                 # If manifest_script is a vodproductinformation URL the content
-                # is not playable (subscriptionMissing / not entitled).
-                # Stop here rather than passing an unplayable URL to the SMIL chain.
+                # is not entitled (subscriptionMissing). Stop immediately.
                 if manifest_script and "vodproductinformation" in manifest_script:
                     logger.warning(
-                        f"{gn_id}: content not entitled (manifest_script is "
-                        f"vodproductinformation URL — subscriptionMissing)"
+                        f"{gn_id}: content not entitled "
+                        f"(subscriptionMissing)"
                     )
                     return None
 
                 if manifest_script:
-                    # href format: https://link.theplatform.eu/s/mdeprod/media/zRPPGLNGgPa1
+                    # href: https://link.theplatform.eu/s/mdeprod/media/zRPPGLNGgPa1
                     guid = manifest_script.rstrip("/").rsplit("/media/", 1)[-1].split("?")[0]
                     if guid and guid != manifest_script:
-                        logger.debug(f"Resolved GN id {gn_id} → guid {guid}")
+                        logger.debug(f"Resolved {gn_id} → guid {guid}")
                         return guid
-                # Fallback to content_id if manifest_script is absent
+
+                # Fallback: content_id already IS the guid (set by _fetch_single_item)
                 resolved = getattr(item, "content_id", None)
-                if resolved and resolved != gn_id:
-                    logger.debug(f"Resolved GN id {gn_id} → content_id {resolved}")
+                if resolved and resolved not in (gn_id, f"movie:{gn_id}", f"episode:{gn_id}"):
+                    logger.debug(f"Resolved {gn_id} → {resolved}")
                     return resolved
+
             logger.warning(f"GN id {gn_id} resolution returned no usable id")
         except Exception as exc:
             logger.warning(f"GN id {gn_id} resolution failed: {exc}")
@@ -1380,10 +1386,20 @@ class Magenta2Provider(StreamingProvider):
 
     def _get_smil_data(self, channel_id: str) -> Optional[Dict[str, Any]]:
         """Get complete SMIL data with caching"""
-        # If the caller passed a Gracenote content id (GN_EP*, GN_MV*, GN_SH*)
-        # rather than a real MPX mediaId, resolve it first.  The SMIL/selector
-        # endpoint only accepts MPX mediaIds.
-        if (
+        # Strip opaque prefixes added at browse time — resolution happens here.
+        if channel_id.startswith("movie:") or channel_id.startswith("episode:"):
+            gn_id = channel_id.split(":", 1)[1]
+            resolved = self._resolve_gn_id_to_media_id(gn_id)
+            if resolved:
+                channel_id = resolved
+            else:
+                logger.error(
+                    f"Cannot play {channel_id}: failed to resolve to MPX guid"
+                )
+                return None
+
+        # Legacy: bare GN_EP*/GN_MV*/GN_SH* ids (pre-opaque-prefix era)
+        elif (
             channel_id.startswith(VOD_PREFIX_EPISODE)
             or channel_id.startswith(VOD_PREFIX_MOVIE_MV)
             or channel_id.startswith(VOD_PREFIX_MOVIE_SH)
