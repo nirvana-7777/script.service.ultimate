@@ -1044,6 +1044,10 @@ class Magenta2Provider(StreamingProvider):
                     "token_type": "Bearer",
                     "expires_in": 7200,
                 })
+                # ✅ ADD THIS — sam3 already has the new RT on its instance after get_token()
+                if sam3.refresh_token:
+                    tfm._save_refresh_token(sam3.refresh_token)
+                    logger.debug("tvhubs refresh_token updated in session after refresh")
                 logger.debug("tvhubs token refreshed successfully")
                 return new_token
 
