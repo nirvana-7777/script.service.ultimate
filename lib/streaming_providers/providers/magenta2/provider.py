@@ -1119,6 +1119,13 @@ class Magenta2Provider(StreamingProvider):
             content_id: Opaque node identifier produced by a previous
                         get_vod_category call (e.g. "lane:322341",
                         "series:GN_SERIES_20914057").  Empty string → root.
+            cursor:     Opaque continuation token from a previous response's
+                        next_cursor field.  None → first page.
+                        Encoded as a plain integer string by VodManager
+                        (the $offset value for the next UnstructuredGrid call).
+            page_size:  Number of items to request per page (default from
+                        VOD_DEFAULT_PAGE_SIZE).  Passed straight through to
+                        VodManager and then to the $size query parameter.
         """
         if not self._vod_manager:
             raise RuntimeError("VodManager not available - configuration discovery may have failed")

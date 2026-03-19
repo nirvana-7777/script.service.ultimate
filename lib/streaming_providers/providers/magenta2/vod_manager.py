@@ -38,8 +38,8 @@ tvhubs base URL resolution order
 
 Public interface
 -----------------
-    vod_manager.get_children(content_id, **kwargs)
-        -> List[VodCategory | VodItem]
+    vod_manager.get_children(content_id, *, cursor, page_size, **kwargs)
+        -> Dict with keys: entries, next_cursor, total
 """
 
 import time
@@ -168,9 +168,10 @@ class VodManager:
         self,
         content_id: str,
         *,
+        cursor: Optional[str] = None,
         page_size: int = VOD_DEFAULT_PAGE_SIZE,
         offset: int = 0,
-    ) -> List[Union[VodCategory, VodItem]]:
+    ) -> Dict:
         """
         Return the children of a VOD node identified by *content_id*.
 
@@ -187,14 +188,48 @@ class VodManager:
 
         Args:
             content_id: Opaque node identifier.
+            cursor:     Opaque continuation token returned in a previous
+                        response's next_cursor field.  For lane/UnstructuredGrid
+                        nodes, VodManager encodes the next $offset as a plain
+                        integer string (e.g. "24", "48").  None → first page.
+                        For non-paginated nodes (home, series, seasons) the
+                        cursor is ignored and next_cursor is always None.
             page_size:  Items per page for lane fetches.
-            offset:     Pagination offset for lane fetches.
+            offset:     Direct offset override for internal callers that bypass
+                        the cursor mechanism (e.g. _resolve_gn_id_to_media_id).
+                        Ignored when cursor is supplied.
+
+        Returns:
+            {
+                "entries":     List[VodCategory | VodItem],
+                "next_cursor": Optional[str],   # None when no further pages exist
+                "total":       Optional[int],   # total item count if known by API
+            }
         """
-        logger.debug(f"{self._provider}: get_children content_id={content_id!r}")
+        logger.debug(
+            f"{self._provider}: get_children content_id={content_id!r} "
+            f"cursor={cursor!r} page_size={page_size}"
+        )
+
+        # Decode cursor → offset.  cursor takes precedence over the legacy
+        # offset kwarg so that route-layer callers always use cursor.
+        if cursor is not None:
+            try:
+                offset = int(cursor)
+            except (ValueError, TypeError):
+                logger.warning(
+                    f"{self._provider}: Invalid cursor value {cursor!r}, "
+                    "ignoring and starting from offset 0"
+                )
+                offset = 0
+
         params = self._base_params()
 
         if not content_id:
-            return self._fetch_home_lanes(params)
+            # Home lanes are not paginated — always return first page wrapped
+            # in the standard dict so callers never need to branch on type.
+            lanes = self._fetch_home_lanes(params)
+            return {"entries": lanes, "next_cursor": None, "total": None}
 
         # ── Lane (UnstructuredGrid) ──────────────────────────────────────
         if content_id.startswith("lane:"):
@@ -217,21 +252,25 @@ class VodManager:
         # ── Series ──────────────────────────────────────────────────────
         if content_id.startswith("series:"):
             gn_id = content_id[len("series:"):]
-            return self._fetch_series_seasons(gn_id, params)
+            seasons = self._fetch_series_seasons(gn_id, params)
+            return {"entries": seasons, "next_cursor": None, "total": None}
 
         # ── Season ──────────────────────────────────────────────────────
         if content_id.startswith("season:"):
             gn_id = content_id[len("season:"):]
-            return self._fetch_season_episodes(gn_id, params)
+            episodes = self._fetch_season_episodes(gn_id, params)
+            return {"entries": episodes, "next_cursor": None, "total": None}
 
         # ── Episode / Movie ─────────────────────────────────────────────
         if content_id.startswith("episode:"):
             gn_id = content_id[len("episode:"):]
-            return self._fetch_single_episode(gn_id, params)
+            items = self._fetch_single_episode(gn_id, params)
+            return {"entries": items, "next_cursor": None, "total": None}
 
         if content_id.startswith("movie:"):
             gn_id = content_id[len("movie:"):]
-            return self._fetch_single_item(gn_id, params)
+            items = self._fetch_single_item(gn_id, params)
+            return {"entries": items, "next_cursor": None, "total": None}
 
         # ── Legacy / backwards-compat ───────────────────────────────────
         # Support old-style content_ids (GN_SERIES_*, GN_SEASON_*, etc.)
@@ -248,12 +287,16 @@ class VodManager:
         if node_id.startswith("VodDetails/"):
             node_id = node_id.split("/")[-1]
         if node_id.startswith(VOD_PREFIX_SEASON):
-            return self._fetch_season_episodes(node_id, params)
+            episodes = self._fetch_season_episodes(node_id, params)
+            return {"entries": episodes, "next_cursor": None, "total": None}
         if node_id.startswith(VOD_PREFIX_SERIES):
-            return self._fetch_series_seasons(node_id, params)
+            seasons = self._fetch_series_seasons(node_id, params)
+            return {"entries": seasons, "next_cursor": None, "total": None}
         if node_id.startswith(VOD_PREFIX_EPISODE):
-            return self._fetch_single_episode(node_id, params)
-        return self._fetch_single_item(node_id, params)
+            items = self._fetch_single_episode(node_id, params)
+            return {"entries": items, "next_cursor": None, "total": None}
+        items = self._fetch_single_item(node_id, params)
+        return {"entries": items, "next_cursor": None, "total": None}
 
     # =========================================================================
     # Private helpers – HTTP layer
@@ -731,7 +774,7 @@ class VodManager:
         offset: int = 0,
         fetch_url: Optional[str] = None,
         extra_params: Optional[Dict] = None,
-    ) -> List[Union[VodCategory, VodItem]]:
+    ) -> Dict:
         """
         Fetch items from an UnstructuredGrid lane.
 
@@ -743,6 +786,13 @@ class VodManager:
                           together in one clean dict.
             extra_params: Additional params from the registry (merged after
                           fetch_url params so they take precedence).
+
+        Returns:
+            {
+                "entries":     List[VodCategory | VodItem],
+                "next_cursor": Optional[str],   # str(next_offset) or None
+                "total":       Optional[int],   # total item count if returned by API
+            }
         """
         from urllib.parse import urlparse, parse_qs, urlunparse
 
@@ -770,7 +820,7 @@ class VodManager:
         )
         data = self._get(url, paged_params)
         if not data:
-            return []
+            return {"entries": [], "next_cursor": None, "total": None}
 
         content = data.get("content", {})
         results: List[Union[VodCategory, VodItem]] = []
@@ -779,12 +829,27 @@ class VodManager:
             if node is not None:
                 results.append(node)
 
-        total = content.get("page", {}).get("total", len(results))
+        page_info = content.get("page", {})
+        total: Optional[int] = page_info.get("total")
+
+        # Compute next_cursor.  Use the API-reported total when available so
+        # we never request a page beyond the end.  Fall back to the heuristic
+        # that a full page means there are probably more items.
+        next_offset = offset + len(results)
+        if total is not None:
+            next_cursor: Optional[str] = str(next_offset) if next_offset < total else None
+        else:
+            # No total from API: assume there are more pages if we received a
+            # full page; stop if we received fewer items than requested.
+            next_cursor = str(next_offset) if len(results) >= page_size else None
+
         logger.debug(
-            f"{self._provider}: Lane {content_id} – fetched {len(results)}/{total} items "
-            f"(offset={offset})"
+            f"{self._provider}: Lane {content_id} – fetched {len(results)}"
+            + (f"/{total}" if total is not None else "")
+            + f" items (offset={offset})"
+            + (f" → next_cursor={next_cursor!r}" if next_cursor else " → end of lane")
         )
-        return results
+        return {"entries": results, "next_cursor": next_cursor, "total": total}
 
     def _map_unstructured_item(
         self, item: Dict, params: Dict

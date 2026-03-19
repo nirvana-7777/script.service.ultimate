@@ -35,30 +35,67 @@ class VodOperations:
         self,
         provider_name: str,
         content_id: str = "",
+        cursor: Optional[str] = None,
+        page_size: int = 24,
         **kwargs,
-    ) -> List[Union[VodCategory, VodItem]]:
+    ) -> Dict:
         """
-        Return the children of a VOD node.
+        Return the children of a VOD node, with optional paging support.
 
         Args:
             provider_name: Provider to query.
             content_id:    Opaque node identifier from a previous response
                            (VodCategory.content_id).  Empty string → root.
+            cursor:        Opaque continuation token from a previous response's
+                           next_cursor field.  None → first page.
+                           Providers encode their own paging state (offset int,
+                           next-page URL, scroll token, etc.) in this string.
+            page_size:     Hint for how many entries to return per page.
+                           Providers may ignore or clamp this value.
 
         Returns:
-            Mixed list of VodCategory and VodItem entries.
+            {
+                "entries":     List[VodCategory | VodItem],
+                "next_cursor": Optional[str],   # None = no further pages
+                "total":       Optional[int],   # total count if known by provider
+            }
+            Providers that have not yet been updated to support paging may
+            return a plain list; this method normalises that into the dict
+            shape above with next_cursor=None so callers never need to
+            special-case the old return type.
 
         Raises:
             ValueError: Provider not found.
         """
         provider = self._get_provider(provider_name)
-        children = provider.get_vod_category(content_id=content_id, **kwargs)
         label = content_id or "root"
-        logger.info(
-            f"Retrieved {len(children)} VOD entries from '{provider_name}' "
-            f"at '{label}'"
+        logger.debug(
+            f"VodOperations: Fetching VOD node '{label}' from '{provider_name}' "
+            f"(cursor={cursor!r}, page_size={page_size})"
         )
-        return children
+
+        raw = provider.get_vod_category(
+            content_id=content_id,
+            cursor=cursor,
+            page_size=page_size,
+            **kwargs,
+        )
+
+        # Normalise: providers that have not yet adopted paging return a plain
+        # list.  Wrap it so all callers always get the same dict shape.
+        if isinstance(raw, list):
+            result = {"entries": raw, "next_cursor": None, "total": None}
+        else:
+            result = raw
+
+        entries = result.get("entries", [])
+        next_cursor = result.get("next_cursor")
+        logger.info(
+            f"VodOperations: Retrieved {len(entries)} VOD entries from '{provider_name}' "
+            f"at '{label}'"
+            + (f" — next_cursor present" if next_cursor else "")
+        )
+        return result
 
     def get_vod_manifest(
         self, provider_name: str, vod_id: str, **kwargs
@@ -93,6 +130,8 @@ class VodOperations:
         Get root VOD entries from all enabled providers that implement VOD.
 
         Providers that return implements_vod=False are silently skipped.
+        Only fetches the first page of root entries per provider — callers
+        that need subsequent pages should use get_vod_node directly.
         """
         enabled = self.registry.get_enabled_providers()
         logger.info(f"Fetching VOD roots from {len(enabled)} providers")
@@ -105,7 +144,8 @@ class VodOperations:
                 provider = self.registry.get_provider(name)
                 if not getattr(provider, "implements_vod", False):
                     continue
-                entries = self.get_vod_node(name, [])
+                node = self.get_vod_node(name, content_id="")
+                entries = node["entries"]
                 result[name] = entries
                 total += len(entries)
             except Exception as e:
