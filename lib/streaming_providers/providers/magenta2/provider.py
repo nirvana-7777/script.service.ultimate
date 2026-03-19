@@ -988,9 +988,33 @@ class Magenta2Provider(StreamingProvider):
 
         return successful_channels
 
+    def _get_tvhubs_bearer(self) -> Optional[str]:
+        """
+        Return the tvhubs-scoped access_token for use as Bearer.
+
+        The tvhubs token has audience "https://tvhubs.telekom.de" and is what
+        the real device sends in Authorization: Bearer for all tvhubs/wcps calls.
+        Falls back to persona_jwt if the tvhubs token is unavailable.
+        """
+        try:
+            tfm = self.authenticator.token_flow_manager
+            token_data = tfm.session_manager.load_scoped_token(
+                self.provider_name, "tvhubs", self.country
+            )
+            if token_data and token_data.get("access_token"):
+                return token_data["access_token"]
+        except Exception as exc:
+            logger.debug(f"Could not load tvhubs token: {exc}")
+        return None
+
     def _vod_auth_headers(self) -> Dict[str, str]:
         """
         Build authentication headers for VOD endpoints, platform-aware.
+
+        Authorization Bearer uses the tvhubs-scoped token (audience
+        https://tvhubs.telekom.de) — this is what the real device sends
+        and what the server uses for partner entitlement decisions.
+        Falls back to persona_jwt if tvhubs token is unavailable.
 
         ftv-web:     x-dt-session-id / x-dt-call-id, origin, referer,
                      x-permissionflagpersonalizeduireco
@@ -998,10 +1022,17 @@ class Magenta2Provider(StreamingProvider):
                      accept-encoding: gzip
         """
         persona_token = self._ensure_authenticated()
-        persona_jwt = self._extract_persona_jwt_from_token(persona_token)
-        auth_value = (
-            f"Bearer {persona_jwt}" if persona_jwt else f"Basic {persona_token}"
-        )
+        # Prefer tvhubs token as Bearer — it carries correct entitlement scope.
+        tvhubs_token = self._get_tvhubs_bearer()
+        if tvhubs_token:
+            auth_value = f"Bearer {tvhubs_token}"
+            logger.debug("VOD auth: using tvhubs token as Bearer")
+        else:
+            persona_jwt = self._extract_persona_jwt_from_token(persona_token)
+            auth_value = (
+                f"Bearer {persona_jwt}" if persona_jwt else f"Basic {persona_token}"
+            )
+            logger.debug("VOD auth: tvhubs token unavailable, falling back to persona_jwt")
 
         client_model: str = (
             self.provider_config.bootstrap.client_model
@@ -1274,8 +1305,18 @@ class Magenta2Provider(StreamingProvider):
             items = self._vod_manager.get_children(gn_id)
             if items:
                 item = items[0]
-                # Prefer the guid extracted from manifest_script href
                 manifest_script = getattr(item, "manifest_script", None)
+
+                # If manifest_script is a vodproductinformation URL the content
+                # is not playable (subscriptionMissing / not entitled).
+                # Stop here rather than passing an unplayable URL to the SMIL chain.
+                if manifest_script and "vodproductinformation" in manifest_script:
+                    logger.warning(
+                        f"{gn_id}: content not entitled (manifest_script is "
+                        f"vodproductinformation URL — subscriptionMissing)"
+                    )
+                    return None
+
                 if manifest_script:
                     # href format: https://link.theplatform.eu/s/mdeprod/media/zRPPGLNGgPa1
                     guid = manifest_script.rstrip("/").rsplit("/media/", 1)[-1].split("?")[0]

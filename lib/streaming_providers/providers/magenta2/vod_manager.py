@@ -285,6 +285,11 @@ class VodManager:
     def _base_params(self) -> Dict[str, str]:
         """Build query parameters common to every tvhubs VOD API request.
 
+        Note: $subscriberType is intentionally omitted — the real Android TV
+        device does NOT send it on tvhubs calls (StructuredGrid, VodDetails,
+        PersonalBar, UnstructuredGrid etc.).  It is only sent on wcps calls
+        (vodproductinformation, VodPlayer) via _playback_params().
+
         Session correlation follows the platform convention:
           - Android TV: ``$cid`` = ``<sessionId>::<callUUID>``  (no sid / t)
           - Web / other: ``sid`` + ``t``                        (no $cid)
@@ -292,7 +297,6 @@ class VodManager:
         params: Dict[str, str] = {
             "$deviceModel": self._device_model,
             "$profile": self._profile_name,
-            "$subscriberType": self._subscriber_type,
             "$theme": self._theme_id,
             "$redirect": "false",
         }
@@ -325,31 +329,18 @@ class VodManager:
 
     def _get(self, url: str, params: Dict) -> Optional[Dict]:
         """
-        Perform an authenticated GET request, injecting all device-identity
-        headers on every call:
+        Perform a GET request and return the parsed JSON body, or None on error.
 
-            Bearer + x-mpx-authorization  — from auth_headers_callback
-            x-stbserialnumber             — stable device serial
-            dt-session-id                 — stable session ID
-            dt-call-id                    — fresh UUID per request
-
-        The server uses all of these to scope responses (partner lists,
-        entitlements, personalisation) to the correct device session.
-        Omitting the serial/session headers causes the server to return
-        generic or reduced responses.
+        Auth + device-identity headers are injected by auth_headers_callback
+        (Bearer, x-mpx-authorization, x-stbserialnumber, dt-session-id,
+        dt-call-id) — all tvhubs and wcps VOD endpoints require them.
         """
-        import uuid as _iuuid
-        headers: Dict[str, str] = {}
+        headers = None
         if self._auth_headers_callback:
             try:
-                headers = dict(self._auth_headers_callback())
+                headers = self._auth_headers_callback()
             except Exception as exc:
                 logger.warning(f"{self._provider}: auth_headers_callback failed: {exc}")
-        if self._serial_number:
-            headers["x-stbserialnumber"] = self._serial_number
-        if self._session_id:
-            headers["dt-session-id"] = self._session_id
-            headers["dt-call-id"] = str(_iuuid.uuid4())
         try:
             response = self._http.get(url, params=params, headers=headers)
             if response and response.status_code == 200:
@@ -363,7 +354,7 @@ class VodManager:
         return None
 
     def _get_auth(self, url: str, params: Dict) -> Optional[Dict]:
-        """Alias for _get."""
+        """Alias for _get — auth is always injected when callback is set."""
         return self._get(url, params)
 
     def _get_no_auth(self, url: str, params: Dict) -> Optional[Dict]:
@@ -1495,8 +1486,7 @@ class VodManager:
             "$reloadAfterChange": "false",
         }
         if self._is_androidtv():
-            import uuid as _uuid
-            iup_params["$cid"] = f"{self._session_id}::{str(_uuid.uuid4())}"
+            iup_params["$cid"] = f"{self._session_id}::{str(_uuid_mod.uuid4())}"
         else:
             iup_params["sid"] = self._session_id
             iup_params["t"] = str(int(time.time() * 1000))
