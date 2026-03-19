@@ -992,15 +992,65 @@ class Magenta2Provider(StreamingProvider):
         """
         Return a valid tvhubs-scoped access_token for use as Bearer.
 
-        Delegates entirely to TokenFlowManager.get_tvhubs_token() which owns
-        the full lifecycle: cache check → refresh → full re-auth chain.
-        No token logic lives here.
+        The tvhubs token has audience "https://tvhubs.telekom.de" and is what
+        the real device sends in Authorization: Bearer for all tvhubs/wcps calls.
+
+        If the stored token is expired, refreshes it automatically using the
+        shared refresh_token via sam3_client.refresh_access_token("tvhubs").
+        Falls back to None if unavailable (caller falls back to persona_jwt).
         """
+        import time as _time
         try:
-            return self.authenticator.token_flow_manager.get_tvhubs_token()
+            tfm = self.authenticator.token_flow_manager
+            token_data = tfm.session_manager.load_scoped_token(
+                self.provider_name, "tvhubs", self.country
+            )
+            if not token_data or not token_data.get("access_token"):
+                return None
+
+            # Check if expired
+            issued_at = token_data.get("issued_at", 0)
+            expires_in = token_data.get("expires_in", 7200)
+            if _time.time() < issued_at + expires_in - 60:
+                # Still valid (with 60s safety margin)
+                return token_data["access_token"]
+
+            # Expired — refresh using the shared refresh_token.
+            # The refresh_token lives in top-level session data (shared across
+            # all subordinate tokens: tvhubs, taa, yo_digital).
+            logger.debug("tvhubs token expired, refreshing via sam3_client")
+            sam3 = tfm.sam3_client
+
+            # Load shared refresh_token from session storage if not on instance
+            shared_rt = (
+                sam3.refresh_token
+                if sam3 and sam3.refresh_token
+                else (
+                    (tfm.session_manager.load_session(self.provider_name, self.country) or {})
+                    .get("refresh_token")
+                )
+            )
+            if not shared_rt:
+                logger.warning("Cannot refresh tvhubs token: no shared refresh_token found")
+                return None
+
+            # Inject into sam3_client so refresh_access_token can use it
+            sam3.refresh_token = shared_rt
+            new_token = sam3.refresh_access_token("tvhubs")
+            if new_token:
+                # Persist the refreshed token
+                tfm._save_tvhubs_token({
+                    "access_token": new_token,
+                    "token_type": "Bearer",
+                    "expires_in": 7200,
+                })
+                logger.debug("tvhubs token refreshed successfully")
+                return new_token
+
+            logger.warning("tvhubs token refresh failed")
         except Exception as exc:
-            logger.debug(f"Could not obtain tvhubs token: {exc}")
-            return None
+            logger.debug(f"Could not load/refresh tvhubs token: {exc}")
+        return None
 
     def _vod_auth_headers(self) -> Dict[str, str]:
         """
@@ -1304,11 +1354,15 @@ class Magenta2Provider(StreamingProvider):
             # Route to the correct resolver based on GN id prefix.
             # get_children with the opaque prefix triggers full resolution.
             if gn_id.startswith(VOD_PREFIX_EPISODE):
-                items = self._vod_manager.get_children(f"episode:{gn_id}")
+                result = self._vod_manager.get_children(f"episode:{gn_id}")
             elif gn_id.startswith(VOD_PREFIX_MOVIE_MV) or gn_id.startswith(VOD_PREFIX_MOVIE_SH):
-                items = self._vod_manager.get_children(f"movie:{gn_id}")
+                result = self._vod_manager.get_children(f"movie:{gn_id}")
             else:
-                items = self._vod_manager.get_children(gn_id)
+                result = self._vod_manager.get_children(gn_id)
+
+            # get_children always returns {"entries": [...], ...} — unwrap it.
+            # Guard against any legacy path that may still return a plain list.
+            items = result.get("entries", []) if isinstance(result, dict) else result
 
             if items:
                 item = items[0]
