@@ -820,6 +820,101 @@ class TokenFlowManager:
         )
         logger.debug("tvhubs token saved")
 
+    # ========================================================================
+    # Public API - tvhubs token (centralized lifecycle)
+    # ========================================================================
+
+    def get_tvhubs_token(self) -> Optional[str]:
+        """
+        Return a valid tvhubs-scoped access_token, managing the full lifecycle:
+
+        1. Cached token still valid?          → return it
+        2. Expired + shared refresh_token?    → refresh tvhubs, save both
+                                                access_token and refresh_token
+        3. Refresh token dead/missing?        → clear stale state, fall through
+                                                to the full re-auth chain
+                                                (line_auth → remote_login)
+        4. Full chain succeeded?              → tvhubs token now in session,
+                                                return it
+
+        This is the single place that owns tvhubs token lifecycle at runtime.
+        provider.py must never inline refresh/save logic — call this instead.
+        """
+        # Step 1: valid cached token
+        try:
+            token_data = self.session_manager.load_scoped_token(
+                self.provider_name, "tvhubs", self.country
+            )
+            if token_data and token_data.get("access_token"):
+                if not self._is_token_expired(token_data):
+                    logger.debug("tvhubs token: using valid cached token")
+                    return token_data["access_token"]
+        except Exception as exc:
+            logger.debug(f"tvhubs token: error reading cache: {exc}")
+
+        # Step 2: try refreshing via shared refresh_token
+        try:
+            session_data = self.session_manager.load_session(self.provider_name, self.country) or {}
+            shared_rt = self.sam3_client.refresh_token or session_data.get("refresh_token")
+
+            if shared_rt:
+                logger.debug("tvhubs token: expired, attempting refresh")
+                self.sam3_client.refresh_token = shared_rt
+                new_access_token = self.sam3_client.refresh_access_token("tvhubs")
+
+                if new_access_token:
+                    # Persist the new access_token
+                    self._save_tvhubs_token({
+                        "access_token": new_access_token,
+                        "token_type": "Bearer",
+                        "expires_in": 7200,
+                    })
+                    # Persist the new refresh_token — the old one is now invalid
+                    if self.sam3_client.refresh_token:
+                        self._save_refresh_token(self.sam3_client.refresh_token)
+                        logger.debug("tvhubs token: refresh_token updated in session")
+                    logger.debug("tvhubs token: refreshed successfully")
+                    return new_access_token
+
+                # Refresh call failed → the refresh_token is dead; clear it so
+                # downstream steps don't waste a round-trip attempting it again.
+                logger.warning(
+                    "tvhubs token: refresh failed — shared refresh_token likely invalidated; "
+                    "clearing and falling back to full re-auth chain"
+                )
+                if "refresh_token" in session_data:
+                    del session_data["refresh_token"]
+                    self.session_manager.save_session(self.provider_name, session_data, self.country)
+                self.sam3_client.refresh_token = None
+            else:
+                logger.debug("tvhubs token: no shared refresh_token available, skipping refresh")
+
+        except Exception as exc:
+            logger.warning(f"tvhubs token: error during refresh attempt: {exc}")
+
+        # Step 3/4: fall back to the full re-auth chain (steps 5/6 in
+        # get_yo_digital_token: line_auth → remote_login).  We call
+        # get_yo_digital_token with force_refresh=True so it skips the
+        # yo_digital / taa checks (already known stale) and goes straight
+        # to the login flows which re-acquire tvhubs + refresh_token as a
+        # side effect.
+        logger.info("tvhubs token: entering full re-auth chain")
+        result = self.get_yo_digital_token(force_refresh=True)
+        if result.success:
+            # The chain saved a fresh tvhubs token as a side effect — return it.
+            try:
+                token_data = self.session_manager.load_scoped_token(
+                    self.provider_name, "tvhubs", self.country
+                )
+                if token_data and token_data.get("access_token"):
+                    logger.debug("tvhubs token: obtained via full re-auth chain")
+                    return token_data["access_token"]
+            except Exception as exc:
+                logger.debug(f"tvhubs token: error reading token after re-auth: {exc}")
+
+        logger.warning("tvhubs token: all acquisition attempts failed")
+        return None
+
     def _save_refresh_token(self, refresh_token: str) -> None:
         """Save shared refresh_token at provider level"""
         session_data = self.session_manager.load_session(self.provider_name, self.country) or {}
