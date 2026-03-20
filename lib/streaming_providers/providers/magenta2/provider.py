@@ -15,6 +15,7 @@ from ...base.models.proxy_models import ProxyConfig
 from ...base.network import HTTPManagerFactory, ProxyConfigManager
 from ...base.provider import StreamingProvider
 from ...base.utils.logger import logger
+from .recordings_manager import RecordingsManager
 from .vod_manager import VodManager
 from .auth import Magenta2Authenticator, Magenta2Credentials, Magenta2UserCredentials
 from .config_models import ProviderConfig
@@ -121,6 +122,7 @@ class Magenta2Provider(StreamingProvider):
         self.endpoint_manager: Optional[EndpointManager] = None
         self.provider_config: Optional[ProviderConfig] = None
         self._vod_manager: Optional[VodManager] = None
+        self._recordings_manager: Optional[RecordingsManager] = None
 
         # 🚨 INITIALIZE AUTHENTICATOR FIRST (with minimal config)
         # Use fallback client IDs initially
@@ -289,6 +291,14 @@ class Magenta2Provider(StreamingProvider):
             )
             logger.info("✓ VodManager initialized with discovered config")
 
+            self._recordings_manager = RecordingsManager(
+                http_manager=self.http_manager,
+                provider_name=self.provider_name,
+                provider_config=self.endpoint_manager.config,
+                auth_headers_callback=self._pvr_auth_headers,
+            )
+            logger.info("✓ RecordingsManager initialized with discovered config")
+
         # Initialize auth tokens (lazy - populated on first use)
         self.device_token = None
         self._persona_cache: Optional[PersonaResult] = None
@@ -450,6 +460,10 @@ class Magenta2Provider(StreamingProvider):
     @property
     def implements_epg(self) -> bool:
         return False
+
+    @property
+    def implements_recordings(self) -> bool:
+        return True
 
     @property
     def catchup_window(self) -> int:
@@ -1111,6 +1125,25 @@ class Magenta2Provider(StreamingProvider):
                 "accept-encoding": "gzip",
             }
 
+    def _pvr_auth_headers(self) -> Dict[str, str]:
+        """
+        Build authentication headers for nPVR (Audience) recording endpoints.
+
+        The nPVR Audience API authenticates with ``Authorization: Basic
+        {persona_token}`` — the same Base64-encoded persona token used for
+        MPX licence and entitlement requests, *not* a Bearer JWT.
+
+        A ``CID`` correlation header (session::call) is included to match
+        real-device request patterns observed in the API.
+        """
+        persona_token = self._ensure_authenticated()
+        return {
+            "Authorization": f"Basic {persona_token}",
+            "User-Agent": self.platform_config["user_agent"],
+            "Accept-Encoding": "gzip",
+            "CID": f"{self.session_id}::{self._generate_call_id()}",
+        }
+
     def get_vod_category(self, content_id: str = "", **kwargs):
         """
         Return the children of a VOD node.
@@ -1130,6 +1163,76 @@ class Magenta2Provider(StreamingProvider):
         if not self._vod_manager:
             raise RuntimeError("VodManager not available - configuration discovery may have failed")
         return self._vod_manager.get_children(content_id=content_id, **kwargs)
+
+    def get_recordings(
+        self,
+        include_deleted: bool = False,
+        **kwargs,
+    ):
+        """
+        Return a list of Recording objects from the nPVR backend.
+
+        Args:
+            include_deleted: When True, include recordings with status
+                             TO_DELETE or DELETED.  Defaults to False.
+            limit:           Max recordings per request (default/max 500).
+            offset:          1-based page offset (default 1).
+
+        Returns:
+            List of :class:`Recording` objects.
+
+        Raises:
+            RuntimeError: When RecordingsManager is not initialised or the
+                          API request fails.
+        """
+        if not self._recordings_manager:
+            raise RuntimeError(
+                "RecordingsManager not available — configuration discovery may have failed"
+            )
+        return self._recordings_manager.get_recordings(
+            include_deleted=include_deleted, **kwargs
+        )
+
+    def delete_recording(self, recording_id: str, **kwargs) -> None:
+        """
+        Permanently delete a recording on the nPVR backend.
+
+        Args:
+            recording_id: The recording's ``id`` field as returned by
+                          get_recordings() (not externalRecordingId).
+
+        Raises:
+            RuntimeError: When RecordingsManager is not initialised or the
+                          API returns a non-success status.
+            KeyError:     When the recording does not exist on the provider.
+        """
+        if not self._recordings_manager:
+            raise RuntimeError(
+                "RecordingsManager not available — configuration discovery may have failed"
+            )
+        self._recordings_manager.delete_recording(recording_id)
+
+    def get_recording_manifest(
+        self, recording_id: str, **kwargs
+    ) -> Optional[str]:
+        """
+        Return the playback URL for a specific recording by ID.
+
+        For recordings already in memory (returned by get_recordings), the
+        ``manifest_script`` field on the Recording object already contains the
+        playback URL.  This method performs a fresh API lookup — use it only
+        when the Recording object is not available.
+
+        Args:
+            recording_id: The recording's ``id`` field.
+
+        Returns:
+            The ``playbackUrl`` string, or None when unavailable (e.g.
+            recording is still PENDING or FAILED).
+        """
+        if not self._recordings_manager:
+            return None
+        return self._recordings_manager.get_recording_manifest(recording_id)
 
     def enrich_channel_data(
         self, channel: StreamingChannel, **kwargs

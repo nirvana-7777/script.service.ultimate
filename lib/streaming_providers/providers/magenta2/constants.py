@@ -336,3 +336,41 @@ VOD_STREAMING_TILE_TITLES = [
 # Keep the singular alias for backwards compatibility with any external code
 # that still imports VOD_STREAMING_TILE_TITLE directly.
 VOD_STREAMING_TILE_TITLE = VOD_STREAMING_TILE_TITLES[0]
+
+# ============================================================================
+# PVR / Recordings Configuration
+# ============================================================================
+
+# nPVR API endpoint path (appended to pvrBaseUrl from manifest)
+PVR_GET_RECORDINGS_PATH = "/get-recordings"
+PVR_RECORDINGS_PATH = "/recordings"
+
+# Default and maximum page sizes for the nPVR get-recordings endpoint
+PVR_DEFAULT_PAGE_LIMIT = 500
+PVR_MAX_PAGE_LIMIT = 500
+
+# Recording statuses used in the byRecordingStatus query parameter.
+# The API accepts a pipe-separated list.
+#
+# Active statuses (exclude soft-deleted recordings) — used by default:
+PVR_RECORDING_STATUSES_ACTIVE = [
+    "SCHEDULED",
+    "RECORDING",
+    "RECORDED",
+    "GENERATED",
+    "FAILED",
+]
+
+# All statuses including soft-deleted — used when include_deleted=True:
+PVR_RECORDING_STATUSES_ALL = [
+    "SCHEDULED",
+    "RECORDING",
+    "RECORDED",
+    "GENERATED",
+    "FAILED",
+    "TO_DELETE",
+    "DELETED",
+]
+
+# Accept header required by the nPVR API (differs from standard JSON endpoints)
+PVR_ACCEPT_HEADER = "application/json; v=2; charset=utf-8"
