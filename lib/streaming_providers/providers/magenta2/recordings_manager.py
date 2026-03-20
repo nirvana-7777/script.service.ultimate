@@ -397,16 +397,31 @@ class RecordingsManager:
         channel_uid: Optional[int] = self._extract_numeric_tail(station_id_uri)
 
         # ── Playback / manifest ───────────────────────────────────────────
-        # playbackUrl is already a theplatform selector URL — same format as
-        # live channels (link.theplatform.eu/s/mdeprod/media/{guid}).
-        # Store it as manifest_script so provider.get_manifest() can resolve
-        # it through the existing SMIL/selector path.
+        # playbackUrl is a theplatform selector URL in the same format used
+        # by live channels and VOD:
+        #   http://link.theplatform.eu/s/mdeprod/media/{guid}
+        #
+        # The GUID (e.g. "gze0sD559dZ7u6TWviDNXw") is the MPX media ID that
+        # the SMIL/selector path in provider.get_manifest() needs.  We extract
+        # it directly here so no extra resolution step is required at playback
+        # time — unlike VOD which must walk VodDetails → productInformation →
+        # VodPlayer to discover the same value.
         playback_url: Optional[str] = raw.get("playbackUrl")
-        manifest_script: Optional[str] = playback_url if playback_url else None
+        mpx_guid: Optional[str] = None
+        if playback_url:
+            tail = playback_url.rstrip("/").rsplit("/media/", 1)
+            if len(tail) == 2:
+                mpx_guid = tail[1].split("?")[0] or None
+
+        # Use the MPX GUID as content_id when available so downstream manifest
+        # and DRM calls resolve correctly.  Fall back to the nPVR recording ID
+        # only when the playbackUrl is absent (e.g. PENDING / FAILED recordings).
+        effective_content_id: str = mpx_guid if mpx_guid else recording_id
+        manifest_script: Optional[str] = playback_url
         session_manifest: bool = manifest_script is not None
 
         return Recording(
-            content_id=recording_id,
+            content_id=effective_content_id,
             name=title,
             provider=self._provider,
             # descriptions
