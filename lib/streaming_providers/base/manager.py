@@ -12,6 +12,7 @@ from .drm_operations import DRMOperations
 from .epg_operations import EPGOperations
 from .event_operations import EventOperations
 from .vod_operations import VodOperations
+from .recording_operations import RecordingOperations
 from .models import StreamingChannel
 from .provider_registry import ProviderRegistry
 from .subscription_operations import SubscriptionOperations
@@ -36,6 +37,7 @@ class ProviderManager:
         self.subscription_ops = SubscriptionOperations(self.registry)
         self.event_ops = EventOperations(self.registry)
         self.vod_ops = VodOperations(self.registry)
+        self.recording_ops = RecordingOperations(self.registry)
 
         # Backward compatibility - expose managers directly
         self.drm_plugin_manager = self.drm_ops.drm_plugin_manager
@@ -260,6 +262,46 @@ class ProviderManager:
 
     def get_all_vod_roots(self) -> dict:
         return self.vod_ops.get_all_vod_roots()
+
+    # ==========================================================================
+    # RECORDING OPERATIONS (delegate to RecordingOperations)
+    # ==========================================================================
+
+    def get_recordings(
+            self,
+            provider_name: str,
+            include_deleted: bool = False,
+    ):
+        return self.recording_ops.get_recordings(
+            provider_name, include_deleted=include_deleted
+        )
+
+    def get_all_recordings(self, include_deleted: bool = False):
+        return self.recording_ops.get_all_recordings(
+            include_deleted=include_deleted
+        )
+
+    def get_recording_manifest(
+            self, provider_name: str, recording_id: str, **kwargs
+    ) -> Optional[str]:
+        return self.recording_ops.get_recording_manifest(
+            provider_name, recording_id, **kwargs
+        )
+
+    def get_recording_drm_configs(
+            self, provider_name: str, recording_id: str, **kwargs
+    ) -> List:
+        # Reuses the same DRM resolution path as channels, events, and VOD.
+        return self.drm_ops.get_content_drm_configs(
+            provider_name, recording_id, **kwargs
+        )
+
+    def delete_recording(
+            self, provider_name: str, recording_id: str, **kwargs
+    ) -> None:
+        return self.recording_ops.delete_recording(
+            provider_name, recording_id, **kwargs
+        )
 
     # ==========================================================================
     # SUBSCRIPTION OPERATIONS (delegate to SubscriptionOperations)
