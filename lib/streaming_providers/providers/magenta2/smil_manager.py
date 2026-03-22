@@ -106,10 +106,22 @@ class SmilManager:
     # =========================================================================
 
     def get_manifest(
-        self, content_id: str, content_type: str = CONTENT_TYPE_LIVE, **kwargs
+        self,
+        content_id: str,
+        content_type: str = CONTENT_TYPE_LIVE,
+        smil_base_url: Optional[str] = None,
+        **kwargs,
     ) -> Optional[str]:
-        """Return the MPD URL for *content_id*, or None on failure."""
-        smil_data = self.get_smil_data(content_id)
+        """
+        Return the MPD URL for *content_id*, or None on failure.
+
+        Args:
+            smil_base_url: Full theplatform selector URL when already known
+                           (e.g. from a Recording's manifest_script field).
+                           When supplied, prefix dispatch and GN id resolution
+                           are skipped entirely — the URL is used directly.
+        """
+        smil_data = self.get_smil_data(content_id, smil_base_url=smil_base_url)
         return smil_data.get("mpd_url") if smil_data else None
 
     def get_catchup_manifest(
@@ -153,16 +165,21 @@ class SmilManager:
             return base_manifest
 
     def get_drm(
-        self, content_id: str, content_type: str = CONTENT_TYPE_LIVE, **kwargs
+        self,
+        content_id: str,
+        content_type: str = CONTENT_TYPE_LIVE,
+        smil_base_url: Optional[str] = None,
+        **kwargs,
     ) -> List[DRMConfig]:
         """
         Return a Widevine DRMConfig for *content_id*.
 
-        Resolves the releasePid from cached SMIL data, extracts the persona JWT,
-        and constructs the full Widevine licence URL.
+        Args:
+            smil_base_url: Full theplatform selector URL when already known.
+                           Passed through to get_smil_data to skip resolution.
         """
         try:
-            smil_data = self.get_smil_data(content_id)
+            smil_data = self.get_smil_data(content_id, smil_base_url=smil_base_url)
             if not smil_data:
                 logger.error(f"{self._provider}: No SMIL data for {content_id}")
                 return []
@@ -226,22 +243,39 @@ class SmilManager:
             logger.error(f"{self._provider}: Error getting DRM for {content_id}: {e}")
             return []
 
-    def get_smil_data(self, content_id: str) -> Optional[Dict[str, Any]]:
+    def get_smil_data(
+        self,
+        content_id: str,
+        smil_base_url: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         Resolve *content_id* to SMIL data (MPD URL + releasePid), with caching.
 
         Dispatch:
-          - ``movie:…`` / ``episode:…``  -> GN id resolution via VodManager
+          - ``smil_base_url`` supplied      -> use directly, skip all resolution
+          - ``movie:…`` / ``episode:…``     -> GN id resolution via VodManager
           - bare ``GN_EP*`` / ``GN_MV*`` / ``GN_SH*`` -> same (legacy compat)
-          - anything else -> treated as a raw MPX GUID (live channel)
+          - anything else                   -> raw MPX GUID (live channel)
 
         Cache key is always the bare MPX GUID so repeated calls for the same
         content under different prefixes share one entry.
-        """
-        smil_base_url: Optional[str] = None
 
-        # ── Opaque VOD prefixes ──────────────────────────────────────────
-        if content_id.startswith("movie:") or content_id.startswith("episode:"):
+        Args:
+            smil_base_url: Full theplatform selector URL when already known
+                           (e.g. from Recording.manifest_script or
+                           VodItem.manifest_script).  Skips prefix dispatch
+                           and GN id resolution entirely.
+        """
+        # ── Direct URL supplied (recordings, already-resolved VOD) ───────
+        # smil_base_url known upfront — strip any existing query string and
+        # derive cache key from the GUID tail.  Skip all prefix dispatch.
+        if smil_base_url:
+            smil_base_url = smil_base_url.split("?")[0]
+            tail = smil_base_url.rsplit("/media/", 1)
+            cache_key = tail[1] if len(tail) == 2 else content_id
+
+        # ── Opaque VOD prefixes — resolve via VodManager ─────────────────
+        elif content_id.startswith("movie:") or content_id.startswith("episode:"):
             gn_id = content_id.split(":", 1)[1]
             smil_base_url = self._resolve_gn_id_to_smil_url(gn_id)
             if not smil_base_url:
@@ -250,6 +284,8 @@ class SmilManager:
                     "failed to resolve to SMIL URL"
                 )
                 return None
+            tail = smil_base_url.rstrip("/").rsplit("/media/", 1)
+            cache_key = tail[1].split("?")[0] if len(tail) == 2 else content_id
 
         # ── Legacy bare GN ids ───────────────────────────────────────────
         elif (
@@ -264,11 +300,10 @@ class SmilManager:
                     "failed to resolve GN id to SMIL URL"
                 )
                 return None
-
-        # ── Stable cache key (bare GUID) ─────────────────────────────────
-        if smil_base_url:
             tail = smil_base_url.rstrip("/").rsplit("/media/", 1)
             cache_key = tail[1].split("?")[0] if len(tail) == 2 else content_id
+
+        # ── Live channel — content_id IS the bare MPX GUID ───────────────
         else:
             cache_key = content_id
 
