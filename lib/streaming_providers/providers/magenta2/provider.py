@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 import base64
 import json
-import re
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -16,6 +15,7 @@ from ...base.network import HTTPManagerFactory, ProxyConfigManager
 from ...base.provider import StreamingProvider
 from ...base.utils.logger import logger
 from .recordings_manager import RecordingsManager
+from .smil_manager import SmilManager
 from .vod_manager import VodManager
 from .auth import Magenta2Authenticator, Magenta2Credentials, Magenta2UserCredentials
 from .config_models import ProviderConfig
@@ -30,17 +30,11 @@ from .constants import (
     DRM_SYSTEM_WIDEVINE,
     ERROR_CODES,
     MAGENTA2_CLIENT_IDS,
-    MAGENTA2_FALLBACK_ACCOUNT_URI,
     MAGENTA2_LOGO,
     MAGENTA2_PLATFORMS,
     MODE_LIVE,
     QUALITY_RANK,
-    SMIL_CACHE_DURATION,
-    SMIL_CLIENT_ID,
     SUPPORTED_COUNTRIES,
-    VOD_PREFIX_EPISODE,
-    VOD_PREFIX_MOVIE_MV,
-    VOD_PREFIX_MOVIE_SH,
 )
 from .discovery import DiscoveryService
 from .endpoint_manager import EndpointManager
@@ -123,6 +117,7 @@ class Magenta2Provider(StreamingProvider):
         self.provider_config: Optional[ProviderConfig] = None
         self._vod_manager: Optional[VodManager] = None
         self._recordings_manager: Optional[RecordingsManager] = None
+        self._smil_manager: Optional[SmilManager] = None
 
         # 🚨 INITIALIZE AUTHENTICATOR FIRST (with minimal config)
         # Use fallback client IDs initially
@@ -299,12 +294,22 @@ class Magenta2Provider(StreamingProvider):
             )
             logger.info("✓ RecordingsManager initialized with discovered config")
 
+            self._smil_manager = SmilManager(
+                http_manager=self.http_manager,
+                provider_name=self.provider_name,
+                session_id=self.session_id,
+                call_id_callback=self._generate_call_id,
+                auth_callback=self._ensure_authenticated,
+                platform_config=self.platform_config,
+                endpoint_manager=self.endpoint_manager,
+                provider_config=self.endpoint_manager.config,
+                vod_manager=self._vod_manager,
+            )
+            logger.info("✓ SmilManager initialized with discovered config")
+
         # Initialize auth tokens (lazy - populated on first use)
         self.device_token = None
         self._persona_cache: Optional[PersonaResult] = None
-        self._smil_cache: Dict[str, Tuple[float, Dict]] = {}  # channel_id -> (timestamp, smil_data)
-        self._smil_cache_ttl = SMIL_CACHE_DURATION
-
         logger.info("Magenta2 provider initialization completed successfully")
 
     @staticmethod
@@ -1125,6 +1130,7 @@ class Magenta2Provider(StreamingProvider):
                 "accept-encoding": "gzip",
             }
 
+
     def _pvr_auth_headers(self) -> Dict[str, str]:
         """
         Build authentication headers for nPVR (Audience) recording endpoints.
@@ -1164,27 +1170,9 @@ class Magenta2Provider(StreamingProvider):
             raise RuntimeError("VodManager not available - configuration discovery may have failed")
         return self._vod_manager.get_children(content_id=content_id, **kwargs)
 
-    def get_recordings(
-        self,
-        include_deleted: bool = False,
-        **kwargs,
-    ):
-        """
-        Return a list of Recording objects from the nPVR backend.
 
-        Args:
-            include_deleted: When True, include recordings with status
-                             TO_DELETE or DELETED.  Defaults to False.
-            limit:           Max recordings per request (default/max 500).
-            offset:          1-based page offset (default 1).
-
-        Returns:
-            List of :class:`Recording` objects.
-
-        Raises:
-            RuntimeError: When RecordingsManager is not initialised or the
-                          API request fails.
-        """
+    def get_recordings(self, include_deleted: bool = False, **kwargs):
+        """Return a list of Recording objects from the nPVR backend."""
         if not self._recordings_manager:
             raise RuntimeError(
                 "RecordingsManager not available — configuration discovery may have failed"
@@ -1194,41 +1182,21 @@ class Magenta2Provider(StreamingProvider):
         )
 
     def delete_recording(self, recording_id: str, **kwargs) -> None:
-        """
-        Permanently delete a recording on the nPVR backend.
-
-        Args:
-            recording_id: The recording's ``id`` field as returned by
-                          get_recordings() (not externalRecordingId).
-
-        Raises:
-            RuntimeError: When RecordingsManager is not initialised or the
-                          API returns a non-success status.
-            KeyError:     When the recording does not exist on the provider.
-        """
+        """Permanently delete a recording on the nPVR backend."""
         if not self._recordings_manager:
             raise RuntimeError(
                 "RecordingsManager not available — configuration discovery may have failed"
             )
         self._recordings_manager.delete_recording(recording_id)
 
-    def get_recording_manifest(
-        self, recording_id: str, **kwargs
-    ) -> Optional[str]:
+    def get_recording_manifest(self, recording_id: str, **kwargs) -> Optional[str]:
         """
         Return the playback URL for a specific recording by ID.
 
         For recordings already in memory (returned by get_recordings), the
-        ``manifest_script`` field on the Recording object already contains the
-        playback URL.  This method performs a fresh API lookup — use it only
-        when the Recording object is not available.
-
-        Args:
-            recording_id: The recording's ``id`` field.
-
-        Returns:
-            The ``playbackUrl`` string, or None when unavailable (e.g.
-            recording is still PENDING or FAILED).
+        manifest_script field already contains the playback URL.  This method
+        performs a fresh API lookup — use it only when the Recording object is
+        not available.
         """
         if not self._recordings_manager:
             return None
@@ -1292,403 +1260,28 @@ class Magenta2Provider(StreamingProvider):
             logger.error(f"Error getting manifest for {channel.name}: {e}")
             return None
 
-    @staticmethod
-    def _parse_smil_for_mpd(smil_content: str, channel_id: str) -> Optional[str]:
-        """
-        Parse SMIL response to extract MPD URL from <video src="..."> tag
-
-        Args:
-            smil_content: Raw SMIL XML content
-            channel_id: Channel ID for logging
-
-        Returns:
-            MPD URL string or None if not found
-        """
-        try:
-            logger.debug(
-                f"Parsing SMIL response for channel {channel_id} (length: {len(smil_content)} chars)"
-            )
-
-            # First check for error cases
-            error_title_pattern = r'<ref[^>]*title="([^"]*)"[^>]*abstract="([^"]*)"[^>]*>'
-            error_match = re.search(error_title_pattern, smil_content)
-
-            if error_match:
-                title = error_match.group(1)
-                abstract = error_match.group(2)
-                logger.warning(
-                    f"SMIL error response for channel {channel_id}: {title} - {abstract}"
-                )
-
-                # Check for specific error patterns
-                if "errorFiles/Unavailable.flv" in smil_content:
-                    logger.error(f"SMIL returned unavailable content for channel {channel_id}")
-                    return None
-                if "Invalid Token" in title or "InvalidAuthToken" in smil_content:
-                    logger.error(f"Invalid authentication token for channel {channel_id}")
-                    return None
-                if "403" in smil_content:
-                    logger.error(f"Access forbidden (403) for channel {channel_id}")
-                    return None
-
-            # Look for <video src="..."> tag first (primary source)
-            video_src_pattern = r'<video\s+src="([^"]+)"'
-            video_match = re.search(video_src_pattern, smil_content)
-
-            if video_match:
-                mpd_url = video_match.group(1)
-                logger.debug(f"Found MPD URL in <video> tag for channel {channel_id}")
-
-                # Log additional info if available in ref tag
-                ref_info_pattern = (
-                    r'<ref[^>]*src="([^"]*)"[^>]*title="([^"]*)"[^>]*abstract="([^"]*)"'
-                )
-                ref_info_match = re.search(ref_info_pattern, smil_content)
-                if ref_info_match and ref_info_match.group(1) == mpd_url:
-                    title = ref_info_match.group(2)
-                    abstract = ref_info_match.group(3)
-                    logger.debug(f"Stream info: {title} - {abstract}")
-
-                return mpd_url
-
-            # Fallback to <ref src="..."> tag if <video> not found
-            ref_src_pattern = r'<ref\s+src="([^"]+)"'
-            ref_match = re.search(ref_src_pattern, smil_content)
-
-            if ref_match:
-                mpd_url = ref_match.group(1)
-                logger.debug(f"Found MPD URL in <ref> tag for channel {channel_id}")
-
-                # Extract title and abstract from the ref tag
-                ref_full_pattern = (
-                    r'<ref[^>]*src="%s"[^>]*title="([^"]*)"[^>]*abstract="([^"]*)"'
-                    % re.escape(mpd_url)
-                )
-                ref_full_match = re.search(ref_full_pattern, smil_content)
-                if ref_full_match:
-                    title = ref_full_match.group(1)
-                    abstract = ref_full_match.group(2)
-                    logger.debug(f"Stream info: {title} - {abstract}")
-
-                return mpd_url
-
-            # If we get here, no MPD URL was found
-            logger.warning(f"No MPD URL found in SMIL response for channel {channel_id}")
-
-            if len(smil_content) < 1000:  # Only log if it's reasonably short
-                logger.debug(f"Full SMIL content: {smil_content}")
-            else:
-                logger.debug(f"SMIL content preview: {smil_content[:500]}...")
-
-            return None
-
-        except Exception as e:
-            logger.error(f"Error parsing SMIL response for channel {channel_id}: {e}")
-            return None
 
     def get_manifest(
         self, content_id: str, content_type: str = CONTENT_TYPE_LIVE, **kwargs
     ) -> Optional[str]:
-        """Get MPD manifest URL using cached SMIL data"""
-        smil_data = self._get_smil_data(content_id)
-        return smil_data.get("mpd_url") if smil_data else None
+        """Get MPD manifest URL via SmilManager."""
+        if not self._smil_manager:
+            raise RuntimeError("SmilManager not available")
+        return self._smil_manager.get_manifest(content_id, content_type, **kwargs)
 
     def get_catchup_manifest(
         self, channel_id: str, start_time: int, end_time: int, **kwargs
     ) -> Optional[str]:
-        """
-        Get catchup manifest URL for Magenta TV.
+        """Get catchup manifest URL via SmilManager."""
+        if not self._smil_manager:
+            raise RuntimeError("SmilManager not available")
+        return self._smil_manager.get_catchup_manifest(
+            channel_id, start_time, end_time, **kwargs
+        )
 
-        Returns the same manifest as get_manifest but extended with
-        ?begin=YYYYMMDDTHHMMSS&end=YYYYMMDDTHHMMSS query parameters.
 
-        Args:
-            channel_id: Channel identifier
-            start_time: Start time as Unix timestamp (epoch seconds)
-            end_time: End time as Unix timestamp (epoch seconds)
-            **kwargs: Additional parameters (epg_id, etc.)
 
-        Returns:
-            Manifest URL with catchup time parameters, or None if channel not found
-        """
-        from ...base.utils.timestamp_converter import TimestampConverter
 
-        # First get the base manifest URL
-        base_manifest = self.get_manifest(channel_id, **kwargs)
-
-        if not base_manifest:
-            logger.warning(f"Channel {channel_id} not found or has no manifest")
-            return None
-
-        try:
-            # Convert epoch seconds to ISO basic format (YYYYMMDDTHHMMSS)
-            start_iso = TimestampConverter.epoch_to_iso(
-                start_time, format_type="basic", as_utc=True
-            )
-            end_iso = TimestampConverter.epoch_to_iso(end_time, format_type="basic", as_utc=True)
-
-            # Build the catchup manifest URL
-            # Check if the manifest already has query parameters
-            separator = "&" if "?" in base_manifest else "?"
-            catchup_manifest = f"{base_manifest}{separator}begin={start_iso}&end={end_iso}"
-
-            logger.debug(f"Catchup manifest for channel {channel_id}: {catchup_manifest}")
-            return catchup_manifest
-
-        except Exception as e:
-            logger.error(f"Error building catchup manifest for channel {channel_id}: {e}")
-            # Fall back to live manifest if catchup formatting fails
-            logger.warning(f"Falling back to live manifest for channel {channel_id}")
-            return base_manifest
-
-    def _resolve_gn_id_to_media_id(self, gn_id: str) -> Optional[str]:
-        """
-        Resolve a Gracenote content id (GN_EP*, GN_MV*, GN_SH*) to the
-        alphanumeric MPX guid needed by the SMIL selector URL (.../media/{guid}).
-
-        Called at play time only — never during browse.  Runs the full chain:
-            VodDetails → productInformationLink → VodPlayer → playbackUrls
-        and extracts the guid from the theplatform href in manifest_script.
-        """
-        if not self._vod_manager:
-            logger.warning(f"Cannot resolve GN id {gn_id}: VodManager not available")
-            return None
-        try:
-            # Route to the correct resolver based on GN id prefix.
-            # get_children with the opaque prefix triggers full resolution.
-            if gn_id.startswith(VOD_PREFIX_EPISODE):
-                result = self._vod_manager.get_children(f"episode:{gn_id}")
-            elif gn_id.startswith(VOD_PREFIX_MOVIE_MV) or gn_id.startswith(VOD_PREFIX_MOVIE_SH):
-                result = self._vod_manager.get_children(f"movie:{gn_id}")
-            else:
-                result = self._vod_manager.get_children(gn_id)
-
-            # get_children always returns {"entries": [...], ...} — unwrap it.
-            # Guard against any legacy path that may still return a plain list.
-            items = result.get("entries", []) if isinstance(result, dict) else result
-
-            if items:
-                item = items[0]
-                manifest_script = getattr(item, "manifest_script", None)
-
-                # If manifest_script is a vodproductinformation URL the content
-                # is not entitled (subscriptionMissing). Stop immediately.
-                if manifest_script and "vodproductinformation" in manifest_script:
-                    logger.warning(
-                        f"{gn_id}: content not entitled "
-                        f"(subscriptionMissing)"
-                    )
-                    return None
-
-                if manifest_script:
-                    # href: https://link.theplatform.eu/s/mdeprod/media/zRPPGLNGgPa1
-                    guid = manifest_script.rstrip("/").rsplit("/media/", 1)[-1].split("?")[0]
-                    if guid and guid != manifest_script:
-                        logger.debug(f"Resolved {gn_id} → guid {guid}")
-                        return guid
-
-                # Fallback: content_id already IS the guid (set by _fetch_single_item)
-                resolved = getattr(item, "content_id", None)
-                if resolved and resolved not in (gn_id, f"movie:{gn_id}", f"episode:{gn_id}"):
-                    logger.debug(f"Resolved {gn_id} → {resolved}")
-                    return resolved
-
-            logger.warning(f"GN id {gn_id} resolution returned no usable id")
-        except Exception as exc:
-            logger.warning(f"GN id {gn_id} resolution failed: {exc}")
-        return None
-
-    def _get_smil_data(self, channel_id: str) -> Optional[Dict[str, Any]]:
-        """Get complete SMIL data with caching"""
-        # Strip opaque prefixes added at browse time — resolution happens here.
-        if channel_id.startswith("movie:") or channel_id.startswith("episode:"):
-            gn_id = channel_id.split(":", 1)[1]
-            resolved = self._resolve_gn_id_to_media_id(gn_id)
-            if resolved:
-                channel_id = resolved
-            else:
-                logger.error(
-                    f"Cannot play {channel_id}: failed to resolve to MPX guid"
-                )
-                return None
-
-        # Legacy: bare GN_EP*/GN_MV*/GN_SH* ids (pre-opaque-prefix era)
-        elif (
-            channel_id.startswith(VOD_PREFIX_EPISODE)
-            or channel_id.startswith(VOD_PREFIX_MOVIE_MV)
-            or channel_id.startswith(VOD_PREFIX_MOVIE_SH)
-        ):
-            resolved = self._resolve_gn_id_to_media_id(channel_id)
-            if resolved:
-                channel_id = resolved
-            else:
-                logger.error(
-                    f"Cannot play {channel_id}: failed to resolve GN id to MPX mediaId"
-                )
-                return None
-
-        # Check cache first
-        now = time.time()
-        if channel_id in self._smil_cache:
-            timestamp, cached_data = self._smil_cache[channel_id]
-            if now - timestamp < self._smil_cache_ttl:
-                logger.debug(f"Using cached SMIL data for {channel_id}")
-                return cached_data
-            else:
-                # Cache expired
-                del self._smil_cache[channel_id]
-
-        try:
-            smil_content = self._get_smil_content(channel_id)
-            if not smil_content:
-                logger.error(f"No SMIL content received for channel {channel_id}")
-                return None
-
-            if len(smil_content.strip()) == 0:
-                logger.error(f"Empty SMIL content for channel {channel_id}")
-                return None
-
-            if "<smil" not in smil_content.lower():
-                logger.error(
-                    f"Invalid SMIL content for channel {channel_id}: {smil_content[:200]}..."
-                )
-                return None
-
-            mpd_url = self._parse_smil_for_mpd(smil_content, channel_id)
-            release_pid = self._extract_release_pid_from_smil(smil_content)
-
-            smil_data = {
-                "content": smil_content,
-                "mpd_url": mpd_url,
-                "release_pid": release_pid,
-                "channel_id": channel_id,
-            }
-
-            # Only cache if we have valid data
-            if mpd_url or release_pid:
-                self._smil_cache[channel_id] = (now, smil_data)
-                logger.debug(f"Cached SMIL data for {channel_id}")
-            else:
-                logger.warning(f"No MPD URL or releasePid found for {channel_id}, not caching")
-
-            return smil_data
-
-        except Exception as e:
-            logger.error(f"Error getting SMIL data for channel {channel_id}: {e}")
-            return None
-
-    def _get_smil_content(self, channel_id: str) -> Optional[str]:
-        """Get SMIL content for a channel to extract releasePid and release concurrency lock"""
-        logger.debug(f"🔵 ENTER _get_smil_content for channel: {channel_id}")
-
-        try:
-            logger.debug("🔵 Step 1: Calling _ensure_authenticated()")
-            persona_token = self._ensure_authenticated()
-            logger.debug(f"🔵 _ensure_authenticated() SUCCESS, token length: {len(persona_token)}")
-
-            if not persona_token:
-                logger.error(f"No persona token!:")
-                return None
-
-            selector_service = self.endpoint_manager.get_endpoint("mpx_selector")
-            if not selector_service:
-                logger.error(f"No selector service!:")
-                return None
-
-            account_pid = self.provider_config.manifest.mpx.account_pid
-            if not account_pid:
-                logger.error(f"No account pid!:")
-                return None
-
-            smil_url = (
-                f"{selector_service}{account_pid}/media/{channel_id}"
-                f"?format=smil&formats=MPEG-DASH&tracking=true&clientId={SMIL_CLIENT_ID}"
-            )
-
-            headers = {
-                "Authorization": f"Basic {persona_token}",
-                "User-Agent": self.platform_config["user_agent"],
-                "Accept": "application/smil+xml, application/xml;q=0.9, */*;q=0.8",
-            }
-
-            logger.debug(f"SMIL Request URL: {smil_url}")
-            logger.debug(f"SMIL Request Headers:")
-            for key, value in headers.items():
-                if key == "Authorization":
-                    logger.debug(f"  {key}: Basic [REDACTED] (length: {len(persona_token)})")
-                else:
-                    logger.debug(f"  {key}: {value}")
-
-            # Also debug the persona token structure
-            try:
-                decoded = base64.b64decode(persona_token).decode("utf-8")
-                logger.debug(f"Decoded persona token preview: {decoded[:100]}...")
-            except Exception as decode_error:
-                logger.debug(f"Could not decode persona token: {decode_error}")
-
-            response = self.http_manager.get(
-                smil_url,
-                operation="manifest_smil_drm",
-                headers=headers,
-                timeout=DEFAULT_REQUEST_TIMEOUT,
-            )
-
-            if response.status_code == 200:
-                smil_content = response.text
-
-                if not smil_content:
-                    logger.error("Empty SMIL content received")
-                    return None
-
-                # RELEASE CONCURRENCY LOCK IMMEDIATELY AFTER GETTING SMIL
-                from .concurrency import extract_and_release_lock
-
-                extract_and_release_lock(
-                    smil_content,
-                    self.http_manager,
-                    client_id=SMIL_CLIENT_ID,
-                    user_agent=self.platform_config["user_agent"],
-                )
-
-                return smil_content
-            else:
-                logger.error(f"Failed to get SMIL content for DRM: {response.status_code}")
-                return None
-
-        except Exception as e:
-            logger.error(f"Error getting SMIL content for DRM: {e}")
-            return None
-
-    @staticmethod
-    def _extract_release_pid_from_smil(smil_content: str) -> Optional[str]:
-        """Extract releasePid from SMIL trackingData parameter"""
-        try:
-            # Look for trackingData parameter in ref tag
-            tracking_data_pattern = r'<param name="trackingData" value="([^"]*)"'
-            match = re.search(tracking_data_pattern, smil_content)
-
-            if not match:
-                logger.warning("No trackingData found in SMIL content")
-                return None
-
-            tracking_data = match.group(1)
-            logger.debug(f"Found trackingData: {tracking_data}")
-
-            # Extract pid from trackingData (pid=value)
-            pid_pattern = r"pid=([^|]+)"
-            pid_match = re.search(pid_pattern, tracking_data)
-
-            if pid_match:
-                release_pid = pid_match.group(1)
-                logger.debug(f"Extracted releasePid: {release_pid}")
-                return release_pid
-            else:
-                logger.warning("No pid found in trackingData")
-                return None
-
-        except Exception as e:
-            logger.error(f"Error extracting releasePid from SMIL: {e}")
-            return None
 
     @staticmethod
     def _extract_persona_jwt_from_token(persona_token: str) -> Optional[str]:
@@ -1720,85 +1313,10 @@ class Magenta2Provider(StreamingProvider):
     def get_drm(
         self, content_id: str, content_type: str = CONTENT_TYPE_LIVE, **kwargs
     ) -> List[DRMConfig]:
-        """Get DRM configuration using unified SMIL data"""
-        try:
-            smil_data = self._get_smil_data(content_id)
-            if not smil_data:
-                logger.error(f"No SMIL data found for channel {content_id}")
-                return []
-
-            if not smil_data.get("release_pid"):
-                logger.error(f"No releasePid found in SMIL for channel {content_id}")
-                logger.debug(f"SMIL data keys: {list(smil_data.keys())}")
-                if "content" in smil_data and smil_data["content"]:
-                    logger.debug(f"SMIL content preview: {smil_data['content'][:500]}...")
-                return []
-
-            release_pid = smil_data["release_pid"]
-
-            # Get persona token
-            persona_token = self._ensure_authenticated()
-
-            # Extract the persona JWT from the Base64-encoded persona token
-            raw_persona_jwt = self._extract_persona_jwt_from_token(persona_token)
-            if not raw_persona_jwt:
-                logger.error("Failed to extract persona JWT from persona token")
-                return []
-
-            # Get widevine endpoint
-            widevine_endpoint = self.endpoint_manager.get_endpoint("widevine_license")
-            if not widevine_endpoint:
-                logger.error("No widevine license endpoint available")
-                return []
-
-            # Get account URI
-            account_uri = self._get_account_uri()
-            encoded_account_uri = quote(account_uri, safe="")
-
-            # Build license URL with the extracted JWT
-            license_url = (
-                f"{widevine_endpoint}?"
-                f"schema=1.0&"
-                f"releasePid={release_pid}&"
-                f"token={raw_persona_jwt}&"
-                f"account={encoded_account_uri}"
-            )
-
-            # Create DRM config
-            drm_config = DRMConfig(
-                system=DRMSystem.WIDEVINE,
-                priority=1,
-                license=LicenseConfig.create_with_req_data(
-                    req_data_template="{CHA-RAW}",
-                    server_url=license_url,
-                    server_certificate=None,
-                    req_headers=json.dumps(
-                        {
-                            "User-Agent": self.platform_config["user_agent"],
-                            "Content-Type": "application/octet-stream",
-                        }
-                    ),
-                    use_http_get_request=False,
-                ),
-            )
-
-            logger.info(
-                f"✓ DRM configuration created for channel {content_id} (releasePid: {release_pid})"
-            )
-            return [drm_config]
-
-        except Exception as e:
-            logger.error(f"Error getting DRM configs for channel {content_id}: {e}")
-            return []
-
-    def _get_account_uri(self) -> str:
-        """Get account URI with fallback logic"""
-        if self.provider_config and self.provider_config.manifest:
-            account_uri = self.provider_config.manifest.mpx.get_account_uri()
-            if account_uri:
-                return account_uri
-
-        return MAGENTA2_FALLBACK_ACCOUNT_URI
+        """Get DRM configuration via SmilManager."""
+        if not self._smil_manager:
+            raise RuntimeError("SmilManager not available")
+        return self._smil_manager.get_drm(content_id, content_type, **kwargs)
 
     def get_epg(
         self,
