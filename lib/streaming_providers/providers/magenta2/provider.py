@@ -310,6 +310,10 @@ class Magenta2Provider(StreamingProvider):
         # Initialize auth tokens (lazy - populated on first use)
         self.device_token = None
         self._persona_cache: Optional[PersonaResult] = None
+        # GUID → manifest_script URL; populated by get_recordings() so that
+        # get_manifest() / get_drm() can inject smil_base_url automatically
+        # without requiring callers (e.g. DRMOperations) to know about it.
+        self._recording_url_cache: Dict[str, str] = {}
         logger.info("Magenta2 provider initialization completed successfully")
 
     @staticmethod
@@ -1177,9 +1181,16 @@ class Magenta2Provider(StreamingProvider):
             raise RuntimeError(
                 "RecordingsManager not available — configuration discovery may have failed"
             )
-        return self._recordings_manager.get_recordings(
+        recordings = self._recordings_manager.get_recordings(
             include_deleted=include_deleted, **kwargs
         )
+        # Cache content_id → manifest_script so get_manifest() / get_drm()
+        # can inject smil_base_url automatically without callers needing to
+        # know about it (e.g. DRMOperations passes only content_id).
+        for rec in recordings:
+            if rec.content_id and rec.manifest_script:
+                self._recording_url_cache[rec.content_id] = rec.manifest_script
+        return recordings
 
     def delete_recording(self, recording_id: str, **kwargs) -> None:
         """Permanently delete a recording on the nPVR backend."""
@@ -1267,6 +1278,12 @@ class Magenta2Provider(StreamingProvider):
         """Get MPD manifest URL via SmilManager."""
         if not self._smil_manager:
             raise RuntimeError("SmilManager not available")
+        # Inject smil_base_url from recording cache when not already supplied.
+        # Ensures recordings use link.theplatform.eu (from playbackUrl) instead
+        # of the selector endpoint (link.api.eu.theplatform.com).
+        if "smil_base_url" not in kwargs and content_id in self._recording_url_cache:
+            kwargs["smil_base_url"] = self._recording_url_cache[content_id]
+            logger.debug(f"Injected smil_base_url from recording cache for {content_id}")
         return self._smil_manager.get_manifest(content_id, content_type, **kwargs)
 
     def get_catchup_manifest(
@@ -1316,6 +1333,10 @@ class Magenta2Provider(StreamingProvider):
         """Get DRM configuration via SmilManager."""
         if not self._smil_manager:
             raise RuntimeError("SmilManager not available")
+        # Same smil_base_url injection as get_manifest — keeps both consistent.
+        if "smil_base_url" not in kwargs and content_id in self._recording_url_cache:
+            kwargs["smil_base_url"] = self._recording_url_cache[content_id]
+            logger.debug(f"Injected smil_base_url from recording cache for {content_id}")
         return self._smil_manager.get_drm(content_id, content_type, **kwargs)
 
     def get_epg(
