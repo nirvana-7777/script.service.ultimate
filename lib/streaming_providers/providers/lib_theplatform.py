@@ -212,6 +212,7 @@ def fetch_distribution_rights(
     cid: str,
     user_agent: str,
     timeout: int = 30,
+    extra_headers: Optional[dict] = None,
 ) -> List[str]:
     """
     Call getApplicableDistributionRights and return the list of right URLs.
@@ -223,15 +224,21 @@ def fetch_distribution_rights(
         cid:           Correlation ID string  "session_id::call_id"
         user_agent:    Platform user-agent string.
         timeout:       HTTP timeout in seconds.
+        extra_headers: Optional additional headers merged on top of the
+                       default set (e.g. Authorization, Origin, Referer).
+                       Caller-supplied keys take precedence.
 
     Returns:
         List of DistributionRight URL strings, empty on failure.
     """
     try:
+        headers = {"User-Agent": user_agent, "Accept": "application/json"}
+        if extra_headers:
+            headers.update(extra_headers)
         response = http_manager.get(
             rights_url,
             operation="get_distribution_rights",
-            headers={"User-Agent": user_agent, "Accept": "application/json"},
+            headers=headers,
             params={"form": "json", "schema": "1.2", "cid": cid},
             timeout=timeout,
         )

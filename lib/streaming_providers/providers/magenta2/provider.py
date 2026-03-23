@@ -829,12 +829,20 @@ class Magenta2Provider(StreamingProvider):
                     "No license_service_url available – configuration discovery may have failed"
                 )
 
+            persona_token = self._ensure_authenticated()
+            auth_headers = {
+                "Authorization": f"Basic {persona_token}",
+                "Origin": "https://www.magenta.tv",
+                "Referer": "https://www.magenta.tv/",
+            }
+
             distribution_rights = fetch_distribution_rights(
                 http_manager=self.http_manager,
                 rights_url=rights_url,
                 cid=cid,
                 user_agent=user_agent,
                 timeout=DEFAULT_REQUEST_TIMEOUT,
+                extra_headers=auth_headers,
             )
 
             # ── Step 2: fetch entitled-channels feed ─────────────────────────
