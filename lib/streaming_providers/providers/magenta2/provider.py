@@ -953,7 +953,7 @@ class Magenta2Provider(StreamingProvider):
 
                     magenta2_channel = Magenta2Channel(
                         name=name,
-                        channel_id=tp_ch.release_pid,
+                        channel_id=tp_ch.station_id,
                         logo_url=logo_url,
                         mode=MODE_LIVE,
                         content_type=CONTENT_TYPE_LIVE,
