@@ -798,6 +798,82 @@ class Magenta2Provider(StreamingProvider):
             logger.warning(f"Error creating channel from entry: {e}")
             return None
 
+    def _fetch_station_metadata(self) -> Dict[str, Dict]:
+        """
+        Fetch the channel-stations feed and return a lookup map keyed by the
+        theplatform Station URI (the key of the stations dict, e.g.
+        "http://data.entertainment.tv.theplatform.eu/…/Station/265808936224").
+
+        This matches listings[0].stationId in the entitled-channels feed, which
+        is what TheplatformChannel.station_id contains after parsing.
+
+        Note: era$mediaPids["urn:theplatform:tv:location:any"] is a short opaque
+        PID used for other purposes — it is NOT the mapping key.
+
+        Each value is a dict with:
+            title    – display name (" - Main" suffix already stripped)
+            logo_url – scaled logo URL or None
+            quality  – "HD", "SD", etc.
+        """
+        metadata: Dict[str, Dict] = {}
+        try:
+            url = None
+            if self.endpoint_manager:
+                url = (
+                    self.endpoint_manager.get_endpoint("channel_stations")
+                    or self.endpoint_manager.get_endpoint("channel_list")
+                )
+            url = url or "https://feed.entertainment.tv.theplatform.eu/f/mdeprod/mdeprod-channel-stations-main"
+            url += "?lang=short-de&sort=dt%24displayChannelNumber&range=1-1000"
+
+            headers = self._get_api_headers(require_auth=False)
+            response = self.http_manager.get(
+                url, operation="api", headers=headers, timeout=DEFAULT_REQUEST_TIMEOUT
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            for entry in data.get("entries", []):
+                try:
+                    stations = entry.get("stations", {})
+                    if not stations:
+                        continue
+                    # The stations dict key IS the Station URI, matching
+                    # listings[0].stationId in the entitled-channels feed.
+                    # era$mediaPids["urn:theplatform:tv:location:any"] is a
+                    # short opaque PID — a different identifier entirely.
+                    station_uri = next(iter(stations.keys()))
+                    station_info = stations[station_uri]
+
+                    title = (station_info.get("title") or entry.get("title", "")).replace(" - Main", "")
+                    quality = station_info.get("dt$quality", "SD")
+
+                    logo_url = None
+                    thumbnails = station_info.get("thumbnails", {})
+                    for logo_type in ["stationLogo", "stationLogoColored"]:
+                        if logo_type in thumbnails:
+                            original_url = thumbnails[logo_type].get("url")
+                            if original_url:
+                                logo_url = self._build_scaled_image_url(original_url)
+                                break
+
+                    # Keep highest-quality entry when duplicates exist
+                    existing = metadata.get(station_uri)
+                    if not existing or QUALITY_RANK.get(quality, 1) > QUALITY_RANK.get(existing["quality"], 1):
+                        metadata[station_uri] = {
+                            "title": title,
+                            "logo_url": logo_url,
+                            "quality": quality,
+                        }
+                except Exception as exc:
+                    logger.debug(f"_fetch_station_metadata: skipping entry: {exc}")
+
+            logger.debug(f"_fetch_station_metadata: built metadata for {len(metadata)} stations")
+        except Exception as exc:
+            logger.warning(f"_fetch_station_metadata: failed, channels will have no names: {exc}")
+
+        return metadata
+
     def get_channels(
         self,
         time_window_hours: int = DEFAULT_EPG_WINDOW_HOURS,
@@ -812,7 +888,9 @@ class Magenta2Provider(StreamingProvider):
         Uses lib_theplatform to:
           1. Call getApplicableDistributionRights (license_service_url from manifest).
           2. Fetch the entitled-channels feed filtered by those rights.
-          3. Convert each TheplatformChannel to a StreamingChannel.
+          3. Fetch the channel-stations feed for display names and logos.
+          4. Convert each TheplatformChannel to a StreamingChannel, enriched with
+             metadata from the stations feed.
         """
         try:
             cid = f"{self.session_id}::{self._generate_call_id()}"
@@ -861,14 +939,22 @@ class Magenta2Provider(StreamingProvider):
                 timeout=DEFAULT_REQUEST_TIMEOUT,
             )
 
-            # ── Step 3: convert to StreamingChannel ──────────────────────────
+            # ── Step 3: fetch station metadata (names, logos, quality) ────────
+            station_metadata = self._fetch_station_metadata()
+
+            # ── Step 4: convert to StreamingChannel ──────────────────────────
             channels: List[StreamingChannel] = []
             for tp_ch in tp_channels:
                 try:
+                    meta = station_metadata.get(tp_ch.station_id, {})
+                    name = meta.get("title") or tp_ch.station_id
+                    logo_url = meta.get("logo_url")
+                    quality = meta.get("quality")
+
                     magenta2_channel = Magenta2Channel(
-                        name=tp_ch.station_id,  # placeholder; no display name in this feed
+                        name=name,
                         channel_id=tp_ch.station_id,
-                        logo_url=None,
+                        logo_url=logo_url,
                         mode=MODE_LIVE,
                         content_type=CONTENT_TYPE_LIVE,
                         country=self.country,
@@ -878,6 +964,7 @@ class Magenta2Provider(StreamingProvider):
                         provider_name=self.provider_name
                     )
                     streaming_channel.channel_number = tp_ch.channel_number
+                    streaming_channel.quality = quality
                     streaming_channel.manifest = tp_ch.mpd_url
                     if tp_ch.hls_url:
                         streaming_channel.hls_url = tp_ch.hls_url
@@ -892,7 +979,8 @@ class Magenta2Provider(StreamingProvider):
 
             logger.info(
                 f"Successfully fetched {len(channels)} entitled channels "
-                f"for country {self.country}"
+                f"for country {self.country} "
+                f"({len(station_metadata)} stations with metadata)"
             )
             return channels
 
