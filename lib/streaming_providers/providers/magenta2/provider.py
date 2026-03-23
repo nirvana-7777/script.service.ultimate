@@ -953,7 +953,7 @@ class Magenta2Provider(StreamingProvider):
 
                     magenta2_channel = Magenta2Channel(
                         name=name,
-                        channel_id=tp_ch.station_id,
+                        channel_id=tp_ch.release_pid,
                         logo_url=logo_url,
                         mode=MODE_LIVE,
                         content_type=CONTENT_TYPE_LIVE,
@@ -1499,7 +1499,7 @@ class Magenta2Provider(StreamingProvider):
         VOD and recordings fall through to SmilManager as before.
         """
         if content_type == CONTENT_TYPE_LIVE and content_id in self._live_pid_cache:
-            release_pid = self._live_pid_cache[content_id]
+            release_pid = content_id
             logger.debug(
                 f"get_drm: building licence directly for live channel {content_id} "
                 f"(releasePid: {release_pid})"
