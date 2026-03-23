@@ -323,8 +323,9 @@ class Magenta2Provider(StreamingProvider):
         # get_manifest() / get_drm() can inject smil_base_url automatically
         # without requiring callers (e.g. DRMOperations) to know about it.
         self._recording_url_cache: Dict[str, str] = {}
-        # station_id → mpd_url / release_pid; populated by get_channels() so
-        # that get_manifest() / get_drm() can bypass SMIL for live channels.
+        # release_pid → mpd_url / release_pid; keyed by release_pid because
+        # channel_id is now set to tp_ch.release_pid in get_channels(), so
+        # content_id arriving in get_manifest() / get_drm() is a release_pid.
         self._live_manifest_cache: Dict[str, str] = {}
         self._live_pid_cache: Dict[str, str] = {}
         logger.info("Magenta2 provider initialization completed successfully")
@@ -969,9 +970,10 @@ class Magenta2Provider(StreamingProvider):
                     if tp_ch.hls_url:
                         streaming_channel.hls_url = tp_ch.hls_url
 
-                    # Cache manifest URL and releasePid for SMIL-free playback
-                    self._live_manifest_cache[tp_ch.station_id] = tp_ch.mpd_url
-                    self._live_pid_cache[tp_ch.station_id] = tp_ch.release_pid
+                    # Cache manifest URL and releasePid keyed by release_pid,
+                    # which is now the channel's channel_id (content_id).
+                    self._live_manifest_cache[tp_ch.release_pid] = tp_ch.mpd_url
+                    self._live_pid_cache[tp_ch.release_pid] = tp_ch.release_pid
 
                     channels.append(streaming_channel)
                 except Exception as exc:
@@ -1499,9 +1501,9 @@ class Magenta2Provider(StreamingProvider):
         VOD and recordings fall through to SmilManager as before.
         """
         if content_type == CONTENT_TYPE_LIVE and content_id in self._live_pid_cache:
-            release_pid = content_id
+            release_pid = content_id  # content_id IS the release_pid
             logger.debug(
-                f"get_drm: building licence directly for live channel {content_id} "
+                f"get_drm: building licence directly for live channel "
                 f"(releasePid: {release_pid})"
             )
             try:
