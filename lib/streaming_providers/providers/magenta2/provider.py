@@ -30,6 +30,7 @@ from .constants import (
     DRM_SYSTEM_WIDEVINE,
     ERROR_CODES,
     MAGENTA2_CLIENT_IDS,
+    MAGENTA2_FALLBACK_ACCOUNT_URI,
     MAGENTA2_LOGO,
     MAGENTA2_PLATFORMS,
     MODE_LIVE,
@@ -37,6 +38,14 @@ from .constants import (
     SUPPORTED_COUNTRIES,
 )
 from .discovery import DiscoveryService
+from ..lib_theplatform import (
+    TheplatformChannel,
+    fetch_distribution_rights,
+    fetch_entitled_channels_feed,
+    extract_persona_jwt,
+    build_licence_url,
+    build_widevine_drm_config,
+)
 from .endpoint_manager import EndpointManager
 from .models import Magenta2Channel, Magenta2PlaybackRestrictedException
 from .token_flow_manager import PersonaResult
@@ -314,6 +323,10 @@ class Magenta2Provider(StreamingProvider):
         # get_manifest() / get_drm() can inject smil_base_url automatically
         # without requiring callers (e.g. DRMOperations) to know about it.
         self._recording_url_cache: Dict[str, str] = {}
+        # station_id → mpd_url / release_pid; populated by get_channels() so
+        # that get_manifest() / get_drm() can bypass SMIL for live channels.
+        self._live_manifest_cache: Dict[str, str] = {}
+        self._live_pid_cache: Dict[str, str] = {}
         logger.info("Magenta2 provider initialization completed successfully")
 
     @staticmethod
@@ -794,40 +807,84 @@ class Magenta2Provider(StreamingProvider):
         **kwargs,
     ) -> List[StreamingChannel]:
         """
-        Fetch available channels from Magenta2 API
+        Fetch available channels from Magenta2 via the entitled-channels flow.
+
+        Uses lib_theplatform to:
+          1. Call getApplicableDistributionRights (license_service_url from manifest).
+          2. Fetch the entitled-channels feed filtered by those rights.
+          3. Convert each TheplatformChannel to a StreamingChannel.
         """
         try:
-            headers = self._get_api_headers(require_auth=False)
+            cid = f"{self.session_id}::{self._generate_call_id()}"
+            user_agent = self.platform_config["user_agent"]
 
-            # Use the discovered channel stations endpoint
-            url = None
-            if self.endpoint_manager:
-                url = self.endpoint_manager.get_endpoint("channel_stations")
-                if not url:
-                    url = self.endpoint_manager.get_endpoint("channel_list")
-                if not url and self.endpoint_manager.has_endpoint("mpx_feed_entitledChannelsFeed"):
-                    url = self.endpoint_manager.get_endpoint("mpx_feed_entitledChannelsFeed")
-
-            # Final fallback
-            if not url:
-                url = "https://feed.entertainment.tv.theplatform.eu/f/mdeprod/mdeprod-channel-stations-main"
-
-            url += "?lang=short-de&sort=dt%24displayChannelNumber&range=1-1000"
-
-            logger.debug(f"Fetching channels from: {url}")
-            response = self.http_manager.get(
-                url, operation="api", headers=headers, timeout=DEFAULT_REQUEST_TIMEOUT
+            # ── Step 1: resolve distribution rights ──────────────────────────
+            rights_url = (
+                self.provider_config.manifest.mpx.license_service_url
+                if self.provider_config and self.provider_config.manifest
+                else None
             )
-            response.raise_for_status()
-            channels_data = response.json()
+            if not rights_url:
+                raise RuntimeError(
+                    "No license_service_url available – configuration discovery may have failed"
+                )
 
-            channels = self._process_channel_stations_response_optimized(
-                channels_data, prefer_highest_quality
+            distribution_rights = fetch_distribution_rights(
+                http_manager=self.http_manager,
+                rights_url=rights_url,
+                cid=cid,
+                user_agent=user_agent,
+                timeout=DEFAULT_REQUEST_TIMEOUT,
             )
+
+            # ── Step 2: fetch entitled-channels feed ─────────────────────────
+            feed_url = (
+                self.endpoint_manager.get_endpoint("mpx_feed_entitledChannelsFeed")
+                if self.endpoint_manager
+                else None
+            ) or "https://feed.entertainment.tv.theplatform.eu/f/mdeprod/mdeprod-entitled-channels"
+
+            tp_channels: List[TheplatformChannel] = fetch_entitled_channels_feed(
+                http_manager=self.http_manager,
+                feed_url=feed_url,
+                distribution_rights=distribution_rights,
+                cid=cid,
+                user_agent=user_agent,
+                timeout=DEFAULT_REQUEST_TIMEOUT,
+            )
+
+            # ── Step 3: convert to StreamingChannel ──────────────────────────
+            channels: List[StreamingChannel] = []
+            for tp_ch in tp_channels:
+                try:
+                    magenta2_channel = Magenta2Channel(
+                        name=tp_ch.station_id,  # placeholder; no display name in this feed
+                        channel_id=tp_ch.station_id,
+                        logo_url=None,
+                        mode=MODE_LIVE,
+                        content_type=CONTENT_TYPE_LIVE,
+                        country=self.country,
+                        raw_data=tp_ch.extra,
+                    )
+                    streaming_channel = magenta2_channel.to_streaming_channel(
+                        provider_name=self.provider_name
+                    )
+                    streaming_channel.channel_number = tp_ch.channel_number
+                    streaming_channel.manifest = tp_ch.mpd_url
+                    if tp_ch.hls_url:
+                        streaming_channel.hls_url = tp_ch.hls_url
+
+                    # Cache manifest URL and releasePid for SMIL-free playback
+                    self._live_manifest_cache[tp_ch.station_id] = tp_ch.mpd_url
+                    self._live_pid_cache[tp_ch.station_id] = tp_ch.release_pid
+
+                    channels.append(streaming_channel)
+                except Exception as exc:
+                    logger.warning(f"get_channels: skipping channel {tp_ch.station_id}: {exc}")
 
             logger.info(
-                f"Successfully fetched {len(channels)} channels for country {self.country} "
-                f"(quality preference: {'highest' if prefer_highest_quality else 'lowest'})"
+                f"Successfully fetched {len(channels)} entitled channels "
+                f"for country {self.country}"
             )
             return channels
 
@@ -1275,7 +1332,16 @@ class Magenta2Provider(StreamingProvider):
     def get_manifest(
         self, content_id: str, content_type: str = CONTENT_TYPE_LIVE, **kwargs
     ) -> Optional[str]:
-        """Get MPD manifest URL via SmilManager."""
+        """Get MPD manifest URL.
+
+        For live channels whose manifest was already fetched by get_channels(),
+        return the cached MPD URL directly without a SMIL round-trip.
+        VOD and recordings fall through to SmilManager as before.
+        """
+        if content_type == CONTENT_TYPE_LIVE and content_id in self._live_manifest_cache:
+            logger.debug(f"get_manifest: cache hit for live channel {content_id}")
+            return self._live_manifest_cache[content_id]
+
         if not self._smil_manager:
             raise RuntimeError("SmilManager not available")
         # Inject smil_base_url from recording cache when not already supplied.
@@ -1330,7 +1396,54 @@ class Magenta2Provider(StreamingProvider):
     def get_drm(
         self, content_id: str, content_type: str = CONTENT_TYPE_LIVE, **kwargs
     ) -> List[DRMConfig]:
-        """Get DRM configuration via SmilManager."""
+        """Get DRM configuration.
+
+        For live channels whose releasePid was cached by get_channels(), build
+        the Widevine licence URL directly using lib_theplatform — no SMIL fetch.
+        VOD and recordings fall through to SmilManager as before.
+        """
+        if content_type == CONTENT_TYPE_LIVE and content_id in self._live_pid_cache:
+            release_pid = self._live_pid_cache[content_id]
+            logger.debug(
+                f"get_drm: building licence directly for live channel {content_id} "
+                f"(releasePid: {release_pid})"
+            )
+            try:
+                persona_token = self._ensure_authenticated()
+                raw_jwt = extract_persona_jwt(persona_token)
+                if not raw_jwt:
+                    logger.error("get_drm: failed to extract persona JWT")
+                    return []
+
+                widevine_endpoint = (
+                    self.endpoint_manager.get_endpoint("widevine_license")
+                    if self.endpoint_manager
+                    else None
+                )
+                if not widevine_endpoint:
+                    logger.error("get_drm: no widevine_license endpoint available")
+                    return []
+
+                account_uri = (
+                    self.provider_config.manifest.mpx.get_account_uri()
+                    if self.provider_config and self.provider_config.manifest
+                    else None
+                ) or MAGENTA2_FALLBACK_ACCOUNT_URI
+
+                licence_url = build_licence_url(
+                    widevine_endpoint=widevine_endpoint,
+                    release_pid=release_pid,
+                    persona_jwt=raw_jwt,
+                    account_uri=account_uri,
+                )
+                return [build_widevine_drm_config(
+                    licence_url=licence_url,
+                    user_agent=self.platform_config["user_agent"],
+                )]
+            except Exception as exc:
+                logger.error(f"get_drm: direct licence build failed for {content_id}: {exc}")
+                return []
+
         if not self._smil_manager:
             raise RuntimeError("SmilManager not available")
         # Same smil_base_url injection as get_manifest — keeps both consistent.

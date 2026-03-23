@@ -5,11 +5,17 @@ import datetime
 from typing import ClassVar, Dict, List, Optional
 
 from ...base.auth import UserPasswordCredentials
-from ...base.models import DRMConfig, DRMSystem, LicenseConfig, StreamingChannel, Event
+from ...base.models import DRMConfig, StreamingChannel, Event
 from ...base.models.proxy_models import ProxyConfig
 from ...base.network import ProxyConfigManager
 from ...base.provider import StreamingProvider
 from ...base.utils.logger import logger
+from ..lib_theplatform import (
+    build_catchup_url,
+    build_licence_url,
+    build_widevine_drm_config,
+    parse_bifrost_epg_channel,
+)
 from .auth import MagentaAuthenticator
 from .constants import (
     API_ENDPOINTS,
@@ -213,40 +219,38 @@ class MagentaEUProvider(StreamingProvider):
         channels = []
         for channel_data in response_data["channels"]:
             try:
-                # Extract channel information
+                tp_channel = parse_bifrost_epg_channel(channel_data)
+                if not tp_channel:
+                    continue
+
+                # Bifrost-specific fields not covered by TheplatformChannel
                 title = channel_data.get("title", "Unknown Channel")
                 logo = channel_data.get("channel_logo", "")
-                manifest = channel_data.get("video_src_dash", "")
-                pid = channel_data.get("pid_dash", "")
-                station_id = channel_data.get("station_id", "")
-                channel_number = channel_data.get("channel_number", "")
                 media_pid = channel_data.get("media_pid", "")
                 is_audio = channel_data.get("is_audio", False)
 
-                # Build manifest script
+                # Build manifest script from bifrost metadata fields
                 manifest_script_parts = []
-                if channel_number:
-                    manifest_script_parts.append(f"chno={channel_number}")
-                if station_id:
-                    manifest_script_parts.append(f"epgid={station_id}")
+                if tp_channel.channel_number:
+                    manifest_script_parts.append(f"chno={tp_channel.channel_number}")
+                if tp_channel.station_id:
+                    manifest_script_parts.append(f"epgid={tp_channel.station_id}")
                 if media_pid:
                     manifest_script_parts.append(f"media={media_pid}")
-
                 manifest_script = " ".join(manifest_script_parts) if manifest_script_parts else ""
 
-                # Create streaming channel
                 streaming_channel = StreamingChannel(
                     name=title,
-                    content_id=station_id or pid or title,
+                    content_id=tp_channel.station_id or tp_channel.release_pid or title,
                     provider=self.provider_name,
                     logo_url=logo,
                     mode="live",
                     session_manifest=False,
-                    manifest=manifest,
+                    manifest=tp_channel.mpd_url,
                     manifest_script=manifest_script,
                     cdm_type=DRM_SYSTEM_WIDEVINE,
                     use_cdm=True,
-                    cdm=f"pid={pid}" if pid else "",
+                    cdm=f"pid={tp_channel.release_pid}" if tp_channel.release_pid else "",
                     cdm_mode="external",
                     video="best",
                     on_demand=True,
@@ -257,7 +261,6 @@ class MagentaEUProvider(StreamingProvider):
                     language=get_language(self.country),
                     streaming_format=STREAMING_FORMAT_DASH,
                 )
-
                 channels.append(streaming_channel)
 
             except Exception as e:
@@ -348,38 +351,22 @@ class MagentaEUProvider(StreamingProvider):
         Returns:
             Manifest URL with catchup time parameters, or None if channel not found
         """
-        from ...base.utils.timestamp_converter import TimestampConverter
-
         # Ensure cache is populated first
         if not self._ensure_channels_cache():
             logger.warning(f"Cannot get catchup manifest for {channel_id}, channels cache unavailable")
             return None
 
-        # First get the base manifest URL
         base_manifest = self.get_manifest(channel_id, **kwargs)
-
         if not base_manifest:
             logger.warning(f"Channel {channel_id} not found or has no manifest")
             return None
 
         try:
-            # Convert epoch seconds to ISO basic format (YYYYMMDDTHHMMSS)
-            start_iso = TimestampConverter.epoch_to_iso(
-                start_time, format_type="basic", as_utc=True
-            )
-            end_iso = TimestampConverter.epoch_to_iso(end_time, format_type="basic", as_utc=True)
-
-            # Build the catchup manifest URL
-            # Check if the manifest already has query parameters
-            separator = "&" if "?" in base_manifest else "?"
-            catchup_manifest = f"{base_manifest}{separator}begin={start_iso}&end={end_iso}"
-
+            catchup_manifest = build_catchup_url(base_manifest, start_time, end_time)
             logger.debug(f"Catchup manifest for channel {channel_id}: {catchup_manifest}")
             return catchup_manifest
-
         except Exception as e:
             logger.error(f"Error building catchup manifest for channel {channel_id}: {e}")
-            # Fall back to live manifest if catchup formatting fails
             logger.warning(f"Falling back to live manifest for channel {channel_id}")
             return base_manifest
 
@@ -416,10 +403,6 @@ class MagentaEUProvider(StreamingProvider):
     def get_drm_config(self, channel: StreamingChannel, **kwargs) -> Optional[DRMConfig]:
         """Get DRM configuration for channel with correct authentication"""
         try:
-            import base64
-            import json
-            from urllib.parse import quote  # For URL encoding
-
             from .auth import MagentaAuthToken, decode_jwt
             from .constants import ACC_URL
 
@@ -443,16 +426,12 @@ class MagentaEUProvider(StreamingProvider):
                 logger.warning("No bearer token available for DRM config")
                 return None
 
-            # Remove 'Bearer ' prefix if present
             if access_token.startswith("Bearer "):
                 access_token = access_token[7:]
 
-            # Decode JWT token to get account details
+            # Decode JWT to extract account ID and persona token
             try:
-                # Get current token from authenticator
                 current_token = self.authenticator.current_token
-
-                # Use the helper method if token is MagentaAuthToken
                 if isinstance(current_token, MagentaAuthToken) and hasattr(
                     current_token, "get_jwt_claims"
                 ):
@@ -461,14 +440,11 @@ class MagentaEUProvider(StreamingProvider):
                         logger.warning("Failed to get JWT claims from token")
                         return None
                 else:
-                    # Fallback: use decode_jwt helper
                     decoded_payload = decode_jwt(access_token, verify=False)
-
             except Exception as e:
                 logger.warning(f"Error decoding JWT token for DRM: {e}")
                 return None
 
-            # Extract account information from JWT payload
             account_id = decoded_payload.get("dc_cts_accountId", "")
             persona_token = decoded_payload.get("dc_cts_personaToken", "")
 
@@ -476,36 +452,20 @@ class MagentaEUProvider(StreamingProvider):
                 logger.warning("Missing account ID or persona token in JWT payload")
                 return None
 
-            # CORRECT: Build account URI and URL-encode it
             account_uri = f"{ACC_URL}/{account_id}"
-            encoded_account_uri = quote(account_uri, safe="")  # URL encode, NOT base64
-
-            # Build license URL with parameters
-            license_url = (
-                f"{WV_URL}{pid}&" f"token={persona_token}&" f"account={encoded_account_uri}"
+            license_url = build_licence_url(
+                widevine_endpoint=WV_URL,
+                release_pid=pid,
+                persona_jwt=persona_token,
+                account_uri=account_uri,
             )
-
             logger.debug(f"License URL created: {license_url[:100]}...")
 
-            # Create DRM config with minimal headers
-            drm_config = DRMConfig(
-                system=DRMSystem.WIDEVINE,
-                priority=1,
-                license=LicenseConfig.create_with_req_data(
-                    req_data_template="{CHA-RAW}",
-                    server_url=license_url,
-                    req_headers=json.dumps(
-                        {
-                            "User-Agent": USER_AGENT,
-                            "Content-Type": "application/octet-stream",
-                            "Origin": get_base_url(self.country),
-                            "Referer": f"{get_base_url(self.country)}/",
-                        }
-                    ),
-                    use_http_get_request=False,
-                ),
+            drm_config = build_widevine_drm_config(
+                licence_url=license_url,
+                user_agent=USER_AGENT,
+                origin=get_base_url(self.country),
             )
-
             logger.debug(f"DRM config created successfully for channel {channel.name}")
             return drm_config
 
