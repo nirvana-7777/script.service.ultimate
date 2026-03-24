@@ -350,6 +350,7 @@ def setup_m3u_routes(app, manager, service):
                         channel_id = channel.channel_id
                         channel_name = channel.name
                         channel_logo = channel.logo_url or ""
+                        chno = f' tvg-chno="{channel.channel_number}"' if getattr(channel, "channel_number", None) is not None else ""
 
                         # Get provider label
                         try:
@@ -364,7 +365,7 @@ def setup_m3u_routes(app, manager, service):
                         stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/index.mpd"
 
                         # Add M3U entry
-                        m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
+                        m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}"{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
 
                         # Add DRM directives if available
                         try:
@@ -455,12 +456,13 @@ def setup_m3u_routes(app, manager, service):
                         channel_id = channel.channel_id
                         channel_name = channel.name
                         channel_logo = channel.logo_url or ""
+                        chno = f' tvg-chno="{channel.channel_number}"' if getattr(channel, "channel_number", None) is not None else ""
 
                         # Build decrypted stream URL
                         stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/decrypted/index.mpd"
 
                         # Add M3U entry
-                        m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
+                        m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}"{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
                         m3u_content += "#KODIPROP:inputstream=inputstream.adaptive\n"
                         m3u_content += f"{stream_url}\n"
 

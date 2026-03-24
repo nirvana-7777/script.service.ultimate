@@ -647,6 +647,7 @@ class UltimateService:
                     channel_id = channel.channel_id
                     channel_name = channel.name
                     channel_logo = channel.logo_url or ""
+                    chno = self._chno_attr(channel)
 
                     # Build decrypted stream URL
                     stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/decrypted/index.mpd"
@@ -659,9 +660,9 @@ class UltimateService:
                     # Add M3U entry with catchup tags if available
                     if catchup_window > 0:
                         catchup_days = math.ceil(catchup_window / 24)
-                        m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}" catchup="{catchup_source}" catchup-days="{catchup_days}",{channel_name}\n'
+                        m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}"{chno} tvg-logo="{channel_logo}" group-title="{provider_label}" catchup="{catchup_source}" catchup-days="{catchup_days}",{channel_name}\n'
                     else:
-                        m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
+                        m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}"{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
 
                     m3u_content += "#KODIPROP:inputstream=inputstream.adaptive\n"
                     m3u_content += f"{stream_url}\n"
@@ -748,6 +749,7 @@ class UltimateService:
                     channel_id = channel.channel_id
                     channel_name = channel.name
                     channel_logo = channel.logo_url or ""
+                    chno = self._chno_attr(channel)
 
                     # Build decrypted stream URL (ffmpeg variant with highest quality)
                     stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/decrypted/ffmpeg/index.mpd"
@@ -774,7 +776,7 @@ class UltimateService:
                     )
 
                     # Add M3U entry with metadata
-                    m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
+                    m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}"{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
                     m3u_content += "#KODIPROP:inputstream=inputstream.adaptive\n"
                     m3u_content += f"{ffmpeg_cmd}\n"
 
@@ -920,7 +922,8 @@ class UltimateService:
                         elif is_unencrypted:
                             # Explicitly unencrypted channel - include with direct stream URL
                             stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/index.mpd"
-                            m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
+                            chno = f' tvg-chno="{channel.channel_number}"' if getattr(channel, "channel_number", None) is not None else ""
+                            m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}"{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
                             m3u_content += f"{stream_url}\n"
                             channels_included += 1
                         else:
@@ -1005,6 +1008,12 @@ class UltimateService:
 
         return m3u_content
 
+    @staticmethod
+    def _chno_attr(channel) -> str:
+        """Return a ' tvg-chno="N"' string when channel_number is set, else empty string."""
+        chno = getattr(channel, "channel_number", None)
+        return f' tvg-chno="{chno}"' if chno is not None else ""
+
     def _generate_m3u_channel_entry(self, base_url, provider_name, channel):
         """
         Generate M3U entry for a single channel.
@@ -1023,6 +1032,7 @@ class UltimateService:
         channel_id = channel.channel_id
         channel_name = channel.name
         channel_logo = channel.logo_url or ""
+        chno = self._chno_attr(channel)
 
         # Build stream URL with /index.mpd
         stream_url = (
@@ -1046,9 +1056,9 @@ class UltimateService:
         if catchup_window > 0:
             # Convert hours to days (ceil to ensure full coverage)
             catchup_days = math.ceil(catchup_window / 24)
-            entry_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}" catchup="{catchup_source}" catchup-days="{catchup_days}",{channel_name}\n'
+            entry_content += f'#EXTINF:-1 tvg-id="{channel_id}"{chno} tvg-logo="{channel_logo}" group-title="{provider_label}" catchup="{catchup_source}" catchup-days="{catchup_days}",{channel_name}\n'
         else:
-            entry_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
+            entry_content += f'#EXTINF:-1 tvg-id="{channel_id}"{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
 
         # Get DRM configs and add KODIPROP directives
         try:
@@ -1098,6 +1108,7 @@ class UltimateService:
         channel_id = channel.channel_id
         channel_name = channel.name
         channel_logo = channel.logo_url or ""
+        chno = f' tvg-chno="{channel.channel_number}"' if getattr(channel, "channel_number", None) is not None else ""
 
         # Build decrypted stream URL via media proxy with /index.mpd
         # Format: /api/providers/{provider}/channels/{channel_id}/stream/decrypted/index.mpd
@@ -1112,9 +1123,9 @@ class UltimateService:
         if catchup_window > 0:
             # Convert hours to days (ceil to ensure full coverage)
             catchup_days = math.ceil(catchup_window / 24)
-            entry_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}" catchup="{catchup_source}" catchup-days="{catchup_days}",{channel_name}\n'
+            entry_content += f'#EXTINF:-1 tvg-id="{channel_id}"{chno} tvg-logo="{channel_logo}" group-title="{provider_label}" catchup="{catchup_source}" catchup-days="{catchup_days}",{channel_name}\n'
         else:
-            entry_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
+            entry_content += f'#EXTINF:-1 tvg-id="{channel_id}"{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
 
         # Add KODIPROP for inputstream.adaptive (still needed for DASH playback)
         entry_content += "#KODIPROP:inputstream=inputstream.adaptive\n"
@@ -1240,7 +1251,8 @@ class UltimateService:
                         elif is_unencrypted:
                             # Explicitly unencrypted channel - include with direct stream URL
                             stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/index.mpd"
-                            m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}" tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
+                            chno = f' tvg-chno="{channel.channel_number}"' if getattr(channel, "channel_number", None) is not None else ""
+                            m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}"{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
                             m3u_content += f"{stream_url}\n"
                             channels_included += 1
                         else:
