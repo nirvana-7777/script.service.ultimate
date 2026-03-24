@@ -328,6 +328,18 @@ class Magenta2Provider(StreamingProvider):
         # content_id arriving in get_manifest() / get_drm() is a release_pid.
         self._live_manifest_cache: Dict[str, str] = {}
         self._live_pid_cache: Dict[str, str] = {}
+        # Full StreamingChannel list from the last successful get_channels() call.
+        # None until get_channels() has run at least once.
+        self._cached_channels: Optional[List[StreamingChannel]] = None
+
+        # station_uri → {title, logo_url, quality}; fetched once at init time
+        # from the unauthenticated channel-stations feed.  get_channels() reads
+        # this dict instead of making a fresh network call every time.
+        # channel_id (= release_pid) comes from the entitled-channels feed
+        # (authenticated), NOT from this call — this call only supplies display
+        # metadata (name, logo, quality, channel number).
+        self._station_metadata: Dict[str, Dict] = self._fetch_station_metadata()
+
         logger.info("Magenta2 provider initialization completed successfully")
 
     @staticmethod
@@ -889,10 +901,24 @@ class Magenta2Provider(StreamingProvider):
         Uses lib_theplatform to:
           1. Call getApplicableDistributionRights (license_service_url from manifest).
           2. Fetch the entitled-channels feed filtered by those rights.
-          3. Fetch the channel-stations feed for display names and logos.
+          3. Merge with station metadata pre-fetched at init time (unauthenticated).
           4. Convert each TheplatformChannel to a StreamingChannel, enriched with
              metadata from the stations feed.
+
+        Results are cached after the first successful call.  Subsequent calls
+        return directly from the cache without hitting the network again.
+
+        Note: channel_id (= release_pid) comes exclusively from the
+        entitled-channels feed (step 2, authenticated).  The station-metadata
+        dict fetched at init time supplies only display data (name, logo, quality).
         """
+        # ── Cache guard ───────────────────────────────────────────────────────
+        # After the first successful call _cached_channels holds the full list.
+        # Return it directly — no network calls, no re-parsing.
+        if hasattr(self, "_cached_channels") and self._cached_channels:
+            logger.debug("get_channels: returning from cache (no network calls)")
+            return list(self._cached_channels)
+
         try:
             cid = f"{self.session_id}::{self._generate_call_id()}"
             user_agent = self.platform_config["user_agent"]
@@ -940,8 +966,10 @@ class Magenta2Provider(StreamingProvider):
                 timeout=DEFAULT_REQUEST_TIMEOUT,
             )
 
-            # ── Step 3: fetch station metadata (names, logos, quality) ────────
-            station_metadata = self._fetch_station_metadata()
+            # ── Step 3: use station metadata pre-fetched at init time ────────
+            # _station_metadata was populated from the unauthenticated
+            # channel-stations feed during __init__.  No network call needed.
+            station_metadata = self._station_metadata
 
             # ── Step 4: convert to StreamingChannel ──────────────────────────
             channels: List[StreamingChannel] = []
@@ -984,6 +1012,9 @@ class Magenta2Provider(StreamingProvider):
                 f"for country {self.country} "
                 f"({len(station_metadata)} stations with metadata)"
             )
+            # Persist the full channel list so subsequent get_channels() calls
+            # return immediately from cache without any network requests.
+            self._cached_channels: List[StreamingChannel] = channels
             return channels
 
         except Exception as e:
