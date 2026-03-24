@@ -870,6 +870,8 @@ class Magenta2Provider(StreamingProvider):
                                 logo_url = self._build_scaled_image_url(original_url)
                                 break
 
+                    channel_number = entry.get("dt$displayChannelNumber")
+
                     # Keep highest-quality entry when duplicates exist
                     existing = metadata.get(station_uri)
                     if not existing or QUALITY_RANK.get(quality, 1) > QUALITY_RANK.get(existing["quality"], 1):
@@ -877,6 +879,7 @@ class Magenta2Provider(StreamingProvider):
                             "title": title,
                             "logo_url": logo_url,
                             "quality": quality,
+                            "channel_number": channel_number,
                         }
                 except Exception as exc:
                     logger.debug(f"_fetch_station_metadata: skipping entry: {exc}")
@@ -979,6 +982,14 @@ class Magenta2Provider(StreamingProvider):
                     name = meta.get("title") or tp_ch.station_id
                     logo_url = meta.get("logo_url")
                     quality = meta.get("quality")
+                    # Prefer the channel number from the stations feed (fetched at
+                    # init time) over the one from the entitled-channels feed, as
+                    # the stations feed is the authoritative source for display numbers.
+                    channel_number = (
+                        meta["channel_number"]
+                        if meta.get("channel_number") is not None
+                        else tp_ch.channel_number
+                    )
 
                     magenta2_channel = Magenta2Channel(
                         name=name,
@@ -992,7 +1003,7 @@ class Magenta2Provider(StreamingProvider):
                     streaming_channel = magenta2_channel.to_streaming_channel(
                         provider_name=self.provider_name
                     )
-                    streaming_channel.channel_number = tp_ch.channel_number
+                    streaming_channel.channel_number = channel_number
                     streaming_channel.quality = quality
                     streaming_channel.manifest = tp_ch.mpd_url
                     if tp_ch.hls_url:
