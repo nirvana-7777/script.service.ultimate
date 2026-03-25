@@ -160,57 +160,21 @@ class MoveTVProvider(StreamingProvider):
         """
         Fetch the live channel list and return only subscribed channels.
 
-        Each returned MoveTVChannel has:
-          - name, content_id (= str(contentId)), live_id, stream_uid
-          - logo_url
-          - catchup_hours (from catchup.duration)
-          - session_manifest=True so callers know to call get_manifest()
+        POST /api/v2/content/live/all with customerId and appVersion.
+        Only subscribed channels are kept; liveId is used as content_id.
         """
         try:
-            headers = self._authenticated_headers()
-            response = self.http_manager.get(
-                MoveTVConfig.channels_url(),
-                operation="api",
-                headers=headers,
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            if not data.get("success"):
-                logger.error("move.tv: channels endpoint returned success=false")
-                return []
-
-            channels: List[MoveTVChannel] = []
-            for item in data.get("content", []):
-                channel = self._parse_channel_item(item)
-                if channel:
-                    channels.append(channel)
-
+            channels = self._fetch_channels()
             self.channels = channels  # type: ignore[assignment]
             logger.info(f"move.tv: Loaded {len(channels)} subscribed channels")
             return channels
 
         except requests.RequestException as exc:
             logger.error(f"move.tv: HTTP error fetching channels: {exc}")
-            # One retry after token invalidation
             try:
                 logger.info("move.tv: Retrying channel fetch after token refresh …")
                 self.authenticator.invalidate_token()
-                headers = self._authenticated_headers()
-                response = self.http_manager.get(
-                    MoveTVConfig.channels_url(),
-                    operation="api",
-                    headers=headers,
-                )
-                response.raise_for_status()
-                data = response.json()
-
-                channels = []
-                for item in data.get("content", []):
-                    channel = self._parse_channel_item(item)
-                    if channel:
-                        channels.append(channel)
-
+                channels = self._fetch_channels()
                 self.channels = channels  # type: ignore[assignment]
                 return channels
             except Exception as retry_exc:
@@ -219,6 +183,38 @@ class MoveTVProvider(StreamingProvider):
         except Exception as exc:
             logger.error(f"move.tv: Unexpected error fetching channels: {exc}")
             return []
+
+    def _fetch_channels(self) -> List[MoveTVChannel]:
+        """POST the channel list endpoint and parse the response."""
+        session = self.authenticator.get_session_info()
+        if not session:
+            self.authenticator.authenticate(force_refresh=True)
+            session = self.authenticator.get_session_info()
+        if not session:
+            raise RuntimeError("move.tv: Unable to obtain session info for channel fetch")
+
+        payload = {
+            "customerId": session["customer_id"],
+            "appVersion": MoveTVConfig.APP_VERSION,
+        }
+        response = self.http_manager.post(
+            MoveTVConfig.channels_url(),
+            operation="api",
+            json=payload,
+            headers=self._authenticated_headers(),
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        if not data.get("success"):
+            raise RuntimeError("move.tv: channels endpoint returned success=false")
+
+        channels: List[MoveTVChannel] = []
+        for item in data.get("content", []):
+            channel = self._parse_channel_item(item)
+            if channel:
+                channels.append(channel)
+        return channels
 
     def _parse_channel_item(self, item: Dict[str, Any]) -> Optional[MoveTVChannel]:
         """
