@@ -1,5 +1,6 @@
 # streaming_providers/providers/movetv/auth.py
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
@@ -24,6 +25,7 @@ class MoveTVAuthToken(BaseAuthToken):
       - customer_profile_id  active profile id (needed in manifest requests)
       - dedicated_server  CDN base URL (e.g. https://edge-mts-si-2.mts-si.tv)
       - device_id         server-assigned device identifier
+      - uid               client-generated unique identifier (UUID)
       - widevine_url      Widevine license server URL (from drm_server block)
       - playready_url     PlayReady license server URL (from drm_server block)
     """
@@ -33,6 +35,7 @@ class MoveTVAuthToken(BaseAuthToken):
     customer_profile_id: int = 0
     dedicated_server: str = ""
     device_id: int = 0
+    uid: str = ""
     widevine_url: str = ""
     playready_url: str = ""
 
@@ -51,6 +54,7 @@ class MoveTVAuthToken(BaseAuthToken):
             "customer_profile_id": self.customer_profile_id,
             "dedicated_server": self.dedicated_server,
             "device_id": self.device_id,
+            "uid": self.uid,
             "widevine_url": self.widevine_url,
             "playready_url": self.playready_url,
         }
@@ -72,6 +76,7 @@ class MoveTVAuthToken(BaseAuthToken):
             customer_profile_id=data.get("customer_profile_id", 0),
             dedicated_server=data.get("dedicated_server", ""),
             device_id=data.get("device_id", 0),
+            uid=data.get("uid", ""),
             widevine_url=data.get("widevine_url", ""),
             playready_url=data.get("playready_url", ""),
         )
@@ -93,19 +98,20 @@ class MoveTVAuthenticator(BaseAuthenticator):
           - refresh_token   → used to renew the session without re-entering credentials
           - dedicated_server → CDN base URL; manifest URLs are derived from it
           - customer_id / device_id / profile.id → required for manifest source requests
+          - t               → token lifetime in seconds (32400 = 9 hours)
     3.  All of the above is stored on MoveTVAuthToken and persisted via the
         base-class settings_manager.
     """
 
     def __init__(
-        self,
-        proxy_config=None,
-        http_manager=None,
-        settings_manager=None,
-        credentials: Optional[UserPasswordCredentials] = None,
-        country: Optional[str] = None,
-        config_dir: Optional[str] = None,
-        enable_kodi_integration: bool = True,
+            self,
+            proxy_config=None,
+            http_manager=None,
+            settings_manager=None,
+            credentials: Optional[UserPasswordCredentials] = None,
+            country: Optional[str] = None,
+            config_dir: Optional[str] = None,
+            enable_kodi_integration: bool = True,
     ):
         super().__init__(
             provider_name="movetv",
@@ -117,6 +123,30 @@ class MoveTVAuthenticator(BaseAuthenticator):
         )
         self._proxy_config = proxy_config
         self._http_manager = http_manager
+        self._uid = None  # Will be loaded from stored token or generated
+
+    # ------------------------------------------------------------------
+    # UID management
+    # ------------------------------------------------------------------
+
+    def _get_or_generate_uid(self) -> str:
+        """
+        Get existing UID from stored token or generate a new UUID.
+        The UID is persisted across sessions via the token storage.
+        """
+        if self._uid:
+            return self._uid
+
+        # Try to load from existing token if available
+        if self._current_token and hasattr(self._current_token, 'uid'):
+            self._uid = self._current_token.uid
+            if self._uid:
+                return self._uid
+
+        # Generate new UUID
+        self._uid = str(uuid.uuid4())
+        logger.debug(f"move.tv: Generated new UID: {self._uid}")
+        return self._uid
 
     # ------------------------------------------------------------------
     # BaseAuthenticator abstract contract
@@ -137,7 +167,7 @@ class MoveTVAuthenticator(BaseAuthenticator):
         Called by the base class only when credentials are already validated,
         so self.credentials is safe to access here.
         """
-        uid = self.get_device_id()
+        uid = self._get_or_generate_uid()
         return {
             "username": self.credentials.username,
             "password": self.credentials.password,
@@ -158,8 +188,8 @@ class MoveTVAuthenticator(BaseAuthenticator):
 
     def has_user_credentials(self) -> bool:
         return (
-            isinstance(self.credentials, UserPasswordCredentials)
-            and self.credentials.validate()
+                isinstance(self.credentials, UserPasswordCredentials)
+                and self.credentials.validate()
         )
 
     def get_current_token_level(self) -> TokenAuthLevel:
@@ -232,16 +262,18 @@ class MoveTVAuthenticator(BaseAuthenticator):
         """
         Map the raw /api/v2/login JSON response onto a MoveTVAuthToken.
 
-        The API does not return a numeric expires_in; the auth_token contains
-        an 'expires-<unix>' component in the protection header of manifest
-        responses (typically ~24 h).  We default to 86 400 s (24 h) so the
-        base-class expiry logic behaves sensibly.
+        The API returns token lifetime in the 't' field (in seconds).
+        If not present, defaults to 32400 (9 hours) based on observed responses.
         """
         auth_token: str = data.get("auth_token", "")
         refresh_token: str = data.get("refresh_token", "")
         customer_id: int = data.get("customer_id", 0)
         device_id: int = data.get("device_id", 0)
         dedicated_server: str = data.get("dedicated_server", "")
+        uid: str = data.get("uid", "")
+
+        # Get token expiry from 't' field (in seconds)
+        token_expiry: int = data.get("t", 32400)  # Default to 9 hours if not present
 
         profile: Dict = data.get("profile", {})
         customer_profile_id: int = profile.get("id", 0)
@@ -252,14 +284,15 @@ class MoveTVAuthenticator(BaseAuthenticator):
 
         logger.info(
             f"move.tv: Login successful – customer_id={customer_id}, "
-            f"device_id={device_id}, dedicated_server={dedicated_server}"
+            f"device_id={device_id}, uid={uid}, dedicated_server={dedicated_server}, "
+            f"token_expires_in={token_expiry}s"
         )
 
         return MoveTVAuthToken(
             # BaseAuthToken fields
-            access_token=auth_token,       # used as bearer / X-Auth-Token
+            access_token=auth_token,  # used as bearer / X-Auth-Token
             token_type="token",
-            expires_in=86400,              # 24 h default; no numeric TTL in response
+            expires_in=token_expiry,  # Use actual token lifetime from API
             issued_at=time.time(),
             refresh_token=refresh_token if refresh_token else None,
             refresh_expires_in=0,
@@ -271,6 +304,7 @@ class MoveTVAuthenticator(BaseAuthenticator):
             customer_profile_id=customer_profile_id,
             dedicated_server=dedicated_server,
             device_id=device_id,
+            uid=uid,
             widevine_url=widevine_url,
             playready_url=playready_url,
         )
@@ -299,6 +333,7 @@ class MoveTVAuthenticator(BaseAuthenticator):
             "customer_id": t.customer_id,
             "customer_profile_id": t.customer_profile_id,
             "device_id": t.device_id,
+            "uid": t.uid,
             "dedicated_server": t.dedicated_server,
             "auth_token": t.auth_token,
         }
