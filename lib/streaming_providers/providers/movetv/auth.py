@@ -126,12 +126,54 @@ class MoveTVAuthenticator(BaseAuthenticator):
         self._uid = None  # Will be loaded from stored token or generated
 
         # Try to load existing token from storage
-        self._load_token_from_storage()
+        self._load_and_restore_token()
 
-        # If token was loaded, extract UID from it
-        if self._current_token and hasattr(self._current_token, 'uid') and self._current_token.uid:
-            self._uid = self._current_token.uid
-            logger.debug(f"move.tv: Loaded UID from stored token: {self._uid}")
+    # ------------------------------------------------------------------
+    # Token loading and restoration
+    # ------------------------------------------------------------------
+
+    def _load_and_restore_token(self) -> bool:
+        """
+        Load token from storage and restore state.
+        Returns True if token was loaded and valid.
+        """
+        if not self.settings_manager:
+            logger.debug("move.tv: No settings manager available for loading token")
+            return False
+
+        try:
+            # Try to load the token using the base class method
+            token_data = self.settings_manager.get_auth_token(self.provider_name)
+            if token_data:
+                logger.debug(f"move.tv: Found stored token data with keys: {list(token_data.keys())}")
+
+                # Create token from stored data
+                self._current_token = self._create_token_from_response(token_data)
+
+                # Restore UID from token
+                if hasattr(self._current_token, 'uid') and self._current_token.uid:
+                    self._uid = self._current_token.uid
+                    logger.info(f"move.tv: Restored UID from storage: {self._uid}")
+                else:
+                    logger.debug("move.tv: No UID found in stored token")
+
+                # Check if token is expired
+                if self._current_token.is_expired:
+                    logger.debug(
+                        f"move.tv: Stored token is expired (issued at {self._current_token.issued_at}, expires in {self._current_token.expires_in}s)")
+                    self._current_token = None
+                    self._uid = None
+                    return False
+                else:
+                    logger.info(
+                        f"move.tv: Successfully loaded token from storage (expires in {self._current_token.expires_in}s)")
+                    return True
+            else:
+                logger.debug("move.tv: No stored token found")
+                return False
+        except Exception as e:
+            logger.warning(f"move.tv: Failed to load token from storage: {e}")
+            return False
 
     # ------------------------------------------------------------------
     # UID management
@@ -146,50 +188,16 @@ class MoveTVAuthenticator(BaseAuthenticator):
             logger.debug(f"move.tv: Using existing UID: {self._uid}")
             return self._uid
 
-        # Try to load from current token if available
-        if self._current_token and hasattr(self._current_token, 'uid'):
+        # Try to load from current token if available (should have been restored already)
+        if self._current_token and hasattr(self._current_token, 'uid') and self._current_token.uid:
             self._uid = self._current_token.uid
-            if self._uid:
-                logger.debug(f"move.tv: Loaded UID from current token: {self._uid}")
-                return self._uid
+            logger.debug(f"move.tv: Loaded UID from current token: {self._uid}")
+            return self._uid
 
-        # Generate new UUID
+        # Generate new UUID as last resort
         self._uid = str(uuid.uuid4())
         logger.debug(f"move.tv: Generated new UID: {self._uid}")
         return self._uid
-
-    def _load_token_from_storage(self) -> bool:
-        """
-        Load token from storage if available.
-        Returns True if token was loaded and valid.
-        """
-        if not self.settings_manager:
-            logger.debug("move.tv: No settings manager available for loading token")
-            return False
-
-        try:
-            # Try to load the token using the base class method
-            token_data = self.settings_manager.get_auth_token(self.provider_name)
-            if token_data:
-                logger.debug(f"move.tv: Found stored token data with keys: {list(token_data.keys())}")
-                self._current_token = self._create_token_from_response(token_data)
-
-                # Check if token is expired
-                if self._current_token.is_expired:
-                    logger.debug(
-                        f"move.tv: Stored token is expired (issued at {self._current_token.issued_at}, expires in {self._current_token.expires_in}s)")
-                    self._current_token = None
-                    return False
-                else:
-                    logger.info(
-                        f"move.tv: Successfully loaded token from storage (expires in {self._current_token.expires_in}s)")
-                    return True
-            else:
-                logger.debug("move.tv: No stored token found")
-                return False
-        except Exception as e:
-            logger.warning(f"move.tv: Failed to load token from storage: {e}")
-            return False
 
     # ------------------------------------------------------------------
     # BaseAuthenticator abstract contract
@@ -258,6 +266,28 @@ class MoveTVAuthenticator(BaseAuthenticator):
     # ------------------------------------------------------------------
     # Authentication
     # ------------------------------------------------------------------
+
+    def authenticate(self, force_refresh: bool = False) -> MoveTVAuthToken:
+        """
+        Override authenticate to ensure we check for existing valid token first.
+        """
+        # If we have a valid token and not forcing refresh, return it
+        if not force_refresh and self._current_token and not self._current_token.is_expired:
+            logger.debug("move.tv: Using existing valid token")
+            return self._current_token
+
+        # If we have a token but it's expired, try to refresh
+        if self._current_token and self._current_token.is_expired:
+            logger.debug("move.tv: Token expired, attempting refresh")
+            refreshed = self._refresh_token()
+            if refreshed:
+                return refreshed
+
+        # Otherwise perform full authentication
+        logger.info("move.tv: Performing new authentication")
+        token = self._perform_authentication()
+        self._current_token = token
+        return token
 
     def _perform_authentication(self) -> MoveTVAuthToken:
         """
