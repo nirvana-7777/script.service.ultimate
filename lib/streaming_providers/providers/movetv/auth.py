@@ -141,6 +141,7 @@ class MoveTVAuthenticator(BaseAuthenticator):
         if self._current_token and hasattr(self._current_token, 'uid'):
             self._uid = self._current_token.uid
             if self._uid:
+                logger.debug(f"move.tv: Loaded existing UID: {self._uid}")
                 return self._uid
 
         # Generate new UUID
@@ -168,7 +169,7 @@ class MoveTVAuthenticator(BaseAuthenticator):
         so self.credentials is safe to access here.
         """
         uid = self._get_or_generate_uid()
-        return {
+        payload = {
             "username": self.credentials.username,
             "password": self.credentials.password,
             "partnerId": MoveTVConfig.PARTNER_ID,
@@ -177,6 +178,13 @@ class MoveTVAuthenticator(BaseAuthenticator):
             "uid": uid,
             "appVersion": MoveTVConfig.APP_VERSION,
         }
+
+        # Log payload with password redacted
+        safe_payload = payload.copy()
+        safe_payload["password"] = "***REDACTED***"
+        logger.debug(f"move.tv: Login payload: {safe_payload}")
+
+        return payload
 
     def _classify_token(self, token: BaseAuthToken) -> TokenAuthLevel:
         """move.tv only issues user-authenticated tokens."""
@@ -218,16 +226,38 @@ class MoveTVAuthenticator(BaseAuthenticator):
         if not self.credentials or not self.credentials.validate():
             raise ValueError("move.tv: No valid credentials available for authentication")
 
+        payload = self._build_auth_payload()
+        headers = self._get_auth_headers()
+
         logger.debug(f"move.tv: POST {self.auth_endpoint}")
+        logger.debug(f"move.tv: Request headers: {headers}")
+
+        # Log payload with password redacted
+        safe_payload = payload.copy()
+        safe_payload["password"] = "***REDACTED***"
+        logger.debug(f"move.tv: Request payload: {safe_payload}")
 
         response = self._http_manager.post(
             self.auth_endpoint,
             operation="auth",
-            json=self._build_auth_payload(),
-            headers=self._get_auth_headers(),
+            json=payload,
+            headers=headers,
         )
+
+        logger.debug(f"move.tv: Response status: {response.status_code}")
+        logger.debug(f"move.tv: Response headers: {dict(response.headers)}")
+
         response.raise_for_status()
         data = response.json()
+
+        # Log response summary
+        if data.get("success"):
+            logger.info(f"move.tv: Login successful - customer_id={data.get('customer_id')}, "
+                        f"device_id={data.get('device_id')}, "
+                        f"uid={data.get('uid')}, "
+                        f"token_expiry={data.get('t')}s")
+        else:
+            logger.warning(f"move.tv: Login failed - {data}")
 
         if not data.get("success"):
             raise ValueError(f"move.tv: Login failed – API returned success=false: {data}")
@@ -282,8 +312,8 @@ class MoveTVAuthenticator(BaseAuthenticator):
         widevine_url: str = drm_server.get("widevine", "")
         playready_url: str = drm_server.get("playready", "")
 
-        logger.info(
-            f"move.tv: Login successful – customer_id={customer_id}, "
+        logger.debug(
+            f"move.tv: Parsing login response - customer_id={customer_id}, "
             f"device_id={device_id}, uid={uid}, dedicated_server={dedicated_server}, "
             f"token_expires_in={token_expiry}s"
         )
