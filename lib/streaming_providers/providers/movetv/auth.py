@@ -159,44 +159,98 @@ class MoveTVAuthenticator(BaseAuthenticator):
 
         The UID is always restored from storage regardless of whether the
         auth token itself is still valid — see class docstring for rationale.
+
+        Storage lookup order:
+          1. settings_manager.get_auth_token()   — primary token store
+          2. settings_manager.load_session_data() — session store (fallback)
+
+        Both stores are tried so that the UID is recovered even when only a
+        session (not a full auth-token dict) has been persisted.  This prevents
+        _get_or_generate_uid() from minting a fresh UUID before the first login,
+        which would hit the platform's device-slot limit (appCode 403007).
         """
         if not self.settings_manager:
             logger.debug("move.tv: No settings manager available for loading token")
             return False
 
         try:
-            # Try to load the token using the base class method
+            # ----------------------------------------------------------------
+            # Primary path: full token dict saved by a previous successful login
+            # ----------------------------------------------------------------
             token_data = self.settings_manager.get_auth_token(self.provider_name)
             if token_data:
                 logger.debug(f"move.tv: Found stored token data with keys: {list(token_data.keys())}")
 
-                # Create token from stored data
                 token = self._create_token_from_response(token_data)
                 self._current_token = token
 
                 # Always restore the UID first — it must survive token expiry.
                 if token.uid:
                     self._uid = token.uid
-                    logger.info(f"move.tv: Restored UID from storage: {self._uid}")
+                    logger.info(f"move.tv: Restored UID from stored token: {self._uid}")
                 else:
                     logger.debug("move.tv: No UID found in stored token")
 
-                # Check if token is expired
                 if token.is_expired:
                     logger.debug(
                         f"move.tv: Stored token is expired (issued at {token.issued_at}, "
                         f"expires in {token.expires_in}s) — UID preserved: {self._uid}"
                     )
-                    # FIX: clear the session token but NOT the UID.
-                    # The UID represents a device slot and must outlive the session.
+                    # Clear the session token but NOT the UID.
                     self._current_token = None
                     return False
                 else:
                     logger.info(f"move.tv: Successfully loaded token from storage (expires in {token.expires_in}s)")
                     return True
-            else:
-                logger.debug("move.tv: No stored token found")
+
+            logger.debug("move.tv: No stored token found in primary store")
+
+            # ----------------------------------------------------------------
+            # Fallback path: session data written by the base class
+            # (contains uid, auth_token, customer_id, etc. but may lack the
+            #  full BaseAuthToken envelope that get_auth_token() expects)
+            # ----------------------------------------------------------------
+            session_data = self.settings_manager.load_session_data(self.provider_name)
+            if session_data:
+                logger.debug(
+                    f"move.tv: Found session data with keys: {list(session_data.keys())}"
+                )
+                uid_from_session = session_data.get("uid")
+                if uid_from_session:
+                    self._uid = uid_from_session
+                    logger.info(
+                        f"move.tv: Restored UID from session store: {self._uid}"
+                    )
+
+                # If the session data contains enough fields to reconstruct a
+                # token, do so — this avoids an unnecessary re-login when the
+                # auth_token itself is still valid.
+                auth_token_value = session_data.get("auth_token")
+                if auth_token_value:
+                    try:
+                        token = self._create_token_from_response(session_data)
+                        self._current_token = token
+                        if not token.is_expired:
+                            logger.info(
+                                "move.tv: Reconstructed valid token from session store"
+                            )
+                            return True
+                        else:
+                            logger.debug(
+                                "move.tv: Session-store token is expired — UID preserved"
+                            )
+                            self._current_token = None
+                    except Exception as e:
+                        logger.debug(
+                            f"move.tv: Could not reconstruct token from session data: {e}"
+                        )
+                        self._current_token = None
+
                 return False
+
+            logger.debug("move.tv: No session data found in fallback store")
+            return False
+
         except Exception as e:
             logger.warning(f"move.tv: Failed to load token from storage: {e}")
             return False
