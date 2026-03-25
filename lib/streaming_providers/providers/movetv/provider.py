@@ -87,6 +87,7 @@ class MoveTVProvider(StreamingProvider):
         country: str = "SI",
         config: Optional[Dict] = None,
         proxy_config: Optional[ProxyConfig] = None,
+        settings_manager=None,
     ):
         super().__init__(country)
 
@@ -102,6 +103,7 @@ class MoveTVProvider(StreamingProvider):
         self.authenticator = MoveTVAuthenticator(
             proxy_config=proxy_config,
             http_manager=self.http_manager,
+            settings_manager=settings_manager,
         )
 
         # Share the same http_manager session with the authenticator
