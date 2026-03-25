@@ -103,7 +103,7 @@ class MoveTVAuthenticator(BaseAuthenticator):
           - customer_id / device_id / profile.id → required for manifest source requests
           - t               → token lifetime in seconds (32400 = 9 hours)
     3.  All of the above is stored on MoveTVAuthToken and persisted via the
-        base-class settings_manager.
+        base-class _save_session() → save_token_data() path.
 
     UID / device-slot lifecycle
     ---------------------------
@@ -114,10 +114,18 @@ class MoveTVAuthenticator(BaseAuthenticator):
     (appCode 403007 = "No slots available").  Generating a new UID on every
     re-auth would consume an additional slot (or fail if the limit is reached).
     Therefore:
-      - _uid is always restored from storage before any login attempt.
+      - _uid is declared before super().__init__() and seeded from
+        self._current_token immediately after super().__init__() returns.
+        The base class __init__ calls _load_session() → load_token_data() →
+        _create_token_from_response(), which populates self._current_token
+        with the persisted MoveTVAuthToken (uid included) before any login
+        attempt can reach _get_or_generate_uid().
       - Expiring or invalidating the auth token must never clear _uid.
-      - A new UUID is only generated when no UID has ever been stored.
+      - A new UUID is only generated on the very first run (no prior session).
     """
+
+    # Redeclare with the concrete subtype so all attribute access is type-safe.
+    _current_token: Optional[MoveTVAuthToken]
 
     # appCode returned by the API when the device-slot limit is reached.
     _APPCODE_NO_SLOTS = "403007"
@@ -132,6 +140,15 @@ class MoveTVAuthenticator(BaseAuthenticator):
             config_dir: Optional[str] = None,
             enable_kodi_integration: bool = True,
     ):
+        # Declare _uid before super().__init__() in case any base-class code
+        # path references it during initialisation.
+        self._uid: Optional[str] = None
+        self._proxy_config = proxy_config
+        self._http_manager = http_manager
+
+        # super().__init__() calls _load_session() → load_token_data() →
+        # _create_token_from_response(), populating self._current_token with
+        # the previously persisted MoveTVAuthToken (uid field included).
         super().__init__(
             provider_name="movetv",
             settings_manager=settings_manager,
@@ -140,121 +157,14 @@ class MoveTVAuthenticator(BaseAuthenticator):
             config_dir=config_dir,
             enable_kodi_integration=enable_kodi_integration,
         )
-        self._proxy_config = proxy_config
-        self._http_manager = http_manager
-        self._uid: Optional[str] = None  # Will be loaded from stored token or generated
-        self._current_token: Optional[MoveTVAuthToken] = None  # Override type to MoveTVAuthToken
 
-        # Try to load existing token from storage
-        self._load_and_restore_token()
-
-    # ------------------------------------------------------------------
-    # Token loading and restoration
-    # ------------------------------------------------------------------
-
-    def _load_and_restore_token(self) -> bool:
-        """
-        Load token from storage and restore state.
-        Returns True if token was loaded and valid.
-
-        The UID is always restored from storage regardless of whether the
-        auth token itself is still valid — see class docstring for rationale.
-
-        Storage lookup order:
-          1. settings_manager.get_auth_token()   — primary token store
-          2. settings_manager.load_session_data() — session store (fallback)
-
-        Both stores are tried so that the UID is recovered even when only a
-        session (not a full auth-token dict) has been persisted.  This prevents
-        _get_or_generate_uid() from minting a fresh UUID before the first login,
-        which would hit the platform's device-slot limit (appCode 403007).
-        """
-        if not self.settings_manager:
-            logger.debug("move.tv: No settings manager available for loading token")
-            return False
-
-        try:
-            # ----------------------------------------------------------------
-            # Primary path: full token dict saved by a previous successful login
-            # ----------------------------------------------------------------
-            token_data = self.settings_manager.get_auth_token(self.provider_name)
-            logger.debug(f"move.tv: get_auth_token raw result: {token_data}")
-            if token_data:
-                logger.debug(f"move.tv: Found stored token data with keys: {list(token_data.keys())}")
-
-                token = self._create_token_from_response(token_data)
-                self._current_token = token
-
-                # Always restore the UID first — it must survive token expiry.
-                if token.uid:
-                    self._uid = token.uid
-                    logger.info(f"move.tv: Restored UID from stored token: {self._uid}")
-                else:
-                    logger.debug("move.tv: No UID found in stored token")
-
-                if token.is_expired:
-                    logger.debug(
-                        f"move.tv: Stored token is expired (issued at {token.issued_at}, "
-                        f"expires in {token.expires_in}s) — UID preserved: {self._uid}"
-                    )
-                    # Clear the session token but NOT the UID.
-                    self._current_token = None
-                    return False
-                else:
-                    logger.info(f"move.tv: Successfully loaded token from storage (expires in {token.expires_in}s)")
-                    return True
-
-            logger.debug("move.tv: No stored token found in primary store")
-
-            # ----------------------------------------------------------------
-            # Fallback path: session data written by the base class
-            # (contains uid, auth_token, customer_id, etc. but may lack the
-            #  full BaseAuthToken envelope that get_auth_token() expects)
-            # ----------------------------------------------------------------
-            session_data = self.settings_manager.load_session_data(self.provider_name)
-            if session_data:
-                logger.debug(
-                    f"move.tv: Found session data with keys: {list(session_data.keys())}"
-                )
-                uid_from_session = session_data.get("uid")
-                if uid_from_session:
-                    self._uid = uid_from_session
-                    logger.info(
-                        f"move.tv: Restored UID from session store: {self._uid}"
-                    )
-
-                # If the session data contains enough fields to reconstruct a
-                # token, do so — this avoids an unnecessary re-login when the
-                # auth_token itself is still valid.
-                auth_token_value = session_data.get("auth_token")
-                if auth_token_value:
-                    try:
-                        token = self._create_token_from_response(session_data)
-                        self._current_token = token
-                        if not token.is_expired:
-                            logger.info(
-                                "move.tv: Reconstructed valid token from session store"
-                            )
-                            return True
-                        else:
-                            logger.debug(
-                                "move.tv: Session-store token is expired — UID preserved"
-                            )
-                            self._current_token = None
-                    except Exception as e:
-                        logger.debug(
-                            f"move.tv: Could not reconstruct token from session data: {e}"
-                        )
-                        self._current_token = None
-
-                return False
-
-            logger.debug("move.tv: No session data found in fallback store")
-            return False
-
-        except Exception as e:
-            logger.warning(f"move.tv: Failed to load token from storage: {e}")
-            return False
+        # Seed _uid from the token the base class just loaded.  This must
+        # happen before any call that could trigger _get_or_generate_uid()
+        # (i.e. before the first login attempt).  We extract the UID even
+        # from an expired token — the UID outlives the session.
+        if isinstance(self._current_token, MoveTVAuthToken) and self._current_token.uid:
+            self._uid = self._current_token.uid
+            logger.info(f"move.tv: Restored UID from persisted session: {self._uid}")
 
     # ------------------------------------------------------------------
     # UID management
@@ -262,25 +172,20 @@ class MoveTVAuthenticator(BaseAuthenticator):
 
     def _get_or_generate_uid(self) -> str:
         """
-        Get existing UID from stored token or generate a new UUID.
-        The UID is persisted across sessions via the token storage.
+        Return the persisted UID, or generate a new UUID on very first run.
 
-        A new UUID is only generated when no UID has ever been recorded for
-        this provider, ensuring we never consume an extra device slot.
+        By the time this is called (from _build_auth_payload during login),
+        __init__ has already seeded self._uid from the stored token via the
+        base class _load_session() path.  A fresh UUID is only created when
+        absolutely no prior session exists for this provider.
         """
         if self._uid:
             logger.debug(f"move.tv: Using existing UID: {self._uid}")
             return self._uid
 
-        # Try to load from current token if available (should have been restored already)
-        if self._current_token and self._current_token.uid:
-            self._uid = self._current_token.uid
-            logger.debug(f"move.tv: Loaded UID from current token: {self._uid}")
-            return self._uid
-
-        # Generate new UUID as last resort (only on very first run)
+        # True first run — no persisted session at all.
         self._uid = str(uuid.uuid4())
-        logger.debug(f"move.tv: Generated new UID: {self._uid}")
+        logger.debug(f"move.tv: Generated new UID (first run): {self._uid}")
         return self._uid
 
     # ------------------------------------------------------------------
@@ -313,7 +218,6 @@ class MoveTVAuthenticator(BaseAuthenticator):
             "appVersion": MoveTVConfig.APP_VERSION,
         }
 
-        # Log payload with password redacted
         safe_payload = payload.copy()
         safe_payload["password"] = "***REDACTED***"
         logger.debug(f"move.tv: Login payload: {safe_payload}")
@@ -376,19 +280,16 @@ class MoveTVAuthenticator(BaseAuthenticator):
         """
         Override authenticate to ensure we check for existing valid token first.
         """
-        # If we have a valid token and not forcing refresh, return it
         if not force_refresh and self._current_token and not self._current_token.is_expired:
             logger.debug("move.tv: Using existing valid token")
             return self._current_token
 
-        # If we have a token but it's expired, try to refresh
         if self._current_token and self._current_token.is_expired:
             logger.debug("move.tv: Token expired, attempting refresh")
             refreshed = self._refresh_token()
             if refreshed:
                 return refreshed
 
-        # Otherwise perform full authentication
         logger.info("move.tv: Performing new authentication")
         token = self._perform_authentication()
         self._current_token = token
@@ -397,8 +298,6 @@ class MoveTVAuthenticator(BaseAuthenticator):
     def _perform_authentication(self) -> MoveTVAuthToken:
         """
         Full username / password login against /api/v2/login.
-        Delegates payload and header construction to the abstract helpers so
-        the base class can call them consistently.
 
         Error handling
         --------------
@@ -416,7 +315,6 @@ class MoveTVAuthenticator(BaseAuthenticator):
         logger.debug(f"move.tv: POST {self.auth_endpoint}")
         logger.debug(f"move.tv: Request headers: {headers}")
 
-        # Log payload with password redacted
         safe_payload = payload.copy()
         safe_payload["password"] = "***REDACTED***"
         logger.debug(f"move.tv: Request payload: {safe_payload}")
@@ -431,13 +329,13 @@ class MoveTVAuthenticator(BaseAuthenticator):
         logger.debug(f"move.tv: Response status: {response.status_code}")
         logger.debug(f"move.tv: Response headers: {dict(response.headers)}")
 
-        # FIX: parse the body before raise_for_status() so we can inspect the
-        # appCode and avoid mis-classifying a slot-limit error as an auth failure.
+        # Parse the body before raise_for_status() so we can inspect appCode
+        # and avoid mis-classifying a slot-limit error as an auth failure.
         data: Dict[str, Any] = {}
         if response.content:
             try:
                 data = response.json()
-            except Exception:
+            except ValueError:
                 pass
 
         # "No slots available" — the UID / device slot is still valid.
@@ -454,15 +352,15 @@ class MoveTVAuthenticator(BaseAuthenticator):
                 "Log out another device from your account and retry."
             )
 
-        # All other HTTP errors (bad credentials, server errors, etc.)
         response.raise_for_status()
 
-        # Log response summary
         if data.get("success"):
-            logger.info(f"move.tv: Login successful - customer_id={data.get('customer_id')}, "
-                        f"device_id={data.get('device_id')}, "
-                        f"uid={data.get('uid')}, "
-                        f"token_expiry={data.get('t')}s")
+            logger.info(
+                f"move.tv: Login successful - customer_id={data.get('customer_id')}, "
+                f"device_id={data.get('device_id')}, "
+                f"uid={data.get('uid')}, "
+                f"token_expiry={data.get('t')}s"
+            )
         else:
             logger.warning(f"move.tv: Login failed - {data}")
 
@@ -471,16 +369,10 @@ class MoveTVAuthenticator(BaseAuthenticator):
 
         token = self._parse_login_response(data)
 
-        # Store the UID from the response
+        # Store the UID from the response and persist via base class path.
         self._uid = token.uid
-
-        # Persist the token
-        if self.settings_manager:
-            try:
-                self.settings_manager.save_auth_token(self.provider_name, token.to_dict())
-                logger.debug("move.tv: Token saved to storage")
-            except Exception as e:
-                logger.warning(f"move.tv: Failed to save token to storage: {e}")
+        self._current_token = token
+        self._save_session()
 
         return token
 
@@ -488,9 +380,7 @@ class MoveTVAuthenticator(BaseAuthenticator):
         """
         The MTS-SI API does not expose a dedicated token-refresh endpoint in
         the captured traffic.  We fall back to a full re-authentication using
-        the stored credentials.  If credentials are unavailable (e.g. the
-        refresh_token value can be used in a future update), None is returned
-        and the base class will trigger _perform_authentication().
+        the stored credentials.  Returns None if credentials are unavailable.
         """
         if not self.has_user_credentials():
             logger.debug("move.tv: No credentials available for token refresh")
@@ -499,7 +389,7 @@ class MoveTVAuthenticator(BaseAuthenticator):
         logger.info("move.tv: Refreshing session via full re-authentication")
         try:
             return self._perform_authentication()
-        except Exception as e:
+        except (ValueError, RuntimeError, OSError) as e:
             logger.warning(f"move.tv: Re-authentication during refresh failed: {e}")
             return None
 
@@ -521,14 +411,12 @@ class MoveTVAuthenticator(BaseAuthenticator):
         device_id: int = data.get("device_id", 0)
         dedicated_server: str = data.get("dedicated_server", "")
         uid: str = data.get("uid", "")
+        token_expiry: int = data.get("t", 32400)
 
-        # Get token expiry from 't' field (in seconds)
-        token_expiry: int = data.get("t", 32400)  # Default to 9 hours if not present
-
-        profile: Dict = data.get("profile", {})
+        profile: Dict[str, Any] = data.get("profile", {})
         customer_profile_id: int = profile.get("id", 0)
 
-        drm_server: Dict = data.get("drm_server", {})
+        drm_server: Dict[str, Any] = data.get("drm_server", {})
         widevine_url: str = drm_server.get("widevine", "")
         playready_url: str = drm_server.get("playready", "")
 
@@ -539,16 +427,14 @@ class MoveTVAuthenticator(BaseAuthenticator):
         )
 
         return MoveTVAuthToken(
-            # BaseAuthToken fields
-            access_token=auth_token,  # used as bearer / X-Auth-Token
+            access_token=auth_token,
             token_type="token",
-            expires_in=token_expiry,  # Use actual token lifetime from API
+            expires_in=token_expiry,
             issued_at=time.time(),
             refresh_token=refresh_token if refresh_token else None,
             refresh_expires_in=0,
             auth_level=TokenAuthLevel.USER_AUTHENTICATED,
             credential_type="user_password",
-            # move.tv specifics
             auth_token=auth_token,
             customer_id=customer_id,
             customer_profile_id=customer_profile_id,
