@@ -350,7 +350,7 @@ def setup_m3u_routes(app, manager, service):
                         channel_id = channel.channel_id
                         channel_name = channel.name
                         channel_logo = channel.logo_url or ""
-                        chno = f' tvg-chno="{channel.channel_number}"' if getattr(channel, "channel_number", None) is not None else ""
+                        chno = f' tvg-chno="{channel.channel_number}" ch-number="{channel.channel_number}"' if getattr(channel, "channel_number", None) is not None else ""
 
                         # Get provider label
                         try:
@@ -456,7 +456,7 @@ def setup_m3u_routes(app, manager, service):
                         channel_id = channel.channel_id
                         channel_name = channel.name
                         channel_logo = channel.logo_url or ""
-                        chno = f' tvg-chno="{channel.channel_number}"' if getattr(channel, "channel_number", None) is not None else ""
+                        chno = f' tvg-chno="{channel.channel_number}" ch-number="{channel.channel_number}"' if getattr(channel, "channel_number", None) is not None else ""
 
                         # Build decrypted stream URL
                         stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/decrypted/index.mpd"

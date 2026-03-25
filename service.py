@@ -922,7 +922,7 @@ class UltimateService:
                         elif is_unencrypted:
                             # Explicitly unencrypted channel - include with direct stream URL
                             stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/index.mpd"
-                            chno = f' tvg-chno="{channel.channel_number}"' if getattr(channel, "channel_number", None) is not None else ""
+                            chno = f' tvg-chno="{channel.channel_number}" ch-number="{channel.channel_number}"' if getattr(channel, "channel_number", None) is not None else ""
                             m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}"{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
                             m3u_content += f"{stream_url}\n"
                             channels_included += 1
@@ -1010,9 +1010,9 @@ class UltimateService:
 
     @staticmethod
     def _chno_attr(channel) -> str:
-        """Return a ' tvg-chno="N"' string when channel_number is set, else empty string."""
+        """Return ' tvg-chno="N" ch-number="N"' when channel_number is set, else empty string."""
         chno = getattr(channel, "channel_number", None)
-        return f' tvg-chno="{chno}"' if chno is not None else ""
+        return f' tvg-chno="{chno}" ch-number="{chno}"' if chno is not None else ""
 
     def _generate_m3u_channel_entry(self, base_url, provider_name, channel):
         """
@@ -1108,7 +1108,7 @@ class UltimateService:
         channel_id = channel.channel_id
         channel_name = channel.name
         channel_logo = channel.logo_url or ""
-        chno = f' tvg-chno="{channel.channel_number}"' if getattr(channel, "channel_number", None) is not None else ""
+        chno = f' tvg-chno="{channel.channel_number}" ch-number="{channel.channel_number}"' if getattr(channel, "channel_number", None) is not None else ""
 
         # Build decrypted stream URL via media proxy with /index.mpd
         # Format: /api/providers/{provider}/channels/{channel_id}/stream/decrypted/index.mpd
@@ -1251,7 +1251,7 @@ class UltimateService:
                         elif is_unencrypted:
                             # Explicitly unencrypted channel - include with direct stream URL
                             stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/index.mpd"
-                            chno = f' tvg-chno="{channel.channel_number}"' if getattr(channel, "channel_number", None) is not None else ""
+                            chno = f' tvg-chno="{channel.channel_number}" ch-number="{channel.channel_number}"' if getattr(channel, "channel_number", None) is not None else ""
                             m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}"{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
                             m3u_content += f"{stream_url}\n"
                             channels_included += 1
