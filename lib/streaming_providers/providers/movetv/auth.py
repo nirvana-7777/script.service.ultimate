@@ -123,7 +123,8 @@ class MoveTVAuthenticator(BaseAuthenticator):
         )
         self._proxy_config = proxy_config
         self._http_manager = http_manager
-        self._uid = None  # Will be loaded from stored token or generated
+        self._uid: Optional[str] = None  # Will be loaded from stored token or generated
+        self._current_token: Optional[MoveTVAuthToken] = None  # Override type to MoveTVAuthToken
 
         # Try to load existing token from storage
         self._load_and_restore_token()
@@ -148,25 +149,25 @@ class MoveTVAuthenticator(BaseAuthenticator):
                 logger.debug(f"move.tv: Found stored token data with keys: {list(token_data.keys())}")
 
                 # Create token from stored data
-                self._current_token = self._create_token_from_response(token_data)
+                token = self._create_token_from_response(token_data)
+                self._current_token = token
 
                 # Restore UID from token
-                if hasattr(self._current_token, 'uid') and self._current_token.uid:
-                    self._uid = self._current_token.uid
+                if token.uid:
+                    self._uid = token.uid
                     logger.info(f"move.tv: Restored UID from storage: {self._uid}")
                 else:
                     logger.debug("move.tv: No UID found in stored token")
 
                 # Check if token is expired
-                if self._current_token.is_expired:
+                if token.is_expired:
                     logger.debug(
-                        f"move.tv: Stored token is expired (issued at {self._current_token.issued_at}, expires in {self._current_token.expires_in}s)")
+                        f"move.tv: Stored token is expired (issued at {token.issued_at}, expires in {token.expires_in}s)")
                     self._current_token = None
                     self._uid = None
                     return False
                 else:
-                    logger.info(
-                        f"move.tv: Successfully loaded token from storage (expires in {self._current_token.expires_in}s)")
+                    logger.info(f"move.tv: Successfully loaded token from storage (expires in {token.expires_in}s)")
                     return True
             else:
                 logger.debug("move.tv: No stored token found")
@@ -189,7 +190,7 @@ class MoveTVAuthenticator(BaseAuthenticator):
             return self._uid
 
         # Try to load from current token if available (should have been restored already)
-        if self._current_token and hasattr(self._current_token, 'uid') and self._current_token.uid:
+        if self._current_token and self._current_token.uid:
             self._uid = self._current_token.uid
             logger.debug(f"move.tv: Loaded UID from current token: {self._uid}")
             return self._uid
@@ -434,7 +435,7 @@ class MoveTVAuthenticator(BaseAuthenticator):
         Authenticates if no valid token is held.
         """
         token = self.authenticate(force_refresh=force_refresh)
-        return token.auth_token  # type: ignore[attr-defined]
+        return token.auth_token
 
     def get_session_info(self) -> Optional[Dict[str, Any]]:
         """
@@ -443,12 +444,11 @@ class MoveTVAuthenticator(BaseAuthenticator):
         """
         if not self._current_token or self._current_token.is_expired:
             return None
-        t: MoveTVAuthToken = self._current_token  # type: ignore[assignment]
         return {
-            "customer_id": t.customer_id,
-            "customer_profile_id": t.customer_profile_id,
-            "device_id": t.device_id,
-            "uid": t.uid,
-            "dedicated_server": t.dedicated_server,
-            "auth_token": t.auth_token,
+            "customer_id": self._current_token.customer_id,
+            "customer_profile_id": self._current_token.customer_profile_id,
+            "device_id": self._current_token.device_id,
+            "uid": self._current_token.uid,
+            "dedicated_server": self._current_token.dedicated_server,
+            "auth_token": self._current_token.auth_token,
         }
