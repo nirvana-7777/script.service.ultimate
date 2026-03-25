@@ -26,6 +26,9 @@ class MoveTVAuthToken(BaseAuthToken):
       - dedicated_server  CDN base URL (e.g. https://edge-mts-si-2.mts-si.tv)
       - device_id         server-assigned device identifier
       - uid               client-generated unique identifier (UUID)
+                          NOTE: the UID identifies a device slot on the platform
+                          and must be preserved independently of session/token
+                          lifetime.  Never clear it on token expiry or invalidation.
       - widevine_url      Widevine license server URL (from drm_server block)
       - playready_url     PlayReady license server URL (from drm_server block)
     """
@@ -101,7 +104,23 @@ class MoveTVAuthenticator(BaseAuthenticator):
           - t               → token lifetime in seconds (32400 = 9 hours)
     3.  All of the above is stored on MoveTVAuthToken and persisted via the
         base-class settings_manager.
+
+    UID / device-slot lifecycle
+    ---------------------------
+    The UID is a client-generated UUID that represents this client's registered
+    device slot on the platform.  It is NOT a session credential — its lifecycle
+    is completely independent of the auth token's expiry or invalidation.  The
+    platform enforces a maximum number of concurrent device slots per account
+    (appCode 403007 = "No slots available").  Generating a new UID on every
+    re-auth would consume an additional slot (or fail if the limit is reached).
+    Therefore:
+      - _uid is always restored from storage before any login attempt.
+      - Expiring or invalidating the auth token must never clear _uid.
+      - A new UUID is only generated when no UID has ever been stored.
     """
+
+    # appCode returned by the API when the device-slot limit is reached.
+    _APPCODE_NO_SLOTS = "403007"
 
     def __init__(
             self,
@@ -137,6 +156,9 @@ class MoveTVAuthenticator(BaseAuthenticator):
         """
         Load token from storage and restore state.
         Returns True if token was loaded and valid.
+
+        The UID is always restored from storage regardless of whether the
+        auth token itself is still valid — see class docstring for rationale.
         """
         if not self.settings_manager:
             logger.debug("move.tv: No settings manager available for loading token")
@@ -152,7 +174,7 @@ class MoveTVAuthenticator(BaseAuthenticator):
                 token = self._create_token_from_response(token_data)
                 self._current_token = token
 
-                # Restore UID from token
+                # Always restore the UID first — it must survive token expiry.
                 if token.uid:
                     self._uid = token.uid
                     logger.info(f"move.tv: Restored UID from storage: {self._uid}")
@@ -162,9 +184,12 @@ class MoveTVAuthenticator(BaseAuthenticator):
                 # Check if token is expired
                 if token.is_expired:
                     logger.debug(
-                        f"move.tv: Stored token is expired (issued at {token.issued_at}, expires in {token.expires_in}s)")
+                        f"move.tv: Stored token is expired (issued at {token.issued_at}, "
+                        f"expires in {token.expires_in}s) — UID preserved: {self._uid}"
+                    )
+                    # FIX: clear the session token but NOT the UID.
+                    # The UID represents a device slot and must outlive the session.
                     self._current_token = None
-                    self._uid = None
                     return False
                 else:
                     logger.info(f"move.tv: Successfully loaded token from storage (expires in {token.expires_in}s)")
@@ -184,6 +209,9 @@ class MoveTVAuthenticator(BaseAuthenticator):
         """
         Get existing UID from stored token or generate a new UUID.
         The UID is persisted across sessions via the token storage.
+
+        A new UUID is only generated when no UID has ever been recorded for
+        this provider, ensuring we never consume an extra device slot.
         """
         if self._uid:
             logger.debug(f"move.tv: Using existing UID: {self._uid}")
@@ -195,7 +223,7 @@ class MoveTVAuthenticator(BaseAuthenticator):
             logger.debug(f"move.tv: Loaded UID from current token: {self._uid}")
             return self._uid
 
-        # Generate new UUID as last resort
+        # Generate new UUID as last resort (only on very first run)
         self._uid = str(uuid.uuid4())
         logger.debug(f"move.tv: Generated new UID: {self._uid}")
         return self._uid
@@ -265,6 +293,27 @@ class MoveTVAuthenticator(BaseAuthenticator):
         return MoveTVAuthToken.from_dict(data)
 
     # ------------------------------------------------------------------
+    # Token invalidation — UID must be preserved
+    # ------------------------------------------------------------------
+
+    def invalidate_token(self) -> None:
+        """
+        Override base-class token invalidation to preserve the UID.
+
+        The base class wipes all stored state when a token is invalidated
+        (e.g. after an HTTP error).  That is correct for the session token,
+        but must never apply to the UID, which represents a registered device
+        slot.  Clearing the UID would cause the next login to register a new
+        device slot, potentially hitting the platform's concurrent-slot limit
+        (appCode 403007).
+        """
+        uid_to_preserve = self._uid
+        super().invalidate_token()
+        # Restore UID that super() may have wiped via storage/state reset.
+        self._uid = uid_to_preserve
+        logger.debug(f"move.tv: Token invalidated — UID preserved: {self._uid}")
+
+    # ------------------------------------------------------------------
     # Authentication
     # ------------------------------------------------------------------
 
@@ -295,6 +344,13 @@ class MoveTVAuthenticator(BaseAuthenticator):
         Full username / password login against /api/v2/login.
         Delegates payload and header construction to the abstract helpers so
         the base class can call them consistently.
+
+        Error handling
+        --------------
+        HTTP 406 with appCode 403007 ("No slots available") is treated as a
+        distinct, non-fatal condition: it does NOT represent a bad credential
+        or a bad token, so we raise a specific RuntimeError without touching
+        the UID or triggering the base-class token-invalidation path.
         """
         if not self.credentials or not self.credentials.validate():
             raise ValueError("move.tv: No valid credentials available for authentication")
@@ -320,8 +376,31 @@ class MoveTVAuthenticator(BaseAuthenticator):
         logger.debug(f"move.tv: Response status: {response.status_code}")
         logger.debug(f"move.tv: Response headers: {dict(response.headers)}")
 
+        # FIX: parse the body before raise_for_status() so we can inspect the
+        # appCode and avoid mis-classifying a slot-limit error as an auth failure.
+        data: Dict[str, Any] = {}
+        if response.content:
+            try:
+                data = response.json()
+            except Exception:
+                pass
+
+        # "No slots available" — the UID / device slot is still valid.
+        # Do NOT call raise_for_status() here; that would trigger the base
+        # class's generic token-invalidation path and wipe the UID.
+        if not response.ok and data.get("appCode") == self._APPCODE_NO_SLOTS:
+            logger.error(
+                f"move.tv: Device slot limit reached (appCode {self._APPCODE_NO_SLOTS}). "
+                f"UID {self._uid!r} is retained. "
+                "To resolve: log out another device from your move.tv account, then retry."
+            )
+            raise RuntimeError(
+                "move.tv: No device slots available (appCode 403007). "
+                "Log out another device from your account and retry."
+            )
+
+        # All other HTTP errors (bad credentials, server errors, etc.)
         response.raise_for_status()
-        data = response.json()
 
         # Log response summary
         if data.get("success"):
