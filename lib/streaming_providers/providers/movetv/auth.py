@@ -178,6 +178,7 @@ class MoveTVAuthenticator(BaseAuthenticator):
             # Primary path: full token dict saved by a previous successful login
             # ----------------------------------------------------------------
             token_data = self.settings_manager.get_auth_token(self.provider_name)
+            logger.debug(f"move.tv: get_auth_token raw result: {token_data}")
             if token_data:
                 logger.debug(f"move.tv: Found stored token data with keys: {list(token_data.keys())}")
 
