@@ -125,6 +125,14 @@ class MoveTVAuthenticator(BaseAuthenticator):
         self._http_manager = http_manager
         self._uid = None  # Will be loaded from stored token or generated
 
+        # Try to load existing token from storage
+        self._load_token_from_storage()
+
+        # If token was loaded, extract UID from it
+        if self._current_token and hasattr(self._current_token, 'uid') and self._current_token.uid:
+            self._uid = self._current_token.uid
+            logger.debug(f"move.tv: Loaded UID from stored token: {self._uid}")
+
     # ------------------------------------------------------------------
     # UID management
     # ------------------------------------------------------------------
@@ -135,19 +143,53 @@ class MoveTVAuthenticator(BaseAuthenticator):
         The UID is persisted across sessions via the token storage.
         """
         if self._uid:
+            logger.debug(f"move.tv: Using existing UID: {self._uid}")
             return self._uid
 
-        # Try to load from existing token if available
+        # Try to load from current token if available
         if self._current_token and hasattr(self._current_token, 'uid'):
             self._uid = self._current_token.uid
             if self._uid:
-                logger.debug(f"move.tv: Loaded existing UID: {self._uid}")
+                logger.debug(f"move.tv: Loaded UID from current token: {self._uid}")
                 return self._uid
 
         # Generate new UUID
         self._uid = str(uuid.uuid4())
         logger.debug(f"move.tv: Generated new UID: {self._uid}")
         return self._uid
+
+    def _load_token_from_storage(self) -> bool:
+        """
+        Load token from storage if available.
+        Returns True if token was loaded and valid.
+        """
+        if not self.settings_manager:
+            logger.debug("move.tv: No settings manager available for loading token")
+            return False
+
+        try:
+            # Try to load the token using the base class method
+            token_data = self.settings_manager.get_auth_token(self.provider_name)
+            if token_data:
+                logger.debug(f"move.tv: Found stored token data with keys: {list(token_data.keys())}")
+                self._current_token = self._create_token_from_response(token_data)
+
+                # Check if token is expired
+                if self._current_token.is_expired:
+                    logger.debug(
+                        f"move.tv: Stored token is expired (issued at {self._current_token.issued_at}, expires in {self._current_token.expires_in}s)")
+                    self._current_token = None
+                    return False
+                else:
+                    logger.info(
+                        f"move.tv: Successfully loaded token from storage (expires in {self._current_token.expires_in}s)")
+                    return True
+            else:
+                logger.debug("move.tv: No stored token found")
+                return False
+        except Exception as e:
+            logger.warning(f"move.tv: Failed to load token from storage: {e}")
+            return False
 
     # ------------------------------------------------------------------
     # BaseAuthenticator abstract contract
@@ -262,7 +304,20 @@ class MoveTVAuthenticator(BaseAuthenticator):
         if not data.get("success"):
             raise ValueError(f"move.tv: Login failed – API returned success=false: {data}")
 
-        return self._parse_login_response(data)
+        token = self._parse_login_response(data)
+
+        # Store the UID from the response
+        self._uid = token.uid
+
+        # Persist the token
+        if self.settings_manager:
+            try:
+                self.settings_manager.save_auth_token(self.provider_name, token.to_dict())
+                logger.debug("move.tv: Token saved to storage")
+            except Exception as e:
+                logger.warning(f"move.tv: Failed to save token to storage: {e}")
+
+        return token
 
     def _refresh_token(self) -> Optional[MoveTVAuthToken]:
         """
