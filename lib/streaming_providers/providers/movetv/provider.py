@@ -197,6 +197,8 @@ class MoveTVProvider(StreamingProvider):
 
         payload = {
             "customerId": session["customer_id"],
+            "customerProfileId": session["customer_profile_id"],
+            "lang": MoveTVConfig.DEFAULT_LANG,
             "appVersion": MoveTVConfig.APP_VERSION,
         }
         response = self.http_manager.post(

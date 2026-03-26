@@ -531,6 +531,14 @@ class UltimateService:
             response.content_type = "application/json"
             return json.dumps({"error": f"Failed to fetch manifest: {str(fetch_err)}"})
 
+    @staticmethod
+    def _sort_channels(channels):
+        """Sort channels by channel_number ascending; channels without a number come last."""
+        return sorted(
+            channels,
+            key=lambda ch: (ch.channel_number is None, ch.channel_number or 0)
+        )
+
     def _generate_m3u_content(
         self, providers=None, save_to_cache=True, cache_filename=None
     ):
@@ -566,8 +574,8 @@ class UltimateService:
         for provider_name in providers_to_process:
             try:
                 # Get channels for this provider
-                channels = self.manager.get_channels(
-                    provider_name=provider_name, fetch_manifests=False
+                channels = self._sort_channels(
+                    self.manager.get_channels(provider_name=provider_name, fetch_manifests=False)
                 )
 
                 # Add each channel to M3U
@@ -631,8 +639,8 @@ class UltimateService:
         for provider_name in providers_to_process:
             try:
                 # Get channels for this provider
-                channels = self.manager.get_channels(
-                    provider_name=provider_name, fetch_manifests=False
+                channels = self._sort_channels(
+                    self.manager.get_channels(provider_name=provider_name, fetch_manifests=False)
                 )
 
                 # Get provider label
@@ -733,8 +741,8 @@ class UltimateService:
         for provider_name in providers_to_process:
             try:
                 # Get channels for this provider
-                channels = self.manager.get_channels(
-                    provider_name=provider_name, fetch_manifests=False
+                channels = self._sort_channels(
+                    self.manager.get_channels(provider_name=provider_name, fetch_manifests=False)
                 )
 
                 # Get provider label
@@ -852,8 +860,8 @@ class UltimateService:
         for provider_name in providers_to_process:
             try:
                 # Get channels for this provider
-                channels = self.manager.get_channels(
-                    provider_name=provider_name, fetch_manifests=False
+                channels = self._sort_channels(
+                    self.manager.get_channels(provider_name=provider_name, fetch_manifests=False)
                 )
 
                 # Get provider instance for label and proxy config
@@ -1181,8 +1189,8 @@ class UltimateService:
         for provider_name in providers_to_process:
             try:
                 # Get channels for this provider
-                channels = self.manager.get_channels(
-                    provider_name=provider_name, fetch_manifests=False
+                channels = self._sort_channels(
+                    self.manager.get_channels(provider_name=provider_name, fetch_manifests=False)
                 )
 
                 # Get provider instance for label and proxy config

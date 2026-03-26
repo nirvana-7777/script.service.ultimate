@@ -343,7 +343,10 @@ def setup_m3u_routes(app, manager, service):
             provider_list = manager.list_providers()
             for provider_name in provider_list:
                 try:
-                    channels = manager.get_subscribed_channels(provider_name)
+                    channels = sorted(
+                        manager.get_subscribed_channels(provider_name),
+                        key=lambda ch: (ch.channel_number is None, ch.channel_number or 0)
+                    )
 
                     for channel in channels:
                         # Generate M3U entry for each subscribed channel
@@ -441,7 +444,10 @@ def setup_m3u_routes(app, manager, service):
             provider_list = manager.list_providers()
             for provider_name in provider_list:
                 try:
-                    channels = manager.get_subscribed_channels(provider_name)
+                    channels = sorted(
+                        manager.get_subscribed_channels(provider_name),
+                        key=lambda ch: (ch.channel_number is None, ch.channel_number or 0)
+                    )
 
                     # Get provider label
                     try:
