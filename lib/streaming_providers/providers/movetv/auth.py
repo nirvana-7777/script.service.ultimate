@@ -110,6 +110,10 @@ class MoveTVAuthenticator(BaseAuthenticator):
         """
         Create a MoveTVAuthToken from stored token data or a raw API response.
         Handles both shapes so that _load_session() works correctly.
+
+        Stored sessions may be missing keys like 'access_token' (stored as
+        'auth_token' only) or 'issued_at' (older sessions). Both are handled
+        gracefully so that _load_session() never raises and discards the token.
         """
         uid = response_data.get("device_id") or response_data.get("uid", "")
         profile = response_data.get("profile", {})
@@ -122,21 +126,54 @@ class MoveTVAuthenticator(BaseAuthenticator):
         else:
             auth_level = auth_level_raw
 
-        return MoveTVAuthToken(
-            access_token=response_data.get("access_token") or response_data.get("auth_token", ""),
+        # 'access_token' and 'auth_token' are the same value; accept either.
+        access_token = (
+            response_data.get("access_token")
+            or response_data.get("auth_token", "")
+        )
+
+        # 'issued_at' is absent from sessions saved before this field was
+        # added.  Use a sentinel far in the future so is_expired stays False
+        # and we always reach validate_token() rather than forcing a login.
+        issued_at = response_data.get("issued_at")
+        if issued_at is None:
+            # No timestamp stored → treat token as freshly issued so the
+            # base-class expiry check never fires.  validate_token() will
+            # confirm liveness with the server instead.
+            issued_at = time.time()
+            logger.debug(
+                "move.tv: Session has no issued_at; defaulting to now so "
+                "validate_token() decides liveness"
+            )
+
+        # expires_in: use a very large value when absent so is_expired==False.
+        # Again, the server-side validate call is the real freshness check.
+        expires_in_raw = response_data.get("expires_in") or response_data.get("t")
+        expires_in = int(expires_in_raw) if expires_in_raw is not None else 86400 * 365
+
+        token = MoveTVAuthToken(
+            access_token=access_token,
             token_type=response_data.get("token_type", "token"),
-            expires_in=int(response_data.get("expires_in", response_data.get("t", 32400))),
-            issued_at=float(response_data.get("issued_at", time.time())),
+            expires_in=expires_in,
+            issued_at=float(issued_at),
             refresh_token=response_data.get("refresh_token") or None,
             refresh_expires_in=int(response_data.get("refresh_expires_in", 0)),
             auth_level=auth_level,
             customer_id=response_data.get("customer_id", 0),
-            customer_profile_id=response_data.get("customer_profile_id")
-                or profile.get("id", 0),
+            customer_profile_id=(
+                response_data.get("customer_profile_id") or profile.get("id", 0)
+            ),
             dedicated_server=response_data.get("dedicated_server", ""),
             uid=uid,
             device_id=uid,
         )
+
+        logger.debug(
+            f"move.tv: Built token — access_token={'***' if token.access_token else '<empty>'}, "
+            f"customer_id={token.customer_id}, uid={token.uid}, "
+            f"is_expired={token.is_expired}"
+        )
+        return token
 
     def get_fallback_credentials(self):
         """No anonymous / fallback credentials for Move.tv — login is required."""
@@ -242,7 +279,13 @@ class MoveTVAuthenticator(BaseAuthenticator):
           3. Stored token, invalid    → full login (future: try refresh first)
           4. force_refresh=True       → full login unconditionally
         """
+        logger.debug(
+            f"move.tv: authenticate(force_refresh={force_refresh}) — "
+            f"has_token={self._current_token is not None}"
+        )
+
         if force_refresh or not self._current_token:
+            logger.debug("move.tv: No stored token or force_refresh — proceeding to full login")
             return self._full_login()
 
         token = cast(MoveTVAuthToken, self._current_token)
