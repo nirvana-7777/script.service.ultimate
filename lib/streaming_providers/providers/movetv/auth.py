@@ -45,6 +45,12 @@ class MoveTVAuthenticator(BaseAuthenticator):
     Concrete implementation of MoveTVAuthenticator.
     """
 
+    # Parameters accepted by BaseAuthenticator.__init__
+    _BASE_INIT_PARAMS = {
+        "provider_name", "settings_manager", "credentials",
+        "country", "config_dir", "enable_kodi_integration",
+    }
+
     def __init__(self, *args, **kwargs):
         # provider_name is a @property on the base class, so it must NOT be
         # passed as a constructor argument — pass the literal string directly.
@@ -53,7 +59,19 @@ class MoveTVAuthenticator(BaseAuthenticator):
             args = ("movetv",) + args[1:]
         else:
             kwargs["provider_name"] = "movetv"
+
+        # Consume kwargs unknown to BaseAuthenticator (e.g. proxy_config)
+        # before forwarding, storing them as instance attributes.
+        extra = {k: v for k, v in kwargs.items() if k not in self._BASE_INIT_PARAMS}
+        for k in extra:
+            kwargs.pop(k)
+
         super().__init__(*args, **kwargs)
+
+        # Attach extra kwargs as attributes so subclass code can use them.
+        for k, v in extra.items():
+            setattr(self, k, v)
+
         self.http_manager: Any = getattr(self, "http_manager", None)
 
     # ------------------------------------------------------------------
