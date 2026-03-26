@@ -328,7 +328,7 @@ class MoveTVProvider(StreamingProvider):
             logger.error(f"move.tv: Unexpected error fetching manifest for {content_id}: {exc}")
             return None
 
-    def get_play_auth_header(self, content_id: str) -> Optional[str]:
+    def _get_play_auth_header(self, content_id: str) -> Optional[str]:
         """
         Return the X-Play-Auth header value for a channel.
 
@@ -343,6 +343,13 @@ class MoveTVProvider(StreamingProvider):
         self.get_manifest(content_id)
         channel = self._channel_by_id(content_id)
         return channel.play_auth_header if channel else None
+
+    def get_manifest_headers(self, content_id: str, **kwargs) -> Dict[str, str]:
+        headers: Dict[str, str] = {
+            "User-Agent": MoveTVConfig.USER_AGENT,
+            "X-Play-Auth": self._get_play_auth_header(content_id),
+        }
+        return headers
 
     # ------------------------------------------------------------------
     # get_drm  (stub – AES-128/token auth, no active Widevine/PlayReady)

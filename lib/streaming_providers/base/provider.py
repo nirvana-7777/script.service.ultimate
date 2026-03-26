@@ -267,6 +267,30 @@ class StreamingProvider(ABC):
         """Get manifest URL for a specific channel by ID"""
         return None
 
+    def get_manifest_headers(self, content_id: str, **kwargs) -> Dict[str, str]:
+        """
+        Return headers for manifest requests.
+        Override if provider requires specific headers.
+        """
+        return {}
+
+    def get_segment_headers(self, content_id: str, **kwargs) -> Dict[str, str]:
+        """
+        Return headers for segment requests (used by proxy).
+        Default implementation uses manifest headers.
+        """
+        return self.get_manifest_headers(content_id, **kwargs)
+
+    def get_manifest_with_headers(self, content_id: str, **kwargs) -> Tuple[Optional[str], Dict[str, str]]:
+        """
+        Convenience method that returns (manifest_url, headers).
+        Default implementation uses get_manifest() and get_manifest_headers().
+        Providers can override if they need more complex logic.
+        """
+        url = self.get_manifest(content_id, **kwargs)
+        headers = self.get_manifest_headers(content_id, **kwargs)
+        return url, headers
+
     def get_dynamic_manifest_params(self, channel: StreamingChannel, **kwargs) -> Optional[str]:
         """Optional: Get dynamic manifest parameters for a channel"""
         return None

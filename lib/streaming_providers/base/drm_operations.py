@@ -291,7 +291,10 @@ class DRMOperations:
         """
         Get DRM configurations for a channel with two-phase plugin processing.
 
-        Phase 0: Fetch manifest, short-circuit if stream is unencrypted.
+        Phase 0: Fetch manifest once, short-circuit if stream is unencrypted.
+                 manifest_url, manifest_headers, and manifest_content are resolved
+                 here and threaded through to all subsequent phases — no phase ever
+                 calls get_manifest_with_headers() again unless Step 0a failed.
         Phase 1: GENERIC plugins (pre-provider) — can generate configs from PSSH.
                  If Phase 1 produces configs:
                    - Full ClearKey coverage  → cache ClearKey-only, return immediately.
@@ -306,6 +309,8 @@ class DRMOperations:
         """
         cache_key = f"{provider_name}:{channel_id}"
         manifest_content = None  # stored to avoid redundant fetches
+        manifest_url = None      # resolved once in Step 0a and reused throughout
+        manifest_headers = None  # resolved once in Step 0a and reused throughout
 
         # ------------------------------------------------------------------
         # Step 0: Resolve provider and inject proxy_config into kwargs
@@ -327,14 +332,16 @@ class DRMOperations:
                     )
 
         # ------------------------------------------------------------------
-        # Step 0a: Fetch manifest and short-circuit for unencrypted streams
+        # Step 0a: Fetch manifest once and short-circuit for unencrypted streams.
+        # manifest_url, manifest_headers, and manifest_content are stored here
+        # so that no later phase needs to call get_manifest_with_headers() again.
         # ------------------------------------------------------------------
-        manifest_url = provider.get_manifest(content_id=channel_id, **kwargs)
+        manifest_url, manifest_headers = provider.get_manifest_with_headers(channel_id, **kwargs)
         if manifest_url and manifest_url.startswith(('http://', 'https://')):
             try:
                 from .network import HTTPManager
                 http = provider.http_manager if hasattr(provider, 'http_manager') else HTTPManager()
-                response = http.get(manifest_url, timeout=10, operation="api")
+                response = http.get(manifest_url, headers=manifest_headers, timeout=10, operation="api")
                 response.raise_for_status()
                 manifest_content = response.text
 
@@ -358,6 +365,8 @@ class DRMOperations:
 
         # ------------------------------------------------------------------
         # Step 2: PHASE 1 — Try GENERIC plugins first (if registered)
+        # Pass the already-resolved manifest_url/headers so _try_generic_plugins
+        # never needs to call get_manifest_with_headers() itself.
         # ------------------------------------------------------------------
         pssh_data_list = None  # reused across phases to avoid re-fetching
 
@@ -365,7 +374,11 @@ class DRMOperations:
             logger.debug(f"Phase 1: Attempting GENERIC plugin processing for '{channel_id}'")
 
             generic_configs, pssh_data_list = self._try_generic_plugins(
-                provider_name, channel_id, cache_key, manifest_content, **kwargs
+                provider_name, channel_id, cache_key,
+                manifest_content=manifest_content,
+                manifest_url=manifest_url,
+                manifest_headers=manifest_headers,
+                **kwargs
             )
 
             # Only proceed with generic configs if they contain real DRM systems
@@ -417,8 +430,10 @@ class DRMOperations:
             return [DRMConfig(system=DRMSystem.NONE, priority=0)]
 
         # ------------------------------------------------------------------
-        # Step 4: PHASE 2 — Extract PSSH if needed for system-specific plugins
+        # Step 4: PHASE 2 — Extract PSSH if needed for system-specific plugins.
         # Reuse pssh_data_list from Phase 1 if already extracted.
+        # If a fresh fetch is needed, reuse the manifest_url/headers resolved
+        # in Step 0a — never call get_manifest_with_headers() again.
         # ------------------------------------------------------------------
         if pssh_data_list is None and self.drm_plugin_manager.has_system_specific_plugins():
             if self._needs_pssh_extraction(provider_drm_configs):
@@ -433,12 +448,16 @@ class DRMOperations:
                             self.pssh_cache.set(cache_key, pssh_data_list)
 
                     if not pssh_data_list:
-                        logger.debug(f"Phase 2: PSSH cache miss for {cache_key}, fetching manifest")
-                        manifest_url = provider.get_manifest(content_id=channel_id, **kwargs)
+                        # manifest_url/headers already resolved in Step 0a — reuse them
                         if manifest_url:
-                            pssh_data_list = self._extract_pssh_from_manifest(manifest_url, provider_name)
+                            logger.debug(f"Phase 2: PSSH cache miss for {cache_key}, extracting from manifest")
+                            pssh_data_list = self._extract_pssh_from_manifest(
+                                manifest_url, manifest_headers, provider_name
+                            )
                             if pssh_data_list:
                                 self.pssh_cache.set(cache_key, pssh_data_list)
+                        else:
+                            logger.debug(f"Phase 2: No manifest URL available for PSSH extraction")
                 else:
                     logger.debug(f"Phase 2: Using cached PSSH for {cache_key}")
 
@@ -520,6 +539,8 @@ class DRMOperations:
             channel_id: str,
             cache_key: str,
             manifest_content: Optional[str] = None,
+            manifest_url: Optional[str] = None,
+            manifest_headers: Optional[dict] = None,
             **kwargs
     ) -> Tuple[Optional[List[DRMConfig]], Optional[List]]:
         """
@@ -527,6 +548,11 @@ class DRMOperations:
         Returns (configs, pssh_data_list) tuple. Both can be None.
 
         IMPORTANT: Ensures PSSH data is complete (with KIDs) before calling plugins.
+
+        manifest_url and manifest_headers should be passed in from the caller
+        (already resolved in Step 0a of get_content_drm_configs) to avoid any
+        additional calls to get_manifest_with_headers(). A lazy fallback fetch
+        is performed only when both are None (i.e. Step 0a failed entirely).
         """
         # Get PSSH data (from cache or manifest)
         pssh_data_list = self.pssh_cache.get(cache_key)
@@ -541,17 +567,22 @@ class DRMOperations:
                 if pssh_data_list:
                     self.pssh_cache.set(cache_key, pssh_data_list)
 
-            # If still no PSSH, fetch manifest
+            # If still no PSSH, use the manifest_url/headers passed in from the caller.
+            # Only perform a lazy get_manifest_with_headers() call if they were not provided
+            # (i.e. Step 0a failed entirely).
             if not pssh_data_list:
-                logger.debug(f"GENERIC plugin: Fetching PSSH for '{provider_name}' / '{channel_id}'")
-                provider = self.registry.get_provider(provider_name)
-                if not provider:
-                    logger.warning(f"Provider '{provider_name}' not found for GENERIC plugin")
-                    return None, None
+                if not manifest_url:
+                    logger.debug(f"GENERIC plugin: No manifest URL provided, fetching for '{provider_name}' / '{channel_id}'")
+                    provider = self.registry.get_provider(provider_name)
+                    if not provider:
+                        logger.warning(f"Provider '{provider_name}' not found for GENERIC plugin")
+                        return None, None
+                    manifest_url, manifest_headers = provider.get_manifest_with_headers(channel_id, **kwargs)
+                else:
+                    logger.debug(f"GENERIC plugin: Using pre-fetched manifest URL for '{channel_id}'")
 
-                manifest_url = provider.get_manifest(content_id=channel_id, **kwargs)
                 if manifest_url:
-                    pssh_data_list = self._extract_pssh_from_manifest(manifest_url, provider_name)
+                    pssh_data_list = self._extract_pssh_from_manifest(manifest_url, manifest_headers, provider_name)
                     if pssh_data_list:
                         self.pssh_cache.set(cache_key, pssh_data_list)
 
@@ -565,30 +596,26 @@ class DRMOperations:
                 f"GENERIC plugin: PSSH data is incomplete (no KIDs) - extracting from init segment"
             )
 
-            provider = self.registry.get_provider(provider_name)
-            if not provider:
-                logger.error(f"Cannot extract real PSSH: provider '{provider_name}' not found")
+            # Reuse manifest_url/headers already in scope; they are guaranteed to be
+            # populated at this point (either passed in or fetched in the block above).
+            if not manifest_url:
+                logger.error(f"GENERIC plugin: Cannot get manifest URL for init segment extraction")
                 return None, pssh_data_list
 
-            manifest_url = provider.get_manifest(content_id=channel_id, **kwargs)
-            if manifest_url:
-                real_pssh = self._extract_pssh_from_manifest(manifest_url, provider_name)
+            real_pssh = self._extract_pssh_from_manifest(manifest_url, manifest_headers, provider_name)
 
-                if real_pssh and not self._has_stub_pssh(real_pssh):
-                    logger.info(
-                        f"GENERIC plugin: Successfully extracted complete PSSH with "
-                        f"{sum(len(p.key_ids) for p in real_pssh)} KIDs from init segment"
-                    )
-                    pssh_data_list = real_pssh
-                    self.pssh_cache.set(cache_key, pssh_data_list)
-                else:
-                    logger.error(
-                        f"GENERIC plugin: Failed to extract complete PSSH - "
-                        f"Kid-Key plugin will not be called"
-                    )
-                    return None, pssh_data_list
+            if real_pssh and not self._has_stub_pssh(real_pssh):
+                logger.info(
+                    f"GENERIC plugin: Successfully extracted complete PSSH with "
+                    f"{sum(len(p.key_ids) for p in real_pssh)} KIDs from init segment"
+                )
+                pssh_data_list = real_pssh
+                self.pssh_cache.set(cache_key, pssh_data_list)
             else:
-                logger.error(f"GENERIC plugin: Cannot get manifest URL for init segment extraction")
+                logger.error(
+                    f"GENERIC plugin: Failed to extract complete PSSH - "
+                    f"Kid-Key plugin will not be called"
+                )
                 return None, pssh_data_list
 
         # Verify we now have complete PSSH
@@ -639,7 +666,7 @@ class DRMOperations:
         }
         return bool(config_systems & plugin_systems)
 
-    def _extract_pssh_from_manifest(self, manifest_url: str, provider_name: Optional[str] = None) -> List:
+    def _extract_pssh_from_manifest(self, manifest_url: str, manifest_headers: dict[str, str], provider_name: Optional[str] = None) -> List:
         """Extract PSSH data from manifest using the provider's HTTPManager."""
         from .utils.drm_extractor import DRMExtractor
         from .network import HTTPManager
@@ -663,7 +690,7 @@ class DRMOperations:
                 http = HTTPManager()
 
             # 3. Perform the request
-            response = http.get(manifest_url, timeout=10, operation="api")
+            response = http.get(manifest_url, headers=manifest_headers, timeout=10, operation="api")
             response.raise_for_status()
             manifest_content = response.text
 
