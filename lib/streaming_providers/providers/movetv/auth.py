@@ -24,7 +24,11 @@ class MoveTVAuthToken(BaseAuthToken):
     def to_dict(self) -> Dict[str, Any]:
         """Concrete implementation of abstract method."""
         return {
+            # Stored under both keys: "access_token" for the base class and
+            # "auth_token" to match the raw API shape, ensuring round-trip
+            # whether reading from the live response or persisted session data.
             "access_token": self.access_token,
+            "auth_token": self.access_token,
             "token_type": self.token_type,
             "expires_in": self.expires_in,
             "issued_at": self.issued_at,
@@ -75,11 +79,7 @@ class MoveTVAuthenticator(BaseAuthenticator):
         self.http_manager: Any = getattr(self, "http_manager", None)
 
     # ------------------------------------------------------------------
-    # Abstract property required by BaseAuthenticator
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Abstract properties / methods required by BaseAuthenticator
+    # Abstract methods required by BaseAuthenticator
     # ------------------------------------------------------------------
 
     @property
@@ -127,6 +127,8 @@ class MoveTVAuthenticator(BaseAuthenticator):
             token_type=response_data.get("token_type", "token"),
             expires_in=int(response_data.get("expires_in", response_data.get("t", 32400))),
             issued_at=float(response_data.get("issued_at", time.time())),
+            refresh_token=response_data.get("refresh_token") or None,
+            refresh_expires_in=int(response_data.get("refresh_expires_in", 0)),
             auth_level=auth_level,
             customer_id=response_data.get("customer_id", 0),
             customer_profile_id=response_data.get("customer_profile_id")
