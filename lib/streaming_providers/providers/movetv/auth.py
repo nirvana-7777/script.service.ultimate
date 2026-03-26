@@ -78,10 +78,6 @@ class MoveTVAuthenticator(BaseAuthenticator):
     # Abstract property required by BaseAuthenticator
     # ------------------------------------------------------------------
 
-    @property
-    def provider_name(self) -> str:
-        return "movetv"
-
     # ------------------------------------------------------------------
     # Abstract properties / methods required by BaseAuthenticator
     # ------------------------------------------------------------------
