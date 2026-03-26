@@ -172,6 +172,99 @@ class MoveTVAuthenticator(BaseAuthenticator):
         return TokenAuthLevel.USER_AUTHENTICATED
 
     # ------------------------------------------------------------------
+    # Token validation
+    # ------------------------------------------------------------------
+
+    def validate_token(self, token: MoveTVAuthToken) -> bool:
+        """
+        Call the Move.tv token-validate endpoint to confirm the stored token
+        is still accepted by the server.
+
+        Returns True if the server reports "Token active.", False otherwise.
+        The token fields (dedicated_server etc.) are NOT updated here because
+        the validate response may contain fresh server URLs — callers that need
+        those values should read them from get_session_info() after a successful
+        validate, or trigger a full re-login on failure.
+        """
+        if not token.access_token:
+            logger.debug("move.tv: validate_token called with empty access_token, skipping")
+            return False
+
+        headers = {
+            **MoveTVConfig.get_base_headers(),
+            "x-auth-token": token.access_token,
+            "x-refresh-token": token.refresh_token or "",
+        }
+        payload = {
+            "customerId": token.customer_id,
+            "appVersion": MoveTVConfig.APP_VERSION,
+        }
+
+        logger.debug(
+            f"move.tv: Validating token for customer_id={token.customer_id}"
+        )
+
+        try:
+            response = self.http_manager.post(
+                MoveTVConfig.validate_url(),
+                json=payload,
+                headers=headers,
+                operation="token_validate",
+            )
+            response.raise_for_status()
+            data = response.json()
+        except Exception as exc:
+            logger.debug(f"move.tv: Token validation request failed: {exc}")
+            return False
+
+        if data.get("message") == "Token active.":
+            logger.debug("move.tv: Token is active")
+            return True
+
+        # Token is not active — log the full response so we can diagnose
+        # what the API returned (new tokens, error codes, etc.).
+        logger.debug(f"move.tv: Token not active, server response: {data}")
+        return False
+
+    # ------------------------------------------------------------------
+    # Override authenticate() to bypass expiry when session data exists
+    # ------------------------------------------------------------------
+
+    def authenticate(self, force_refresh: bool = False) -> MoveTVAuthToken:
+        """
+        Move.tv sessions do not carry an explicit server-side expiry we can
+        rely on.  When we have a stored token we validate it with the API
+        instead of checking the local is_expired flag.
+
+        Flow:
+          1. No stored token          → full login
+          2. Stored token, valid      → return as-is
+          3. Stored token, invalid    → full login (future: try refresh first)
+          4. force_refresh=True       → full login unconditionally
+        """
+        if force_refresh or not self._current_token:
+            return self._full_login()
+
+        token = cast(MoveTVAuthToken, self._current_token)
+
+        if self.validate_token(token):
+            return token
+
+        logger.info("move.tv: Stored token failed validation, performing full login")
+        return self._full_login()
+
+    def _full_login(self) -> MoveTVAuthToken:
+        """Ensure credentials, run the login request, persist the session."""
+        if not self._ensure_credentials():
+            raise Exception("No valid credentials available for move.tv")
+
+        token = self._perform_authentication()
+        self._current_token = token
+        self._save_session()
+        logger.info("move.tv: Authentication successful")
+        return token
+
+    # ------------------------------------------------------------------
     # Public helpers (unchanged interface)
     # ------------------------------------------------------------------
 
@@ -183,7 +276,7 @@ class MoveTVAuthenticator(BaseAuthenticator):
         Returns info required for playback.
         Casts the token to MoveTVAuthToken to resolve attribute errors.
         """
-        if not self._current_token or self._current_token.is_expired:
+        if not self._current_token:
             return None
 
         t = cast(MoveTVAuthToken, self._current_token)

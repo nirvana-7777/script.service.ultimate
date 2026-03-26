@@ -21,6 +21,7 @@ class MoveTVConfig:
     # API endpoint paths  (relative to API_BASE_URL)
     # -------------------------------------------------------------------------
     PATH_LOGIN: str = "/api/v2/login"
+    PATH_VALIDATE: str = "/api/v2/token/validate"
     PATH_LIVE_CHANNELS: str = "/api/v2/content/live/all"
     PATH_LIVE_SOURCE: str = "/api/v2/content/live/source/get"
 
@@ -94,6 +95,10 @@ class MoveTVConfig:
     @classmethod
     def login_url(cls) -> str:
         return f"{cls.API_BASE_URL}{cls.PATH_LOGIN}"
+
+    @classmethod
+    def validate_url(cls) -> str:
+        return f"{cls.API_BASE_URL}{cls.PATH_VALIDATE}"
 
     @classmethod
     def channels_url(cls) -> str:
