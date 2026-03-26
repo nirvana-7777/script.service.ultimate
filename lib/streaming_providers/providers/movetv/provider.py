@@ -349,6 +349,7 @@ class MoveTVProvider(StreamingProvider):
             "User-Agent": MoveTVConfig.USER_AGENT,
             "X-Play-Auth": self._get_play_auth_header(content_id),
         }
+        logger.debug(f"move.tv: Manifest headers: {headers}")
         return headers
 
     # ------------------------------------------------------------------
