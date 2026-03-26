@@ -158,6 +158,11 @@ class MoveTVAuthenticator(BaseAuthenticator):
             enable_kodi_integration=enable_kodi_integration,
         )
 
+        # FIX: Explicitly seed the UID from the loaded session token
+        if self._current_token and hasattr(self._current_token, 'uid') and self._current_token.uid:
+            self._uid = self._current_token.uid
+            logger.debug(f"move.tv: Restored UID from session: {self._uid}")
+
         # Seed _uid from the token the base class just loaded.  This must
         # happen before any call that could trigger _get_or_generate_uid()
         # (i.e. before the first login attempt).  We extract the UID even
