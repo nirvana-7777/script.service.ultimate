@@ -12,7 +12,7 @@ import json
 from abc import ABC, abstractmethod
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, ClassVar, Dict, List, Optional
+from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple
 
 from ..providers.auth import AuthContext, AuthStatus
 from .models.proxy_models import ProxyConfig
