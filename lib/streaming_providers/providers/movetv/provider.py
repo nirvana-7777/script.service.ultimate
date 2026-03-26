@@ -308,15 +308,16 @@ class MoveTVProvider(StreamingProvider):
             if source_data is None:
                 return None
 
+            # ✅ STORE PLAY AUTH FIRST - before checking content_url
+            # This ensures the header is cached even if content_url is missing
+            self._store_play_auth(content_id, source_data)
+
             content_url: Optional[str] = source_data.get("content_url")
             if not content_url:
                 logger.warning(
                     f"move.tv: No content_url in source response for liveId={live_id}"
                 )
                 return None
-
-            # Cache X-Play-Auth on the channel for cheap retrieval by callers
-            self._store_play_auth(content_id, source_data)
 
             logger.info(f"move.tv: Manifest URL for liveId={live_id}: {content_url}")
             return content_url
@@ -339,10 +340,19 @@ class MoveTVProvider(StreamingProvider):
         if channel and channel.play_auth_header:
             return channel.play_auth_header
 
-        # Trigger manifest fetch to populate the header
-        self.get_manifest(content_id)
-        channel = self._channel_by_id(content_id)
-        return channel.play_auth_header if channel else None
+        # Fetch manifest but don't use this method to avoid recursion
+        # We need to directly call _fetch_live_source and store the header
+        try:
+            live_id = int(content_id)
+            source_data = self._fetch_live_source(live_id)
+            if source_data:
+                self._store_play_auth(content_id, source_data)
+                channel = self._channel_by_id(content_id)
+                return channel.play_auth_header if channel else None
+        except Exception as exc:
+            logger.error(f"move.tv: Failed to fetch play auth header: {exc}")
+
+        return None
 
     def get_manifest_headers(self, content_id: str, **kwargs) -> Dict[str, str]:
         headers: Dict[str, str] = {
