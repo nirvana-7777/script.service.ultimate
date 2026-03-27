@@ -264,8 +264,88 @@ class MoveTVAuthenticator(BaseAuthenticator):
         return False
 
     # ------------------------------------------------------------------
-    # Override authenticate() to bypass expiry when session data exists
+    # Token refresh via /api/v2/token/status
     # ------------------------------------------------------------------
+
+    def refresh_token(self, token: "MoveTVAuthToken") -> Optional["MoveTVAuthToken"]:
+        """
+        Exchange the current refresh_token for a fresh auth_token + refresh_token
+        using the ``/api/v2/token/status`` endpoint.
+
+        The API expects the *old* refresh_token in the ``x-refresh-token`` header
+        and ``customerProfileId`` / ``appVersion`` in the JSON body.  On success
+        it returns new ``auth_token`` and ``refresh_token`` values together with
+        updated server URLs.
+
+        Returns a new :class:`MoveTVAuthToken` (already persisted) on success,
+        or ``None`` if the refresh fails (caller should fall back to full login).
+        """
+        if not token.refresh_token:
+            logger.debug("move.tv: refresh_token called but no refresh_token stored, skipping")
+            return None
+
+        headers = {
+            **MoveTVConfig.get_base_headers(),
+            "x-refresh-token": token.refresh_token,
+        }
+        payload = {
+            "customerProfileId": token.customer_profile_id,
+            "appVersion": MoveTVConfig.APP_VERSION,
+        }
+
+        logger.debug(
+            f"move.tv: Refreshing token for customer_profile_id={token.customer_profile_id}"
+        )
+
+        try:
+            response = self.http_manager.post(
+                MoveTVConfig.token_status_url(),
+                json=payload,
+                headers=headers,
+                operation="token_refresh",
+            )
+            response.raise_for_status()
+            data = response.json()
+        except Exception as exc:
+            logger.debug(f"move.tv: Token refresh request failed: {exc}")
+            return None
+
+        if not data.get("success") or data.get("message") != "Token active.":
+            logger.debug(f"move.tv: Token refresh rejected by server: {data}")
+            return None
+
+        # Merge refreshed fields into a new token, preserving any fields not
+        # returned by the status endpoint (e.g. credential_type).
+        existing = token.to_dict()
+        merged = {
+            **existing,
+            # The status response uses "auth_token"; map to both keys.
+            "access_token": data.get("auth_token", existing.get("access_token")),
+            "auth_token": data.get("auth_token", existing.get("auth_token")),
+            "refresh_token": data.get("refresh_token", existing.get("refresh_token")),
+            # "t" is the new expires_in value from the status response.
+            "expires_in": data.get("t", existing.get("expires_in")),
+            "dedicated_server": data.get("dedicated_server", existing.get("dedicated_server")),
+            "customer_id": int(data.get("customer_id") or existing.get("customer_id", 0)),
+            # IMPORTANT: The Move.tv API response field "device_id" is a
+            # server-assigned device identifier — it is NOT the same as the
+            # base-class device_id, which is our persistent local UID slot
+            # (analogous to how the API calls the auth token "auth_token" but
+            # the base class calls it "access_token").  We must preserve the
+            # existing uid/device_id so the base class keeps its value intact.
+        }
+
+        new_token = self._create_token_from_response(merged)
+        self._current_token = new_token
+        self._save_session()
+
+        logger.info(
+            f"move.tv: Token refreshed successfully — "
+            f"customer_id={new_token.customer_id}, uid={new_token.uid}"
+        )
+        return new_token
+
+
 
     def authenticate(self, force_refresh: bool = False) -> MoveTVAuthToken:
         """
@@ -293,7 +373,12 @@ class MoveTVAuthenticator(BaseAuthenticator):
         if self.validate_token(token):
             return token
 
-        logger.info("move.tv: Stored token failed validation, performing full login")
+        logger.info("move.tv: Stored token failed validation, attempting token refresh")
+        refreshed = self.refresh_token(token)
+        if refreshed:
+            return refreshed
+
+        logger.info("move.tv: Token refresh failed, performing full login")
         return self._full_login()
 
     def _full_login(self) -> MoveTVAuthToken:

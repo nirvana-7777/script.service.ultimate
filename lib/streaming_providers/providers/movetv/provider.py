@@ -1,12 +1,12 @@
 # streaming_providers/providers/movetv/provider.py
 import requests
-from typing import ClassVar, Dict, List, Optional, Any
+from typing import ClassVar, Dict, List, Optional, Any, cast
 
 from ...base.models import DRMConfig, StreamingChannel
 from ...base.models.proxy_models import ProxyConfig
 from ...base.provider import StreamingProvider
 from ...base.utils.logger import logger
-from .auth import MoveTVAuthenticator
+from .auth import MoveTVAuthenticator, MoveTVAuthToken
 from .constants import MoveTVConfig
 
 
@@ -171,6 +171,28 @@ class MoveTVProvider(StreamingProvider):
             logger.info(f"move.tv: Loaded {len(channels)} subscribed channels")
             return channels
 
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 401:
+                logger.info("move.tv: 401 on channel fetch — attempting token refresh …")
+                try:
+                    token = cast(MoveTVAuthToken, self.authenticator._current_token)
+                    if token and self.authenticator.refresh_token(token):
+                        channels = self._fetch_channels()
+                        self.channels = channels  # type: ignore[assignment]
+                        return channels
+                except Exception:
+                    pass
+                logger.info("move.tv: Refresh failed, retrying channel fetch after full login …")
+            else:
+                logger.error(f"move.tv: HTTP error fetching channels: {exc}")
+            try:
+                self.authenticator.authenticate(force_refresh=True)
+                channels = self._fetch_channels()
+                self.channels = channels  # type: ignore[assignment]
+                return channels
+            except Exception as retry_exc:
+                logger.error(f"move.tv: Channel fetch retry failed: {retry_exc}")
+                return []
         except requests.RequestException as exc:
             logger.error(f"move.tv: HTTP error fetching channels: {exc}")
             try:
@@ -414,6 +436,30 @@ class MoveTVProvider(StreamingProvider):
             json=payload,
             headers=headers,
         )
+
+        # On 401, attempt a token refresh and retry once before giving up.
+        if response.status_code == 401:
+            logger.info(f"move.tv: 401 on manifest fetch for liveId={live_id} — attempting token refresh …")
+            token = cast(MoveTVAuthToken, self.authenticator._current_token)
+            refreshed = self.authenticator.refresh_token(token) if token else None
+            if not refreshed:
+                logger.info("move.tv: Refresh failed, falling back to full login for manifest fetch")
+                self.authenticator.authenticate(force_refresh=True)
+            # Rebuild session and headers with the new token.
+            session = self.authenticator.get_session_info()
+            if not session:
+                logger.error("move.tv: Unable to obtain session after token refresh for manifest fetch")
+                return None
+            payload["customerId"] = session["customer_id"]
+            payload["customerProfileId"] = session["customer_profile_id"]
+            headers = MoveTVConfig.get_api_headers(auth_token=session["auth_token"])
+            response = self.http_manager.post(
+                MoveTVConfig.live_source_url(),
+                operation="manifest",
+                json=payload,
+                headers=headers,
+            )
+
         response.raise_for_status()
         data = response.json()
 
