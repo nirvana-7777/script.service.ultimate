@@ -130,6 +130,11 @@ class MoveTVProvider(StreamingProvider):
         # Share the same http_manager session with the authenticator
         self.http_manager = self._share_http_manager_with_authenticator(self.authenticator)
 
+        # Standalone play-auth cache: content_id -> (header_value, expires_at)
+        # Used by _store_play_auth / _get_play_auth_header so they never depend
+        # on self.channels being populated (get_channels may not have been called).
+        self._play_auth_cache: Dict[str, tuple] = {}
+
         # Attempt authentication at startup; non-fatal if it fails
         try:
             self.authenticator.authenticate()
@@ -376,13 +381,18 @@ class MoveTVProvider(StreamingProvider):
         """
         Return the X-Play-Auth header value for a channel.
 
-        The cached value is only returned when it has not expired (with a
-        60-second early-expiry buffer).  A stale or absent value triggers a
-        fresh _fetch_live_source call so the CDN always receives a valid token.
+        Checks the standalone _play_auth_cache first (populated by every
+        _store_play_auth call, regardless of whether self.channels exists).
+        A cached value is only returned when it has not expired (with a
+        60-second early-expiry buffer).  A stale or absent entry triggers a
+        fresh _fetch_live_source call.
         """
-        channel = self._channel_by_id(content_id)
-        if channel and channel.is_play_auth_valid():
-            return channel.play_auth_header
+        cached = self._play_auth_cache.get(content_id)
+        if cached:
+            header_value, expires_at = cached
+            buffer = MoveTVChannel._PLAY_AUTH_EARLY_EXPIRY_BUFFER
+            if expires_at and time.time() < (expires_at - buffer):
+                return header_value
 
         # Cache miss or expired — fetch a fresh source and re-cache.
         try:
@@ -390,8 +400,8 @@ class MoveTVProvider(StreamingProvider):
             source_data = self._fetch_live_source(live_id)
             if source_data:
                 self._store_play_auth(content_id, source_data)
-                channel = self._channel_by_id(content_id)
-                return channel.play_auth_header if channel else None
+                cached = self._play_auth_cache.get(content_id)
+                return cached[0] if cached else None
         except Exception as exc:
             logger.error(f"move.tv: Failed to fetch play auth header: {exc}")
 
@@ -506,11 +516,12 @@ class MoveTVProvider(StreamingProvider):
 
     def _store_play_auth(self, content_id: str, source_data: Dict[str, Any]) -> None:
         """
-        Cache the X-Play-Auth header value and its expiry on the channel.
+        Cache the X-Play-Auth header value and its expiry.
 
-        The expiry is extracted from the 'expires-<unix_ts>' segment embedded
-        in the token string so that _get_play_auth_header() can validate it
-        before serving the cached value.
+        Written to both the standalone _play_auth_cache dict (always) and to
+        the matching MoveTVChannel object (when the channel list has been
+        loaded).  Using the dict means the header is available even when
+        get_channels() has not yet been called.
         """
         protection: Dict = source_data.get("protection", {})
         header_value: str = protection.get("headerValue", "")
@@ -528,11 +539,17 @@ class MoveTVProvider(StreamingProvider):
                 f"liveId={content_id}; token will not be reused."
             )
 
+        # Always populate the standalone cache so _get_play_auth_header works
+        # regardless of whether self.channels has been populated.
+        self._play_auth_cache[content_id] = (header_value, expires_at)
+
+        # Also mirror onto the channel object when available.
         channel = self._channel_by_id(content_id)
         if channel:
             channel.play_auth_header = header_value
             channel.play_auth_expires_at = expires_at
-            logger.debug(
-                f"move.tv: Cached X-Play-Auth for liveId={content_id} "
-                f"expires_at={expires_at}: {header_value[:60]}…"
-            )
+
+        logger.debug(
+            f"move.tv: Cached X-Play-Auth for liveId={content_id} "
+            f"expires_at={expires_at}: {header_value[:60]}…"
+        )
