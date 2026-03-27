@@ -1,4 +1,6 @@
 # streaming_providers/providers/movetv/provider.py
+import re
+import time
 import requests
 from typing import ClassVar, Dict, List, Optional, Any, cast
 
@@ -28,13 +30,31 @@ class MoveTVChannel(StreamingChannel):
                               requesting the actual .mpd / .m3u8 from the CDN
     """
 
+    # How many seconds before the stated expiry we treat the token as stale.
+    # 60 s gives enough runway to start playback before the CDN rejects it.
+    _PLAY_AUTH_EARLY_EXPIRY_BUFFER: int = 60
+
     def __init__(self, *args, catalog_id: int = 0, catchup_hours: int = 0,
-                 stream_uid: str = "", play_auth_header: str = "", **kwargs):
+                 stream_uid: str = "", play_auth_header: str = "",
+                 play_auth_expires_at: float = 0.0, **kwargs):
         super().__init__(*args, **kwargs)
         self.catalog_id: int = catalog_id
         self.catchup_hours: int = catchup_hours
         self.stream_uid: str = stream_uid
         self.play_auth_header: str = play_auth_header
+        # Unix timestamp after which play_auth_header must be treated as stale.
+        # 0.0 means "no expiry parsed / never cached".
+        self.play_auth_expires_at: float = play_auth_expires_at
+
+    def is_play_auth_valid(self) -> bool:
+        """Return True only when a header is cached and has not yet expired."""
+        if not self.play_auth_header:
+            return False
+        if self.play_auth_expires_at == 0.0:
+            # No expiry was parsed — treat as already invalid so a fresh fetch
+            # is triggered.
+            return False
+        return time.time() < (self.play_auth_expires_at - self._PLAY_AUTH_EARLY_EXPIRY_BUFFER)
 
     def to_dict(self) -> Dict:
         result = super().to_dict()
@@ -42,6 +62,7 @@ class MoveTVChannel(StreamingChannel):
         result["CatchupHours"] = self.catchup_hours
         result["StreamUid"] = self.stream_uid
         result["PlayAuthHeader"] = self.play_auth_header
+        result["PlayAuthExpiresAt"] = self.play_auth_expires_at
         return result
 
 
@@ -355,15 +376,15 @@ class MoveTVProvider(StreamingProvider):
         """
         Return the X-Play-Auth header value for a channel.
 
-        Populated automatically during get_manifest().  If not yet cached,
-        get_manifest() is called implicitly.
+        The cached value is only returned when it has not expired (with a
+        60-second early-expiry buffer).  A stale or absent value triggers a
+        fresh _fetch_live_source call so the CDN always receives a valid token.
         """
         channel = self._channel_by_id(content_id)
-        if channel and channel.play_auth_header:
+        if channel and channel.is_play_auth_valid():
             return channel.play_auth_header
 
-        # Fetch manifest but don't use this method to avoid recursion
-        # We need to directly call _fetch_live_source and store the header
+        # Cache miss or expired — fetch a fresh source and re-cache.
         try:
             live_id = int(content_id)
             source_data = self._fetch_live_source(live_id)
@@ -478,16 +499,40 @@ class MoveTVProvider(StreamingProvider):
                 return ch
         return None
 
+    # Regex to extract the Unix expiry from the X-Play-Auth token value.
+    # The token format embeds it as "expires-<unix_ts>" e.g.:
+    #   hash-…-expires-1774465909-cusid-…
+    _PLAY_AUTH_EXPIRY_RE = re.compile(r"expires-(\d+)")
+
     def _store_play_auth(self, content_id: str, source_data: Dict[str, Any]) -> None:
-        """Cache the X-Play-Auth header value on the matching channel."""
+        """
+        Cache the X-Play-Auth header value and its expiry on the channel.
+
+        The expiry is extracted from the 'expires-<unix_ts>' segment embedded
+        in the token string so that _get_play_auth_header() can validate it
+        before serving the cached value.
+        """
         protection: Dict = source_data.get("protection", {})
         header_value: str = protection.get("headerValue", "")
         if not header_value:
             return
+
+        # Parse the expiry timestamp from the token itself.
+        expires_at: float = 0.0
+        match = self._PLAY_AUTH_EXPIRY_RE.search(header_value)
+        if match:
+            expires_at = float(match.group(1))
+        else:
+            logger.warning(
+                f"move.tv: Could not parse expiry from X-Play-Auth for "
+                f"liveId={content_id}; token will not be reused."
+            )
+
         channel = self._channel_by_id(content_id)
         if channel:
             channel.play_auth_header = header_value
+            channel.play_auth_expires_at = expires_at
             logger.debug(
-                f"move.tv: Cached X-Play-Auth for liveId={content_id}: "
-                f"{header_value[:60]}…"
+                f"move.tv: Cached X-Play-Auth for liveId={content_id} "
+                f"expires_at={expires_at}: {header_value[:60]}…"
             )
