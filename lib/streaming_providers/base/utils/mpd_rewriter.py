@@ -41,6 +41,7 @@ class MPDRewriter:
             channel: Optional[str] = None,
             blocklist_path: str = "representation_blocklist.json",
             clearkey_receiver_side: bool = False,
+            segment_headers: Optional[Dict[str, str]] = None,
     ):
         self.media_proxy_url = media_proxy_url.rstrip("/")
         self.provider_proxy_url = provider_proxy_url
@@ -61,6 +62,12 @@ class MPDRewriter:
         self._static_params = {}
         if self.provider_proxy_url:
             self._static_params["proxy"] = self.provider_proxy_url
+        if segment_headers:
+            import json
+            encoded = base64.urlsafe_b64encode(
+                json.dumps(segment_headers).encode()
+            ).decode().rstrip("=")
+            self._static_params["headers"] = encoded
 
     @staticmethod
     def encode_url(url: str) -> str:

@@ -332,6 +332,58 @@ class UltimateService:
         # Fallback to environment manager config
         return self.env_manager.get_config(setting_id, default)
 
+    def _fetch_manifest_for_rewriter(
+            self,
+            provider: str,
+            channel_id: str,
+            manifest_url: str,
+    ) -> tuple:
+        """
+        Fetch a manifest and collect everything MPDRewriter needs.
+
+        Returns:
+            (manifest_text, ttl, provider_proxy_url, segment_headers)
+
+        Raises:
+            ValueError: if the provider HTTP manager is not available
+            requests.HTTPError: if the manifest fetch fails
+        """
+        http_manager = self.manager.get_provider_http_manager(provider)
+        if not http_manager:
+            raise ValueError(f'Provider "{provider}" not configured properly (no HTTP manager)')
+
+        # Resolve manifest headers from the provider so auth tokens etc. are sent
+        provider_instance = self.manager.get_provider(provider)
+        manifest_headers = (
+            provider_instance.get_manifest_headers(channel_id)
+            if provider_instance else {}
+        )
+        segment_headers = (
+            provider_instance.get_segment_headers(channel_id)
+            if provider_instance else {}
+        )
+
+        manifest_response = http_manager.get(
+            manifest_url, headers=manifest_headers, operation="manifest"
+        )
+        manifest_response.raise_for_status()
+
+        # Cache TTL: prefer HTTP Cache-Control/Expires, fall back to MPD minimumUpdatePeriod
+        ttl = MPDRewriter.extract_cache_ttl(manifest_response.headers)
+        mpd_ttl = MPDRewriter.extract_mpd_update_period(manifest_response.text)
+        if mpd_ttl and mpd_ttl < ttl:
+            ttl = mpd_ttl
+
+        # Derive provider-side proxy URL for the media proxy to use when forwarding
+        provider_proxy_url = None
+        if http_manager.config.proxy_config:
+            proxy_cfg = http_manager.config.proxy_config
+            provider_proxy_url = (
+                f"{proxy_cfg.proxy_type.value.lower()}://{proxy_cfg.host}:{proxy_cfg.port}"
+            )
+
+        return manifest_response.text, ttl, provider_proxy_url, segment_headers
+
     def get_decrypted_manifest(
             self, provider: str, channel_id: str, keyids: dict,
             highest_quality_only: bool = False, receiver_side: bool = False
@@ -345,6 +397,7 @@ class UltimateService:
             channel_id: Channel ID
             keyids: Dictionary of kid:key pairs
             highest_quality_only: If True, keep only highest quality video representation
+            receiver_side: If True, inject ClearKey signaling for receiver-side decryption
 
         Returns:
             Rewritten MPD content as string
@@ -354,48 +407,24 @@ class UltimateService:
         # Note: We don't cache decrypted manifests as they contain keys
         logger.info(
             f"Generating {'receiver-side clearkey' if receiver_side else 'decrypted'} manifest "
-            f"for {provider}/{channel_id} (highest_quality_only={highest_quality_only})")
+            f"for {provider}/{channel_id} (highest_quality_only={highest_quality_only})"
+        )
 
-        # Get original manifest URL
         manifest_url = self.manager.get_channel_manifest(
             provider_name=provider, channel_id=channel_id, country=country
         )
-
         if not manifest_url:
             response.status = 404
             response.content_type = "application/json"
             return json.dumps(
-                {
-                    "error": f'Manifest not available for channel "{channel_id}" from provider "{provider}"'
-                }
+                {"error": f'Manifest not available for channel "{channel_id}" from provider "{provider}"'}
             )
 
-        # Get provider's HTTP manager
-        http_manager = self.manager.get_provider_http_manager(provider)
-        if not http_manager:
-            logger.error(f"No HTTP manager found for provider '{provider}'")
-            response.status = 502
-            response.content_type = "application/json"
-            return json.dumps(
-                {"error": f'Provider "{provider}" not configured properly'}
-            )
-
-        # Fetch manifest
         try:
-            logger.debug(f"Fetching manifest for decryption: {manifest_url}")
-            manifest_response = http_manager.get(manifest_url, operation="manifest")
+            manifest_text, _ttl, provider_proxy_url, segment_headers = self._fetch_manifest_for_rewriter(
+                provider, channel_id, manifest_url
+            )
 
-            # Get provider proxy URL if configured
-            provider_proxy_url = None
-            if http_manager.config.proxy_config:
-                proxy_cfg = http_manager.config.proxy_config
-                provider_proxy_url = (
-                    f"{proxy_cfg.proxy_type.value.lower()}://{proxy_cfg.host}:{proxy_cfg.port}"
-                )
-                logger.debug(f"Provider has proxy configured: {provider_proxy_url}")
-
-            # Rewrite MPD URLs to point to media proxy decrypt endpoint with keys
-            # CHANGED: Added provider and channel_id parameters for blocklist filtering
             rewriter = MPDRewriter(
                 self.media_proxy_url,
                 provider_proxy_url,
@@ -404,127 +433,153 @@ class UltimateService:
                 provider=provider,
                 channel=channel_id,
                 clearkey_receiver_side=receiver_side,
+                segment_headers=segment_headers,
             )
-            rewritten_mpd = rewriter.rewrite_mpd(manifest_response.text, manifest_url)
+            rewritten_mpd = rewriter.rewrite_mpd(manifest_text, manifest_url)
 
-            # Return rewritten MPD
             response.content_type = "application/dash+xml; charset=utf-8"
             return rewritten_mpd
 
+        except ValueError as e:
+            logger.error(str(e))
+            response.status = 502
+            response.content_type = "application/json"
+            return json.dumps({"error": str(e)})
         except Exception as fetch_err:
             logger.error(f"Failed to fetch manifest for decryption: {fetch_err}")
             response.status = 502
             response.content_type = "application/json"
             return json.dumps({"error": f"Failed to fetch manifest: {str(fetch_err)}"})
 
+    def get_proxied_catchup_manifest(
+            self,
+            provider: str,
+            channel_id: str,
+            start_time: int,
+            end_time: int,
+            epg_id: str = None,
+            country: str = None,
+    ) -> str:
+        """
+        Get proxied and rewritten MPD manifest for catchup content using media proxy.
+        Similar to get_proxied_manifest but for catchup streams.
+        """
+        cache_key = f"{channel_id}_catchup_{start_time}_{end_time}"
+
+        cached_mpd = self.mpd_cache.get(provider, cache_key)
+        if cached_mpd:
+            response.content_type = "application/dash+xml; charset=utf-8"
+            return cached_mpd
+
+        logger.info(f"Cache miss for catchup {provider}/{channel_id}, fetching manifest")
+
+        if not self.media_proxy_url:
+            response.status = 503
+            response.content_type = "application/json"
+            return json.dumps({"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"})
+
+        manifest_url = self.manager.get_catchup_manifest(
+            provider_name=provider,
+            channel_id=channel_id,
+            start_time=start_time,
+            end_time=end_time,
+            epg_id=epg_id,
+            country=country,
+        )
+        if not manifest_url:
+            response.status = 404
+            response.content_type = "application/json"
+            return json.dumps({"error": "Catchup manifest not available"})
+
+        try:
+            manifest_text, ttl, provider_proxy_url, segment_headers = self._fetch_manifest_for_rewriter(
+                provider, channel_id, manifest_url
+            )
+
+            rewriter = MPDRewriter(
+                self.media_proxy_url,
+                provider_proxy_url,
+                None,  # No keyids for catchup streams
+                False,  # highest_quality_only — not needed for catchup
+                provider=provider,
+                channel=channel_id,
+                segment_headers=segment_headers,
+            )
+            rewritten_mpd = rewriter.rewrite_mpd(manifest_text, manifest_url)
+
+            self.mpd_cache.set(
+                provider=provider,
+                channel_id=cache_key,
+                mpd_content=rewritten_mpd,
+                ttl=ttl,
+                original_url=manifest_url,
+            )
+
+            response.content_type = "application/dash+xml; charset=utf-8"
+            return rewritten_mpd
+
+        except ValueError as e:
+            logger.error(str(e))
+            response.status = 502
+            response.content_type = "application/json"
+            return json.dumps({"error": str(e)})
+        except Exception as fetch_err:
+            logger.error(f"Failed to fetch catchup manifest: {fetch_err}")
+            response.status = 502
+            response.content_type = "application/json"
+            return json.dumps({"error": f"Failed to fetch manifest: {str(fetch_err)}"})
+
     def get_proxied_manifest(self, provider: str, channel_id: str, highest_quality_only: bool = False) -> str:
-        """
-        Get proxied and rewritten MPD manifest for a channel using media proxy.
-        Uses cache when available and valid.
-
-        Args:
-            provider: Provider name
-            channel_id: Channel ID
-            highest_quality_only: If True, keep only highest quality video representation
-
-        Returns:
-            Rewritten MPD content as string
-        """
         country = request.query.get("country")
 
-        # Try cache first (only if not using highest_quality_only, as that changes output)
         if not highest_quality_only:
             cached_mpd = self.mpd_cache.get(provider, channel_id)
             if cached_mpd:
                 response.content_type = "application/dash+xml; charset=utf-8"
                 return cached_mpd
 
-        # Cache miss or highest_quality_only enabled - fetch and rewrite
-        logger.info(
-            f"Cache miss for {provider}/{channel_id}, fetching manifest (highest_quality_only={highest_quality_only})")
-
-        # Check if media proxy is configured
         if not self.media_proxy_url:
             response.status = 503
             response.content_type = "application/json"
-            return json.dumps(
-                {"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"}
-            )
+            return json.dumps({"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"})
 
-        # Get original manifest URL
         manifest_url = self.manager.get_channel_manifest(
             provider_name=provider, channel_id=channel_id, country=country
         )
-
         if not manifest_url:
             response.status = 404
             response.content_type = "application/json"
             return json.dumps(
-                {
-                    "error": f'Manifest not available for channel "{channel_id}" from provider "{provider}"'
-                }
-            )
+                {"error": f'Manifest not available for channel "{channel_id}" from provider "{provider}"'})
 
-        # Get provider's HTTP manager to fetch manifest and check proxy config
-        http_manager = self.manager.get_provider_http_manager(provider)
-        if not http_manager:
-            logger.error(f"No HTTP manager found for provider '{provider}'")
-            response.status = 502
-            response.content_type = "application/json"
-            return json.dumps(
-                {"error": f'Provider "{provider}" not configured properly'}
-            )
-
-        # Fetch manifest via provider's HTTP manager
         try:
-            logger.debug(f"Fetching manifest: {manifest_url}")
-            manifest_response = http_manager.get(manifest_url, operation="manifest")
+            manifest_text, ttl, provider_proxy_url, segment_headers = self._fetch_manifest_for_rewriter(
+                provider, channel_id, manifest_url
+            )
 
-            # Extract cache TTL from response headers
-            ttl = MPDRewriter.extract_cache_ttl(manifest_response.headers)
-
-            # Also check MPD's own update period as fallback
-            mpd_ttl = MPDRewriter.extract_mpd_update_period(manifest_response.text)
-            if mpd_ttl and mpd_ttl < ttl:
-                ttl = mpd_ttl
-                logger.debug(f"Using MPD minimumUpdatePeriod as TTL: {ttl}s")
-
-            # Get provider proxy URL if configured
-            provider_proxy_url = None
-            if http_manager.config.proxy_config:
-                # Build proxy URL from config
-                proxy_cfg = http_manager.config.proxy_config
-                provider_proxy_url = (
-                    f"{proxy_cfg.proxy_type.value.lower()}://{proxy_cfg.host}:{proxy_cfg.port}"
-                )
-                logger.debug(f"Provider has proxy configured: {provider_proxy_url}")
-
-            # Rewrite MPD URLs to point to media proxy
-            # CHANGED: Added provider and channel_id parameters for blocklist filtering
             rewriter = MPDRewriter(
                 self.media_proxy_url,
                 provider_proxy_url,
-                None,  # No keyids for proxied (unencrypted) streams
+                None,
                 highest_quality_only,
-                provider=provider,  # NEW: Enable blocklist filtering
-                channel=channel_id  # NEW: Enable blocklist filtering
+                provider=provider,
+                channel=channel_id,
+                segment_headers=segment_headers,
             )
-            rewritten_mpd = rewriter.rewrite_mpd(manifest_response.text, manifest_url)
+            rewritten_mpd = rewriter.rewrite_mpd(manifest_text, manifest_url)
 
-            # Cache the rewritten MPD (only if not using highest_quality_only)
             if not highest_quality_only:
-                self.mpd_cache.set(
-                    provider=provider,
-                    channel_id=channel_id,
-                    mpd_content=rewritten_mpd,
-                    ttl=ttl,
-                    original_url=manifest_url,
-                )
+                self.mpd_cache.set(provider=provider, channel_id=channel_id,
+                                   mpd_content=rewritten_mpd, ttl=ttl, original_url=manifest_url)
 
-            # Return rewritten MPD
             response.content_type = "application/dash+xml; charset=utf-8"
             return rewritten_mpd
 
+        except ValueError as e:
+            logger.error(str(e))
+            response.status = 502
+            response.content_type = "application/json"
+            return json.dumps({"error": str(e)})
         except Exception as fetch_err:
             logger.error(f"Failed to fetch manifest: {fetch_err}")
             response.status = 502
@@ -1496,115 +1551,6 @@ class UltimateService:
         )
 
         return m3u_content
-
-    def get_proxied_catchup_manifest(
-            self,
-            provider: str,
-            channel_id: str,
-            start_time: int,
-            end_time: int,
-            epg_id: str = None,
-            country: str = None,
-    ) -> str:
-        """
-        Get proxied and rewritten MPD manifest for catchup content using media proxy.
-        Similar to get_proxied_manifest but for catchup streams.
-        """
-        # Generate cache key that includes time parameters
-        cache_key = f"{channel_id}_catchup_{start_time}_{end_time}"
-
-        # Try cache first (with catchup-specific key)
-        cached_mpd = self.mpd_cache.get(provider, cache_key)
-        if cached_mpd:
-            response.content_type = "application/dash+xml; charset=utf-8"
-            return cached_mpd
-
-        logger.info(
-            f"Cache miss for catchup {provider}/{channel_id}, fetching manifest"
-        )
-
-        # Check if media proxy is configured
-        if not self.media_proxy_url:
-            response.status = 503
-            response.content_type = "application/json"
-            return json.dumps(
-                {"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"}
-            )
-
-        # Get catchup manifest URL
-        manifest_url = self.manager.get_catchup_manifest(
-            provider_name=provider,
-            channel_id=channel_id,
-            start_time=start_time,
-            end_time=end_time,
-            epg_id=epg_id,
-            country=country,
-        )
-
-        if not manifest_url:
-            response.status = 404
-            response.content_type = "application/json"
-            return json.dumps({"error": f"Catchup manifest not available"})
-
-        # Get provider's HTTP manager
-        http_manager = self.manager.get_provider_http_manager(provider)
-        if not http_manager:
-            logger.error(f"No HTTP manager found for provider '{provider}'")
-            response.status = 502
-            response.content_type = "application/json"
-            return json.dumps(
-                {"error": f'Provider "{provider}" not configured properly'}
-            )
-
-        # Fetch manifest
-        try:
-            logger.debug(f"Fetching catchup manifest: {manifest_url}")
-            manifest_response = http_manager.get(manifest_url, operation="manifest")
-
-            # Extract cache TTL
-            ttl = MPDRewriter.extract_cache_ttl(manifest_response.headers)
-            mpd_ttl = MPDRewriter.extract_mpd_update_period(manifest_response.text)
-            if mpd_ttl and mpd_ttl < ttl:
-                ttl = mpd_ttl
-
-            # Get provider proxy URL if configured
-            provider_proxy_url = None
-            if http_manager.config.proxy_config:
-                proxy_cfg = http_manager.config.proxy_config
-                provider_proxy_url = (
-                    f"{proxy_cfg.proxy_type.value.lower()}://{proxy_cfg.host}:{proxy_cfg.port}"
-                )
-                logger.debug(f"Provider has proxy configured: {provider_proxy_url}")
-
-            # Rewrite MPD URLs to point to media proxy
-            # CHANGED: Added provider and channel_id parameters for blocklist filtering
-            rewriter = MPDRewriter(
-                self.media_proxy_url,
-                provider_proxy_url,
-                None,  # No keyids for catchup streams
-                False,  # highest_quality_only - usually not needed for catchup
-                provider=provider,  # NEW: Enable blocklist filtering
-                channel=channel_id  # NEW: Enable blocklist filtering
-            )
-            rewritten_mpd = rewriter.rewrite_mpd(manifest_response.text, manifest_url)
-
-            # Cache the rewritten MPD with catchup-specific key
-            self.mpd_cache.set(
-                provider=provider,
-                channel_id=cache_key,  # Use catchup-specific cache key
-                mpd_content=rewritten_mpd,
-                ttl=ttl,
-                original_url=manifest_url,
-            )
-
-            response.content_type = "application/dash+xml; charset=utf-8"
-            return rewritten_mpd
-
-        except Exception as fetch_err:
-            logger.error(f"Failed to fetch catchup manifest: {fetch_err}")
-            response.status = 502
-            response.content_type = "application/json"
-            return json.dumps({"error": f"Failed to fetch manifest: {str(fetch_err)}"})
 
     @staticmethod
     def get_settings_manager():

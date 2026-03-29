@@ -6,7 +6,7 @@ Separated from general manifest parsing to maintain clear separation of concerns
 
 import base64
 import re
-from typing import List
+from typing import Dict, List, Optional
 
 from ..models.drm import PSSHData
 from .logger import logger
@@ -43,6 +43,8 @@ class DRMExtractor:
         if fallback_to_segments and segment_urls:
             incomplete_pssh = [p for p in pssh_list if not p.pssh_box or not p.key_ids]
             if incomplete_pssh:
+                # No headers available in this deprecated path — callers that need
+                # auth on segment requests should use _extract_from_single_segment directly.
                 segment_pssh = DRMExtractor._extract_from_single_segment(
                     segment_urls[0], [p.system_id for p in incomplete_pssh]
                 )
@@ -92,13 +94,27 @@ class DRMExtractor:
     @staticmethod
     def _extract_from_single_segment(
             segment_url: str,
-            expected_system_ids: List[str] = None
+            expected_system_ids: List[str] = None,
+            headers: Optional[Dict[str, str]] = None,
     ) -> List[PSSHData]:
-        """Extract PSSH from a single segment URL."""
+        """
+        Extract PSSH from a single segment URL.
+
+        Args:
+            segment_url: URL of the init segment to fetch
+            expected_system_ids: If provided, filter results to these DRM system IDs.
+                                 Falls back to returning all PSSH if no matches found.
+            headers: HTTP headers to use when fetching the segment (e.g. Authorization).
+                     Providers that require auth on segment requests should supply these
+                     via StreamingProvider.get_segment_headers().
+        """
         from .mp4_pssh_extractor import MP4PSSHExtractor
 
         try:
-            pssh_from_segment = MP4PSSHExtractor.extract_from_url(segment_url)
+            pssh_from_segment = MP4PSSHExtractor.extract_from_url(
+                segment_url,
+                headers=headers or {},
+            )
 
             if expected_system_ids:
                 # Normalize expected IDs using the model

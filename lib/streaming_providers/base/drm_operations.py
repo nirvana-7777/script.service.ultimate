@@ -452,7 +452,8 @@ class DRMOperations:
                         if manifest_url:
                             logger.debug(f"Phase 2: PSSH cache miss for {cache_key}, extracting from manifest")
                             pssh_data_list = self._extract_pssh_from_manifest(
-                                manifest_url, manifest_headers, provider_name
+                                manifest_url, manifest_headers, provider_name,
+                                channel_id=channel_id,
                             )
                             if pssh_data_list:
                                 self.pssh_cache.set(cache_key, pssh_data_list)
@@ -582,7 +583,10 @@ class DRMOperations:
                     logger.debug(f"GENERIC plugin: Using pre-fetched manifest URL for '{channel_id}'")
 
                 if manifest_url:
-                    pssh_data_list = self._extract_pssh_from_manifest(manifest_url, manifest_headers, provider_name)
+                    pssh_data_list = self._extract_pssh_from_manifest(
+                        manifest_url, manifest_headers, provider_name,
+                        channel_id=channel_id,
+                    )
                     if pssh_data_list:
                         self.pssh_cache.set(cache_key, pssh_data_list)
 
@@ -602,7 +606,10 @@ class DRMOperations:
                 logger.error(f"GENERIC plugin: Cannot get manifest URL for init segment extraction")
                 return None, pssh_data_list
 
-            real_pssh = self._extract_pssh_from_manifest(manifest_url, manifest_headers, provider_name)
+            real_pssh = self._extract_pssh_from_manifest(
+                manifest_url, manifest_headers, provider_name,
+                channel_id=channel_id,
+            )
 
             if real_pssh and not self._has_stub_pssh(real_pssh):
                 logger.info(
@@ -666,8 +673,26 @@ class DRMOperations:
         }
         return bool(config_systems & plugin_systems)
 
-    def _extract_pssh_from_manifest(self, manifest_url: str, manifest_headers: dict[str, str], provider_name: Optional[str] = None) -> List:
-        """Extract PSSH data from manifest using the provider's HTTPManager."""
+    def _extract_pssh_from_manifest(
+            self,
+            manifest_url: str,
+            manifest_headers: Dict[str, str],
+            provider_name: Optional[str] = None,
+            channel_id: Optional[str] = None,
+    ) -> List:
+        """
+        Extract PSSH data from manifest, falling back to the init segment if
+        the manifest itself carries only stub ContentProtection entries.
+
+        Args:
+            manifest_url: URL of the manifest to fetch.
+            manifest_headers: HTTP headers to use when fetching the manifest.
+            provider_name: Used to resolve the provider's HTTPManager and
+                           segment headers. If None, a plain HTTPManager is used.
+            channel_id: Passed to provider.get_segment_headers() so providers
+                        that require per-channel auth on segments supply the
+                        correct headers. If None, segment headers default to {}.
+        """
         from .utils.drm_extractor import DRMExtractor
         from .network import HTTPManager
 
@@ -677,19 +702,28 @@ class DRMOperations:
             return []
 
         try:
-            # 2. Resolve the correct HTTP manager
+            # 2. Resolve the correct HTTP manager and segment headers
             http = None
+            segment_headers = {}
+
             if provider_name:
                 provider = self.registry.get_provider(provider_name)
                 if provider:
                     http = provider.http_manager
                     logger.debug(f"Using configured HTTPManager for provider: {provider_name}")
 
+                    if channel_id:
+                        segment_headers = provider.get_segment_headers(channel_id)
+                        logger.debug(
+                            f"Resolved segment headers for '{provider_name}/{channel_id}': "
+                            f"{list(segment_headers.keys())}"
+                        )
+
             if not http:
                 logger.debug("No provider manager found; using default HTTPManager")
                 http = HTTPManager()
 
-            # 3. Perform the request
+            # 3. Perform the manifest request
             response = http.get(manifest_url, headers=manifest_headers, timeout=10, operation="api")
             response.raise_for_status()
             manifest_content = response.text
@@ -712,7 +746,8 @@ class DRMOperations:
                 if init_segment_url:
                     segment_pssh = DRMExtractor._extract_from_single_segment(
                         init_segment_url,
-                        [p.system_id for p in pssh_list] if pssh_list else []
+                        [p.system_id for p in pssh_list] if pssh_list else [],
+                        headers=segment_headers,
                     )
 
                     if segment_pssh:
