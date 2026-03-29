@@ -145,6 +145,66 @@ def setup_stream_routes(app, manager, service):
             )
             return None
 
+    def _build_stream_headers(
+        content_type: str,
+        provider: str,
+        content_id: str,
+        country=None,
+        # catchup-specific — only used for channels
+        is_catchup: bool = False,
+        start_time: int = None,
+        end_time: int = None,
+        epg_id: str = None,
+    ):
+        """
+        Fetch manifest and segment headers from the provider, serialise to JSON
+        and attach as a base64-encoded response header (x-kodi-stream-headers).
+        Non-fatal: logs a warning and returns None on any error.
+
+        Payload structure:
+            {
+                "manifest": { <header-name>: <value>, ... },
+                "segment":  { <header-name>: <value>, ... }
+            }
+        Both keys are always present (empty dict if the provider returns nothing).
+        """
+        try:
+            provider_instance = manager.get_provider(provider)
+            if not provider_instance:
+                return None
+
+            kwargs = {}
+            if country:
+                kwargs["country"] = country
+            if is_catchup and content_type == CONTENT_TYPE_CHANNEL:
+                kwargs.update(
+                    start_time=start_time,
+                    end_time=end_time,
+                    epg_id=epg_id,
+                )
+
+            manifest_headers = provider_instance.get_manifest_headers(content_id, **kwargs)
+            segment_headers = provider_instance.get_segment_headers(content_id, **kwargs)
+
+            payload = {
+                "manifest": manifest_headers or {},
+                "segment": segment_headers or {},
+            }
+
+            encoded = base64.b64encode(
+                json.dumps(payload).encode("utf-8")
+            ).decode("ascii")
+
+            response.headers["x-kodi-stream-headers"] = encoded
+            return encoded
+
+        except Exception as e:
+            logger.warning(
+                f"Could not build x-kodi-stream-headers header for "
+                f"{content_type} {provider}/{content_id}: {e}"
+            )
+            return None
+
     def _resolve_stream(
         content_type: str,
         provider: str,
@@ -167,6 +227,15 @@ def setup_stream_routes(app, manager, service):
         """
         # --- DRM header (best-effort, never fatal) ---
         _build_drm_header(
+            content_type, provider, content_id,
+            country=country,
+            is_catchup=is_catchup,
+            start_time=start_time_int,
+            end_time=end_time_int,
+            epg_id=epg_id,
+        )
+        # --- Stream headers (best-effort, never fatal) ---
+        _build_stream_headers(
             content_type, provider, content_id,
             country=country,
             is_catchup=is_catchup,
@@ -342,6 +411,7 @@ def setup_stream_routes(app, manager, service):
                 stream_url += f"?country={country}"
 
             _build_drm_header(CONTENT_TYPE_CHANNEL, provider, channel_id, country=country)
+            _build_stream_headers(CONTENT_TYPE_CHANNEL, provider, channel_id, country=country)
 
             return {
                 "provider": provider,
@@ -508,6 +578,7 @@ def setup_stream_routes(app, manager, service):
                 stream_url += f"?country={country}"
 
             _build_drm_header(CONTENT_TYPE_EVENT, provider, event_id, country=country)
+            _build_stream_headers(CONTENT_TYPE_EVENT, provider, event_id, country=country)
 
             return {
                 "provider": provider,
@@ -620,6 +691,7 @@ def setup_stream_routes(app, manager, service):
                 stream_url += f"?country={country}"
 
             _build_drm_header(CONTENT_TYPE_VOD, provider, vod_id, country=country)
+            _build_stream_headers(CONTENT_TYPE_VOD, provider, vod_id, country=country)
 
             return {
                 "provider": provider,
@@ -734,6 +806,9 @@ def setup_stream_routes(app, manager, service):
                 stream_url += f"?country={country}"
 
             _build_drm_header(
+                CONTENT_TYPE_RECORDING, provider, recording_id, country=country
+            )
+            _build_stream_headers(
                 CONTENT_TYPE_RECORDING, provider, recording_id, country=country
             )
 
