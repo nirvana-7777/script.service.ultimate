@@ -5,7 +5,7 @@ Extracts PSSH boxes and Key IDs from MP4 segments using the refactored DRM model
 """
 
 import struct
-from typing import Optional
+from typing import Dict, List, Optional
 
 from ..models.drm import PSSHData, TencParser, PSSHParser
 from ..models.drm.exceptions import InvalidPSSHError, InvalidTencError
@@ -20,13 +20,21 @@ class MP4PSSHExtractor:
     """
 
     @staticmethod
-    def extract_from_url(segment_url: str, timeout: int = 10) -> list[PSSHData]:
+    def extract_from_url(
+            segment_url: str,
+            timeout: int = 10,
+            headers: Optional[Dict[str, str]] = None,
+    ) -> List[PSSHData]:
         """
         Download MP4 segment and extract PSSH data.
 
         Args:
             segment_url: URL of the MP4 segment
             timeout: Request timeout in seconds
+            headers: Optional HTTP headers to include in the request.
+                     Providers that require authentication on segment requests
+                     (e.g. Authorization, X-Custom-Token) should supply these
+                     via StreamingProvider.get_segment_headers().
 
         Returns:
             List of PSSHData objects with extracted information
@@ -34,7 +42,11 @@ class MP4PSSHExtractor:
         import requests
 
         try:
-            response = requests.get(segment_url, timeout=timeout)
+            response = requests.get(
+                segment_url,
+                timeout=timeout,
+                headers=headers or {},
+            )
             response.raise_for_status()
 
             # Only download first ~100KB for efficiency
@@ -48,7 +60,7 @@ class MP4PSSHExtractor:
             return []
 
     @staticmethod
-    def extract_from_bytes(data: bytes) -> list[PSSHData]:
+    def extract_from_bytes(data: bytes) -> List[PSSHData]:
         """
         Extract PSSH boxes and encryption info from MP4 binary data.
 
@@ -135,7 +147,7 @@ class MP4PSSHExtractor:
         return pssh_data_list
 
     @staticmethod
-    def _extract_all_tenc_kids(data: bytes) -> list[str]:
+    def _extract_all_tenc_kids(data: bytes) -> List[str]:
         """
         Extract all Key IDs from tenc boxes in the MP4 data.
 
@@ -200,7 +212,7 @@ class MP4PSSHExtractor:
         return kids
 
     @staticmethod
-    def _extract_from_moov(moov_data: bytes) -> list[PSSHData]:
+    def _extract_from_moov(moov_data: bytes) -> List[PSSHData]:
         """
         Extract PSSH boxes from moov container.
 
@@ -241,13 +253,13 @@ class MP4PSSHExtractor:
                 offset += box_size
 
             except Exception as e:
-                logger.debug(f"Error in moov at offset {offset}: {e}")
+                logger.debug(f"Error parsing moov box at offset {offset}: {e}")
                 break
 
         return pssh_list
 
     @staticmethod
-    def _extract_from_trak(trak_data: bytes) -> list[PSSHData]:
+    def _extract_from_trak(trak_data: bytes) -> List[PSSHData]:
         """Extract PSSH from trak box"""
         pssh_list = []
         offset = 8
@@ -276,7 +288,7 @@ class MP4PSSHExtractor:
         return pssh_list
 
     @staticmethod
-    def _extract_from_mdia(mdia_data: bytes) -> list[PSSHData]:
+    def _extract_from_mdia(mdia_data: bytes) -> List[PSSHData]:
         """Extract PSSH from mdia box"""
         pssh_list = []
         offset = 8
@@ -305,7 +317,7 @@ class MP4PSSHExtractor:
         return pssh_list
 
     @staticmethod
-    def _extract_from_minf(minf_data: bytes) -> list[PSSHData]:
+    def _extract_from_minf(minf_data: bytes) -> List[PSSHData]:
         """Extract PSSH from minf box"""
         pssh_list = []
         offset = 8
@@ -334,7 +346,7 @@ class MP4PSSHExtractor:
         return pssh_list
 
     @staticmethod
-    def _extract_from_stbl(stbl_data: bytes) -> list[PSSHData]:
+    def _extract_from_stbl(stbl_data: bytes) -> List[PSSHData]:
         """Extract PSSH from stbl box (where protection scheme info usually is)"""
         pssh_list = []
         offset = 8
@@ -363,7 +375,7 @@ class MP4PSSHExtractor:
         return pssh_list
 
     @staticmethod
-    def _extract_from_sinf(sinf_data: bytes) -> list[PSSHData]:
+    def _extract_from_sinf(sinf_data: bytes) -> List[PSSHData]:
         """Extract PSSH from sinf (protection scheme information) box"""
         pssh_list = []
         offset = 8
@@ -392,7 +404,7 @@ class MP4PSSHExtractor:
         return pssh_list
 
     @staticmethod
-    def _extract_from_schi(schi_data: bytes) -> list[PSSHData]:
+    def _extract_from_schi(schi_data: bytes) -> List[PSSHData]:
         """Extract PSSH from schi box (where PSSH boxes are typically stored)"""
         pssh_list = []
         offset = 8
