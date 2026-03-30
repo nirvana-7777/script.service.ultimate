@@ -205,6 +205,28 @@ def setup_stream_routes(app, manager, service):
             )
             return None
 
+    def _stream_needs_headers(
+            content_type: str, provider: str, content_id: str, country=None
+    ) -> bool:
+        """
+        Returns True if the provider requires manifest or segment headers for
+        this content — meaning a plain redirect would lose those headers and
+        playback would likely fail.
+        """
+        try:
+            provider_instance = manager.get_provider(provider)
+            if not provider_instance:
+                return False
+            kwargs = {"country": country} if country else {}
+            manifest_headers = provider_instance.get_manifest_headers(content_id, **kwargs) or {}
+            segment_headers = provider_instance.get_segment_headers(content_id, **kwargs) or {}
+            return bool(manifest_headers or segment_headers)
+        except Exception as e:
+            logger.warning(
+                f"Could not check stream headers for {content_type} {provider}/{content_id}: {e}"
+            )
+            return False  # assume no headers needed; let the redirect attempt proceed
+
     def _resolve_stream(
         content_type: str,
         provider: str,
@@ -364,14 +386,51 @@ def setup_stream_routes(app, manager, service):
                     highest_quality_only=highest_quality_only,
                 )
 
+
             elif is_unencrypted:
-                if manager.needs_proxy(provider) and service.media_proxy_url:
+
+                # Even without encryption, some providers require manifest/segment headers
+
+                # (auth tokens, etc.). If headers are present, route through the media proxy
+
+                # so it can inject them on every request. Otherwise a plain redirect is safe.
+
+                needs_headers = _stream_needs_headers(content_type, provider, content_id, country)
+
+                if needs_headers and service.media_proxy_url:
+
                     return service.get_proxied_manifest(
+
                         provider, content_id,
+
                         highest_quality_only=highest_quality_only,
+
                     )
+
+                elif needs_headers and not service.media_proxy_url:
+
+                    logger.warning(
+
+                        f"Provider {provider}/{content_id} needs headers but MEDIA_PROXY_URL is not set; "
+
+                        "falling back to redirect (playback may fail)"
+
+                    )
+
+                    manifest_url = _get_manifest_url(content_type, provider, content_id, country=country)
+
+                    return redirect(manifest_url)
+
                 else:
-                    return service.get_original_manifest(provider, content_id, country)
+
+                    manifest_url = _get_manifest_url(content_type, provider, content_id, country=country)
+
+                    if not manifest_url:
+                        response.status = 404
+
+                        return {"error": f'Manifest not available for {content_type} "{content_id}"'}
+
+                    return redirect(manifest_url)
 
             else:
                 response.status = 400
