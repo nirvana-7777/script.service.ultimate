@@ -441,6 +441,8 @@ def setup_stream_routes(app, manager, service):
                     )
                 }
 
+        except HTTPResponse:
+            raise
         except ValueError as e:
             logger.error(f"API Error in decrypted {content_type} stream: {e}")
             response.status = 404
