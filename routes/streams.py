@@ -489,6 +489,43 @@ def setup_stream_routes(app, manager, service):
             response.status = 500
             return {"error": f"Internal server error: {str(e)}"}
 
+    @app.route("/api/providers/<provider>/channels/<channel_id>/manifest/original")
+    def get_channel_manifest_original(provider, channel_id):
+        """
+        Fetch and return the original manifest content without modifications.
+        """
+        try:
+            country = request.query.get("country")
+
+            # Get the upstream manifest URL
+            manifest_url = manager.get_channel_manifest(
+                provider_name=provider,
+                channel_id=channel_id,
+                country=country
+            )
+
+            if not manifest_url:
+                response.status = 404
+                return {"error": f'Manifest not available for channel "{channel_id}"'}
+
+            # Use existing helper to fetch manifest
+            manifest_text, _, _, _ = service._fetch_manifest_for_rewriter(
+                provider, channel_id, manifest_url
+            )
+
+            # Return unmodified manifest
+            response.content_type = "application/dash+xml; charset=utf-8"
+            return manifest_text
+
+        except ValueError as e:
+            logger.error(f"manifest fetch error for {provider}/{channel_id}: {e}")
+            response.status = 404
+            return {"error": str(e)}
+        except Exception as e:
+            logger.error(f"manifest fetch error for {provider}/{channel_id}: {e}")
+            response.status = 500
+            return {"error": f"Failed to fetch manifest: {str(e)}"}
+
     @app.route("/api/providers/<provider>/channels/<channel_id>/stream/index.mpd")
     def get_channel_stream(provider, channel_id):
         """
