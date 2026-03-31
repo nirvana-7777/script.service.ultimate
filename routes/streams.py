@@ -228,24 +228,19 @@ def setup_stream_routes(app, manager, service):
             return False  # assume no headers needed; let the redirect attempt proceed
 
     def _resolve_stream(
-        content_type: str,
-        provider: str,
-        content_id: str,
-        country=None,
-        # catchup-specific — only used for channels
-        is_catchup: bool = False,
-        start_time_int: int = None,
-        end_time_int: int = None,
-        epg_id: str = None,
+            content_type: str,
+            provider: str,
+            content_id: str,
+            country=None,
+            # catchup-specific — only used for channels
+            is_catchup: bool = False,
+            start_time_int: int = None,
+            end_time_int: int = None,
+            epg_id: str = None,
     ):
         """
         Core stream resolution: attach DRM header, then either redirect to the
         upstream manifest or return a proxy-rewritten manifest body.
-
-        Handles three cases in order:
-          1. Catchup (channel-only for now)
-          2. Proxy needed  → return rewritten MPD body
-          3. No proxy      → HTTP 302 redirect to upstream manifest URL
         """
         # --- DRM header (best-effort, never fatal) ---
         _build_drm_header(
@@ -328,19 +323,56 @@ def setup_stream_routes(app, manager, service):
             else:
                 return service.get_proxied_manifest(provider, content_id)
         else:
-            manifest_url = _get_manifest_url(
-                content_type, provider, content_id, country=country
-            )
-            if not manifest_url:
-                response.status = 404
-                return {
-                    "error": (
-                        f'Manifest not available for {content_type} '
-                        f'"{content_id}" from provider "{provider}"'
+            # Check if provider requires manifest context (needs HTTP manager to fetch)
+            provider_instance = manager.get_provider(provider)
+            if provider_instance and getattr(provider_instance, 'requires_manifest_context', False):
+                # For providers that need manifest context, fetch and return the manifest directly
+                logger.debug(
+                    f"Provider {provider} requires manifest context — fetching manifest directly "
+                    f"for {content_type}/{content_id}"
+                )
+                try:
+                    manifest_url = _get_manifest_url(
+                        content_type, provider, content_id, country=country
                     )
-                }
-            logger.debug(f"Redirecting to manifest: {manifest_url}")
-            return redirect(manifest_url)
+                    if not manifest_url:
+                        response.status = 404
+                        return {
+                            "error": (
+                                f'Manifest not available for {content_type} '
+                                f'"{content_id}" from provider "{provider}"'
+                            )
+                        }
+
+                    # Use the service's _fetch_manifest_for_rewriter or a similar helper
+                    manifest_text, _, _, _ = service.fetch_manifest_for_rewriter(
+                        provider, content_id, manifest_url
+                    )
+
+                    response.content_type = "application/dash+xml; charset=utf-8"
+                    return manifest_text
+
+                except Exception as e:
+                    logger.error(
+                        f"Failed to fetch manifest for {content_type}/{content_id} "
+                        f"from {provider}: {e}"
+                    )
+                    response.status = 502
+                    return {"error": f"Failed to fetch manifest: {str(e)}"}
+            else:
+                manifest_url = _get_manifest_url(
+                    content_type, provider, content_id, country=country
+                )
+                if not manifest_url:
+                    response.status = 404
+                    return {
+                        "error": (
+                            f'Manifest not available for {content_type} '
+                            f'"{content_id}" from provider "{provider}"'
+                        )
+                    }
+                logger.debug(f"Redirecting to manifest: {manifest_url}")
+                return redirect(manifest_url)
 
     def _resolve_decrypted_stream(
         content_type: str,
@@ -544,7 +576,7 @@ def setup_stream_routes(app, manager, service):
             # Use existing helper to fetch manifest
             # _fetch_manifest_for_rewriter expects (provider, channel_id, manifest_url)
             # but we can pass content_id as channel_id since it's just an identifier
-            manifest_text, _, _, _ = service._fetch_manifest_for_rewriter(
+            manifest_text, _, _, _ = service.fetch_manifest_for_rewriter(
                 provider, content_id, manifest_url
             )
 

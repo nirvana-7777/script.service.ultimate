@@ -171,6 +171,11 @@ class MoveTVProvider(StreamingProvider):
     def supported_auth_types(self) -> List[str]:
         return self.SUPPORTED_AUTH_TYPES
 
+    @property
+    def requires_manifest_context(self) -> bool:
+        # Manifests need http_manager context
+        return True
+
     # ------------------------------------------------------------------
     # Header helpers
     # ------------------------------------------------------------------

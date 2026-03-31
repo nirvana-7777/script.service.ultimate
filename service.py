@@ -332,7 +332,7 @@ class UltimateService:
         # Fallback to environment manager config
         return self.env_manager.get_config(setting_id, default)
 
-    def _fetch_manifest_for_rewriter(
+    def fetch_manifest_for_rewriter(
             self,
             provider: str,
             channel_id: str,
@@ -421,7 +421,7 @@ class UltimateService:
             )
 
         try:
-            manifest_text, _ttl, provider_proxy_url, segment_headers = self._fetch_manifest_for_rewriter(
+            manifest_text, _ttl, provider_proxy_url, segment_headers = self.fetch_manifest_for_rewriter(
                 provider, channel_id, manifest_url
             )
 
@@ -492,7 +492,7 @@ class UltimateService:
             return json.dumps({"error": "Catchup manifest not available"})
 
         try:
-            manifest_text, ttl, provider_proxy_url, segment_headers = self._fetch_manifest_for_rewriter(
+            manifest_text, ttl, provider_proxy_url, segment_headers = self.fetch_manifest_for_rewriter(
                 provider, channel_id, manifest_url
             )
 
@@ -553,7 +553,7 @@ class UltimateService:
                 {"error": f'Manifest not available for channel "{channel_id}" from provider "{provider}"'})
 
         try:
-            manifest_text, ttl, provider_proxy_url, segment_headers = self._fetch_manifest_for_rewriter(
+            manifest_text, ttl, provider_proxy_url, segment_headers = self.fetch_manifest_for_rewriter(
                 provider, channel_id, manifest_url
             )
 

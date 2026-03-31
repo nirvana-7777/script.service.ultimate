@@ -1198,6 +1198,11 @@ class StreamingProvider(ABC):
         credential_types = ["user_credentials", "client_credentials"]
         return any(auth_type in credential_types for auth_type in self.supported_auth_types)
 
+    @property
+    def requires_manifest_context(self) -> bool:
+        """True if provider needs to use same http manager to get manifest."""
+        return False
+
     # ===== AUTHENTICATION PROPERTIES =====
 
     def get_current_auth_type(self, context: AuthContext) -> str:
