@@ -489,28 +489,63 @@ def setup_stream_routes(app, manager, service):
             response.status = 500
             return {"error": f"Internal server error: {str(e)}"}
 
-    @app.route("/api/providers/<provider>/channels/<channel_id>/manifest/original")
-    def get_channel_manifest_original(provider, channel_id):
+    @app.route("/api/providers/<provider>/<content_type>/<content_id>/manifest/original")
+    def get_original_manifest(provider, content_type, content_id):
         """
         Fetch and return the original manifest content without modifications.
+        The server fetches the manifest and returns it as-is.
+
+        Supported content_type values:
+            - channels
+            - events
+            - vod
+            - recordings
+
+        Example:
+            GET /api/providers/rtlplus/channels/123/manifest/original
+            GET /api/providers/discovery_de/vod/movie123/manifest/original
         """
         try:
             country = request.query.get("country")
 
-            # Get the upstream manifest URL
-            manifest_url = manager.get_channel_manifest(
-                provider_name=provider,
-                channel_id=channel_id,
-                country=country
-            )
+            # Get the upstream manifest URL based on content_type
+            if content_type == "channels":
+                manifest_url = manager.get_channel_manifest(
+                    provider_name=provider,
+                    channel_id=content_id,
+                    country=country
+                )
+            elif content_type == "events":
+                manifest_url = manager.get_event_manifest(
+                    provider_name=provider,
+                    event_id=content_id,
+                    country=country
+                )
+            elif content_type == "vod":
+                manifest_url = manager.get_vod_manifest(
+                    provider_name=provider,
+                    vod_id=content_id,
+                    country=country
+                )
+            elif content_type == "recordings":
+                manifest_url = manager.get_recording_manifest(
+                    provider_name=provider,
+                    recording_id=content_id,
+                    country=country
+                )
+            else:
+                response.status = 400
+                return {"error": f"Invalid content_type: {content_type}"}
 
             if not manifest_url:
                 response.status = 404
-                return {"error": f'Manifest not available for channel "{channel_id}"'}
+                return {"error": f'Manifest not available for {content_type} "{content_id}" from provider "{provider}"'}
 
             # Use existing helper to fetch manifest
+            # _fetch_manifest_for_rewriter expects (provider, channel_id, manifest_url)
+            # but we can pass content_id as channel_id since it's just an identifier
             manifest_text, _, _, _ = service._fetch_manifest_for_rewriter(
-                provider, channel_id, manifest_url
+                provider, content_id, manifest_url
             )
 
             # Return unmodified manifest
@@ -518,11 +553,11 @@ def setup_stream_routes(app, manager, service):
             return manifest_text
 
         except ValueError as e:
-            logger.error(f"manifest fetch error for {provider}/{channel_id}: {e}")
+            logger.error(f"Original manifest error for {provider}/{content_type}/{content_id}: {e}")
             response.status = 404
             return {"error": str(e)}
         except Exception as e:
-            logger.error(f"manifest fetch error for {provider}/{channel_id}: {e}")
+            logger.error(f"Original manifest error for {provider}/{content_type}/{content_id}: {e}")
             response.status = 500
             return {"error": f"Failed to fetch manifest: {str(e)}"}
 
