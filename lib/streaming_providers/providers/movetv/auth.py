@@ -325,6 +325,10 @@ class MoveTVAuthenticator(BaseAuthenticator):
             "refresh_token": data.get("refresh_token", existing.get("refresh_token")),
             # "t" is the new expires_in value from the status response.
             "expires_in": data.get("t", existing.get("expires_in")),
+            # Reset the issue timestamp so is_expired is calculated against
+            # *now*, not the original login time.  Without this the merged
+            # token inherits the old issued_at and is immediately stale.
+            "issued_at": time.time(),
             "dedicated_server": data.get("dedicated_server", existing.get("dedicated_server")),
             "customer_id": int(data.get("customer_id") or existing.get("customer_id", 0)),
             # IMPORTANT: The Move.tv API response field "device_id" is a
