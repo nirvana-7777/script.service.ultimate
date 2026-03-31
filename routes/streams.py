@@ -325,6 +325,13 @@ def setup_stream_routes(app, manager, service):
         else:
             # Check if provider requires manifest context (needs HTTP manager to fetch)
             provider_instance = manager.get_provider(provider)
+
+            if provider_instance is None:
+                logger.warning(
+                    f"_resolve_stream: manager.get_provider('{provider}') returned None — "
+                    "cannot check requires_manifest_context; falling back to redirect"
+                )
+
             if provider_instance and getattr(provider_instance, 'requires_manifest_context', False):
                 # For providers that need manifest context, fetch and return the manifest directly
                 logger.debug(
