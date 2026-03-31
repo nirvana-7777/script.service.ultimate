@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from urllib.parse import quote
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
-from ...base.models import DRMConfig, DRMSystem, LicenseConfig, StreamingChannel, Event
+from ...base.models import DRMConfig, StreamingChannel, Event
 from ...base.models.auth import AuthState
 from ...base.models.proxy_models import ProxyConfig
 from ...base.network import HTTPManagerFactory, ProxyConfigManager
@@ -26,7 +26,6 @@ from .constants import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_PLATFORM,
     DEFAULT_REQUEST_TIMEOUT,
-    DRM_REQUEST_HEADERS,
     DRM_SYSTEM_WIDEVINE,
     ERROR_CODES,
     MAGENTA2_CLIENT_IDS,
@@ -1410,67 +1409,18 @@ class Magenta2Provider(StreamingProvider):
             return None
         return self._recordings_manager.get_recording_manifest(recording_id)
 
-    def enrich_channel_data(
-        self, channel: StreamingChannel, **kwargs
-    ) -> Optional[StreamingChannel]:
-        """Get manifest URL for a specific channel and configure DRM"""
-        self._ensure_authenticated()
-
-        try:
-            entitlement_token = self.get_entitlement_token(
-                content_id=channel.channel_id, content_type=channel.content_type
-            )
-
-            playlist_data = self.get_channel_playlist(channel.channel_id, entitlement_token)
-
-            manifest_url = playlist_data.get("manifestUrl", playlist_data.get("manifest"))
-            if not manifest_url:
-                return None
-
-            channel.manifest = manifest_url
-            channel.streaming_format = playlist_data.get(
-                "streamingFormat", playlist_data.get("format", "dash")
-            )
-
-            license_url = playlist_data.get("licenseUrl", playlist_data.get("license"))
-            if license_url:
-                widevine_url = (
-                    self.endpoint_manager.get_endpoint("widevine_license")
-                    if self.endpoint_manager
-                    else license_url
-                )
-
-                drm_config = DRMConfig(
-                    system=DRMSystem.WIDEVINE,
-                    priority=1,
-                    license=LicenseConfig(
-                        server_url=widevine_url,
-                        server_certificate=playlist_data.get(
-                            "certificateUrl", playlist_data.get("certificate")
-                        ),
-                        req_headers=json.dumps(
-                            {
-                                "User-Agent": self.platform_config["user_agent"],
-                                "Content-Type": DRM_REQUEST_HEADERS["Content-Type"],
-                            }
-                        ),
-                        req_data="{CHA-RAW}",
-                        use_http_get_request=False,
-                    ),
-                )
-                channel.drm_config = drm_config
-                channel.cdm_type = DRM_SYSTEM_WIDEVINE
-                channel.cdm = f"pid={channel.channel_id}"
-
-            return channel
-
-        except Exception as e:
-            logger.error(f"Error getting manifest for {channel.name}: {e}")
-            return None
-
+    def _ensure_live_cache(self) -> None:
+        """
+        Populate _live_manifest_cache and _live_pid_cache on demand.
+        Called automatically by get_manifest() / get_drm() so that callers
+        do not have to call get_channels() explicitly first.
+        """
+        if not self._live_manifest_cache:
+            logger.debug("Live channel cache is empty — auto-populating via get_channels()")
+            self.get_channels()
 
     def get_manifest(
-        self, content_id: str, content_type: str = CONTENT_TYPE_LIVE, **kwargs
+            self, content_id: str, content_type: str = CONTENT_TYPE_LIVE, **kwargs
     ) -> Optional[str]:
         """Get MPD manifest URL.
 
@@ -1478,19 +1428,78 @@ class Magenta2Provider(StreamingProvider):
         return the cached MPD URL directly without a SMIL round-trip.
         VOD and recordings fall through to SmilManager as before.
         """
-        if content_type == CONTENT_TYPE_LIVE and content_id in self._live_manifest_cache:
-            logger.debug(f"get_manifest: cache hit for live channel {content_id}")
-            return self._live_manifest_cache[content_id]
+        if content_type == CONTENT_TYPE_LIVE:
+            self._ensure_live_cache()  # ← auto-bootstrap
+            if content_id in self._live_manifest_cache:
+                logger.debug(f"get_manifest: cache hit for live channel {content_id}")
+                return self._live_manifest_cache[content_id]
 
         if not self._smil_manager:
             raise RuntimeError("SmilManager not available")
-        # Inject smil_base_url from recording cache when not already supplied.
-        # Ensures recordings use link.theplatform.eu (from playbackUrl) instead
-        # of the selector endpoint (link.api.eu.theplatform.com).
         if "smil_base_url" not in kwargs and content_id in self._recording_url_cache:
             kwargs["smil_base_url"] = self._recording_url_cache[content_id]
             logger.debug(f"Injected smil_base_url from recording cache for {content_id}")
         return self._smil_manager.get_manifest(content_id, content_type, **kwargs)
+
+    def get_drm(
+            self, content_id: str, content_type: str = CONTENT_TYPE_LIVE, **kwargs
+    ) -> List[DRMConfig]:
+        """Get DRM configuration.
+
+        For live channels whose releasePid was cached by get_channels(), build
+        the Widevine licence URL directly using lib_theplatform — no SMIL fetch.
+        VOD and recordings fall through to SmilManager as before.
+        """
+        if content_type == CONTENT_TYPE_LIVE:
+            self._ensure_live_cache()  # ← auto-bootstrap
+            if content_id in self._live_pid_cache:
+                release_pid = content_id
+                logger.debug(
+                    f"get_drm: building licence directly for live channel "
+                    f"(releasePid: {release_pid})"
+                )
+                try:
+                    persona_token = self._ensure_authenticated()
+                    raw_jwt = extract_persona_jwt(persona_token)
+                    if not raw_jwt:
+                        logger.error("get_drm: failed to extract persona JWT")
+                        return []
+
+                    widevine_endpoint = (
+                        self.endpoint_manager.get_endpoint("widevine_license")
+                        if self.endpoint_manager
+                        else None
+                    )
+                    if not widevine_endpoint:
+                        logger.error("get_drm: no widevine_license endpoint available")
+                        return []
+
+                    account_uri = (
+                                      self.provider_config.manifest.mpx.get_account_uri()
+                                      if self.provider_config and self.provider_config.manifest
+                                      else None
+                                  ) or MAGENTA2_FALLBACK_ACCOUNT_URI
+
+                    licence_url = build_licence_url(
+                        widevine_endpoint=widevine_endpoint,
+                        release_pid=release_pid,
+                        persona_jwt=raw_jwt,
+                        account_uri=account_uri,
+                    )
+                    return [build_widevine_drm_config(
+                        licence_url=licence_url,
+                        user_agent=self.platform_config["user_agent"],
+                    )]
+                except Exception as exc:
+                    logger.error(f"get_drm: direct licence build failed for {content_id}: {exc}")
+                    return []
+
+        if not self._smil_manager:
+            raise RuntimeError("SmilManager not available")
+        if "smil_base_url" not in kwargs and content_id in self._recording_url_cache:
+            kwargs["smil_base_url"] = self._recording_url_cache[content_id]
+            logger.debug(f"Injected smil_base_url from recording cache for {content_id}")
+        return self._smil_manager.get_drm(content_id, content_type, **kwargs)
 
     def get_catchup_manifest(
         self, channel_id: str, start_time: int, end_time: int, **kwargs
@@ -1501,10 +1510,6 @@ class Magenta2Provider(StreamingProvider):
         return self._smil_manager.get_catchup_manifest(
             channel_id, start_time, end_time, **kwargs
         )
-
-
-
-
 
     @staticmethod
     def _extract_persona_jwt_from_token(persona_token: str) -> Optional[str]:
@@ -1532,65 +1537,6 @@ class Magenta2Provider(StreamingProvider):
         except Exception as e:
             logger.error(f"Error extracting persona JWT token: {e}")
             return None
-
-    def get_drm(
-        self, content_id: str, content_type: str = CONTENT_TYPE_LIVE, **kwargs
-    ) -> List[DRMConfig]:
-        """Get DRM configuration.
-
-        For live channels whose releasePid was cached by get_channels(), build
-        the Widevine licence URL directly using lib_theplatform — no SMIL fetch.
-        VOD and recordings fall through to SmilManager as before.
-        """
-        if content_type == CONTENT_TYPE_LIVE and content_id in self._live_pid_cache:
-            release_pid = content_id  # content_id IS the release_pid
-            logger.debug(
-                f"get_drm: building licence directly for live channel "
-                f"(releasePid: {release_pid})"
-            )
-            try:
-                persona_token = self._ensure_authenticated()
-                raw_jwt = extract_persona_jwt(persona_token)
-                if not raw_jwt:
-                    logger.error("get_drm: failed to extract persona JWT")
-                    return []
-
-                widevine_endpoint = (
-                    self.endpoint_manager.get_endpoint("widevine_license")
-                    if self.endpoint_manager
-                    else None
-                )
-                if not widevine_endpoint:
-                    logger.error("get_drm: no widevine_license endpoint available")
-                    return []
-
-                account_uri = (
-                    self.provider_config.manifest.mpx.get_account_uri()
-                    if self.provider_config and self.provider_config.manifest
-                    else None
-                ) or MAGENTA2_FALLBACK_ACCOUNT_URI
-
-                licence_url = build_licence_url(
-                    widevine_endpoint=widevine_endpoint,
-                    release_pid=release_pid,
-                    persona_jwt=raw_jwt,
-                    account_uri=account_uri,
-                )
-                return [build_widevine_drm_config(
-                    licence_url=licence_url,
-                    user_agent=self.platform_config["user_agent"],
-                )]
-            except Exception as exc:
-                logger.error(f"get_drm: direct licence build failed for {content_id}: {exc}")
-                return []
-
-        if not self._smil_manager:
-            raise RuntimeError("SmilManager not available")
-        # Same smil_base_url injection as get_manifest — keeps both consistent.
-        if "smil_base_url" not in kwargs and content_id in self._recording_url_cache:
-            kwargs["smil_base_url"] = self._recording_url_cache[content_id]
-            logger.debug(f"Injected smil_base_url from recording cache for {content_id}")
-        return self._smil_manager.get_drm(content_id, content_type, **kwargs)
 
     def get_epg(
         self,
