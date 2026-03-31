@@ -402,6 +402,34 @@ class MoveTVProvider(StreamingProvider):
                 self._store_play_auth(content_id, source_data)
                 cached = self._play_auth_cache.get(content_id)
                 return cached[0] if cached else None
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 401:
+                logger.info(
+                    f"move.tv: 401 fetching play-auth for liveId={content_id} "
+                    "— attempting token refresh …"
+                )
+                try:
+                    token = cast(MoveTVAuthToken, self.authenticator._current_token)
+                    refreshed = self.authenticator.refresh_token(token) if token else None
+                    if not refreshed:
+                        logger.info(
+                            "move.tv: Refresh failed, falling back to full login "
+                            "for play-auth fetch"
+                        )
+                        self.authenticator.authenticate(force_refresh=True)
+                    # Retry once with the new token.
+                    live_id = int(content_id)
+                    source_data = self._fetch_live_source(live_id)
+                    if source_data:
+                        self._store_play_auth(content_id, source_data)
+                        cached = self._play_auth_cache.get(content_id)
+                        return cached[0] if cached else None
+                except Exception as retry_exc:
+                    logger.error(
+                        f"move.tv: Failed to fetch play auth header after re-auth: {retry_exc}"
+                    )
+            else:
+                logger.error(f"move.tv: Failed to fetch play auth header: {exc}")
         except Exception as exc:
             logger.error(f"move.tv: Failed to fetch play auth header: {exc}")
 
