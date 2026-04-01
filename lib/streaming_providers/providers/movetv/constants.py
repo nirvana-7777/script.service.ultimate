@@ -7,7 +7,8 @@ class MoveTVConfig:
     Central configuration for the move.tv / MTS-SI provider.
 
     All endpoint paths and fixed request parameters live here so that
-    provider.py and auth.py never contain raw strings or magic numbers.
+    provider.py, auth.py, and vod_manager.py never contain raw strings
+    or magic numbers.
     """
 
     # -------------------------------------------------------------------------
@@ -20,11 +21,23 @@ class MoveTVConfig:
     # -------------------------------------------------------------------------
     # API endpoint paths  (relative to API_BASE_URL)
     # -------------------------------------------------------------------------
+
+    # Auth
     PATH_LOGIN: str = "/api/v2/login"
     PATH_VALIDATE: str = "/api/v2/token/validate"
     PATH_TOKEN_STATUS: str = "/api/v2/token/status"
+
+    # Live
     PATH_LIVE_CHANNELS: str = "/api/v2/content/live/all"
     PATH_LIVE_SOURCE: str = "/api/v2/content/live/source/get"
+
+    # VOD — catalogue / filtering
+    PATH_VOD_FILTERS: str = "/api/v2/content/vod/filters"
+    PATH_VOD_GET_ALL: str = "/api/v2/content/vod/get/all"
+
+    # VOD — homepage layout
+    PATH_PAGE_GET: str = "/api/v2/content/page/get"
+    PATH_COMPONENT_GET: str = "/api/v2/content/component/get"
 
     # -------------------------------------------------------------------------
     # Device / app constants sent in every login payload
@@ -33,6 +46,11 @@ class MoveTVConfig:
     DEVICE_MODEL_ID: int = 10
     DEVICE_NAME: str = "Chrome 146"
     APP_VERSION: str = "3.4.8"
+
+    # -------------------------------------------------------------------------
+    # Language / locale defaults
+    # -------------------------------------------------------------------------
+    DEFAULT_LANG: int = 1          # 1 = Serbian / local
 
     # -------------------------------------------------------------------------
     # HTTP / request defaults
@@ -51,7 +69,7 @@ class MoveTVConfig:
     UNAUTHENTICATED_TOKEN: str = "null"
 
     # -------------------------------------------------------------------------
-    # Image / logo base URL (prepend to relative picture.icon paths)
+    # Image / logo base URL (prepend to relative picture paths)
     # -------------------------------------------------------------------------
     IMAGE_BASE_URL: str = "https://api2.mts-si.tv"
 
@@ -60,7 +78,19 @@ class MoveTVConfig:
     # -------------------------------------------------------------------------
     DTYPE_DASH: int = 1
 
-    DEFAULT_LANG: int = 1
+    # -------------------------------------------------------------------------
+    # VOD: item-type IDs returned by /component/get and /vod/get/all
+    # -------------------------------------------------------------------------
+    # itemTypeId values observed in component responses
+    ITEM_TYPE_LIVE: int = 1         # live channel card
+    ITEM_TYPE_MOVIE: int = 2        # single movie / standalone VOD
+    ITEM_TYPE_SERIES: int = 3       # series / show (has children / seasons)
+    ITEM_TYPE_CATEGORY: int = 4     # browse category node (not playable)
+    ITEM_TYPE_SERIES_CARD: int = 5  # series card as returned by /vod/get/all
+
+    # contentSubTypeId values observed in /vod/get/all
+    CONTENT_SUB_TYPE_MOVIE: int = 2
+    CONTENT_SUB_TYPE_SERIES: int = 5
 
     # -------------------------------------------------------------------------
     # Header builders
@@ -86,7 +116,7 @@ class MoveTVConfig:
 
     @classmethod
     def get_api_headers(cls, auth_token: Optional[str] = None) -> Dict[str, str]:
-        """Headers for authenticated JSON API calls (channels, manifest source)."""
+        """Headers for authenticated JSON API calls (channels, manifest source, VOD)."""
         return cls.get_base_headers(auth_token)
 
     # -------------------------------------------------------------------------
@@ -113,18 +143,39 @@ class MoveTVConfig:
     def live_source_url(cls) -> str:
         return f"{cls.API_BASE_URL}{cls.PATH_LIVE_SOURCE}"
 
+    @classmethod
+    def vod_filters_url(cls) -> str:
+        return f"{cls.API_BASE_URL}{cls.PATH_VOD_FILTERS}"
+
+    @classmethod
+    def vod_get_all_url(cls) -> str:
+        return f"{cls.API_BASE_URL}{cls.PATH_VOD_GET_ALL}"
+
+    @classmethod
+    def page_get_url(cls) -> str:
+        return f"{cls.API_BASE_URL}{cls.PATH_PAGE_GET}"
+
+    @classmethod
+    def component_get_url(cls) -> str:
+        return f"{cls.API_BASE_URL}{cls.PATH_COMPONENT_GET}"
+
     # -------------------------------------------------------------------------
-    # Logo URL helper
+    # Logo / image URL helper
     # -------------------------------------------------------------------------
 
     @classmethod
-    def build_logo_url(cls, icon_path: Optional[str]) -> Optional[str]:
+    def build_image_url(cls, path: Optional[str]) -> Optional[str]:
         """
-        Turns a relative icon path like '/images/logo/rts1_dark.png' into an
-        absolute URL.  Returns None when *icon_path* is falsy.
+        Turns a relative image path like '/images/tvshow_poster/…jpeg' into an
+        absolute URL.  Returns None when *path* is falsy.
         """
-        if not icon_path:
+        if not path:
             return None
-        if icon_path.startswith("http"):
-            return icon_path
-        return f"{cls.IMAGE_BASE_URL}{icon_path}"
+        if path.startswith("http"):
+            return path
+        return f"{cls.IMAGE_BASE_URL}{path}"
+
+    @classmethod
+    def build_logo_url(cls, icon_path: Optional[str]) -> Optional[str]:
+        """Alias kept for backward compatibility with existing channel code."""
+        return cls.build_image_url(icon_path)

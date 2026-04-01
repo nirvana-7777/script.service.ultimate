@@ -11,6 +11,15 @@ from ...base.utils.logger import logger
 from .auth import MoveTVAuthenticator, MoveTVAuthToken
 from .constants import MoveTVConfig
 
+from .vod_manager import (
+    MoveTvVodManager,
+    VodFilters,
+    VodPage,
+    VodItem,
+    PageComponent,
+    ComponentItem,
+)
+
 
 class MoveTVChannel(StreamingChannel):
     """
@@ -126,6 +135,8 @@ class MoveTVProvider(StreamingProvider):
             http_manager=self.http_manager,
             settings_manager=settings_manager,
         )
+
+        self._vod = MoveTvVodManager(self)
 
         # Share the same http_manager session with the authenticator
         self.http_manager = self._share_http_manager_with_authenticator(self.authenticator)
@@ -597,3 +608,73 @@ class MoveTVProvider(StreamingProvider):
             f"move.tv: Cached X-Play-Auth for liveId={content_id} "
             f"expires_at={expires_at}: {header_value[:60]}…"
         )
+
+    # ------------------------------------------------------------------ #
+    # VOD — catalogue                                                      #
+    # ------------------------------------------------------------------ #
+
+    def get_vod_filters(self) -> VodFilters:
+        """Return available VOD content types, categories, catalogs, tags, and sort options."""
+        return self._vod.get_vod_filters()
+
+    def get_vod_items(
+            self,
+            page: int = 1,
+            sort: str = "newest",
+            tag_id=None,
+            category_id=None,
+            catalog_id=None,
+            content_type_id=None,
+            search_query=None,
+    ) -> VodPage:
+        """Return a paginated VOD catalogue with optional filtering."""
+        return self._vod.get_vod_items(
+            page=page,
+            sort=sort,
+            tag_id=tag_id,
+            category_id=category_id,
+            catalog_id=catalog_id,
+            content_type_id=content_type_id,
+            search_query=search_query,
+        )
+
+    def get_all_vod_items(
+            self,
+            sort: str = "newest",
+            tag_id=None,
+            category_id=None,
+            catalog_id=None,
+            content_type_id=None,
+            max_pages=None,
+    ):
+        """Fetch every VOD page and return a flat list of VodItems."""
+        return self._vod.get_all_vod_items(
+            sort=sort,
+            tag_id=tag_id,
+            category_id=category_id,
+            catalog_id=catalog_id,
+            content_type_id=content_type_id,
+            max_pages=max_pages,
+        )
+
+    # ------------------------------------------------------------------ #
+    # VOD — homepage / page layout                                         #
+    # ------------------------------------------------------------------ #
+
+    def get_page_components(self, page_id: int):
+        """
+        Return the ordered list of component descriptors for a UI page.
+
+        Pass the returned component IDs to get_component_items() to load
+        the actual content cards.
+        """
+        return self._vod.get_page_components(page_id)
+
+    def get_component_items(self, component_id: int):
+        """
+        Return the content cards for a single carousel / banner component.
+
+        Richer than get_vod_items() cards: includes description, age rating,
+        release year, duration, and per-item subscription status.
+        """
+        return self._vod.get_component_items(component_id)
