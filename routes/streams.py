@@ -428,15 +428,11 @@ def setup_stream_routes(app, manager, service):
 
             elif is_unencrypted:
 
-                # Even without encryption, some providers require manifest/segment headers
-
-                # (auth tokens, etc.). If headers are present, route through the media proxy
-
-                # so it can inject them on every request. Otherwise a plain redirect is safe.
-
                 needs_headers = _stream_needs_headers(content_type, provider, content_id, country)
 
-                if needs_headers and service.media_proxy_url:
+                needs_proxy = manager.needs_proxy(provider)  # ← ADD THIS
+
+                if (needs_headers or needs_proxy) and service.media_proxy_url:  # ← include needs_proxy
 
                     return service.get_proxied_manifest(
 
@@ -446,11 +442,11 @@ def setup_stream_routes(app, manager, service):
 
                     )
 
-                elif needs_headers and not service.media_proxy_url:
+                elif (needs_headers or needs_proxy) and not service.media_proxy_url:  # ← include needs_proxy
 
                     logger.warning(
 
-                        f"Provider {provider}/{content_id} needs headers but MEDIA_PROXY_URL is not set; "
+                        f"Provider {provider}/{content_id} needs proxy/headers but MEDIA_PROXY_URL is not set; "
 
                         "falling back to redirect (playback may fail)"
 
