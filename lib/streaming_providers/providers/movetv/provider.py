@@ -494,15 +494,26 @@ class MoveTVProvider(StreamingProvider):
 
         logger.debug(f"move.tv: POST {MoveTVConfig.live_source_url()} liveId={live_id}")
 
-        response = self.http_manager.post(
-            MoveTVConfig.live_source_url(),
-            operation="manifest",
-            json=payload,
-            headers=headers,
-        )
+        try:
+            response = self.http_manager.post(
+                MoveTVConfig.live_source_url(),
+                operation="manifest",
+                json=payload,
+                headers=headers,
+            )
+            # http_manager returned a response object — check status before raise_for_status().
+            is_401 = response.status_code == 401
+        except requests.HTTPError as exc:
+            # http_manager raised before returning (e.g. it calls raise_for_status internally).
+            # Extract the 401 from the exception's attached response instead.
+            if exc.response is not None and exc.response.status_code == 401:
+                is_401 = True
+                response = exc.response
+            else:
+                raise
 
         # On 401, attempt a token refresh and retry once before giving up.
-        if response.status_code == 401:
+        if is_401:
             logger.info(f"move.tv: 401 on manifest fetch for liveId={live_id} — attempting token refresh …")
             token = cast(MoveTVAuthToken, self.authenticator._current_token)
             refreshed = self.authenticator.refresh_token(token) if token else None
