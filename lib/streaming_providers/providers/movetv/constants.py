@@ -31,6 +31,9 @@ class MoveTVConfig:
     PATH_LIVE_CHANNELS: str = "/api/v2/content/live/all"
     PATH_LIVE_SOURCE: str = "/api/v2/content/live/source/get"
 
+    # EPG
+    PATH_EPG_ALL: str = "/api/v2/content/epg/all"
+
     # VOD — catalogue / filtering
     PATH_VOD_FILTERS: str = "/api/v2/content/vod/filters"
     PATH_VOD_GET_ALL: str = "/api/v2/content/vod/get/all"
@@ -142,6 +145,11 @@ class MoveTVConfig:
     @classmethod
     def live_source_url(cls) -> str:
         return f"{cls.API_BASE_URL}{cls.PATH_LIVE_SOURCE}"
+
+    @classmethod
+    def epg_all_url(cls) -> str:
+        """Full URL for fetching EPG data for a single channel."""
+        return f"{cls.API_BASE_URL}{cls.PATH_EPG_ALL}"
 
     @classmethod
     def vod_filters_url(cls) -> str:

@@ -20,6 +20,8 @@ from .vod_manager import (
     ComponentItem,
 )
 
+from .epg_manager import MoveTvEpgManager
+
 
 class MoveTVChannel(StreamingChannel):
     """
@@ -137,6 +139,7 @@ class MoveTVProvider(StreamingProvider):
         )
 
         self._vod = MoveTvVodManager(self)
+        self._epg = MoveTvEpgManager(self.authenticator)
 
         # Share the same http_manager session with the authenticator
         self.http_manager = self._share_http_manager_with_authenticator(self.authenticator)
@@ -678,3 +681,40 @@ class MoveTVProvider(StreamingProvider):
         release year, duration, and per-item subscription status.
         """
         return self._vod.get_component_items(component_id)
+
+    def get_epg(
+            self,
+            channel_id: str,
+            backwards: int = 2,
+            forwards: int = 2,
+            **kwargs,
+    ) -> List[Dict]:  # ← ADD (whole method)
+        """
+        Return the EPG schedule for *channel_id*.
+
+        Parameters
+        ----------
+        channel_id:
+            Provider content ID of the live channel (string form of the
+            integer seen in the API, e.g. ``"211458"``).
+        backwards:
+            Hours of past programming to include (default 2).
+        forwards:
+            Hours of future programming to include (default 2).
+
+        Returns
+        -------
+        List of normalised programme dicts from ``MoveTvEpgManager``.
+        """
+        return self._epg.get_channel_epg(
+            channel_id,
+            backwards=kwargs.get("backwards", backwards),
+            forwards=kwargs.get("forwards", forwards),
+        )
+
+    # ④ If your framework checks this property to decide whether to call
+    #    get_epg(), keep it.  If it inspects get_epg() directly (base returns
+    #    []) you can skip this property entirely.
+    @property
+    def implements_epg(self) -> bool:  # ← ADD (optional)
+        return True
