@@ -696,13 +696,126 @@ class MoveTvVodManager:
             self, path_ids: List[str], **kwargs
     ) -> List[Union[VodCategory, VodItem]]:
         """
-        Fetch children of a VOD category node (seasons, episodes, ...).
+        Fetch children of a VOD category node.
 
-        Not yet implemented -- log the browser request when drilling into a
-        series or category, then implement here.
+        Path structure:
+            [] or ["root"]          → Return content types (Film, Serija)
+            ["root", "Film"]        → Return categories for movies
+            ["root", "Serija"]      → Return categories for series
+            ["root", "Film", "123"] → Return VOD items for that category
+            ["root", "Serija", "456"] → Return VOD items for that series category
         """
+
+        # Handle root level - return content types
+        if not path_ids or path_ids[0] == "root":
+            # Fetch filters to get content types
+            filters = self.get_vod_filters()
+
+            categories = []
+            for content_type in filters.content_types:
+                # Map content type ID to a display name
+                type_name = content_type.name  # "Film" or "Serija"
+
+                categories.append(
+                    VodCategory(
+                        name=type_name,
+                        content_id=f"content_type_{content_type.content_type_id}",
+                        provider=self._provider.provider_name,
+                        # Store the content_type_id in the path for next level
+                        # The UI will pass this as path_ids[1]
+                    )
+                )
+
+            logger.info(
+                f"{self._provider.provider_name}: VOD root -> "
+                f"{len(categories)} content types"
+            )
+            return categories
+
+        # Handle content type level (e.g., ["root", "Film"] or ["root", "Serija"])
+        if len(path_ids) == 2 and path_ids[0] == "root":
+            content_type_name = path_ids[1]
+
+            # Fetch filters to get categories for this content type
+            filters = self.get_vod_filters()
+
+            # Find the content type ID
+            content_type_id = None
+            for ct in filters.content_types:
+                if ct.name == content_type_name:
+                    content_type_id = ct.content_type_id
+                    break
+
+            if not content_type_id:
+                logger.warning(
+                    f"{self._provider.provider_name}: Unknown content type '{content_type_name}'"
+                )
+                return []
+
+            # Return categories/genres for this content type
+            categories = []
+            for category in filters.categories:
+                # Create a category that can be browsed further
+                categories.append(
+                    VodCategory(
+                        name=category.name,
+                        content_id=str(category.content_id),
+                        provider=self._provider.provider_name,
+                        # The path will be ["root", content_type_name, category_id]
+                    )
+                )
+
+            logger.info(
+                f"{self._provider.provider_name}: VOD content type '{content_type_name}' -> "
+                f"{len(categories)} categories"
+            )
+            return categories
+
+        # Handle category level - return VOD items
+        if len(path_ids) >= 3 and path_ids[0] == "root":
+            content_type_name = path_ids[1]
+            category_id = path_ids[2]
+
+            # Fetch filters to get content type ID
+            filters = self.get_vod_filters()
+            content_type_id = None
+            for ct in filters.content_types:
+                if ct.name == content_type_name:
+                    content_type_id = ct.content_type_id
+                    break
+
+            if not content_type_id:
+                return []
+
+            # Map content type name to tag ID (optional filtering)
+            tag_map = {
+                "Film": 1,  # FILM tag
+                "Serija": 2,  # SERIJA tag
+            }
+            tag_id = tag_map.get(content_type_name)
+
+            # Fetch VOD items for this category
+            vod_page = self.get_vod_items(
+                page=1,
+                sort="newest",
+                tag_id=tag_id,
+                category_id=int(category_id) if category_id != "root" else None,
+                content_type_id=content_type_id,
+            )
+
+            # Convert VodItems to the expected return format
+            # (VodOperations likely expects VodItem or similar)
+            items = []
+            for item in vod_page.items:
+                items.append(item)
+
+            logger.info(
+                f"{self._provider.provider_name}: VOD category '{category_id}' -> "
+                f"{len(items)} items"
+            )
+            return items
+
         logger.warning(
-            f"{self._provider.provider_name}: get_vod_category({path_ids}) -- "
-            "not yet implemented; log the browse/drill-down endpoint to add support."
+            f"{self._provider.provider_name}: Unhandled VOD path: {path_ids}"
         )
         return []

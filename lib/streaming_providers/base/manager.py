@@ -13,6 +13,7 @@ from .epg_operations import EPGOperations
 from .event_operations import EventOperations
 from .vod_operations import VodOperations
 from .recording_operations import RecordingOperations
+from .timer_operations import TimerOperations
 from .models import StreamingChannel
 from .provider_registry import ProviderRegistry
 from .subscription_operations import SubscriptionOperations
@@ -38,6 +39,7 @@ class ProviderManager:
         self.event_ops = EventOperations(self.registry)
         self.vod_ops = VodOperations(self.registry)
         self.recording_ops = RecordingOperations(self.registry)
+        self.timer_ops = TimerOperations(self.registry)
 
         # Backward compatibility - expose managers directly
         self.drm_plugin_manager = self.drm_ops.drm_plugin_manager
@@ -301,6 +303,48 @@ class ProviderManager:
     ) -> None:
         return self.recording_ops.delete_recording(
             provider_name, recording_id, **kwargs
+        )
+
+    # ==========================================================================
+    # TIMER OPERATIONS (delegate to TimerOperations)
+    # ==========================================================================
+
+    def get_timer_types(self, provider_name: str) -> List:
+        return self.timer_ops.get_timer_types(provider_name)
+
+    def get_all_timer_types(self) -> Dict[str, List]:
+        return self.timer_ops.get_all_timer_types()
+
+    def get_timers(
+            self,
+            provider_name: str,
+            include_inactive: bool = False,
+    ) -> List:
+        return self.timer_ops.get_timers(
+            provider_name, include_inactive=include_inactive
+        )
+
+    def get_all_timers(self, include_inactive: bool = False) -> Dict[str, List]:
+        return self.timer_ops.get_all_timers(include_inactive=include_inactive)
+
+    def get_timer(self, provider_name: str, client_index: int):
+        return self.timer_ops.get_timer(provider_name, client_index)
+
+    def add_timer(self, provider_name: str, timer, **kwargs):
+        return self.timer_ops.add_timer(provider_name, timer, **kwargs)
+
+    def update_timer(self, provider_name: str, timer, **kwargs):
+        return self.timer_ops.update_timer(provider_name, timer, **kwargs)
+
+    def delete_timer(
+            self,
+            provider_name: str,
+            client_index: int,
+            force_delete: bool = False,
+            **kwargs,
+    ) -> None:
+        return self.timer_ops.delete_timer(
+            provider_name, client_index, force_delete=force_delete, **kwargs
         )
 
     # ==========================================================================
