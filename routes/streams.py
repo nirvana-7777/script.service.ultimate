@@ -29,6 +29,7 @@ from datetime import datetime
 
 from bottle import HTTPResponse, redirect, request, response
 from streaming_providers.base.utils import logger
+from streaming_providers.base.utils.manifest_utils import ManifestUtils
 
 # ---------------------------------------------------------------------------
 # Content-type constants — single source of truth used by helpers and routes
@@ -227,6 +228,30 @@ def setup_stream_routes(app, manager, service):
             )
             return False  # assume no headers needed; let the redirect attempt proceed
 
+    def _inject_base_url(manifest_text: str, base_url: str) -> str:
+        """
+        Inject an absolute BaseURL element at the MPD root level if one is not
+        already present. This anchors relative segment URLs to the upstream
+        origin, which is necessary when the manifest is served from a different
+        host than the CDN (e.g. requires_manifest_context providers).
+        """
+        import re
+
+        # If a root-level BaseURL is already present, leave it alone —
+        # the manifest author's intent takes precedence.
+        existing = ManifestUtils.extract_base_urls(manifest_text)
+        if existing:
+            return manifest_text
+
+        # Insert immediately after the opening <MPD ...> tag.
+        base_url_element = f"<BaseURL>{base_url}</BaseURL>"
+        return re.sub(
+            r"(<MPD\b[^>]*>)",
+            rf"\1\n  {base_url_element}",
+            manifest_text,
+            count=1,
+        )
+
     def _resolve_stream(
             content_type: str,
             provider: str,
@@ -333,7 +358,6 @@ def setup_stream_routes(app, manager, service):
                 )
 
             if provider_instance and getattr(provider_instance, 'requires_manifest_context', False):
-                # For providers that need manifest context, fetch and return the manifest directly
                 logger.debug(
                     f"Provider {provider} requires manifest context — fetching manifest directly "
                     f"for {content_type}/{content_id}"
@@ -351,10 +375,14 @@ def setup_stream_routes(app, manager, service):
                             )
                         }
 
-                    # Use the service's _fetch_manifest_for_rewriter or a similar helper
                     manifest_text, _, _, _ = service.fetch_manifest_for_rewriter(
                         provider, content_id, manifest_url
                     )
+
+                    # Inject the upstream manifest URL as a BaseURL so the player can
+                    # resolve relative segment URLs correctly. Without this, segments
+                    # resolve against the local server URL and all requests fail.
+                    manifest_text = _inject_base_url(manifest_text, manifest_url)
 
                     response.content_type = "application/dash+xml; charset=utf-8"
                     return manifest_text
