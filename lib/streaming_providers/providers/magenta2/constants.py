@@ -374,3 +374,11 @@ PVR_RECORDING_STATUSES_ALL = [
 
 # Accept header required by the nPVR API (differs from standard JSON endpoints)
 PVR_ACCEPT_HEADER = "application/json; v=2; charset=utf-8"
+
+# Timer type IDs — used by TimersManager and get_timer_types()
+PVR_TIMER_TYPE_EPG_ONE_SHOT = 1
+
+# Recording statuses that represent pending timers (not yet captured).
+# Used as the byRecordingStatus filter in TimersManager.get_timers().
+# Kept as a list (like the STATUSES_ACTIVE/ALL siblings) for easy pipe-joining.
+PVR_RECORDING_STATUSES_TIMERS = ["SCHEDULED"]
