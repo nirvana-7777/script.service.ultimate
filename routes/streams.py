@@ -25,6 +25,8 @@ Adding VOD in the future means:
 
 import base64
 import json
+import re
+from urllib.parse import urljoin
 from datetime import datetime
 
 from bottle import HTTPResponse, redirect, request, response
@@ -228,22 +230,16 @@ def setup_stream_routes(app, manager, service):
             )
             return False  # assume no headers needed; let the redirect attempt proceed
 
-    def _inject_base_url(manifest_text: str, base_url: str) -> str:
-        """
-        Inject an absolute BaseURL element at the MPD root level if one is not
-        already present. This anchors relative segment URLs to the upstream
-        origin, which is necessary when the manifest is served from a different
-        host than the CDN (e.g. requires_manifest_context providers).
-        """
-        import re
-
-        # If a root-level BaseURL is already present, leave it alone —
-        # the manifest author's intent takes precedence.
+    def _inject_base_url(manifest_text: str, manifest_url: str) -> str:
         existing = ManifestUtils.extract_base_urls(manifest_text)
         if existing:
             return manifest_text
 
-        # Insert immediately after the opening <MPD ...> tag.
+        # Strip the filename, keep the directory — e.g.
+        # https://cdn.example.com/live/stream/index.mpd
+        # → https://cdn.example.com/live/stream/
+        base_url = urljoin(manifest_url, ".")
+
         base_url_element = f"<BaseURL>{base_url}</BaseURL>"
         return re.sub(
             r"(<MPD\b[^>]*>)",
