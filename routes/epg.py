@@ -5,6 +5,7 @@ EPG-related route handlers
 
 from bottle import request, response
 from streaming_providers.base.utils import logger
+from streaming_providers.base.epg_operations import EPGOperations
 
 
 def setup_epg_routes(app, manager, service):
@@ -338,3 +339,41 @@ def setup_epg_routes(app, manager, service):
             logger.error(f"Error saving EPG mapping for {provider}: {e}", exc_info=True)
             response.status = 500
             return {"error": f"Failed to save mapping: {str(e)}"}
+
+    @app.route("/api/providers/<provider>/channels/<channel_id>/epg", method="GET")
+    def get_channel_epg(provider, channel_id):
+        """Get EPG data for a specific channel."""
+        # Query parameters (Unix timestamps)
+        start = request.query.get("start")
+        end = request.query.get("end")
+
+        # Optional: limit results
+        limit = request.query.get("limit", default=100, type=int)
+
+        try:
+            epg_ops = EPGOperations(manager.registry)
+
+            programs = epg_ops.get_channel_epg(
+                provider_name=provider,
+                channel_id=channel_id,
+                start_time=int(start) if start else None,
+                end_time=int(end) if end else None,
+                limit=limit
+            )
+
+            return {
+                "provider": provider,
+                "channel_id": channel_id,
+                "start_time": start,
+                "end_time": end,
+                "count": len(programs),
+                "programs": programs
+            }
+
+        except ValueError as e:
+            response.status = 404
+            return {"error": str(e)}
+        except Exception as e:
+            logger.error(f"Error getting EPG: {e}")
+            response.status = 500
+            return {"error": str(e)}
