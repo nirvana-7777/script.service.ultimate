@@ -81,7 +81,10 @@ class MoveTvEpgManager:
         Parameters
         ----------
         channel_id:
-            The provider's numeric content ID for the channel (as a string).
+            The provider's ``contentId`` for the channel (as a string) —
+            i.e. ``MoveTVChannel.catalog_id``, NOT the ``liveId`` /
+            ``content_id``.  Translation from liveId to contentId must happen
+            before this method is called (see ``MoveTVProvider.get_epg``).
         backwards:
             Hours of past programming to include (API default: 2).
             Ignored when start_time/end_time are provided.

@@ -178,10 +178,6 @@ class MoveTVProvider(StreamingProvider):
         return True
 
     @property
-    def implements_epg(self) -> bool:
-        return False
-
-    @property
     def supported_auth_types(self) -> List[str]:
         return self.SUPPORTED_AUTH_TYPES
 
@@ -688,15 +684,16 @@ class MoveTVProvider(StreamingProvider):
             backwards: int = 2,
             forwards: int = 2,
             **kwargs,
-    ) -> List[Dict]:  # ← ADD (whole method)
+    ) -> List[Dict]:
         """
         Return the EPG schedule for *channel_id*.
 
         Parameters
         ----------
         channel_id:
-            Provider content ID of the live channel (string form of the
-            integer seen in the API, e.g. ``"211458"``).
+            The channel's liveId (stored as ``MoveTVChannel.content_id``).
+            Internally translated to the contentId (``catalog_id``) that the
+            EPG API expects before the request is fired.
         backwards:
             Hours of past programming to include (default 2).
         forwards:
@@ -706,10 +703,28 @@ class MoveTVProvider(StreamingProvider):
         -------
         List of normalised programme dicts from ``MoveTvEpgManager``.
         """
+        # The EPG endpoint uses contentId (catalog_id), NOT liveId (content_id).
+        # Resolve via the cached channel list; fall back to channel_id as-is so
+        # callers that already pass a contentId still work.
+        catalog_id = channel_id
+        channel = self._channel_by_id(channel_id)
+        if channel is not None:
+            catalog_id = str(channel.catalog_id)
+            logger.debug(
+                f"move.tv EPG: resolved liveId={channel_id} → contentId={catalog_id}"
+            )
+        else:
+            logger.warning(
+                f"move.tv EPG: channel liveId={channel_id!r} not found in channel "
+                f"cache — passing value as-is to EPG manager (may fail if it is "
+                f"not a valid contentId)"
+            )
+
         return self._epg.get_channel_epg(
-            channel_id,
+            catalog_id,
             backwards=kwargs.get("backwards", backwards),
             forwards=kwargs.get("forwards", forwards),
+            **{k: v for k, v in kwargs.items() if k not in ("backwards", "forwards")},
         )
 
     # ④ If your framework checks this property to decide whether to call
