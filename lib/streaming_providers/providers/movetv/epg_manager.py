@@ -81,10 +81,7 @@ class MoveTvEpgManager:
         Parameters
         ----------
         channel_id:
-            The provider's ``contentId`` for the channel (as a string) —
-            i.e. ``MoveTVChannel.catalog_id``, NOT the ``liveId`` /
-            ``content_id``.  Translation from liveId to contentId must happen
-            before this method is called (see ``MoveTVProvider.get_epg``).
+            The provider's numeric content ID for the channel (as a string).
         backwards:
             Hours of past programming to include (API default: 2).
             Ignored when start_time/end_time are provided.
@@ -264,7 +261,18 @@ class MoveTvEpgManager:
         (anchor_utc, backwards, forwards)
         """
         def _to_utc(dt: datetime) -> datetime:
-            """Attach UTC if naive, otherwise convert."""
+            """Attach UTC if naive, otherwise convert.
+
+            Also accepts int/float values and treats them as Unix epoch
+            seconds (or milliseconds when the value is clearly too large
+            to be a seconds-since-1970 timestamp, i.e. > year 3000).
+            """
+            if isinstance(dt, (int, float)):
+                # Heuristic: epoch-ms values are ~1 000× larger than epoch-s.
+                # Year 3000 in epoch-s ≈ 32 503 680 000 — use that as the
+                # cutoff to auto-detect milliseconds.
+                ts = dt / 1000 if dt > 32_503_680_000 else dt
+                return datetime.fromtimestamp(ts, tz=timezone.utc)
             if dt.tzinfo is None:
                 return dt.replace(tzinfo=timezone.utc)
             return dt.astimezone(timezone.utc)
