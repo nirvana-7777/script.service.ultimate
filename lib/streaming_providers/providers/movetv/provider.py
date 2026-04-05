@@ -27,13 +27,13 @@ class MoveTVChannel(StreamingChannel):
     """
     Extends StreamingChannel with move.tv-specific fields.
 
-    content_id  stores the *liveId* so that get_manifest(content_id) can post
-    it directly to the source endpoint without any mapping lookup.
+    content_id  stores the *contentId* so that get_epg(content_id) can pass
+    it directly to the EPG endpoint without any mapping lookup.
 
     Extra fields
     ------------
-    catalog_id      : int   – the original contentId from the channel list
-                              (retained for EPG / catch-up use)
+    live_id         : int   – the liveId used by the live-source / manifest
+                              endpoint (required for get_manifest mapping)
     catchup_hours   : int   – how many hours of catch-up are available (0 = none)
     stream_uid      : str   – the streamUid used by the CDN (e.g. "rts1")
     play_auth_header: str   – the X-Play-Auth value delivered with the manifest
@@ -45,11 +45,11 @@ class MoveTVChannel(StreamingChannel):
     # 60 s gives enough runway to start playback before the CDN rejects it.
     _PLAY_AUTH_EARLY_EXPIRY_BUFFER: int = 60
 
-    def __init__(self, *args, catalog_id: int = 0, catchup_hours: int = 0,
+    def __init__(self, *args, live_id: int = 0, catchup_hours: int = 0,
                  stream_uid: str = "", play_auth_header: str = "",
                  play_auth_expires_at: float = 0.0, **kwargs):
         super().__init__(*args, **kwargs)
-        self.catalog_id: int = catalog_id
+        self.live_id: int = live_id
         self.catchup_hours: int = catchup_hours
         self.stream_uid: str = stream_uid
         self.play_auth_header: str = play_auth_header
@@ -69,7 +69,7 @@ class MoveTVChannel(StreamingChannel):
 
     def to_dict(self) -> Dict:
         result = super().to_dict()
-        result["CatalogId"] = self.catalog_id
+        result["LiveId"] = self.live_id
         result["CatchupHours"] = self.catchup_hours
         result["StreamUid"] = self.stream_uid
         result["PlayAuthHeader"] = self.play_auth_header
@@ -93,9 +93,9 @@ class MoveTVProvider(StreamingProvider):
 
     content_id convention
     ---------------------
-    liveId is stored as content_id; the original contentId is kept in
-    catalog_id.  This means get_manifest(content_id) can post liveId directly
-    with no mapping lookup.
+    contentId is stored as content_id so get_epg(content_id) can pass it
+    directly to the EPG endpoint with no mapping lookup.  liveId is kept in
+    live_id and looked up when get_manifest() needs to call the source endpoint.
 
     Manifest
     --------
@@ -317,10 +317,11 @@ class MoveTVProvider(StreamingProvider):
             # Audio-only channels
             is_audio = bool(item.get("audioOnly", False))
 
-            # liveId stored as content_id so get_manifest() needs no mapping
+            # contentId stored as content_id so get_epg() needs no mapping;
+            # liveId stored in live_id for use by get_manifest()
             channel = MoveTVChannel(
                 name=name,
-                content_id=str(live_id),
+                content_id=str(catalog_id),
                 provider=self.provider_name,
                 logo_url=logo_url,
                 mode="live",
@@ -332,7 +333,7 @@ class MoveTVProvider(StreamingProvider):
                 language="sr",
                 country=self.country,
                 # move.tv specifics
-                catalog_id=int(catalog_id),
+                live_id=int(live_id),
                 catchup_hours=catchup_hours,
                 stream_uid=stream_uid,
             )
@@ -356,16 +357,20 @@ class MoveTVProvider(StreamingProvider):
         requesting the returned .mpd / .m3u8 URL from the CDN.  The header
         value can be retrieved via get_play_auth_header().
 
-        ``content_id`` is the liveId stored on MoveTVChannel.content_id.
-        It is posted directly to the source endpoint with no mapping required.
+        ``content_id`` is the contentId stored on MoveTVChannel.content_id.
+        It is resolved to the liveId via the channel cache before being posted
+        to the source endpoint.
         """
         try:
-            # content_id IS the liveId — cast directly, no mapping needed
-            try:
-                live_id = int(content_id)
-            except (ValueError, TypeError):
-                logger.error(f"move.tv: content_id is not a valid liveId: {content_id!r}")
+            # content_id IS the contentId — resolve to liveId via channel cache
+            channel = self._channel_by_id(content_id)
+            if channel is None:
+                logger.error(
+                    f"move.tv: Channel not found in cache for content_id={content_id!r}; "
+                    "cannot resolve liveId for manifest fetch"
+                )
                 return None
+            live_id = channel.live_id
 
             source_data = self._fetch_live_source(live_id)
             if source_data is None:
@@ -411,7 +416,14 @@ class MoveTVProvider(StreamingProvider):
 
         # Cache miss or expired — fetch a fresh source and re-cache.
         try:
-            live_id = int(content_id)
+            channel = self._channel_by_id(content_id)
+            if channel is None:
+                logger.error(
+                    f"move.tv: Channel not found for content_id={content_id!r}; "
+                    "cannot resolve liveId for play-auth fetch"
+                )
+                return None
+            live_id = channel.live_id
             source_data = self._fetch_live_source(live_id)
             if source_data:
                 self._store_play_auth(content_id, source_data)
@@ -433,7 +445,7 @@ class MoveTVProvider(StreamingProvider):
                         )
                         self.authenticator.authenticate(force_refresh=True)
                     # Retry once with the new token.
-                    live_id = int(content_id)
+                    live_id = channel.live_id
                     source_data = self._fetch_live_source(live_id)
                     if source_data:
                         self._store_play_auth(content_id, source_data)
@@ -691,9 +703,8 @@ class MoveTVProvider(StreamingProvider):
         Parameters
         ----------
         channel_id:
-            The channel's liveId (stored as ``MoveTVChannel.content_id``).
-            Internally translated to the contentId (``catalog_id``) that the
-            EPG API expects before the request is fired.
+            The channel's contentId (stored as ``MoveTVChannel.content_id``).
+            Passed directly to the EPG API with no mapping required.
         backwards:
             Hours of past programming to include (default 2).
         forwards:
@@ -703,25 +714,9 @@ class MoveTVProvider(StreamingProvider):
         -------
         List of normalised programme dicts from ``MoveTvEpgManager``.
         """
-        # The EPG endpoint uses contentId (catalog_id), NOT liveId (content_id).
-        # Resolve via the cached channel list; fall back to channel_id as-is so
-        # callers that already pass a contentId still work.
-        catalog_id = channel_id
-        channel = self._channel_by_id(channel_id)
-        if channel is not None:
-            catalog_id = str(channel.catalog_id)
-            logger.debug(
-                f"move.tv EPG: resolved liveId={channel_id} → contentId={catalog_id}"
-            )
-        else:
-            logger.warning(
-                f"move.tv EPG: channel liveId={channel_id!r} not found in channel "
-                f"cache — passing value as-is to EPG manager (may fail if it is "
-                f"not a valid contentId)"
-            )
-
+        # content_id IS the contentId the EPG endpoint expects — no mapping needed.
         return self._epg.get_channel_epg(
-            catalog_id,
+            channel_id,
             backwards=kwargs.get("backwards", backwards),
             forwards=kwargs.get("forwards", forwards),
             **{k: v for k, v in kwargs.items() if k not in ("backwards", "forwards")},
