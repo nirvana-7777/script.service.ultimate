@@ -74,7 +74,7 @@ class MoveTVConfig:
     # -------------------------------------------------------------------------
     # Image / logo base URL (prepend to relative picture paths)
     # -------------------------------------------------------------------------
-    IMAGE_BASE_URL: str = "https://api2.mts-si.tv"
+    IMAGE_BASE_URL: str = "https://edge-mts-si-2.mts-si.tv"
 
     # -------------------------------------------------------------------------
     # Streaming type identifier used in the manifest source request
