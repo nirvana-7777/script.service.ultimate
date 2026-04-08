@@ -2,22 +2,19 @@
 import re
 import time
 import requests
-from typing import ClassVar, Dict, List, Optional, Any, cast
+from typing import ClassVar, Dict, List, Optional, Any
 
 from ...base.models import DRMConfig, StreamingChannel
 from ...base.models.proxy_models import ProxyConfig
 from ...base.provider import StreamingProvider
 from ...base.utils.logger import logger
-from .auth import MoveTVAuthenticator, MoveTVAuthToken
+from .auth import MoveTVAuthenticator
 from .constants import MoveTVConfig
 
 from .vod_manager import (
     MoveTvVodManager,
     VodFilters,
     VodPage,
-    VodItem,
-    PageComponent,
-    ComponentItem,
 )
 
 from .epg_manager import MoveTvEpgManager
@@ -170,7 +167,7 @@ class MoveTVProvider(StreamingProvider):
 
     @property
     def provider_logo(self) -> str:
-        return ""  # No hosted logo URL known at this time
+        return MoveTVConfig.PROVIDER_LOGO
 
     @property
     def uses_dynamic_manifests(self) -> bool:
@@ -216,7 +213,7 @@ class MoveTVProvider(StreamingProvider):
             if exc.response is not None and exc.response.status_code == 401:
                 logger.info("move.tv: 401 on channel fetch — attempting token refresh …")
                 try:
-                    token = cast(MoveTVAuthToken, self.authenticator._current_token)
+                    token = self.authenticator.get_current_token()
                     if token and self.authenticator.refresh_token(token):
                         channels = self._fetch_channels()
                         self.channels = channels  # type: ignore[assignment]
@@ -436,7 +433,7 @@ class MoveTVProvider(StreamingProvider):
                     "— attempting token refresh …"
                 )
                 try:
-                    token = cast(MoveTVAuthToken, self.authenticator._current_token)
+                    token = self.authenticator.get_current_token()
                     refreshed = self.authenticator.refresh_token(token) if token else None
                     if not refreshed:
                         logger.info(
@@ -537,7 +534,7 @@ class MoveTVProvider(StreamingProvider):
         # On 401, attempt a token refresh and retry once before giving up.
         if is_401:
             logger.info(f"move.tv: 401 on manifest fetch for liveId={live_id} — attempting token refresh …")
-            token = cast(MoveTVAuthToken, self.authenticator._current_token)
+            token = self.authenticator.get_current_token()
             refreshed = self.authenticator.refresh_token(token) if token else None
             if not refreshed:
                 logger.info("move.tv: Refresh failed, falling back to full login for manifest fetch")

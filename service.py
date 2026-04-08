@@ -5,6 +5,8 @@ import sys
 import threading
 import time
 from urllib.parse import parse_qsl, urlencode
+from typing import Optional
+import requests
 
 from bottle import Bottle, redirect, request, response, run
 
@@ -89,6 +91,10 @@ class UltimateService:
         except Exception as e:
             logger.warning(f"Could not initialize EPG Manager: {e}")
             self.epg_manager = None
+
+        # 3. Fetch EPG aliases for tvg-epgid mapping (initialize first)
+        self.epg_alias_map = {}  # Initialize to empty dict as fallback
+        self._fetch_epg_aliases()  # This will update self.epg_alias_map
 
         self.setup_routes()
         self.config_html = self._load_config_html()
@@ -594,65 +600,189 @@ class UltimateService:
             key=lambda ch: (ch.channel_number is None, ch.channel_number or 0)
         )
 
-    def _generate_m3u_content(
-        self, providers=None, save_to_cache=True, cache_filename=None
-    ):
+    def _fetch_epg_aliases(self) -> None:
         """
-        Internal method to generate M3U content for specified providers.
+        Fetch EPG aliases from ultimate-epg service for tvg-epgid mapping.
+        Updates self.epg_alias_map with mapping of channel_id -> epg_id.
+        """
+        api_base_url = os.environ.get("ULTIMATE_EPG_API_URL", "").strip()
+
+        if not api_base_url:
+            logger.info("ULTIMATE_EPG_API_URL not set - tvg-epgid will not be added to M3U playlists")
+            self.epg_alias_map = {}
+            return
+
+        aliases_url = f"{api_base_url.rstrip('/')}/api/v1/aliases"
+
+        try:
+            resp = requests.get(aliases_url, timeout=10)
+            resp.raise_for_status()
+
+            data = resp.json()
+            aliases = data.get("aliases", [])
+
+            # Build mapping: alias -> channel_name
+            alias_map = {}
+            for alias_entry in aliases:
+                alias = alias_entry.get("alias")
+                channel_name = alias_entry.get("channel_name")
+                if alias and channel_name:
+                    alias_map[alias] = channel_name
+
+            self.epg_alias_map = alias_map
+            logger.info(f"Fetched {len(alias_map)} EPG aliases from {aliases_url}")
+
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Failed to fetch EPG aliases from {aliases_url}: {e}")
+            self.epg_alias_map = {}
+        except Exception as e:
+            logger.warning(f"Unexpected error fetching EPG aliases: {e}")
+            self.epg_alias_map = {}
+
+    def _get_epg_id(self, channel_id: str) -> Optional[str]:
+        """
+        Get EPG ID (channel_name) for a given channel_id from alias mapping.
 
         Args:
-            providers: List of provider names, or None for all providers
-            save_to_cache: Whether to save to cache
-            cache_filename: Cache filename to use
+            channel_id: The channel's ID (alias from ultimate-epg)
 
         Returns:
-            M3U content as string
+            EPG ID string if found, None otherwise
         """
-        # Get base URL for absolute stream URLs
-        base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
+        if not self.epg_alias_map:
+            return None
+        return self.epg_alias_map.get(channel_id)
 
-        # Start M3U content
-        m3u_content = "#EXTM3U\n"
+    def _generate_m3u_channel_entry(self, base_url, provider_name, channel):
+        """
+        Generate M3U entry for a single channel.
 
-        # Determine which providers to process
-        if providers is None:
-            # All providers
-            providers_to_process = self.manager.list_providers()
-            cache_filename = cache_filename or "playlist.m3u"
+        Args:
+            base_url: Base URL for stream endpoints
+            provider_name: Name of the provider
+            channel: StreamingChannel object
+
+        Returns:
+            M3U entry as string
+        """
+        entry_content = ""
+
+        # Access StreamingChannel attributes directly
+        channel_id = channel.channel_id
+        channel_name = channel.name
+        channel_logo = channel.logo_url or ""
+        chno = self._chno_attr(channel)
+
+        # Get EPG ID if available
+        epg_id = self._get_epg_id(channel_id)
+        epg_id_attr = f' tvg-epgid="{epg_id}"' if epg_id else ""
+
+        # Build stream URL with /index.mpd
+        stream_url = (
+            f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/index.mpd"
+        )
+
+        # Get provider instance to access provider_label
+        try:
+            provider_instance = self.manager.get_provider(provider_name)
+            provider_label = provider_instance.provider_label
+        except (AttributeError, KeyError, ValueError):
+            # Fallback to provider_name if provider_label is not available
+            provider_label = provider_name
+
+        # Get catchup information from channel
+        catchup_window = getattr(channel, 'catchup_window', 0)  # in hours
+        catchup_source = getattr(channel, 'catchup_source', 'default')
+
+        # Build EXTINF line with catchup tags if available
+        import math
+        if catchup_window > 0:
+            # Convert hours to days (ceil to ensure full coverage)
+            catchup_days = math.ceil(catchup_window / 24)
+            entry_content += f'#EXTINF:-1 tvg-id="{channel_id}"{epg_id_attr}{chno} tvg-logo="{channel_logo}" group-title="{provider_label}" catchup="{catchup_source}" catchup-days="{catchup_days}",{channel_name}\n'
         else:
-            # Specific provider(s)
-            providers_to_process = (
-                [providers] if isinstance(providers, str) else providers
+            entry_content += f'#EXTINF:-1 tvg-id="{channel_id}"{epg_id_attr}{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
+
+        # Get DRM configs and add KODIPROP directives
+        try:
+            drm_configs = self.manager.get_channel_drm_configs(
+                provider_name=provider_name, channel_id=channel_id
             )
-            cache_filename = cache_filename or f"{providers_to_process[0]}.m3u"
 
-        for provider_name in providers_to_process:
-            try:
-                # Get channels for this provider
-                channels = self._sort_channels(
-                    self.manager.get_channels(provider_name=provider_name, fetch_manifests=False)
-                )
+            if drm_configs:
+                drm_directives = self._generate_drm_directives(drm_configs)
+                entry_content += drm_directives
 
-                # Add each channel to M3U
-                for channel in channels:
-                    m3u_content += self._generate_m3u_channel_entry(
-                        base_url, provider_name, channel
-                    )
+        except Exception as drm_err:
+            logger.debug(
+                f"Could not get DRM for {provider_name}/{channel_id}: {str(drm_err)}"
+            )
 
-            except Exception as provider_err:
-                logger.warning(
-                    f"Failed to get channels for provider '{provider_name}': {str(provider_err)}"
-                )
-                continue
+        # Add stream URL
+        entry_content += f"{stream_url}\n"
 
-        # Save to cache if requested
-        if save_to_cache and cache_filename:
-            if self.vfs.write_text(cache_filename, m3u_content):
-                logger.info(f"M3U playlist cached to {cache_filename}")
-            else:
-                logger.warning(f"Failed to cache M3U playlist to {cache_filename}")
+        return entry_content
 
-        return m3u_content
+    def _generate_m3u_decrypted_channel_entry(
+            self,  # Changed from @staticmethod to instance method
+            base_url,
+            provider_name,
+            provider_label,
+            channel,
+            clearkey_data,
+            provider_proxy_url,
+    ):
+        """
+        Generate M3U entry for a ClearKey encrypted channel with decryption URL.
+
+        Args:
+            base_url: Base URL for stream endpoints
+            provider_name: Name of the provider
+            provider_label: Display label for the provider
+            channel: StreamingChannel object
+            clearkey_data: ClearKey DRM data
+            provider_proxy_url: Optional provider proxy URL
+
+        Returns:
+            M3U entry as string
+        """
+        entry_content = ""
+
+        channel_id = channel.channel_id
+        channel_name = channel.name
+        channel_logo = channel.logo_url or ""
+        chno = f' tvg-chno="{channel.channel_number}" ch-number="{channel.channel_number}"' if getattr(channel,
+                                                                                                       "channel_number",
+                                                                                                       None) is not None else ""
+
+        # Get EPG ID if available
+        epg_id = self._get_epg_id(channel_id)
+        epg_id_attr = f' tvg-epgid="{epg_id}"' if epg_id else ""
+
+        # Build decrypted stream URL via media proxy with /index.mpd
+        # Format: /api/providers/{provider}/channels/{channel_id}/stream/decrypted/index.mpd
+        stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/decrypted/index.mpd"
+
+        # Get catchup information from channel
+        catchup_window = getattr(channel, 'catchup_window', 0)  # in hours
+        catchup_source = getattr(channel, 'catchup_source', 'default')
+
+        import math
+        # Build EXTINF line with catchup tags if available
+        if catchup_window > 0:
+            # Convert hours to days (ceil to ensure full coverage)
+            catchup_days = math.ceil(catchup_window / 24)
+            entry_content += f'#EXTINF:-1 tvg-id="{channel_id}"{epg_id_attr}{chno} tvg-logo="{channel_logo}" group-title="{provider_label}" catchup="{catchup_source}" catchup-days="{catchup_days}",{channel_name}\n'
+        else:
+            entry_content += f'#EXTINF:-1 tvg-id="{channel_id}"{epg_id_attr}{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
+
+        # Add KODIPROP for inputstream.adaptive (still needed for DASH playback)
+        entry_content += "#KODIPROP:inputstream=inputstream.adaptive\n"
+
+        # Add stream URL
+        entry_content += f"{stream_url}\n"
+
+        return entry_content
 
     def _generate_m3u_decrypted_fast(self, providers=None):
         """
@@ -712,6 +842,10 @@ class UltimateService:
                     channel_logo = channel.logo_url or ""
                     chno = self._chno_attr(channel)
 
+                    # Get EPG ID if available
+                    epg_id = self._get_epg_id(channel_id)
+                    epg_id_attr = f' tvg-epgid="{epg_id}"' if epg_id else ""
+
                     # Build decrypted stream URL
                     stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/decrypted/index.mpd"
 
@@ -723,9 +857,9 @@ class UltimateService:
                     # Add M3U entry with catchup tags if available
                     if catchup_window > 0:
                         catchup_days = math.ceil(catchup_window / 24)
-                        m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}"{chno} tvg-logo="{channel_logo}" group-title="{provider_label}" catchup="{catchup_source}" catchup-days="{catchup_days}",{channel_name}\n'
+                        m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}"{epg_id_attr}{chno} tvg-logo="{channel_logo}" group-title="{provider_label}" catchup="{catchup_source}" catchup-days="{catchup_days}",{channel_name}\n'
                     else:
-                        m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}"{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
+                        m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}"{epg_id_attr}{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
 
                     m3u_content += "#KODIPROP:inputstream=inputstream.adaptive\n"
                     m3u_content += f"{stream_url}\n"
@@ -814,6 +948,10 @@ class UltimateService:
                     channel_logo = channel.logo_url or ""
                     chno = self._chno_attr(channel)
 
+                    # Get EPG ID if available
+                    epg_id = self._get_epg_id(channel_id)
+                    epg_id_attr = f' tvg-epgid="{epg_id}"' if epg_id else ""
+
                     # Build decrypted stream URL (ffmpeg variant with highest quality)
                     stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/decrypted/ffmpeg/index.mpd"
 
@@ -839,7 +977,7 @@ class UltimateService:
                     )
 
                     # Add M3U entry with metadata
-                    m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}"{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
+                    m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}"{epg_id_attr}{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
                     m3u_content += "#KODIPROP:inputstream=inputstream.adaptive\n"
                     m3u_content += f"{ffmpeg_cmd}\n"
 
@@ -940,6 +1078,7 @@ class UltimateService:
                     channel_id = channel.channel_id
                     channel_name = channel.name
                     channel_logo = channel.logo_url or ""
+                    chno = self._chno_attr(channel)
 
                     # Try to get DRM configs
                     try:
@@ -984,9 +1123,10 @@ class UltimateService:
                             channels_included += 1
                         elif is_unencrypted:
                             # Explicitly unencrypted channel - include with direct stream URL
+                            epg_id = self._get_epg_id(channel_id)
+                            epg_id_attr = f' tvg-epgid="{epg_id}"' if epg_id else ""
                             stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/index.mpd"
-                            chno = f' tvg-chno="{channel.channel_number}" ch-number="{channel.channel_number}"' if getattr(channel, "channel_number", None) is not None else ""
-                            m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}"{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
+                            m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}"{epg_id_attr}{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
                             m3u_content += f"{stream_url}\n"
                             channels_included += 1
                         else:
@@ -1022,6 +1162,66 @@ class UltimateService:
                 logger.warning(
                     f"Failed to cache filtered decrypted M3U playlist to {cache_filename}"
                 )
+
+        return m3u_content
+
+    def _generate_m3u_content(
+        self, providers=None, save_to_cache=True, cache_filename=None
+    ):
+        """
+        Internal method to generate M3U content for specified providers.
+
+        Args:
+            providers: List of provider names, or None for all providers
+            save_to_cache: Whether to save to cache
+            cache_filename: Cache filename to use
+
+        Returns:
+            M3U content as string
+        """
+        # Get base URL for absolute stream URLs
+        base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
+
+        # Start M3U content
+        m3u_content = "#EXTM3U\n"
+
+        # Determine which providers to process
+        if providers is None:
+            # All providers
+            providers_to_process = self.manager.list_providers()
+            cache_filename = cache_filename or "playlist.m3u"
+        else:
+            # Specific provider(s)
+            providers_to_process = (
+                [providers] if isinstance(providers, str) else providers
+            )
+            cache_filename = cache_filename or f"{providers_to_process[0]}.m3u"
+
+        for provider_name in providers_to_process:
+            try:
+                # Get channels for this provider
+                channels = self._sort_channels(
+                    self.manager.get_channels(provider_name=provider_name, fetch_manifests=False)
+                )
+
+                # Add each channel to M3U
+                for channel in channels:
+                    m3u_content += self._generate_m3u_channel_entry(
+                        base_url, provider_name, channel
+                    )
+
+            except Exception as provider_err:
+                logger.warning(
+                    f"Failed to get channels for provider '{provider_name}': {str(provider_err)}"
+                )
+                continue
+
+        # Save to cache if requested
+        if save_to_cache and cache_filename:
+            if self.vfs.write_text(cache_filename, m3u_content):
+                logger.info(f"M3U playlist cached to {cache_filename}")
+            else:
+                logger.warning(f"Failed to cache M3U playlist to {cache_filename}")
 
         return m3u_content
 
@@ -1076,127 +1276,6 @@ class UltimateService:
         """Return ' tvg-chno="N" ch-number="N"' when channel_number is set, else empty string."""
         chno = getattr(channel, "channel_number", None)
         return f' tvg-chno="{chno}" ch-number="{chno}"' if chno is not None else ""
-
-    def _generate_m3u_channel_entry(self, base_url, provider_name, channel):
-        """
-        Generate M3U entry for a single channel.
-
-        Args:
-            base_url: Base URL for stream endpoints
-            provider_name: Name of the provider
-            channel: StreamingChannel object
-
-        Returns:
-            M3U entry as string
-        """
-        entry_content = ""
-
-        # Access StreamingChannel attributes directly
-        channel_id = channel.channel_id
-        channel_name = channel.name
-        channel_logo = channel.logo_url or ""
-        chno = self._chno_attr(channel)
-
-        # Build stream URL with /index.mpd
-        stream_url = (
-            f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/index.mpd"
-        )
-
-        # Get provider instance to access provider_label
-        try:
-            provider_instance = self.manager.get_provider(provider_name)
-            provider_label = provider_instance.provider_label
-        except (AttributeError, KeyError, ValueError):
-            # Fallback to provider_name if provider_label is not available
-            provider_label = provider_name
-
-        # Get catchup information from channel
-        catchup_window = getattr(channel, 'catchup_window', 0)  # in hours
-        catchup_source = getattr(channel, 'catchup_source', 'default')
-
-        # Build EXTINF line with catchup tags if available
-        import math
-        if catchup_window > 0:
-            # Convert hours to days (ceil to ensure full coverage)
-            catchup_days = math.ceil(catchup_window / 24)
-            entry_content += f'#EXTINF:-1 tvg-id="{channel_id}"{chno} tvg-logo="{channel_logo}" group-title="{provider_label}" catchup="{catchup_source}" catchup-days="{catchup_days}",{channel_name}\n'
-        else:
-            entry_content += f'#EXTINF:-1 tvg-id="{channel_id}"{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
-
-        # Get DRM configs and add KODIPROP directives
-        try:
-            drm_configs = self.manager.get_channel_drm_configs(
-                provider_name=provider_name, channel_id=channel_id
-            )
-
-            if drm_configs:
-                drm_directives = self._generate_drm_directives(drm_configs)
-                entry_content += drm_directives
-
-        except Exception as drm_err:
-            logger.debug(
-                f"Could not get DRM for {provider_name}/{channel_id}: {str(drm_err)}"
-            )
-
-        # Add stream URL
-        entry_content += f"{stream_url}\n"
-
-        return entry_content
-
-    @staticmethod
-    def _generate_m3u_decrypted_channel_entry(
-            base_url,
-            provider_name,
-            provider_label,
-            channel,
-            clearkey_data,
-            provider_proxy_url,
-    ):
-        """
-        Generate M3U entry for a ClearKey encrypted channel with decryption URL.
-
-        Args:
-            base_url: Base URL for stream endpoints
-            provider_name: Name of the provider
-            provider_label: Display label for the provider
-            channel: StreamingChannel object
-            clearkey_data: ClearKey DRM data
-            provider_proxy_url: Optional provider proxy URL
-
-        Returns:
-            M3U entry as string
-        """
-        entry_content = ""
-
-        channel_id = channel.channel_id
-        channel_name = channel.name
-        channel_logo = channel.logo_url or ""
-        chno = f' tvg-chno="{channel.channel_number}" ch-number="{channel.channel_number}"' if getattr(channel, "channel_number", None) is not None else ""
-
-        # Build decrypted stream URL via media proxy with /index.mpd
-        # Format: /api/providers/{provider}/channels/{channel_id}/stream/decrypted/index.mpd
-        stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/decrypted/index.mpd"
-
-        # Get catchup information from channel
-        catchup_window = getattr(channel, 'catchup_window', 0)  # in hours
-        catchup_source = getattr(channel, 'catchup_source', 'default')
-
-        import math
-        # Build EXTINF line with catchup tags if available
-        if catchup_window > 0:
-            # Convert hours to days (ceil to ensure full coverage)
-            catchup_days = math.ceil(catchup_window / 24)
-            entry_content += f'#EXTINF:-1 tvg-id="{channel_id}"{chno} tvg-logo="{channel_logo}" group-title="{provider_label}" catchup="{catchup_source}" catchup-days="{catchup_days}",{channel_name}\n'
-        else:
-            entry_content += f'#EXTINF:-1 tvg-id="{channel_id}"{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
-
-        # Add KODIPROP for inputstream.adaptive (still needed for DASH playback)
-        entry_content += "#KODIPROP:inputstream=inputstream.adaptive\n"
-
-        # Add stream URL
-        entry_content += f"{stream_url}\n"
-
-        return entry_content
 
     def _generate_m3u_decrypted_content(
         self, providers=None, save_to_cache=True, cache_filename=None
@@ -1475,6 +1554,40 @@ class UltimateService:
             directives += f"#KODIPROP:inputstream.adaptive.drm_legacy={drm_legacy}\n"
 
         return directives
+
+    # ── Public API for route modules ─────────────────────────────────────────────
+
+    def get_epg_id(self, channel_id: str) -> Optional[str]:
+        """Public wrapper for EPG ID lookup."""
+        return self._get_epg_id(channel_id)
+
+    def generate_m3u_all(self, save_to_cache: bool = False) -> str:
+        """Public wrapper for full M3U generation."""
+        return self._generate_m3u_all(save_to_cache=save_to_cache)
+
+    def generate_m3u_provider(self, provider: str, save_to_cache: bool = False) -> str:
+        """Public wrapper for per-provider M3U generation."""
+        return self._generate_m3u_provider(provider, save_to_cache=save_to_cache)
+
+    def generate_m3u_decrypted_fast(self, providers=None) -> str:
+        """Public wrapper for fast decrypted M3U generation."""
+        return self._generate_m3u_decrypted_fast(providers)
+
+    def generate_m3u_decrypted_ffmpeg_fast(self, providers=None) -> str:
+        """Public wrapper for fast ffmpeg-decrypted M3U generation."""
+        return self._generate_m3u_decrypted_ffmpeg_fast(providers)
+
+    def generate_m3u_decrypted_filtered_all(self, save_to_cache: bool = False) -> str:
+        """Public wrapper for filtered decrypted M3U (all providers)."""
+        return self._generate_m3u_decrypted_filtered_all(save_to_cache=save_to_cache)
+
+    def generate_m3u_decrypted_filtered_provider(self, provider: str, save_to_cache: bool = False) -> str:
+        """Public wrapper for filtered decrypted M3U (single provider)."""
+        return self._generate_m3u_decrypted_filtered_provider(provider, save_to_cache=save_to_cache)
+
+    def generate_drm_directives(self, drm_configs) -> str:
+        """Public wrapper for DRM directive generation."""
+        return self._generate_drm_directives(drm_configs)
 
     @staticmethod
     def _process_license_headers(req_headers):

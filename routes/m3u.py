@@ -36,7 +36,7 @@ def setup_m3u_routes(app, manager, service):
             logger.info(
                 "No valid cache found, generating M3U playlist for all providers"
             )
-            return service._generate_m3u_all(save_to_cache=True)
+            return service.generate_m3u_all(save_to_cache=True)
 
         except Exception as api_err:
             logger.error(f"API Error in /api/m3u: {str(api_err)}")
@@ -52,7 +52,7 @@ def setup_m3u_routes(app, manager, service):
         """
         try:
             logger.info("Force generating M3U playlist for all providers")
-            return service._generate_m3u_all(save_to_cache=True)
+            return service.generate_m3u_all(save_to_cache=True)
 
         except Exception as api_err:
             logger.error(f"API Error in /api/m3u/generate: {str(api_err)}")
@@ -85,7 +85,7 @@ def setup_m3u_routes(app, manager, service):
             logger.info(
                 f"No valid cache found, generating M3U playlist for provider '{provider}'"
             )
-            return service._generate_m3u_provider(provider, save_to_cache=True)
+            return service.generate_m3u_provider(provider, save_to_cache=True)
 
         except ValueError as val_err:
             logger.error(f"API Error in /api/providers/{provider}/m3u: {str(val_err)}")
@@ -105,7 +105,7 @@ def setup_m3u_routes(app, manager, service):
         """
         try:
             logger.info(f"Force generating M3U playlist for provider '{provider}'")
-            return service._generate_m3u_provider(provider, save_to_cache=True)
+            return service.generate_m3u_provider(provider, save_to_cache=True)
 
         except ValueError as val_err:
             logger.error(
@@ -131,7 +131,7 @@ def setup_m3u_routes(app, manager, service):
         """
         try:
             logger.info("Generating fast decrypted M3U playlist for all providers")
-            return service._generate_m3u_decrypted_fast(providers=None)
+            return service.generate_m3u_decrypted_fast(providers=None)
 
         except Exception as api_err:
             logger.error(f"API Error in /api/m3u/decrypted: {str(api_err)}")
@@ -165,7 +165,7 @@ def setup_m3u_routes(app, manager, service):
             logger.info(
                 "No valid cache found, generating filtered decrypted M3U playlist for all providers"
             )
-            return service._generate_m3u_decrypted_filtered_all(save_to_cache=True)
+            return service.generate_m3u_decrypted_filtered_all(save_to_cache=True)
 
         except Exception as api_err:
             logger.error(f"API Error in /api/m3u/decrypted/filtered: {str(api_err)}")
@@ -181,7 +181,7 @@ def setup_m3u_routes(app, manager, service):
         """
         try:
             logger.info("Force generating filtered decrypted M3U playlist for all providers")
-            return service._generate_m3u_decrypted_filtered_all(save_to_cache=True)
+            return service.generate_m3u_decrypted_filtered_all(save_to_cache=True)
 
         except Exception as api_err:
             logger.error(f"API Error in /api/m3u/decrypted/filtered/generate: {str(api_err)}")
@@ -199,7 +199,7 @@ def setup_m3u_routes(app, manager, service):
         """
         try:
             logger.info(f"Generating fast decrypted M3U playlist for provider '{provider}'")
-            return service._generate_m3u_decrypted_fast(providers=provider)
+            return service.generate_m3u_decrypted_fast(providers=provider)
 
         except ValueError as val_err:
             logger.error(
@@ -226,7 +226,7 @@ def setup_m3u_routes(app, manager, service):
         """
         try:
             logger.info(f"Generating fast decrypted ffmpeg M3U playlist for provider '{provider}'")
-            return service._generate_m3u_decrypted_ffmpeg_fast(providers=provider)
+            return service.generate_m3u_decrypted_ffmpeg_fast(providers=provider)
 
         except ValueError as val_err:
             logger.error(
@@ -270,7 +270,7 @@ def setup_m3u_routes(app, manager, service):
             logger.info(
                 f"No valid cache found, generating filtered decrypted M3U playlist for provider '{provider}'"
             )
-            return service._generate_m3u_decrypted_filtered_provider(
+            return service.generate_m3u_decrypted_filtered_provider(
                 provider, save_to_cache=True
             )
 
@@ -298,7 +298,7 @@ def setup_m3u_routes(app, manager, service):
             logger.info(
                 f"Force generating filtered decrypted M3U playlist for provider '{provider}'"
             )
-            return service._generate_m3u_decrypted_filtered_provider(
+            return service.generate_m3u_decrypted_filtered_provider(
                 provider, save_to_cache=True
             )
 
@@ -353,7 +353,12 @@ def setup_m3u_routes(app, manager, service):
                         channel_id = channel.channel_id
                         channel_name = channel.name
                         channel_logo = channel.logo_url or ""
-                        chno = f' tvg-chno="{channel.channel_number}" ch-number="{channel.channel_number}"' if getattr(channel, "channel_number", None) is not None else ""
+                        chno = f' tvg-chno="{channel.channel_number}" ch-number="{channel.channel_number}"' if getattr(
+                            channel, "channel_number", None) is not None else ""
+
+                        # Get EPG ID if available
+                        epg_id = service.get_epg_id(channel_id)
+                        epg_id_attr = f' tvg-epgid="{epg_id}"' if epg_id else ""
 
                         # Get provider label
                         try:
@@ -361,14 +366,14 @@ def setup_m3u_routes(app, manager, service):
                             provider_label = getattr(
                                 provider_instance, "provider_label", provider_name
                             )
-                        except:
+                        except Exception:
                             provider_label = provider_name
 
                         # Build stream URL with /index.mpd
                         stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/index.mpd"
 
                         # Add M3U entry
-                        m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}"{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
+                        m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}"{epg_id_attr}{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
 
                         # Add DRM directives if available
                         try:
@@ -376,7 +381,7 @@ def setup_m3u_routes(app, manager, service):
                                 provider_name, channel_id
                             )
                             if drm_configs:
-                                drm_directives = service._generate_drm_directives(
+                                drm_directives = service.generate_drm_directives(
                                     drm_configs
                                 )
                                 m3u_content += drm_directives
@@ -405,22 +410,6 @@ def setup_m3u_routes(app, manager, service):
 
         except Exception as api_err:
             logger.error(f"API Error in /api/m3u/subscribed: {str(api_err)}")
-            response.status = 500
-            return {"error": f"Internal server error: {str(api_err)}"}
-
-    @app.route("/api/m3u/subscribed/generate")
-    def generate_m3u_subscribed():
-        """Force regenerate subscribed M3U playlist"""
-        try:
-            # Clear cache and regenerate
-            cache_file = "playlist_subscribed.m3u"
-            service.vfs.delete(cache_file)  # Delete if exists
-
-            # Call the subscribed M3U endpoint which will regenerate
-            return get_m3u_subscribed()
-
-        except Exception as api_err:
-            logger.error(f"API Error in /api/m3u/subscribed/generate: {str(api_err)}")
             response.status = 500
             return {"error": f"Internal server error: {str(api_err)}"}
 
@@ -455,20 +444,25 @@ def setup_m3u_routes(app, manager, service):
                         provider_label = getattr(
                             provider_instance, "provider_label", provider_name
                         )
-                    except:
+                    except Exception:
                         provider_label = provider_name
 
                     for channel in channels:
                         channel_id = channel.channel_id
                         channel_name = channel.name
                         channel_logo = channel.logo_url or ""
-                        chno = f' tvg-chno="{channel.channel_number}" ch-number="{channel.channel_number}"' if getattr(channel, "channel_number", None) is not None else ""
+                        chno = f' tvg-chno="{channel.channel_number}" ch-number="{channel.channel_number}"' if getattr(
+                            channel, "channel_number", None) is not None else ""
+
+                        # Get EPG ID if available
+                        epg_id = service.get_epg_id(channel_id)
+                        epg_id_attr = f' tvg-epgid="{epg_id}"' if epg_id else ""
 
                         # Build decrypted stream URL
                         stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/decrypted/index.mpd"
 
                         # Add M3U entry
-                        m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}"{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
+                        m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}"{epg_id_attr}{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
                         m3u_content += "#KODIPROP:inputstream=inputstream.adaptive\n"
                         m3u_content += f"{stream_url}\n"
 
@@ -486,5 +480,21 @@ def setup_m3u_routes(app, manager, service):
 
         except Exception as api_err:
             logger.error(f"API Error in /api/m3u/subscribed/decrypted: {str(api_err)}")
+            response.status = 500
+            return {"error": f"Internal server error: {str(api_err)}"}
+
+    @app.route("/api/m3u/subscribed/generate")
+    def generate_m3u_subscribed():
+        """Force regenerate subscribed M3U playlist"""
+        try:
+            # Clear cache and regenerate
+            cache_file = "playlist_subscribed.m3u"
+            service.vfs.delete(cache_file)  # Delete if exists
+
+            # Call the subscribed M3U endpoint which will regenerate
+            return get_m3u_subscribed()
+
+        except Exception as api_err:
+            logger.error(f"API Error in /api/m3u/subscribed/generate: {str(api_err)}")
             response.status = 500
             return {"error": f"Internal server error: {str(api_err)}"}

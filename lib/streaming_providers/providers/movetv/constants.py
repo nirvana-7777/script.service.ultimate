@@ -10,7 +10,7 @@ class MoveTVConfig:
     provider.py, auth.py, and vod_manager.py never contain raw strings
     or magic numbers.
     """
-
+    PROVIDER_LOGO: str = "https://m.media-amazon.com/images/I/41NLX+Ej5+L.png"
     # -------------------------------------------------------------------------
     # Base URLs
     # -------------------------------------------------------------------------

@@ -403,6 +403,9 @@ class MoveTVAuthenticator(BaseAuthenticator):
     def get_auth_token(self, force_refresh: bool = False) -> str:
         return self.authenticate(force_refresh).access_token
 
+    def get_current_token(self) -> MoveTVAuthToken:
+        return cast(MoveTVAuthToken, self._current_token)
+
     def get_session_info(self) -> Optional[Dict[str, Any]]:
         """
         Returns info required for playback.
