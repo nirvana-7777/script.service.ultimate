@@ -1701,6 +1701,7 @@ class UltimateService:
         from routes.vod import setup_vod_routes
         from routes.recordings import setup_recordings_routes
         from routes.timers import setup_timers_routes
+        from routes.bookmarks import setup_bookmarks_routes
 
         # Setup routes from separate modules
         setup_provider_routes(self.app, self.manager, self)
@@ -1714,6 +1715,7 @@ class UltimateService:
         setup_vod_routes(self.app, self.manager)
         setup_recordings_routes(self.app, self.manager, self)
         setup_timers_routes(self.app, self.manager, self)
+        setup_bookmarks_routes(self.app, self.manager, self)
 
         # Core UI routes
         @self.app.route("/config")

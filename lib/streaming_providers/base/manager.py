@@ -14,7 +14,9 @@ from .event_operations import EventOperations
 from .vod_operations import VodOperations
 from .recording_operations import RecordingOperations
 from .timer_operations import TimerOperations
+from .bookmark_operations import BookmarkOperations
 from .models import StreamingChannel
+from .models.bookmark import Bookmark, ContentType
 from .provider_registry import ProviderRegistry
 from .subscription_operations import SubscriptionOperations
 from .utils.logger import logger
@@ -40,6 +42,7 @@ class ProviderManager:
         self.vod_ops = VodOperations(self.registry)
         self.recording_ops = RecordingOperations(self.registry)
         self.timer_ops = TimerOperations(self.registry)
+        self.bookmark_ops = BookmarkOperations(self.registry)
 
         # Backward compatibility - expose managers directly
         self.drm_plugin_manager = self.drm_ops.drm_plugin_manager
@@ -346,6 +349,283 @@ class ProviderManager:
         return self.timer_ops.delete_timer(
             provider_name, client_index, force_delete=force_delete, **kwargs
         )
+
+    # ==========================================================================
+    # BOOKMARK OPERATIONS (delegate to BookmarkOperations)
+    # ==========================================================================
+
+    def get_bookmarks(
+            self,
+            provider_name: str,
+            content_type: Optional[ContentType] = None,
+            include_completed: bool = False,
+            include_stale: bool = False,
+            max_age_hours: int = 720,
+    ) -> List[Bookmark]:
+        """
+        Get bookmarks from a specific provider.
+
+        Args:
+            provider_name: Name of the provider to query.
+            content_type: Optional filter by content type.
+            include_completed: If True, include completed bookmarks.
+            include_stale: If True, include stale bookmarks.
+            max_age_hours: Maximum age before a bookmark is considered stale.
+
+        Returns:
+            List of Bookmark objects.
+
+        Raises:
+            ValueError: If the provider is not found or disabled.
+        """
+        return self.bookmark_ops.get_bookmarks(
+            provider_name,
+            content_type=content_type,
+            include_completed=include_completed,
+            include_stale=include_stale,
+            max_age_hours=max_age_hours,
+        )
+
+    def get_bookmark(
+            self, provider_name: str, content_id: str
+    ) -> Optional[Bookmark]:
+        """
+        Get a specific bookmark by content ID from a provider.
+
+        Args:
+            provider_name: Name of the provider.
+            content_id: Content identifier.
+
+        Returns:
+            Bookmark object if found, None otherwise.
+
+        Raises:
+            ValueError: If the provider is not found or disabled.
+        """
+        return self.bookmark_ops.get_bookmark(provider_name, content_id)
+
+    def update_bookmark(
+            self,
+            provider_name: str,
+            content_id: str,
+            content_type: ContentType,
+            position_seconds: int,
+            duration_seconds: Optional[int] = None,
+            title: Optional[str] = None,
+            **kwargs,
+    ) -> Optional[Bookmark]:
+        """
+        Update or create a bookmark for a specific content.
+
+        Args:
+            provider_name: Name of the provider.
+            content_id: Content identifier.
+            content_type: Type of content being bookmarked.
+            position_seconds: Playback position in seconds (0 = start, -1 = completed).
+            duration_seconds: Total duration of the content (optional).
+            title: Content title for caching (optional).
+            **kwargs: Additional metadata (thumbnail_url, series_title, etc.).
+
+        Returns:
+            Updated Bookmark object, or None if provider doesn't support bookmarks.
+
+        Raises:
+            ValueError: If the provider is not found or disabled.
+            RuntimeError: If the provider rejects the update.
+        """
+        return self.bookmark_ops.update_bookmark(
+            provider_name,
+            content_id,
+            content_type,
+            position_seconds,
+            duration_seconds=duration_seconds,
+            title=title,
+            **kwargs,
+        )
+
+    def delete_bookmark(
+            self, provider_name: str, content_id: str
+    ) -> bool:
+        """
+        Delete a bookmark from a specific provider.
+
+        Args:
+            provider_name: Name of the provider.
+            content_id: Content identifier.
+
+        Returns:
+            True if deleted, False if bookmark didn't exist or provider doesn't support.
+
+        Raises:
+            ValueError: If the provider is not found or disabled.
+            RuntimeError: If the provider refuses deletion.
+        """
+        return self.bookmark_ops.delete_bookmark(provider_name, content_id)
+
+    def mark_bookmark_completed(
+            self,
+            provider_name: str,
+            content_id: str,
+            content_type: ContentType,
+            duration_seconds: Optional[int] = None,
+            title: Optional[str] = None,
+            **kwargs,
+    ) -> Optional[Bookmark]:
+        """
+        Mark a content as completed (watched to end).
+
+        Args:
+            provider_name: Name of the provider.
+            content_id: Content identifier.
+            content_type: Type of content.
+            duration_seconds: Total duration (optional).
+            title: Content title (optional).
+            **kwargs: Additional metadata.
+
+        Returns:
+            Updated Bookmark with position set to -1, or None if not supported.
+
+        Raises:
+            ValueError: If the provider is not found or disabled.
+        """
+        return self.bookmark_ops.mark_completed(
+            provider_name,
+            content_id,
+            content_type,
+            duration_seconds=duration_seconds,
+            title=title,
+            **kwargs,
+        )
+
+    def get_all_bookmarks(
+            self,
+            content_type: Optional[ContentType] = None,
+            include_completed: bool = False,
+            include_stale: bool = False,
+            max_age_hours: int = 720,
+    ) -> Dict[str, List[Bookmark]]:
+        """
+        Get bookmarks from all enabled providers.
+
+        Args:
+            content_type: Optional filter by content type.
+            include_completed: If True, include completed bookmarks.
+            include_stale: If True, include stale bookmarks.
+            max_age_hours: Maximum age for stale detection.
+
+        Returns:
+            Dict mapping provider name → list of Bookmark objects.
+            Failed providers are represented by an '_errors' key.
+        """
+        return self.bookmark_ops.get_all_bookmarks(
+            content_type=content_type,
+            include_completed=include_completed,
+            include_stale=include_stale,
+            max_age_hours=max_age_hours,
+        )
+
+    def get_all_bookmarks_flat(
+            self,
+            content_type: Optional[ContentType] = None,
+            include_completed: bool = False,
+            include_stale: bool = False,
+            max_age_hours: int = 720,
+            sort_by: str = "last_updated",
+    ) -> List[Bookmark]:
+        """
+        Get all bookmarks as a flat list sorted by the specified field.
+
+        Args:
+            content_type: Optional filter by content type.
+            include_completed: If True, include completed bookmarks.
+            include_stale: If True, include stale bookmarks.
+            max_age_hours: Maximum age for stale detection.
+            sort_by: Sort field ('last_updated', 'created_at', 'title', 'provider').
+
+        Returns:
+            Flat list of Bookmark objects sorted by sort_by.
+
+        Raises:
+            ValueError: If sort_by is not a recognised field.
+        """
+        return self.bookmark_ops.get_all_bookmarks_flat(
+            content_type=content_type,
+            include_completed=include_completed,
+            include_stale=include_stale,
+            max_age_hours=max_age_hours,
+            sort_by=sort_by,
+        )
+
+    def delete_all_bookmarks_for_content(
+            self,
+            content_id: str,
+            provider_filter: Optional[List[str]] = None,
+    ) -> Dict[str, bool]:
+        """
+        Delete bookmarks for a specific content ID across all providers.
+
+        Useful when content is removed from a provider.
+
+        Args:
+            content_id: Content identifier to delete.
+            provider_filter: Optional list of provider names to restrict deletion.
+
+        Returns:
+            Dict mapping provider name → True if deleted, False if not found.
+        """
+        return self.bookmark_ops.delete_all_bookmarks_for_content(
+            content_id, provider_filter=provider_filter
+        )
+
+    def cleanup_stale_bookmarks(
+            self,
+            max_age_hours: int = 720,
+            dry_run: bool = True,
+            provider_filter: Optional[List[str]] = None,
+    ) -> Dict[str, int]:
+        """
+        Remove bookmarks older than max_age_hours.
+
+        Args:
+            max_age_hours: Age threshold in hours (default 720 = 30 days).
+            dry_run: If True, only report what would be deleted without actually deleting.
+            provider_filter: Optional list of provider names to restrict cleanup.
+
+        Returns:
+            Dict mapping provider name → number of bookmarks deleted (or would-be deleted).
+        """
+        return self.bookmark_ops.cleanup_stale_bookmarks(
+            max_age_hours=max_age_hours,
+            dry_run=dry_run,
+            provider_filter=provider_filter,
+        )
+
+    def get_bookmark_stats(self, max_age_hours: int = 720) -> Dict[str, Any]:
+        """
+        Get statistics about bookmarks across all providers.
+
+        Args:
+            max_age_hours: Age threshold used for staleness classification.
+
+        Returns:
+            Dictionary with counts by status, content type, and provider.
+        """
+        return self.bookmark_ops.get_bookmark_stats(max_age_hours=max_age_hours)
+
+    def validate_bookmarks(
+            self, provider_name: str, auto_fix: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Validate all bookmarks from a provider and optionally fix common issues.
+
+        Args:
+            provider_name: Name of the provider.
+            auto_fix: If True, attempt to fix fixable issues.
+
+        Returns:
+            Dictionary with validation results (total, errors, warnings, fixed).
+        """
+        return self.bookmark_ops.validate_bookmarks(provider_name, auto_fix=auto_fix)
 
     # ==========================================================================
     # SUBSCRIPTION OPERATIONS (delegate to SubscriptionOperations)
