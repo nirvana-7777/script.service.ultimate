@@ -36,7 +36,7 @@ when only the broadcast_id is passed from Kodi.
 """
 
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 from ..models.epg_models import EPGEntry
 from ..utils.environment import get_environment_manager, is_kodi_environment
@@ -117,12 +117,31 @@ class EPGManager:
         logger.debug(f"EPGManager: Using default time range: {start} to {end}")
         return start, end
 
+    @staticmethod
+    def _to_unix_ts(value: Optional[Union[datetime, int, float]]) -> Optional[int]:
+        """
+        Normalise a time value to a Unix timestamp (int seconds).
+
+        Accepts:
+          - None           → None
+          - int / float    → treated directly as Unix seconds (already a timestamp)
+          - datetime       → converted via .timestamp()
+
+        This prevents the 'int object has no attribute timestamp' crash that
+        occurs when callers pass a raw Unix timestamp instead of a datetime.
+        """
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return int(value)
+        return int(value.timestamp())
+
     def get_epg(
         self,
         provider_name: str,
         channel_id: str,
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
+        start_time: Optional[Union[datetime, int, float]] = None,
+        end_time: Optional[Union[datetime, int, float]] = None,
     ) -> List[Dict]:
         """
         Get EPG data for a specific channel within a time range.
@@ -157,14 +176,15 @@ class EPGManager:
                 logger.error("EPGManager: Failed to get EPG XML file")
                 return []
 
-            # Step 3: Convert datetime to Unix timestamps
-            if start_time is None or end_time is None:
+            # Step 3: Convert start_time / end_time to Unix timestamps.
+            # _to_unix_ts() handles datetime objects, raw ints, and floats
+            # uniformly so callers can pass either form without crashing.
+            start_ts = self._to_unix_ts(start_time)
+            end_ts   = self._to_unix_ts(end_time)
+            if start_ts is None or end_ts is None:
                 default_start, default_end = self._get_default_time_range()
-                start_ts = int(start_time.timestamp()) if start_time else default_start
-                end_ts = int(end_time.timestamp()) if end_time else default_end
-            else:
-                start_ts = int(start_time.timestamp())
-                end_ts = int(end_time.timestamp())
+                start_ts = start_ts if start_ts is not None else default_start
+                end_ts   = end_ts   if end_ts   is not None else default_end
 
             logger.debug(f"EPGManager: Time range: {start_ts} to {end_ts}")
 
@@ -194,8 +214,8 @@ class EPGManager:
         self,
         provider_name: str,
         channel_id: str,
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
+        start_time: Optional[Union[datetime, int, float]] = None,
+        end_time: Optional[Union[datetime, int, float]] = None,
     ) -> List[EPGEntry]:
         """
         Get EPG data as EPGEntry objects (for internal use).
@@ -224,13 +244,12 @@ class EPGManager:
                 logger.error("EPGManager: Failed to get EPG XML file")
                 return []
 
-            if start_time is None or end_time is None:
+            start_ts = self._to_unix_ts(start_time)
+            end_ts   = self._to_unix_ts(end_time)
+            if start_ts is None or end_ts is None:
                 default_start, default_end = self._get_default_time_range()
-                start_ts = int(start_time.timestamp()) if start_time else default_start
-                end_ts = int(end_time.timestamp()) if end_time else default_end
-            else:
-                start_ts = int(start_time.timestamp())
-                end_ts = int(end_time.timestamp())
+                start_ts = start_ts if start_ts is not None else default_start
+                end_ts   = end_ts   if end_ts   is not None else default_end
 
             return self.parser.parse_epg_for_channel(
                 xml_path,
