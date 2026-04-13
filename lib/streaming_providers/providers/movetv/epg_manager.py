@@ -201,10 +201,29 @@ class MoveTvEpgManager:
                 timeout=MoveTVConfig.TIMEOUT,
             )
             response.raise_for_status()
-            data: Dict[str, Any] = response.json()
         except Exception as exc:
             logger.error(
                 f"MoveTV EPG: Request failed for channel {channel_id} — {exc}"
+            )
+            return []
+
+        # Decode JSON separately so a missing / malformed body doesn't
+        # collapse into a silent "Request failed" that hides the real cause.
+        try:
+            data: Dict[str, Any] = response.json()
+        except Exception as exc:
+            logger.error(
+                f"MoveTV EPG: Failed to decode JSON response for channel "
+                f"{channel_id} — {exc} "
+                f"(HTTP {response.status_code}, body={response.text[:200]!r})"
+            )
+            return []
+
+        # The API may return a 200 with success=false, or (rarely) a null body
+        # parsed as None.  Guard both cases before calling .get() on data.
+        if data is None:
+            logger.error(
+                f"MoveTV EPG: API returned null/empty JSON body for channel {channel_id}"
             )
             return []
 

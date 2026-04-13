@@ -11,7 +11,13 @@ from .utils.logger import logger
 
 
 class EPGOperations:
-    """Handles all EPG-related operations."""
+    """Handles all EPG-related operations.
+
+    Design note: instantiate this class ONCE (e.g. at application / route
+    setup time) and reuse the same instance for every request.  Creating a
+    new instance per-request causes EPGManager, EPGCache, EPGMapping and
+    their VFS helpers to be re-constructed (and re-logged) on every call.
+    """
 
     def __init__(self, registry):
         self.registry = registry
@@ -35,6 +41,16 @@ class EPGOperations:
                 start_time=kwargs.get("start_time"),
                 end_time=kwargs.get("end_time"),
             )
+
+        # Guard against a provider returning None instead of an empty list.
+        # Without this check the len() call below (and any downstream
+        # iteration) would raise "NoneType has no attribute …".
+        if epg_data is None:
+            logger.warning(
+                f"provider.get_epg() returned None for channel '{channel_id}' "
+                f"on provider '{provider_name}' — treating as empty result"
+            )
+            epg_data = []
 
         logger.debug(f"Retrieved {len(epg_data)} EPG entries for '{channel_id}'")
         return epg_data

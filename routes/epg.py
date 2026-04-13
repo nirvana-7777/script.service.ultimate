@@ -11,6 +11,11 @@ from streaming_providers.base.epg_operations import EPGOperations
 def setup_epg_routes(app, manager, service):
     """Setup EPG-related routes"""
 
+    # Instantiate EPGOperations once here so that EPGManager, EPGCache,
+    # EPGMapping and their VFS helpers are only constructed a single time,
+    # not on every incoming HTTP request.
+    epg_ops = EPGOperations(manager.registry)
+
     @app.route("/api/epg/status", method="GET")
     def get_epg_status():
         """Get EPG configuration and cache status"""
@@ -178,7 +183,7 @@ def setup_epg_routes(app, manager, service):
 
             return {
                 "channels": sorted_channels,
-                "channel_map": channel_map,  # NEW: Map of id -> display name
+                "channel_map": channel_map,  # Map of id -> display name
                 "count": len(sorted_channels),
                 "source_url": service.epg_url,
                 "cache_path": xml_path,
@@ -351,8 +356,8 @@ def setup_epg_routes(app, manager, service):
         limit = request.query.get("limit", default=100, type=int)
 
         try:
-            epg_ops = EPGOperations(manager.registry)
-
+            # Re-use the shared epg_ops instance created at setup time —
+            # do NOT construct a new EPGOperations() here.
             programs = epg_ops.get_channel_epg(
                 provider_name=provider,
                 channel_id=channel_id,
@@ -374,6 +379,6 @@ def setup_epg_routes(app, manager, service):
             response.status = 404
             return {"error": str(e)}
         except Exception as e:
-            logger.error(f"Error getting EPG: {e}")
+            logger.error(f"Error getting EPG: {e}", exc_info=True)
             response.status = 500
             return {"error": str(e)}
