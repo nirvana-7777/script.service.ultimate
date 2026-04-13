@@ -443,14 +443,15 @@ class MoveTvEpgManager:
             category_ids = []
             category_images = []
 
-            for cat in item.get("categories", []):
+            for cat in item.get("categories") or []:
                 if cat.get("name"):
                     categories.append(cat["name"])
                 if cat.get("categoryId"):
                     category_ids.append(cat["categoryId"])
-                if cat.get("picture", {}).get("icon"):
+                cat_picture = cat.get("picture") or {}
+                if cat_picture.get("icon"):
                     category_images.append(
-                        MoveTVConfig.build_image_url(cat["picture"]["icon"])
+                        MoveTVConfig.build_image_url(cat_picture["icon"])
                     )
 
             # ------------------------------------------------------------
@@ -505,7 +506,7 @@ class MoveTvEpgManager:
             # ------------------------------------------------------------
             # Collect all available images
             # ------------------------------------------------------------
-            picture = item.get("picture", {})
+            picture = item.get("picture") or {}
             images = {
                 "background": MoveTVConfig.build_image_url(picture.get("background")),
                 "icon": MoveTVConfig.build_image_url(picture.get("icon")),
@@ -548,8 +549,8 @@ class MoveTvEpgManager:
                 "end_ms": end_ms,
 
                 # Genre and categories (enhanced)
-                "genre": item.get("tagInfo", {}).get("name"),
-                "genre_id": item.get("tagInfo", {}).get("tagId"),
+                "genre": (item.get("tagInfo") or {}).get("name"),
+                "genre_id": (item.get("tagInfo") or {}).get("tagId"),
                 "categories": categories,
                 "category_ids": category_ids,
                 "category_images": category_images if category_images else None,
