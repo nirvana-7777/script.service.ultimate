@@ -75,7 +75,9 @@ _ROLES_DE: Dict[str, str] = {
     "Drehbuch": "writers",
     "Moderation": "presenter",
     "Musik": "composers",
+    "songs": "composers",       # songwriter credit (English label used across AT content)
     "Mitarbeiter": "contributors",
+    "Technik": "contributors",  # technical crew
 }
 
 _ROLES_PL: Dict[str, str] = {
@@ -402,6 +404,28 @@ class MagentaEUEpgManager:
         return {k: sorted(v) if v else None for k, v in buckets.items()}
 
     @staticmethod
+    def _parse_episode_number(value: Any, max_valid: Optional[int] = None) -> Optional[int]:
+        """
+        Parse a season or episode number from the API response.
+
+        The bifrost/Gracenote API always returns these as strings. When a show
+        has no real season structure Gracenote encodes a year-based placeholder
+        (e.g. "20230000", "39170000"). Pass max_valid to discard values above a
+        threshold (season numbers only — episode numbers have no upper bound).
+        """
+        if value is None:
+            return None
+        try:
+            n = int(value)
+            if n <= 0:
+                return None
+            if max_valid is not None and n > max_valid:
+                return None
+            return n
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
     def _parse_timestamp(iso_str: Optional[str]) -> Optional[int]:
         """Parse an ISO-8601 datetime string to a Unix timestamp (int seconds)."""
         if not iso_str:
@@ -441,6 +465,15 @@ class MagentaEUEpgManager:
         except (ValueError, TypeError):
             year = None
 
+        # Season / episode — the API returns strings, and Gracenote encodes
+        # "no real season" as a large placeholder (e.g. "20230000", "39170000").
+        # Any value >= 9999 is treated as absent to avoid nonsense data.
+        # Season: values >= 9999 are Gracenote year-encoded placeholders (e.g.
+        # "20230000") meaning the show has no real season structure → treat as None.
+        # Episode: no upper bound — long-running daily shows can have 2000+ episodes.
+        season_number = self._parse_episode_number(item.get("season_number"), max_valid=9998)
+        episode_number = self._parse_episode_number(item.get("episode_number"), max_valid=None)
+
         return {
             # Identifiers
             "channel_id": channel_id,
@@ -452,8 +485,8 @@ class MagentaEUEpgManager:
             "episode_name": item.get("episode_name"),
 
             # Episode info
-            "season_number": item.get("season_number"),
-            "episode_number": item.get("episode_number"),
+            "season_number": season_number,
+            "episode_number": episode_number,
 
             # Time (Unix timestamps)
             "start": start,
@@ -474,6 +507,11 @@ class MagentaEUEpgManager:
             # Metadata
             "year": year,
             "image": details.get("poster_image_url"),
+            "language": self._app_language,
+
+            # Parental rating — schedule item returns a raw value (e.g. "12", "FSK 16").
+            # Stored as-is in parental_rating_code; numeric extraction left to the consumer.
+            "parental_rating_code": item.get("ratings") or None,
         }
 
     # ------------------------------------------------------------------
