@@ -17,6 +17,7 @@ from ..lib_theplatform import (
     parse_bifrost_epg_channel,
 )
 from .auth import MagentaAuthenticator
+from .epg_manager import MagentaEUEpgManager
 from .constants import (
     API_ENDPOINTS,
     CONTENT_TYPE_LIVE,
@@ -95,6 +96,13 @@ class MagentaEUProvider(StreamingProvider):
             proxy_config=self.http_manager.config.proxy_config,  # Use resolved proxy
         )
 
+
+        # EPG manager — owns all schedule fetch/parse logic
+        self.epg_manager = MagentaEUEpgManager(
+            country=country,
+            http_manager=self.http_manager,
+            authenticator=self.authenticator,
+        )
         logger.info(f"=== MagentaProvider.__init__ COMPLETE ===")
 
     def _load_proxy_from_manager(self, config_dir: Optional[str]) -> Optional[ProxyConfig]:
@@ -129,7 +137,7 @@ class MagentaEUProvider(StreamingProvider):
 
     @property
     def implements_epg(self) -> bool:
-        return False
+        return True
 
     @property
     def catchup_window(self) -> int:
@@ -275,6 +283,26 @@ class MagentaEUProvider(StreamingProvider):
             **kwargs,
     ) -> List[Event]:
         return []
+
+    def get_epg(self, channel_id: str, **kwargs) -> List[Dict]:
+        """
+        Native EPG entry point called by EPGOperations when implements_epg=True.
+
+        Delegates entirely to MagentaEUEpgManager — the provider is only an
+        orchestrator here.
+
+        Parameters
+        ----------
+        channel_id:  Station ID (theplatform Station URI) — same value stored
+                     as content_id on StreamingChannel.
+        **kwargs:    Forwarded to the manager; recognised keys are
+                     start_time and end_time (datetime objects).
+        """
+        return self.epg_manager.get_channel_epg(
+            channel_id=channel_id,
+            start_time=kwargs.get("start_time"),
+            end_time=kwargs.get("end_time"),
+        )
 
     def enrich_channel_data(
         self, channel: StreamingChannel, **kwargs
