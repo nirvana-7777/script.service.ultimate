@@ -17,16 +17,25 @@ Design notes
 * Programme details (description, credits, image) are fetched per-programme and
   cached in-memory via ``_ProgramDetailsCache`` to avoid hammering the API.
 * Credit labels are localised per country because the bifrost API returns
-  role names in the content language (e.g. "Besetzung" for AT, "Obsada" for PL).
+  role names in the content language, sometimes ALL-CAPS (HR, ME).
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ...base.utils.logger import logger
+from .constants import (
+    DEFAULT_REQUEST_TIMEOUT,
+    SUPPORTED_COUNTRIES,
+    get_app_key,
+    get_bifrost_url,
+    get_guest_headers,
+    get_language,
+    get_natco_key,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -42,22 +51,13 @@ class _ProgramDetailsCache:
     """
 
     def __init__(self) -> None:
-        self._store: Dict[tuple, Any] = {}
+        self._store: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
     def get(self, natco_code: str, program_id: str) -> Optional[Dict[str, Any]]:
         return self._store.get((natco_code, program_id))
 
     def put(self, natco_code: str, program_id: str, data: Dict[str, Any]) -> None:
         self._store[(natco_code, program_id)] = data
-from .constants import (
-    DEFAULT_REQUEST_TIMEOUT,
-    SUPPORTED_COUNTRIES,
-    get_app_key,
-    get_bifrost_url,
-    get_guest_headers,
-    get_language,
-    get_natco_key,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -65,8 +65,10 @@ from .constants import (
 # ---------------------------------------------------------------------------
 # The bifrost API returns role_name in the content language, not English.
 # Each mapping translates the localised label → canonical credit bucket.
+# Verified against actual epg_parser provider implementations.
+# Note: HR uses ALL-CAPS labels as returned by the API.
 
-_ROLES_DE = {
+_ROLES_DE: Dict[str, str] = {
     "Besetzung": "cast",
     "Regie": "directors",
     "Produktion": "producers",
@@ -75,39 +77,48 @@ _ROLES_DE = {
     "Musik": "composers",
     "Mitarbeiter": "contributors",
 }
-_ROLES_PL = {
-    "Obsada": "cast",
-    "Reżyseria": "directors",
-    "Produkcja": "producers",
-    "Scenariusz": "writers",
-    "Prowadzący": "presenter",
-    "Muzyka": "composers",
-    "Współpracownik": "contributors",
-}
-_ROLES_HR = {
-    "Glumci": "cast",
-    "Redatelj": "directors",
+
+_ROLES_PL: Dict[str, str] = {
+    "Aktor": "cast",
+    "Reżyser": "directors",
     "Producent": "producers",
-    "Scenarij": "writers",
-    "Voditelj": "presenter",
-    "Glazba": "composers",
-    "Suradnik": "contributors",
+    "Scenarzysta": "writers",
+    "Prezenter": "presenter",
 }
-_ROLES_HU = {
-    "Szereplők": "cast",
+
+_ROLES_HR: Dict[str, str] = {
+    # ALL-CAPS as returned by the bifrost API for HR
+    "GLUMI": "cast",
+    "REŽIJA": "directors",
+    "PRODUKCIJA": "producers",
+    "SCENARIJ": "writers",
+    "AUTOR": "writers",       # second writer label — both map to the same bucket
+    "VODITELJ": "presenter",
+}
+
+_ROLES_ME: Dict[str, str] = {
+    "Glumi": "cast",
+    "Režija": "directors",
+    "Producent": "producers",
+    "Scenarista": "writers",
+    "Voditelj": "presenter",
+}
+
+_ROLES_HU: Dict[str, str] = {
+    "Színész": "cast",
     "Rendező": "directors",
     "Producer": "producers",
-    "Forgatókönyvíró": "writers",
+    "Író": "writers",
+    "Forgatókönyvíró": "writers",   # screenwriter — also maps to writers
     "Műsorvezető": "presenter",
-    "Zeneszerző": "composers",
-    "Közreműködő": "contributors",
+    "Stáb": "contributors",
 }
 
 _ROLE_MAPS: Dict[str, Dict[str, str]] = {
     "at": _ROLES_DE,
     "hu": _ROLES_HU,
     "hr": _ROLES_HR,
-    "me": _ROLES_HR,   # ME uses same platform labels as HR
+    "me": _ROLES_ME,
     "pl": _ROLES_PL,
 }
 
@@ -207,12 +218,11 @@ class MagentaEUEpgManager:
         """
         date_from, date_to = self._resolve_window(start_time, end_time)
 
-        # Collect the set of calendar dates to fetch
-        dates: list[datetime] = []
+        # Collect the calendar dates spanned by the window
+        dates: List[datetime] = []
         current = date_from.replace(hour=0, minute=0, second=0, microsecond=0)
         while current.date() <= date_to.date():
             dates.append(current)
-            from datetime import timedelta
             current = current + timedelta(days=1)
 
         programmes: List[Dict[str, Any]] = []
@@ -226,7 +236,7 @@ class MagentaEUEpgManager:
                 prog = self._parse_item(item, channel_id)
                 if prog is None:
                     continue
-                # Filter to requested window (allow programmes that overlap)
+                # Keep only programmes that overlap the requested window
                 if prog["end"] <= int(date_from.timestamp()):
                     continue
                 if prog["start"] >= int(date_to.timestamp()):
@@ -244,7 +254,7 @@ class MagentaEUEpgManager:
     # HTTP helpers
     # ------------------------------------------------------------------
 
-    def _current_ids(self) -> tuple[str, str]:
+    def _current_ids(self) -> Tuple[str, str]:
         """Return (device_id, session_id) from the authenticator token."""
         token = getattr(self._auth, "current_token", None)
         device_id = getattr(token, "device_id", "") or ""
@@ -268,7 +278,7 @@ class MagentaEUEpgManager:
     def _fetch_day_schedules(self, date: datetime) -> Dict[str, Any]:
         """
         Fetch all 3-hour schedule blocks for *date* and return a merged dict
-        keyed by URL (same shape as YoDigitalFetcher.fetch_epg cached_data).
+        keyed by URL, ready for _extract_channel_items.
         """
         merged: Dict[str, Any] = {}
         headers = self._guest_headers(flow="EPG", step="EPG_SCHEDULES")
@@ -304,7 +314,7 @@ class MagentaEUEpgManager:
         return merged
 
     def _fetch_program_details(self, program_id: str) -> Dict[str, Any]:
-        """Fetch detailed metadata for a single programme (with disk cache)."""
+        """Fetch detailed metadata for a single programme (with in-memory cache)."""
         if not program_id:
             return {}
 
@@ -356,21 +366,24 @@ class MagentaEUEpgManager:
         items: List[Dict[str, Any]] = []
         for data in schedule_blocks.values():
             channels_map = (data or {}).get("channels", {})
-            channel_items = channels_map.get(channel_id, [])
-            items.extend(channel_items)
+            items.extend(channels_map.get(channel_id, []))
         items.sort(key=lambda x: x.get("start_time", ""))
         return items
 
-    def _parse_credits(self, details: Dict[str, Any]) -> Dict[str, Optional[List[str]]]:
+    def _parse_credits(
+        self, details: Dict[str, Any]
+    ) -> Dict[str, Optional[List[str]]]:
         """
         Parse the ``roles`` list from programme details into credit buckets.
 
         Returns a dict with keys: cast, directors, producers, writers,
         presenter, composers, contributors — each a sorted List[str] or None.
         """
-        buckets: Dict[str, set] = {k: set() for k in
+        buckets: Dict[str, Set[str]] = {
+            k: set() for k in
             ["cast", "directors", "producers", "writers",
-             "presenter", "composers", "contributors"]}
+             "presenter", "composers", "contributors"]
+        }
 
         for role in (details.get("roles") or []):
             role_name = role.get("role_name")
@@ -471,7 +484,7 @@ class MagentaEUEpgManager:
     def _resolve_window(
         start_time: Optional[datetime],
         end_time: Optional[datetime],
-    ) -> tuple[datetime, datetime]:
+    ) -> Tuple[datetime, datetime]:
         """
         Normalise start/end to UTC-aware datetimes.
 
