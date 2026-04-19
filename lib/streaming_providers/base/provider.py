@@ -206,6 +206,16 @@ class StreamingProvider(ABC):
         """
         return 0, 0
 
+    @property
+    def implements_epg(self) -> bool:
+        """
+        Check if provider implements EPG.
+
+        Returns:
+            bool: True if any EPG data is available (past or future)
+        """
+        return self.epg_window != (0, 0)
+
     def get_channels(self, **kwargs) -> List[StreamingChannel]:
         """Fetch channels from the provider"""
         return []
