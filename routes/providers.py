@@ -107,6 +107,7 @@ def setup_provider_routes(app, manager, service):
             provider_catchup_hours = getattr(
                 provider_instance, "catchup_window", 0
             )  # CHANGE
+            epg_window = getattr(provider_instance, "epg_window", (0, 0))
 
             # Build channel list with catchup info
             channels_data = []
@@ -125,6 +126,11 @@ def setup_provider_routes(app, manager, service):
                 "provider": provider,
                 "country": provider_instance.country if provider_instance else "DE",
                 "catchup_window_hours": provider_catchup_hours,  # CHANGE
+                "epg_window": {
+                    "past_days": epg_window[0],
+                    "future_days": epg_window[1],
+                    "implements_epg": epg_window != (0, 0),
+                },
                 "channels": channels_data,
             }
         except Exception as api_err:

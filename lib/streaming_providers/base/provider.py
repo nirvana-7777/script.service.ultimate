@@ -195,6 +195,17 @@ class StreamingProvider(ABC):
         """Return True if provider uses truly dynamic manifests"""
         return False
 
+    @property
+    def epg_window(self) -> Tuple[int, int]:
+        """
+        Return the EPG window as (past_days, future_days).
+
+        Returns:
+            Tuple[int, int]: Number of days of EPG available in the past and future.
+                             (0, 0) means this provider does not implement EPG.
+        """
+        return 0, 0
+
     def get_channels(self, **kwargs) -> List[StreamingChannel]:
         """Fetch channels from the provider"""
         return []
