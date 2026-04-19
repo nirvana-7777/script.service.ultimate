@@ -2,7 +2,7 @@
 import re
 import time
 import requests
-from typing import ClassVar, Dict, List, Optional, Any
+from typing import ClassVar, Dict, List, Optional, Any, Tuple
 
 from ...base.models import DRMConfig, StreamingChannel
 from ...base.models.proxy_models import ProxyConfig
@@ -719,9 +719,6 @@ class MoveTVProvider(StreamingProvider):
             **{k: v for k, v in kwargs.items() if k not in ("backwards", "forwards")},
         )
 
-    # ④ If your framework checks this property to decide whether to call
-    #    get_epg(), keep it.  If it inspects get_epg() directly (base returns
-    #    []) you can skip this property entirely.
     @property
-    def implements_epg(self) -> bool:  # ← ADD (optional)
-        return True
+    def epg_window(self) -> Tuple[int, int]:
+        return 7, 3

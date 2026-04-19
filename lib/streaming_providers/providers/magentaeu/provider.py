@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 import time
 import datetime
-from typing import ClassVar, Dict, List, Optional
+from typing import ClassVar, Dict, List, Optional, Tuple
 
 from ...base.auth import UserPasswordCredentials
 from ...base.models import DRMConfig, StreamingChannel, Event
@@ -136,8 +136,8 @@ class MagentaEUProvider(StreamingProvider):
         return False
 
     @property
-    def implements_epg(self) -> bool:
-        return True
+    def epg_window(self) -> Tuple[int, int]:
+        return 7, 7
 
     @property
     def catchup_window(self) -> int:
