@@ -12,7 +12,7 @@ from typing import Dict, List
 
 PROVIDER_NAME = "livgolf"
 PROVIDER_LABEL = "LIV Golf"
-PROVIDER_LOGO = "https://upload.wikimedia.org/wikipedia/en/thumb/9/9f/LIV_Golf_logo.svg/1200px-LIV_Golf_logo.svg.png"
+PROVIDER_LOGO = "https://fr.wikipedia.org/wiki/Fichier:LIVGOLF_logo_v2.png"
 
 # ============================================================================
 # Application / Device Configuration
