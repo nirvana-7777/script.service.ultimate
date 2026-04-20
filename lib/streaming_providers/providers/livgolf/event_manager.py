@@ -309,7 +309,7 @@ class LivGolfEventManager:
                 use_cdm=False,
                 cdm_type=None,
                 cdm=None,
-                cdm_mode=None,
+                cdm_mode="",
                 streaming_format=STREAMING_FORMAT_DASH,
                 content_type=CONTENT_TYPE_LIVE,
                 mode="live",

@@ -207,7 +207,8 @@ class LivGolfProvider(StreamingProvider):
     ) -> Optional[StreamingChannel]:
         return None
 
-    def validate_credentials(self, credentials) -> bool:
+    @staticmethod
+    def validate_credentials() -> bool:
         """
         Anonymous providers do not validate user credentials.
         Return True so the base class does not block provider setup.

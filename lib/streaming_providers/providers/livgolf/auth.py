@@ -227,7 +227,6 @@ class LivGolfAuthenticator(BaseAuthenticator):
         raw_token = response_data.get("access_token", "")
         device_id = response_data.get("device_id") or f"browser-{uuid.uuid4()}"
 
-        exp = _token_expires_at(raw_token) if raw_token else 0.0
         issued = response_data.get("issued_at", time.time())
         expires_in = response_data.get("expires_in", 0)
 
