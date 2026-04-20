@@ -15,7 +15,7 @@ long-lived (~1 year) and is persisted between sessions by the base
 authenticator's settings_manager.
 """
 
-from typing import ClassVar, Dict, List, Optional, Tuple
+from typing import ClassVar, Dict, List, Optional
 
 from ...base.models import Event, StreamingChannel
 from ...base.models.proxy_models import ProxyConfig
@@ -105,11 +105,6 @@ class LivGolfProvider(StreamingProvider):
         return False
 
     @property
-    def epg_window(self) -> Tuple[int, int]:
-        # No EPG support.
-        return 0, 0
-
-    @property
     def catchup_window(self) -> int:
         return 0
 
@@ -182,10 +177,28 @@ class LivGolfProvider(StreamingProvider):
 
     def get_manifest(self, content_id: str, **kwargs) -> Optional[str]:
         """
-        Manifest URLs are embedded directly in Event objects; nothing to look
-        up dynamically.
+        Retrieve the manifest URL for a specific event ID.
+
+        If the event is not in the event manager's cache, it triggers a fresh
+        fetch.  LIV Golf events embed the manifest URL directly.
         """
-        return None
+        champion_id = kwargs.get("champion_id", self._champion_id)
+        logger.info(f"[LivGolfProvider] get_manifest(content_id={content_id})")
+
+        try:
+            event = self.event_manager.get_event(
+                content_id, champion_id=champion_id
+            )
+            if event:
+                logger.info(f"[LivGolfProvider] Found manifest for '{content_id}'")
+                return event.manifest
+
+            logger.warning(f"[LivGolfProvider] Event '{content_id}' not found")
+            return None
+
+        except Exception as exc:
+            logger.error(f"[LivGolfProvider] get_manifest failed: {exc}")
+            return None
 
     def get_catchup_manifest(
         self, channel_id: str, start_time: int, end_time: int, **kwargs
@@ -200,11 +213,6 @@ class LivGolfProvider(StreamingProvider):
     def get_dynamic_manifest_params(
         self, channel: StreamingChannel, **kwargs
     ) -> Optional[str]:
-        return None
-
-    def enrich_channel_data(
-        self, channel: StreamingChannel, **kwargs
-    ) -> Optional[StreamingChannel]:
         return None
 
     @staticmethod

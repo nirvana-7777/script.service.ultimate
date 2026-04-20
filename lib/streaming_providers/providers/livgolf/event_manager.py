@@ -83,6 +83,9 @@ class LivGolfEventManager:
         # Cached preferred CDN base URL (None = not yet resolved)
         self._preferred_cdn: Optional[str] = None
 
+        # Cache for events keyed by content_id (video_id)
+        self._events_cache: Dict[str, Event] = {}
+
         logger.info("[LivGolfEventManager] Initialised")
 
     # ------------------------------------------------------------------
@@ -122,15 +125,22 @@ class LivGolfEventManager:
         )
 
         events: List[Event] = []
+        new_cache: Dict[str, Event] = {}
+
         for stream in team_streams:
             event = self._build_event(stream, preferred_cdn, stream_kind="team")
             if event:
                 events.append(event)
+                new_cache[event.content_id] = event
 
         for stream in group_streams:
             event = self._build_event(stream, preferred_cdn, stream_kind="group")
             if event:
                 events.append(event)
+                new_cache[event.content_id] = event
+
+        # Update cache with fresh results
+        self._events_cache = new_cache
 
         logger.info(
             f"[LivGolfEventManager] champion={champion_id}: "
@@ -138,6 +148,26 @@ class LivGolfEventManager:
             f"{len(events)} events"
         )
         return events
+
+    def get_event(
+        self, content_id: str, champion_id: str = DEFAULT_CHAMPION_ID
+    ) -> Optional[Event]:
+        """
+        Return a single Event by its content_id.
+
+        If the event is not in the cache, it triggers a fresh get_events() call
+        to discover it.
+        """
+        event = self._events_cache.get(content_id)
+        if event:
+            return event
+
+        logger.info(
+            f"[LivGolfEventManager] Event '{content_id}' not in cache — "
+            "triggering fresh fetch"
+        )
+        self.get_events(champion_id=champion_id)
+        return self._events_cache.get(content_id)
 
     # ------------------------------------------------------------------
     # Region / CDN resolution
