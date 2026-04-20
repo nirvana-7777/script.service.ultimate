@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 from ...base.auth.base_auth import BaseAuthenticator, BaseAuthToken, TokenAuthLevel
+from ...base.auth.credentials import ClientCredentials
 from ...base.models.proxy_models import ProxyConfig
 from ...base.utils.logger import logger
 from .constants import (
@@ -84,9 +85,9 @@ class LivGolfAuthToken(BaseAuthToken):
             "expires_in": self.expires_in,
             "issued_at": self.issued_at,
             "auth_level": (
-                self.auth_level.value if self.auth_level else TokenAuthLevel.ANONYMOUS.value
+                self.auth_level.value if self.auth_level else TokenAuthLevel.CLIENT_CREDENTIALS.value
             ),
-            "credential_type": self.credential_type or "",
+            "credential_type": self.credential_type or "client_credentials",
             "device_id": self.device_id,
         }
 
@@ -158,7 +159,8 @@ class LivGolfAuthenticator(BaseAuthenticator):
         return {}
 
     def get_fallback_credentials(self):
-        return None
+        # Anonymous authenticator - treat as client credentials
+        return ClientCredentials(client_id=PROVIDER_NAME, client_secret="anonymous")
 
     def _perform_authentication(self) -> BaseAuthToken:
         """Fetch a fresh anonymous token from the ViewLift identity endpoint."""
@@ -198,7 +200,7 @@ class LivGolfAuthenticator(BaseAuthenticator):
             expires_in=expires_in,
             issued_at=issued,
             device_id=device_id,
-            auth_level=TokenAuthLevel.ANONYMOUS,
+            auth_level=TokenAuthLevel.CLIENT_CREDENTIALS,
         )
 
         logger.info(
@@ -220,7 +222,7 @@ class LivGolfAuthenticator(BaseAuthenticator):
             return None
 
     def _classify_token(self, token: BaseAuthToken) -> TokenAuthLevel:
-        return TokenAuthLevel.ANONYMOUS
+        return TokenAuthLevel.CLIENT_CREDENTIALS
 
     def _create_token_from_response(self, response_data: Dict[str, Any]) -> BaseAuthToken:
         """Restore a token from the persisted session dict."""
@@ -236,7 +238,7 @@ class LivGolfAuthenticator(BaseAuthenticator):
             expires_in=expires_in,
             issued_at=issued,
             device_id=device_id,
-            auth_level=TokenAuthLevel.ANONYMOUS,
+            auth_level=TokenAuthLevel.CLIENT_CREDENTIALS,
         )
         return token
 
