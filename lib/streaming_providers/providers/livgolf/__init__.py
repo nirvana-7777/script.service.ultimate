@@ -7,14 +7,14 @@ from .constants import (
     PROVIDER_LOGO,
     PROVIDER_NAME,
 )
-from .event_manager import LivGolfEventManager
+from .channel_manager import LivGolfChannelManager
 from .provider import LivGolfProvider
 
 __all__ = [
     "LivGolfProvider",
     "LivGolfAuthenticator",
     "LivGolfAuthToken",
-    "LivGolfEventManager",
+    "LivGolfChannelManager",
     "PROVIDER_NAME",
     "PROVIDER_LABEL",
     "PROVIDER_LOGO",

@@ -1,22 +1,22 @@
-# streaming_providers/providers/livgolf/event_manager.py
+# streaming_providers/providers/livgolf/channel_manager.py
 # -*- coding: utf-8 -*-
 """
-Event manager for the LIV Golf provider.
+Channel manager for the LIV Golf provider.
 
 Responsibilities
 ----------------
 * Discover the best CDN edge region from /mobii/regions.
 * Fetch team-camera and group-camera stream lists for a champion (tournament).
 * Rewrite manifest URLs to use the preferred regional CDN.
-* Return normalised ``Event`` objects ready for the provider.
+* Return normalised ``StreamingChannel`` objects ready for the provider.
 
 Design notes
 ------------
 * Region selection is cached for the lifetime of the process — CDN topology
   does not change during a session.
-* Stream lists are fetched fresh on every ``get_events()`` call so that live
+* Stream lists are fetched fresh on every ``get_channels()`` call so that live
   tournament URLs (which rotate) are always current.
-* No EPG, no channels — this provider is events-only.
+* No EPG support — this provider is channels-only.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional
 
-from ...base.models import Event
+from ...base.models import StreamingChannel
 from ...base.utils.logger import logger
 from .constants import (
     API_ENDPOINTS,
@@ -61,12 +61,12 @@ def _rewrite_cdn(url: str, preferred_base: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# LivGolfEventManager
+# LivGolfChannelManager
 # ---------------------------------------------------------------------------
 
-class LivGolfEventManager:
+class LivGolfChannelManager:
     """
-    Fetches LIV Golf live event streams and normalises them into ``Event`` objects.
+    Fetches LIV Golf live camera streams and normalises them into ``StreamingChannel`` objects.
 
     Parameters
     ----------
@@ -83,21 +83,21 @@ class LivGolfEventManager:
         # Cached preferred CDN base URL (None = not yet resolved)
         self._preferred_cdn: Optional[str] = None
 
-        # Cache for events keyed by content_id (video_id)
-        self._events_cache: Dict[str, Event] = {}
+        # Cache for channels keyed by content_id (video_id)
+        self._channels_cache: Dict[str, StreamingChannel] = {}
 
-        logger.info("[LivGolfEventManager] Initialised")
+        logger.info("[LivGolfChannelManager] Initialised")
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def get_events(self, champion_id: str = DEFAULT_CHAMPION_ID) -> List[Event]:
+    def get_channels(self, champion_id: str = DEFAULT_CHAMPION_ID) -> List[StreamingChannel]:
         """
-        Return all available live streams for *champion_id* as ``Event`` objects.
+        Return all available live streams for *champion_id* as ``StreamingChannel`` objects.
 
         Both team-camera and group-camera feeds are fetched and merged.
-        Each stream becomes one Event with a DASH manifest URL rewritten to
+        Each stream becomes one Channel with a DASH manifest URL rewritten to
         the closest CDN region.
 
         Parameters
@@ -107,7 +107,7 @@ class LivGolfEventManager:
         """
         authorization = self._auth.get_authorization_header()
         if not authorization:
-            logger.error("[LivGolfEventManager] No authorization token available")
+            logger.error("[LivGolfChannelManager] No authorization token available")
             return []
 
         preferred_cdn = self._get_preferred_cdn(authorization)
@@ -124,50 +124,50 @@ class LivGolfEventManager:
             stream_kind="group",
         )
 
-        events: List[Event] = []
-        new_cache: Dict[str, Event] = {}
+        channels: List[StreamingChannel] = []
+        new_cache: Dict[str, StreamingChannel] = {}
 
         for stream in team_streams:
-            event = self._build_event(stream, preferred_cdn, stream_kind="team")
-            if event:
-                events.append(event)
-                new_cache[event.content_id] = event
+            channel = self._build_channel(stream, preferred_cdn, stream_kind="team")
+            if channel:
+                channels.append(channel)
+                new_cache[channel.content_id] = channel
 
         for stream in group_streams:
-            event = self._build_event(stream, preferred_cdn, stream_kind="group")
-            if event:
-                events.append(event)
-                new_cache[event.content_id] = event
+            channel = self._build_channel(stream, preferred_cdn, stream_kind="group")
+            if channel:
+                channels.append(channel)
+                new_cache[channel.content_id] = channel
 
         # Update cache with fresh results
-        self._events_cache = new_cache
+        self._channels_cache = new_cache
 
         logger.info(
-            f"[LivGolfEventManager] champion={champion_id}: "
+            f"[LivGolfChannelManager] champion={champion_id}: "
             f"{len(team_streams)} team + {len(group_streams)} group streams → "
-            f"{len(events)} events"
+            f"{len(channels)} channels"
         )
-        return events
+        return channels
 
-    def get_event(
+    def get_channel(
         self, content_id: str, champion_id: str = DEFAULT_CHAMPION_ID
-    ) -> Optional[Event]:
+    ) -> Optional[StreamingChannel]:
         """
-        Return a single Event by its content_id.
+        Return a single StreamingChannel by its content_id.
 
-        If the event is not in the cache, it triggers a fresh get_events() call
+        If the channel is not in the cache, it triggers a fresh get_channels() call
         to discover it.
         """
-        event = self._events_cache.get(content_id)
-        if event:
-            return event
+        channel = self._channels_cache.get(content_id)
+        if channel:
+            return channel
 
         logger.info(
-            f"[LivGolfEventManager] Event '{content_id}' not in cache — "
+            f"[LivGolfChannelManager] Channel '{content_id}' not in cache — "
             "triggering fresh fetch"
         )
-        self.get_events(champion_id=champion_id)
-        return self._events_cache.get(content_id)
+        self.get_channels(champion_id=champion_id)
+        return self._channels_cache.get(content_id)
 
     # ------------------------------------------------------------------
     # Region / CDN resolution
@@ -185,7 +185,7 @@ class LivGolfEventManager:
             return self._preferred_cdn
 
         self._preferred_cdn = self._resolve_preferred_cdn(authorization)
-        logger.info(f"[LivGolfEventManager] Preferred CDN: {self._preferred_cdn}")
+        logger.info(f"[LivGolfChannelManager] Preferred CDN: {self._preferred_cdn}")
         return self._preferred_cdn
 
     def _resolve_preferred_cdn(self, authorization: str) -> str:
@@ -205,7 +205,7 @@ class LivGolfEventManager:
             data = response.json()
         except Exception as exc:
             logger.warning(
-                f"[LivGolfEventManager] Regions fetch failed, using fallback: {exc}"
+                f"[LivGolfChannelManager] Regions fetch failed, using fallback: {exc}"
             )
             return FALLBACK_CDN_BASE
 
@@ -221,7 +221,7 @@ class LivGolfEventManager:
                     break
 
         if not region_map:
-            logger.warning("[LivGolfEventManager] Empty region map, using fallback CDN")
+            logger.warning("[LivGolfChannelManager] Empty region map, using fallback CDN")
             return FALLBACK_CDN_BASE
 
         # Walk the preference list and return the first available region
@@ -232,7 +232,7 @@ class LivGolfEventManager:
         # Fall back to the first returned region
         first_base = next(iter(region_map.values()))
         logger.warning(
-            f"[LivGolfEventManager] No preferred region matched — "
+            f"[LivGolfChannelManager] No preferred region matched — "
             f"using first available: {first_base}"
         )
         return first_base
@@ -264,27 +264,27 @@ class LivGolfEventManager:
             data = response.json()
             streams = data.get("streams", [])
             logger.debug(
-                f"[LivGolfEventManager] Fetched {len(streams)} {stream_kind} streams"
+                f"[LivGolfChannelManager] Fetched {len(streams)} {stream_kind} streams"
             )
             return streams
         except Exception as exc:
             logger.warning(
-                f"[LivGolfEventManager] Failed to fetch {stream_kind} streams: {exc}"
+                f"[LivGolfChannelManager] Failed to fetch {stream_kind} streams: {exc}"
             )
             return []
 
     # ------------------------------------------------------------------
-    # Event construction
+    # Channel construction
     # ------------------------------------------------------------------
 
-    def _build_event(
+    def _build_channel(
         self,
         stream: Dict[str, Any],
         preferred_cdn: str,
         stream_kind: str,
-    ) -> Optional[Event]:
+    ) -> Optional[StreamingChannel]:
         """
-        Convert a single stream dict into an ``Event``.
+        Convert a single stream dict into a ``StreamingChannel``.
 
         Stream dicts have at least: ``id``, ``name``, ``dashUrl``, ``hlsUrl``.
         Team streams additionally carry ``teamId`` and ``livTeamId``.
@@ -294,14 +294,14 @@ class LivGolfEventManager:
 
         if not video_id or not raw_name:
             logger.debug(
-                f"[LivGolfEventManager] Skipping stream with missing id or name: {stream}"
+                f"[LivGolfChannelManager] Skipping stream with missing id or name: {stream}"
             )
             return None
 
         dash_url = stream.get("dashUrl", "")
         if not dash_url:
             logger.debug(
-                f"[LivGolfEventManager] Skipping stream '{raw_name}' — no DASH URL"
+                f"[LivGolfChannelManager] Skipping stream '{raw_name}' — no DASH URL"
             )
             return None
 
@@ -329,7 +329,7 @@ class LivGolfEventManager:
         manifest_script = " ".join(meta_parts)
 
         try:
-            event = Event(
+            channel = StreamingChannel(
                 name=label,
                 content_id=content_id,
                 provider=PROVIDER_NAME,
@@ -347,10 +347,10 @@ class LivGolfEventManager:
                 video="best",
                 on_demand=False,
             )
-            return event
+            return channel
         except Exception as exc:
             logger.warning(
-                f"[LivGolfEventManager] Failed to construct Event for '{raw_name}': {exc}"
+                f"[LivGolfChannelManager] Failed to construct Channel for '{raw_name}': {exc}"
             )
             return None
 
@@ -367,7 +367,7 @@ class LivGolfEventManager:
         """
         Turn a raw API name like ``"Team_06"`` or ``"Group_03"`` into a
         presentable label like ``"LIV Golf – Team Feed 6"`` or
-        ``"LIV Golf – Group Feed 3"``.
+        Found Presentable Label ``"LIV Golf – Group Feed 3"``.
 
         For team streams the team number is replaced by the teamId where
         available, since the numeric suffix is just an ordering index.

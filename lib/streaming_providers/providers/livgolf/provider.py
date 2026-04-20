@@ -5,8 +5,8 @@ LIV Golf streaming provider.
 
 Supported features
 ------------------
-* Events (live team and group camera feeds) — no authentication required.
-* No channels, no EPG, no catch-up.
+* Channels (live team and group camera feeds) — no authentication required.
+* No EPG, no events, no catch-up.
 
 Authentication
 --------------
@@ -15,7 +15,7 @@ long-lived (~1 year) and is persisted between sessions by the base
 authenticator's settings_manager.
 """
 
-from typing import ClassVar, Dict, List, Optional
+from typing import ClassVar, Dict, List, Optional, Tuple
 
 from ...base.models import Event, StreamingChannel
 from ...base.models.proxy_models import ProxyConfig
@@ -31,14 +31,14 @@ from .constants import (
     PROVIDER_NAME,
     USER_AGENT,
 )
-from .event_manager import LivGolfEventManager
+from .channel_manager import LivGolfChannelManager
 
 
 class LivGolfProvider(StreamingProvider):
     """
     StreamingProvider implementation for LIV Golf.
 
-    Only ``get_events()`` is meaningful — ``get_channels()``, ``get_epg()``,
+    Only ``get_channels()`` is meaningful — ``get_events()``, ``get_epg()``,
     ``get_manifest()``, ``get_catchup_manifest()``, and ``get_drm()`` all
     return empty / None, consistent with the base contract.
     """
@@ -78,7 +78,7 @@ class LivGolfProvider(StreamingProvider):
             proxy_config=self.http_manager.config.proxy_config,
         )
 
-        self.event_manager = LivGolfEventManager(
+        self.channel_manager = LivGolfChannelManager(
             http_manager=self.http_manager,
             authenticator=self.authenticator,
         )
@@ -107,6 +107,11 @@ class LivGolfProvider(StreamingProvider):
         return False
 
     @property
+    def epg_window(self) -> Tuple[int, int]:
+        # No EPG support.
+        return 0, 0
+
+    @property
     def catchup_window(self) -> int:
         return 0
 
@@ -133,12 +138,12 @@ class LivGolfProvider(StreamingProvider):
         return self.authenticate(force_refresh=True)
 
     # ------------------------------------------------------------------
-    # Events — the sole data surface of this provider
+    # Channels — the sole data surface of this provider
     # ------------------------------------------------------------------
 
-    def get_events(self, **kwargs) -> List[Event]:
+    def get_channels(self, **kwargs) -> List[StreamingChannel]:
         """
-        Return all live LIV Golf camera feeds as ``Event`` objects.
+        Return all live LIV Golf camera feeds as ``StreamingChannel`` objects.
 
         Both team-camera streams and group-camera streams are included.
 
@@ -149,28 +154,28 @@ class LivGolfProvider(StreamingProvider):
             itself defaulting to ``DEFAULT_CHAMPION_ID``).
         """
         champion_id = kwargs.get("champion_id", self._champion_id)
-        logger.info(f"[LivGolfProvider] get_events(champion_id={champion_id})")
+        logger.info(f"[LivGolfProvider] get_channels(champion_id={champion_id})")
 
         try:
             # Ensure we have a valid anonymous token before delegating.
             if self.authenticator.is_token_expired():
-                logger.info("[LivGolfProvider] Token expired — refreshing before get_events")
+                logger.info("[LivGolfProvider] Token expired — refreshing before get_channels")
                 self.authenticate(force_refresh=True)
 
-            events = self.event_manager.get_events(champion_id=champion_id)
-            logger.info(f"[LivGolfProvider] Returning {len(events)} events")
-            return events
+            channels = self.channel_manager.get_channels(champion_id=champion_id)
+            logger.info(f"[LivGolfProvider] Returning {len(channels)} channels")
+            return channels
 
         except Exception as exc:
-            logger.error(f"[LivGolfProvider] get_events failed: {exc}")
+            logger.error(f"[LivGolfProvider] get_channels failed: {exc}")
             raise
 
     # ------------------------------------------------------------------
-    # Channels / EPG / manifest — not supported; satisfy base contract
+    # EPG / Events / manifest — not supported or delegated
     # ------------------------------------------------------------------
 
-    def get_channels(self, **kwargs) -> List[StreamingChannel]:
-        """LIV Golf has no linear channels."""
+    def get_events(self, **kwargs) -> List[Event]:
+        """LIV Golf has no one-time events; streams are linear channels."""
         return []
 
     def get_epg(self, channel_id: str, **kwargs) -> List[Dict]:
@@ -179,23 +184,23 @@ class LivGolfProvider(StreamingProvider):
 
     def get_manifest(self, content_id: str, **kwargs) -> Optional[str]:
         """
-        Retrieve the manifest URL for a specific event ID.
+        Retrieve the manifest URL for a specific channel ID.
 
-        If the event is not in the event manager's cache, it triggers a fresh
-        fetch.  LIV Golf events embed the manifest URL directly.
+        If the channel is not in the channel manager's cache, it triggers a fresh
+        fetch.  LIV Golf channels embed the manifest URL directly.
         """
         champion_id = kwargs.get("champion_id", self._champion_id)
         logger.info(f"[LivGolfProvider] get_manifest(content_id={content_id})")
 
         try:
-            event = self.event_manager.get_event(
+            channel = self.channel_manager.get_channel(
                 content_id, champion_id=champion_id
             )
-            if event:
+            if channel:
                 logger.info(f"[LivGolfProvider] Found manifest for '{content_id}'")
-                return event.manifest
+                return channel.manifest
 
-            logger.warning(f"[LivGolfProvider] Event '{content_id}' not found")
+            logger.warning(f"[LivGolfProvider] Channel '{content_id}' not found")
             return None
 
         except Exception as exc:
@@ -215,6 +220,11 @@ class LivGolfProvider(StreamingProvider):
     def get_dynamic_manifest_params(
         self, channel: StreamingChannel, **kwargs
     ) -> Optional[str]:
+        return None
+
+    def enrich_channel_data(
+        self, channel: StreamingChannel, **kwargs
+    ) -> Optional[StreamingChannel]:
         return None
 
     @staticmethod
