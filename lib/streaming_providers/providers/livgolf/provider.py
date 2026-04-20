@@ -44,19 +44,21 @@ class LivGolfProvider(StreamingProvider):
     """
 
     PROVIDER_LOGO: ClassVar[str] = PROVIDER_LOGO
+    SUPPORTED_COUNTRIES: ClassVar[List[str]] = ["global"]
 
     def __init__(
         self,
+        country: str = "global",
         config_dir: Optional[str] = None,
         proxy_config: Optional[ProxyConfig] = None,
         proxy_url: Optional[str] = None,
         # Allow callers to pin a specific tournament; defaults to the live one.
         champion_id: str = DEFAULT_CHAMPION_ID,
     ) -> None:
-        logger.info("[LivGolfProvider] __init__ START")
+        logger.info(f"[LivGolfProvider] __init__ START (country={country})")
 
         # StreamingProvider.__init__ expects a country; LIV Golf is global.
-        super().__init__(country="global")
+        super().__init__(country=country)
 
         self._champion_id = champion_id
 
