@@ -113,7 +113,7 @@ API_ENDPOINTS = {
 }
 
 # Widevine configuration
-WV_URL = "https://widevine.entitlement.theplatform.eu/wv/web/ModularDrm/getRawWidevineLicense?schema=1.0&form=json&releasePid="
+WV_URL = "https://widevine.entitlement.theplatform.eu/wv/web/ModularDrm/getRawWidevineLicense"
 ACC_URL = "http://access.auth.theplatform.com/data/Account"
 
 # ============================================================================
