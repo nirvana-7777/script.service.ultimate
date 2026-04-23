@@ -1,6 +1,7 @@
 # streaming_providers/providers/rtlplus/auth.py
 import base64
 import json
+import time
 from typing import Any, Dict, Optional
 
 from ...base.auth.base_auth import BaseAuthToken, TokenAuthLevel
@@ -13,16 +14,15 @@ from .models import RTLPlusAuthToken, RTLPlusClientCredentials, RTLPlusUserCrede
 
 class RTLPlusAuthenticator(BaseOAuth2Authenticator):
     def __init__(
-        self,
-        credentials=None,
-        config_dir=None,
-        client_version=None,
-        device_id=None,
-        proxy_config: Optional[ProxyConfig] = None,
-        http_manager=None,
+            self,
+            credentials=None,
+            config_dir=None,
+            client_version=None,
+            device_id=None,
+            proxy_config: Optional[ProxyConfig] = None,
+            http_manager=None,
     ):
 
-        # Initialize configuration FIRST
         config_dict = {}
         if client_version:
             config_dict["client_version"] = client_version
@@ -31,33 +31,31 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
 
         self._config = RTLPlusConfig(config_dict)
         self._client_id = None
+        self._bedrock_token: Optional[str] = None
+        self._bedrock_token_expiry: float = 0
+        self._cached_user_id: Optional[str] = None
 
-        # Get proxy_config if not provided
         if proxy_config is None:
             from ...base.network import ProxyConfigManager
 
             proxy_mgr = ProxyConfigManager(config_dir)
             proxy_config = proxy_mgr.get_proxy_config("rtlplus")
 
-        # Call parent init FIRST
         super().__init__(
             provider_name="rtlplus",
-            credentials=credentials,  # Pass None if not provided
+            credentials=credentials,
             config_dir=config_dir,
             proxy_config=proxy_config,
             http_manager=http_manager,
         )
 
-        # NOW set default credentials if needed (after super init)
         if self.credentials is None:
             self.credentials = self._get_default_credentials()
 
     @property
     def auth_endpoint(self) -> str:
-        """Override auth_endpoint to use our config"""
         return self.config.auth_endpoint
 
-    # Required OAuth2 properties
     @property
     def oauth_client_id(self) -> str:
         return self._get_client_id()
@@ -70,36 +68,30 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
     def oauth_redirect_uri(self) -> str:
         return self.config.base_website
 
+    @property
+    def config(self) -> RTLPlusConfig:
+        return self._config
+
     def _get_auth_headers(self) -> Dict[str, str]:
-        """RTL+-specific authentication headers"""
         return self.config.get_auth_headers()
 
     def _build_auth_payload(self) -> Dict[str, Any]:
-        """Build authentication payload from credentials"""
         return self.credentials.to_auth_payload()
 
     def _get_default_credentials(self):
-        """Get default client credentials for anonymous access"""
         try:
-            # Try to get dynamic credentials first
             config_creds = self._get_anonymous_credentials_from_config()
             if config_creds:
                 return RTLPlusClientCredentials(
                     client_id=config_creds.get("client_id", RTLPlusDefaults.ANONYMOUS_CLIENT_ID),
-                    client_secret=config_creds.get(
-                        "client_secret", RTLPlusDefaults.ANONYMOUS_CLIENT_SECRET
-                    ),
+                    client_secret=config_creds.get("client_secret", RTLPlusDefaults.ANONYMOUS_CLIENT_SECRET),
                 )
         except Exception as e:
             logger.warning(f"Could not get dynamic credentials: {e}")
 
-        # Fallback to default credentials
         return RTLPlusClientCredentials()
 
     def _create_token_from_response(self, response_data: Dict[str, Any]) -> RTLPlusAuthToken:
-        """Create RTL+-specific token from OAuth2 response"""
-        import time
-
         return RTLPlusAuthToken(
             access_token=response_data["access_token"],
             token_type=response_data.get("token_type", "Bearer"),
@@ -111,14 +103,7 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
             scope=response_data.get("scope", ""),
         )
 
-    def get_current_token_level(self) -> "TokenAuthLevel":
-        """
-        Return the auth level of whichever token the base class currently holds.
-
-        Walks the common attribute names used by BaseOAuth2Authenticator to
-        store the active token, classifies it via _classify_token, and returns
-        UNKNOWN if no token is found.
-        """
+    def get_current_token_level(self) -> TokenAuthLevel:
         for attr in ("token", "_token", "current_token", "_current_token", "_access_token"):
             tok = getattr(self, attr, None)
             if tok is not None:
@@ -126,36 +111,17 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
         return TokenAuthLevel.UNKNOWN
 
     def get_fallback_credentials(self):
-        """Get fallback credentials (anonymous client credentials)"""
         return self._get_default_credentials()
 
     def _classify_token(self, token: BaseAuthToken) -> TokenAuthLevel:
-        """
-        Classify RTL+ token authentication level by decoding JWT payload
-
-        Logic:
-        - CLIENT_CREDENTIALS: isGuest=True AND clientId='anonymous-user'
-        - USER_AUTHENTICATED: Has preferred_username OR email claims
-        - UNKNOWN: Cannot determine or invalid token
-
-        Args:
-            token: Token to classify
-
-        Returns:
-            TokenAuthLevel indicating the authentication level
-        """
         if not token or not token.access_token:
-            logger.debug("RTL+ Cannot classify: No token or access token")
             return TokenAuthLevel.UNKNOWN
 
         try:
-            # Decode JWT without verification to check the payload
             parts = token.access_token.split(".")
             if len(parts) < 2:
-                logger.debug("RTL+ Cannot classify: Invalid token format")
                 return TokenAuthLevel.UNKNOWN
 
-            # Add padding if needed and decode
             payload_segment = parts[1]
             padding = 4 - len(payload_segment) % 4
             if padding != 4:
@@ -164,61 +130,38 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
             payload_json = base64.b64decode(payload_segment)
             payload = json.loads(payload_json)
 
-            # Extract relevant claims
             client_id = payload.get("clientId")
             is_guest = payload.get("isGuest", False)
             preferred_username = payload.get("preferred_username")
             email = payload.get("email")
 
-            logger.debug(
-                f"RTL+ Token JWT payload: clientId={client_id}, isGuest={is_guest}, "
-                f"has_preferred_username={bool(preferred_username)}, has_email={bool(email)}"
-            )
-
-            # Check for user-authenticated token
             if preferred_username or email:
-                logger.debug("RTL+ Token classified as USER_AUTHENTICATED (has user claims)")
                 return TokenAuthLevel.USER_AUTHENTICATED
 
-            # Check for client credentials (anonymous) token
             if is_guest and client_id == "anonymous-user":
-                logger.debug("RTL+ Token classified as CLIENT_CREDENTIALS (anonymous)")
                 return TokenAuthLevel.CLIENT_CREDENTIALS
 
-            # Cannot determine
-            logger.debug("RTL+ Token classified as UNKNOWN (no matching criteria)")
             return TokenAuthLevel.UNKNOWN
 
         except Exception as e:
             logger.warning(f"RTL+ Error classifying token: {e}")
             return TokenAuthLevel.UNKNOWN
 
-    def _perform_oauth_authorization_code_flow(
-        self, username: str, password: str
-    ) -> Dict[str, Any]:
-        """
-        RTL+ specific OAuth2 authorization code flow with PKCE
-        Uses base class generic form login
-        """
+    def _perform_oauth_authorization_code_flow(self, username: str, password: str) -> Dict[str, Any]:
         import uuid
         return self._perform_generic_form_login(
             username=username,
             password=password,
             form_selector_pattern=r'<form id="rtlplus-form-login" action="([^"]*)"',
             login_fields={"username": "username", "password": "password"},
-            extra_params={
-                "prompt": "login",
-                "nonce": str(uuid.uuid4()),
-            },
+            extra_params={"prompt": "login", "nonce": str(uuid.uuid4())},
             additional_form_data={"credentialId": "", "rememberMe": "on"},
         )
 
     def _get_client_id(self) -> str:
-        """Get client ID from RTL+ website configuration using base class method"""
         if self._client_id:
             return self._client_id
 
-        # Use base class method for extraction
         self._client_id = self._extract_client_id_from_js(
             main_page_url=self.config.base_website,
             js_file_pattern=r'<script src="(main[A-z0-9\-\.]+\.js)"',
@@ -228,26 +171,21 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
         if self._client_id:
             return self._client_id
 
-        # Fallback to default if extraction failed
         logger.warning("Could not extract client ID, using default")
         return RTLPlusDefaults.CLIENT_ID
 
     def _get_client_version(self) -> str:
-        """Get client version from RTL+ configuration"""
-        if self.config.client_version != RTLPlusDefaults.CLIENT_VERSION:
+        if self.config.client_version != RTLPlusDefaults.CLIENT_VERSION_FALLBACK:
             return self.config.client_version
 
         try:
             headers = self.config.get_base_headers()
-            response = self.http_manager.get(
-                self.config.config_endpoint, operation="api", headers=headers
-            )
+            response = self.http_manager.get(self.config.config_endpoint, operation="api", headers=headers)
             response.raise_for_status()
 
             config_data = response.json()
-            version = config_data.get("version", RTLPlusDefaults.CLIENT_VERSION)
+            version = config_data.get("version", RTLPlusDefaults.CLIENT_VERSION_FALLBACK)
 
-            # Update config with retrieved version
             self.config.client_version = version
             return version
 
@@ -256,13 +194,7 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
             return self.config.client_version
 
     def _get_anonymous_credentials_from_config(self) -> Optional[Dict[str, str]]:
-        """
-        Extract anonymous credentials from RTL+ website configuration
-        Uses base class generic config extraction
-        """
-
         def parse_credentials(config_str: str) -> Dict[str, str]:
-            """Parse anonymousCredentials config string"""
             credentials = {}
             for pair in config_str.split(","):
                 if ":" in pair:
@@ -279,41 +211,145 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
             parse_function=parse_credentials,
         )
 
-    # RTL+-specific credential management methods
-    def set_user_credentials(
-        self, username: str, password: str, client_id: Optional[str] = None
-    ) -> bool:
+    # --------------------------------------------------------------------------
+    # Bedrock Token Management (Linear TV)
+    # --------------------------------------------------------------------------
+
+    def get_bedrock_token(self, force_refresh: bool = False) -> str:
         """
-        Set RTL+ user credentials for authentication
+        Get or refresh Bedrock token.
+
+        The Bedrock token is a JWT required for all Bedrock API calls
+        (layout, DRM, heartbeat). Obtained using the OAuth token.
+        """
+        if not force_refresh and self._bedrock_token and self._bedrock_token_expiry > time.time() + 300:
+            return self._bedrock_token
+
+        oauth_token = self.get_bearer_token()
+
+        response = self.http_manager.post(
+            self.config.bedrock_auth_url,
+            headers={"authorization": f"Bearer {oauth_token}"},
+            operation="api",
+        )
+        response.raise_for_status()
+
+        data = response.json()
+        self._bedrock_token = data.get("token")
+
+        if self._bedrock_token:
+            try:
+                parts = self._bedrock_token.split(".")
+                if len(parts) >= 2:
+                    payload = parts[1]
+                    padding = 4 - len(payload) % 4
+                    if padding != 4:
+                        payload += "=" * padding
+                    decoded = json.loads(base64.b64decode(payload))
+                    self._bedrock_token_expiry = decoded.get("exp", 0)
+            except Exception as e:
+                logger.debug(f"Could not decode Bedrock token expiry: {e}")
+
+        logger.debug("RTL+ Bedrock token obtained successfully")
+        return self._bedrock_token
+
+    def get_upfront_token(self, content_id: str, uid: str) -> str:
+        """
+        Get upfront token for DRM license acquisition.
+
+        The upfront token is used as x-dt-auth-token when requesting
+        licenses from DRMToday.
 
         Args:
-            username: RTL+ username/email
-            password: RTL+ password
-            client_id: Optional client ID for user authentication
+            content_id: DRM content ID (e.g., "dashcenc_rtlde_vox")
+            uid: User ID from OAuth token
+        """
+        oauth_token = self.get_bearer_token()
+        bedrock_token = self.get_bedrock_token()
+
+        url = self.config.get_upfront_token_url(uid=uid, content_id=content_id)
+        headers = self.config.get_upfront_token_headers(oauth_token, bedrock_token)
+
+        response = self.http_manager.get(url, headers=headers, operation="api")
+        response.raise_for_status()
+
+        data = response.json()
+        token = data.get("token")
+
+        if not token:
+            raise ValueError("No token in upfront token response")
+
+        logger.debug(f"RTL+ Upfront token obtained for {content_id}")
+        return token
+
+    def invalidate_bedrock_token(self) -> None:
+        """Invalidate cached Bedrock token"""
+        self._bedrock_token = None
+        self._bedrock_token_expiry = 0
+
+    def get_user_id_from_token(self) -> Optional[str]:
+        """
+        Extract user ID (sub claim) from the current OAuth token.
 
         Returns:
-            True if credentials were set and saved successfully
+            User ID string or None if not available
         """
-        try:
-            # Create new user credentials
-            user_creds = RTLPlusUserCredentials(
-                username=username, password=password, client_id=client_id
-            )
+        if self._cached_user_id:
+            return self._cached_user_id
 
-            # Validate credentials
+        token = self.get_bearer_token()
+        if not token:
+            return None
+
+        try:
+            parts = token.split(".")
+            if len(parts) < 2:
+                return None
+
+            payload_segment = parts[1]
+            padding = 4 - len(payload_segment) % 4
+            if padding != 4:
+                payload_segment += "=" * padding
+
+            payload_json = base64.b64decode(payload_segment)
+            payload = json.loads(payload_json)
+
+            # The user ID is in the 'sub' claim
+            # Format: f:83a2e227-f27d-4d33-a811-33ad588170c4:1052940424
+            sub = payload.get("sub", "")
+
+            # Extract numeric ID from the end if present
+            if ":" in sub:
+                self._cached_user_id = sub.split(":")[-1]
+            else:
+                self._cached_user_id = sub
+
+            return self._cached_user_id
+
+        except Exception as e:
+            logger.warning(f"Could not extract user ID from token: {e}")
+            return None
+
+    # --------------------------------------------------------------------------
+    # Credential Management
+    # --------------------------------------------------------------------------
+
+    def set_user_credentials(self, username: str, password: str, client_id: Optional[str] = None) -> bool:
+        try:
+            user_creds = RTLPlusUserCredentials(username=username, password=password, client_id=client_id)
+
             if not user_creds.validate():
                 logger.warning("Invalid user credentials provided")
                 return False
 
-            # Set as current credentials
             self.credentials = user_creds
-
-            # Save to persistent storage
             success = self.save_credentials(user_creds)
+
             if success:
                 logger.info("RTL+ user credentials saved successfully")
-                # Invalidate current token to force re-authentication with new credentials
                 self.invalidate_token()
+                self.invalidate_bedrock_token()
+                self._cached_user_id = None  # Clear cached user ID
             else:
                 logger.error("Failed to save RTL+ user credentials")
 
@@ -324,61 +360,32 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
             return False
 
     def has_user_credentials(self) -> bool:
-        """
-        Check if user credentials are currently set (not anonymous)
-
-        Returns:
-            True if using user credentials, False if using anonymous access
-        """
         from ...base.auth.credentials import UserPasswordCredentials
-
         return isinstance(self.credentials, (RTLPlusUserCredentials, UserPasswordCredentials))
 
     def has_stored_credentials(self) -> bool:
-        """
-        Check for stored RTL+ user credentials
-        """
         try:
-            logger.debug("RTL+ Checking for stored credentials using settings manager")
             stored_creds = self.settings_manager.get_provider_credentials(self.provider_name)
 
             if not stored_creds:
-                logger.debug("RTL+ No stored credentials found")
                 return False
 
-            # Import the base credential types
             from ...base.auth.credentials import UserPasswordCredentials
-
-            # Check if it's either RTLPlusUserCredentials OR base UserPasswordCredentials
-            is_user_creds = isinstance(
-                stored_creds, (RTLPlusUserCredentials, UserPasswordCredentials)
-            )
-            logger.debug(
-                f"RTL+ Has stored user credentials: {is_user_creds} (type: {type(stored_creds)})"
-            )
-
-            return is_user_creds
+            return isinstance(stored_creds, (RTLPlusUserCredentials, UserPasswordCredentials))
 
         except Exception as e:
             logger.debug(f"RTL+ Error checking stored credentials: {e}")
             return False
 
     def get_authentication_status(self) -> Dict[str, Any]:
-        """
-        Get RTL+-specific authentication status information
-        """
         status = super().get_authentication_status()
-
-        # Add RTL+-specific information
-        status.update(
-            {
-                "has_user_credentials": self.has_user_credentials(),
-                "authentication_mode": ("user" if self.has_user_credentials() else "anonymous"),
-                "client_version": self.config.client_version,
-            }
-        )
-
+        status.update({
+            "has_user_credentials": self.has_user_credentials(),
+            "authentication_mode": ("user" if self.has_user_credentials() else "anonymous"),
+            "client_version": self.config.client_version,
+            "has_bedrock_token": bool(self._bedrock_token),
+            "has_user_id": bool(self._cached_user_id),
+        })
         if self.has_user_credentials() and hasattr(self.credentials, "username"):
             status["username"] = self.credentials.username
-
         return status

@@ -29,7 +29,6 @@ class RTLPlusUserCredentials(UserPasswordCredentials):
             "username": self.username,
             "password": self.password,
         }
-        # RTL+ might need client_id for user auth - adjust based on API requirements
         if self.client_id:
             payload["client_id"] = self.client_id
         return payload
@@ -65,7 +64,6 @@ class RTLPlusAuthToken(BaseAuthToken):
         not_before_policy: Optional[int] = None,
         scope: str = "",
     ):
-        # Initialize parent class with refresh_expires_in
         super().__init__(
             access_token=access_token,
             token_type=token_type,
@@ -74,7 +72,6 @@ class RTLPlusAuthToken(BaseAuthToken):
             refresh_token=refresh_token,
             refresh_expires_in=refresh_expires_in,
         )
-        # RTL+ specific fields
         self.refresh_expires_in = refresh_expires_in
         self.not_before_policy = not_before_policy
         self.scope = scope
@@ -114,21 +111,36 @@ class RTLPlusAuthToken(BaseAuthToken):
             return False
 
         current_time = time.time()
-        # Add small buffer (30 seconds) to account for network delays
         buffer_time = 30
 
         return current_time < (self.issued_at + self.expires_in - buffer_time)
 
-    # Add this method to the RTLPlusAuthToken class in models.py
     def is_anonymous_token(self) -> bool:
-        """Check if this token was obtained via anonymous authentication"""
+        """Check if this token was obtained via anonymous authentication."""
         if not self.access_token:
             return True
 
         try:
-            # Simple check without full JWT decoding - look for anonymous client ID pattern
-            return "anonymous-user" in self.access_token
-        except:
+            import base64
+            import json
+
+            parts = self.access_token.split(".")
+            if len(parts) < 2:
+                return False
+
+            payload_segment = parts[1]
+            padding = 4 - len(payload_segment) % 4
+            if padding != 4:
+                payload_segment += "=" * padding
+
+            payload_json = base64.b64decode(payload_segment)
+            payload = json.loads(payload_json)
+
+            client_id = payload.get("clientId")
+            is_guest = payload.get("isGuest", False)
+
+            return is_guest and client_id == "anonymous-user"
+        except Exception:
             return False
 
 
@@ -148,13 +160,11 @@ class RTLPlusChannel:
     sort_order: int = 0
 
     def __post_init__(self):
-        """Validate channel data after initialization"""
         if not self.id or not self.name:
             raise ValueError("Channel must have both id and name")
 
     @classmethod
     def from_api_response(cls, data: Dict[str, Any]) -> "RTLPlusChannel":
-        """Create channel from API response data"""
         return cls(
             id=data["id"],
             name=data["name"],
@@ -167,7 +177,6 @@ class RTLPlusChannel:
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert channel to dictionary"""
         return {
             "id": self.id,
             "name": self.name,
@@ -179,16 +188,17 @@ class RTLPlusChannel:
             "sort_order": self.sort_order,
         }
 
+
 @dataclass
 class RTLPlusLiveEvent:
     """
     RTL+ API representation of a live event before conversion to the
-    domain Event model.  Keeps parsing logic isolated from the domain layer.
+    domain Event model.
     """
     id: str
     title: str
-    stream_start: str          # ISO string from API
-    stream_end: str            # ISO string from API
+    stream_start: str
+    stream_end: str
     location: Optional[str]
     event_category: str
     event_sub_category: str
@@ -200,9 +210,8 @@ class RTLPlusLiveEvent:
 
     @classmethod
     def from_api_node(cls, node: Dict[str, Any]) -> "RTLPlusLiveEvent":
-        """Parse a single LiveEvent GraphQL node from LiveEventsOverview."""
         details = node.get("details") or {}
-        images  = node.get("images") or {}
+        images = node.get("images") or {}
         return cls(
             id=node["id"],
             title=node["title"],
@@ -217,18 +226,23 @@ class RTLPlusLiveEvent:
                 images.get("artworkLandscape", {}).get("url")
                 or images.get("artworkPortrait", {}).get("url")
             ),
-            required_permission=node.get(
-                "requiredPermission", RTLPlusDefaults.PERMISSION_PAY_TV
-            ),
+            required_permission=node.get("requiredPermission", RTLPlusDefaults.PERMISSION_PAY_TV),
             watch_path=node.get("urlData", {}).get("watchPath", ""),
         )
 
     def to_event(self, provider: str = "rtlplus") -> "Event":
-        """Convert to the domain Event model."""
-        from dateutil.parser import isoparse   # already likely a dep; fallback below
+        """Convert to the domain Event model with lazy dateutil import."""
+        try:
+            from dateutil.parser import isoparse
+        except ImportError:
+            # Fallback for environments without dateutil
+            from datetime import datetime
+            def isoparse(date_string):
+                # Simple ISO parser for common formats
+                return datetime.fromisoformat(date_string.replace('Z', '+00:00'))
 
         start = isoparse(self.stream_start)
-        end   = isoparse(self.stream_end)
+        end = isoparse(self.stream_end)
 
         return Event(
             name=self.title,
@@ -239,11 +253,12 @@ class RTLPlusLiveEvent:
             logo_url=self.logo_url,
             description=self.description,
             genre=self.event_sub_category,
-            content_type=ContentType.LIVE,   # always live for RTL+ events
+            content_type=ContentType.LIVE,
             language="de",
             country="DE",
             venue=self.location,
         )
+
 
 @dataclass
 class RTLPlusStreamInfo:
@@ -259,13 +274,11 @@ class RTLPlusStreamInfo:
     quality: str = "auto"
 
     def __post_init__(self):
-        """Validate stream info after initialization"""
         if not self.manifest_url or not self.channel_id:
             raise ValueError("Stream must have both manifest_url and channel_id")
 
     @classmethod
     def from_manifest_response(cls, data: Dict[str, Any], channel_id: str) -> "RTLPlusStreamInfo":
-        """Create stream info from manifest API response"""
         return cls(
             manifest_url=data["url"],
             channel_id=channel_id,
@@ -276,7 +289,6 @@ class RTLPlusStreamInfo:
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert stream info to dictionary"""
         return {
             "manifest_url": self.manifest_url,
             "channel_id": self.channel_id,
@@ -287,5 +299,4 @@ class RTLPlusStreamInfo:
         }
 
     def has_drm(self) -> bool:
-        """Check if stream has DRM protection"""
         return bool(self.drm_license_url and self.drm_key_id)
