@@ -2,6 +2,7 @@
 import base64
 import json
 import time
+import hashlib
 from typing import Any, Dict, Optional
 
 from ...base.auth.base_auth import BaseAuthToken, TokenAuthLevel
@@ -215,21 +216,54 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
     # Bedrock Token Management (Linear TV)
     # --------------------------------------------------------------------------
 
-    def get_bedrock_token(self, force_refresh: bool = False) -> str:
-        """
-        Get or refresh Bedrock token.
+    def _get_server_timestamp(self) -> int:
+        """Get current server timestamp from RTL+ time endpoint."""
+        try:
+            response = self.http_manager.get(
+                "https://time.rtlde.bedrock.tech/",
+                operation="api",
+                headers={"User-Agent": self.config.user_agent}
+            )
+            data = response.json()
+            return data.get("timestamp", int(time.time()))
+        except Exception as e:
+            logger.warning(f"Could not fetch server timestamp: {e}")
+            return int(time.time())
 
-        The Bedrock token is a JWT required for all Bedrock API calls
-        (layout, DRM, heartbeat). Obtained using the OAuth token.
+    @staticmethod
+    def _generate_auth_token(device_id: str, timestamp: int) -> str:
         """
+        Generate the x-auth-token required for Bedrock API calls.
+
+        Based on analysis, this appears to be a SHA-1 hash of device_id + timestamp.
+        """
+        # Convert timestamp to string
+        ts_str = str(timestamp)
+
+        # Try SHA-1 of device_id + timestamp (most likely)
+        data = f"{device_id}{ts_str}"
+        token = hashlib.sha1(data.encode()).hexdigest()
+
+        logger.debug(f"Generated auth token: {token} for device {device_id[:8]}... at {timestamp}")
+        return token
+
+    def get_bedrock_token(self, force_refresh: bool = False) -> str:
+        """Get or refresh Bedrock token."""
         if not force_refresh and self._bedrock_token and self._bedrock_token_expiry > time.time() + 300:
             return self._bedrock_token
 
         oauth_token = self.get_bearer_token()
 
+        # Get timestamp and generate auth token
+        timestamp = self._get_server_timestamp()
+        auth_token = self._generate_auth_token(self.config.device_id, timestamp)
+
+        # Use headers from config
+        headers = self.config.get_bedrock_token_headers(oauth_token, auth_token, timestamp)
+
         response = self.http_manager.get(
             self.config.bedrock_auth_url,
-            headers={"authorization": f"Bearer {oauth_token}"},
+            headers=headers,
             operation="api",
         )
         response.raise_for_status()

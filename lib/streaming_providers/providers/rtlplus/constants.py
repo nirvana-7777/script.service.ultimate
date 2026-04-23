@@ -21,6 +21,10 @@ class RTLPlusDefaults:
     DEVICE_NAME = "Linux Chrome"
     PLAYREADY_DEVICE_NAME = "Windows Edge"
 
+    # Device screen size (used in headers)
+    DEVICE_PLAYER_SIZE_WIDTH = 972
+    DEVICE_PLAYER_SIZE_HEIGHT = 919
+
     # User agents
     USER_AGENT = get_user_agent("windows", "chrome")
     PLAYREADY_USER_AGENT = get_user_agent("windows", "edge")
@@ -42,6 +46,7 @@ class RTLPlusDefaults:
     AUTH_AUTHORIZE_ENDPOINT = f"{AUTH_BASE_URL}/auth"
     GRAPHQL_ENDPOINT = "https://cdn.gateway.now-plus-prod.aws-cbc.cloud/graphql"
     BASE_WEBSITE = "https://plus.rtl.de/"
+    BETA_WEBSITE = "https://beta.plus.rtl.de/"
     CONFIG_ENDPOINT = "https://plus.rtl.de/assets/config/config.json"
 
     # Bedrock API endpoints (Linear TV)
@@ -49,6 +54,7 @@ class RTLPlusDefaults:
     BEDROCK_LAYOUT_BASE = "https://layout.rtlde.bedrock.tech/front/v1/rtlde/m6group_web/main/token-web-31"
     BEDROCK_DRM_UPFRONT_BASE = "https://drm.rtlde.bedrock.tech/v1/customers/rtlde/platforms/m6group_web/services/rtlplus_root/users/{uid}/live"
     BEDROCK_HEARTBEAT_URL = "https://heartbeat-v2.rtlde.bedrock.tech/v2/platforms/m6group_web/notify/session_live"
+    TIME_ENDPOINT = "https://time.rtlde.bedrock.tech/"
 
     # DRM license server
     DRMTODAY_LICENSE_URL = "https://lic.drmtoday.com/license-proxy-widevine/cenc/"
@@ -141,7 +147,8 @@ def _get_rtlplus_client_version() -> str:
                 _CLIENT_VERSION_CACHE = data["version"]
             logger.debug(f"Fetched RTL+ client version: {_CLIENT_VERSION_CACHE}")
         except Exception as exc:
-            logger.warning(f"Could not fetch RTL+ client version ({exc}); using fallback {RTLPlusDefaults.CLIENT_VERSION_FALLBACK}")
+            logger.warning(
+                f"Could not fetch RTL+ client version ({exc}); using fallback {RTLPlusDefaults.CLIENT_VERSION_FALLBACK}")
             _CLIENT_VERSION_CACHE = RTLPlusDefaults.CLIENT_VERSION_FALLBACK
     return _CLIENT_VERSION_CACHE
 
@@ -173,7 +180,8 @@ class RTLPlusGraphQL:
 
     @classmethod
     def live_tv_stations(cls, epg_count: int = 4) -> dict:
-        return cls._build("LiveTvStations", f'{{"epgCount":{epg_count},"filter":{{"channelTypes":["BROADCAST","FAST"]}}}}')
+        return cls._build("LiveTvStations",
+                          f'{{"epgCount":{epg_count},"filter":{{"channelTypes":["BROADCAST","FAST"]}}}}')
 
     @classmethod
     def explore_widget_watch(cls, area: str = "home", offset: int = 0, take: int = 15) -> dict:
@@ -181,7 +189,8 @@ class RTLPlusGraphQL:
 
     @classmethod
     def season_with_episodes(cls, season_rrn: str, offset: int = 0, limit: int = 48) -> dict:
-        return cls._build("SeasonWithFormatAndEpisodes", f'{{"seasonId":"{season_rrn}","offset":{offset},"limit":{limit}}}')
+        return cls._build("SeasonWithFormatAndEpisodes",
+                          f'{{"seasonId":"{season_rrn}","offset":{offset},"limit":{limit}}}')
 
     @classmethod
     def live_events_overview_page(cls) -> dict:
@@ -205,7 +214,8 @@ class RTLPlusGraphQL:
 
     @classmethod
     def watch_player_config(cls, rrn: str) -> dict:
-        return cls._build("WatchPlayerConfigV3", f'{{"platform":"{RTLPlusDefaults.VOD_PLATFORM_GRAPHQL}","id":"{rrn}"}}')
+        return cls._build("WatchPlayerConfigV3",
+                          f'{{"platform":"{RTLPlusDefaults.VOD_PLATFORM_GRAPHQL}","id":"{rrn}"}}')
 
     @classmethod
     def seo_url_data(cls, watch_path: str) -> dict:
@@ -228,6 +238,14 @@ class RTLPlusGraphQL:
 class RTLPlusHeaders:
     """Standard header configurations for RTL+ requests"""
 
+    # Common headers shared across multiple request types
+    _COMMON_HEADERS = {
+        "accept": "*/*",
+        "accept-encoding": "gzip, deflate, br, zstd",
+        "accept-language": "de-DE,de;q=0.9",
+        "cache-control": "no-cache",
+    }
+
     @staticmethod
     def get_base_headers(user_agent: str = None) -> dict:
         return {"User-Agent": user_agent or RTLPlusDefaults.USER_AGENT, "Accept": "application/json"}
@@ -243,7 +261,8 @@ class RTLPlusHeaders:
         return headers
 
     @staticmethod
-    def get_api_headers(access_token: str = None, device_id: str = None, client_version: str = None, user_agent: str = None) -> dict:
+    def get_api_headers(access_token: str = None, device_id: str = None, client_version: str = None,
+                        user_agent: str = None) -> dict:
         headers = RTLPlusHeaders.get_base_headers(user_agent)
         headers.update({
             "Content-Type": "application/json",
@@ -258,69 +277,106 @@ class RTLPlusHeaders:
         return headers
 
     @staticmethod
-    def get_events_headers(access_token: str, profile_token: str = None, device_id: str = None, client_version: str = None, user_agent: str = None) -> dict:
-        headers = RTLPlusHeaders.get_api_headers(access_token=access_token, device_id=device_id, client_version=client_version, user_agent=user_agent)
+    def get_events_headers(access_token: str, profile_token: str = None, device_id: str = None,
+                           client_version: str = None, user_agent: str = None) -> dict:
+        headers = RTLPlusHeaders.get_api_headers(access_token=access_token, device_id=device_id,
+                                                 client_version=client_version, user_agent=user_agent)
         if profile_token:
             headers[RTLPlusDefaults.PROFILE_HEADER] = profile_token
         return headers
 
     @staticmethod
-    def get_bedrock_layout_headers(
-        oauth_token: str,
-        bedrock_token: str,
-        device_id: str,
-        client_version: str,
-        user_agent: str,
-        location: str = None,
+    def get_bedrock_token_headers(
+            oauth_token: str,
+            device_id: str,
+            client_version: str,
+            user_agent: str,
+            auth_token: str,
+            timestamp: int,
     ) -> dict:
-        headers = {
+        """Headers for obtaining Bedrock token."""
+        headers = dict(RTLPlusHeaders._COMMON_HEADERS)
+        headers.update({
             "authorization": f"Bearer {oauth_token}",
-            "cache-control": "no-cache",
-            "origin": RTLPlusDefaults.BASE_WEBSITE.rstrip("/"),
-            "referer": RTLPlusDefaults.BASE_WEBSITE,
-            "request-timeout": "10000",
+            "origin": RTLPlusDefaults.BETA_WEBSITE.rstrip("/"),
+            "referer": RTLPlusDefaults.BETA_WEBSITE,
+            "user-agent": user_agent,
+            "x-auth-device-id": device_id,
+            "x-auth-device-name": RTLPlusDefaults.DEVICE_NAME,
+            "x-auth-device-player-size-width": str(RTLPlusDefaults.DEVICE_PLAYER_SIZE_WIDTH),
+            "x-auth-device-player-size-height": str(RTLPlusDefaults.DEVICE_PLAYER_SIZE_HEIGHT),
+            "x-auth-token": auth_token,
+            "x-auth-token-timestamp": str(timestamp),
+            "x-client-release": client_version,
+            "x-customer-name": "rtlde",
+        })
+        return headers
+
+    @staticmethod
+    def get_bedrock_layout_headers(
+            oauth_token: str,
+            bedrock_token: str,
+            device_id: str,
+            client_version: str,
+            user_agent: str,
+            location: str = None,
+    ) -> dict:
+        """Headers for Bedrock layout API calls."""
+        headers = dict(RTLPlusHeaders._COMMON_HEADERS)
+        headers.update({
+            "authorization": f"Bearer {oauth_token}",
+            "origin": RTLPlusDefaults.BETA_WEBSITE.rstrip("/"),
+            "referer": RTLPlusDefaults.BETA_WEBSITE,
             "user-agent": user_agent,
             "x-bedrock-token": bedrock_token,
             "x-auth-device-id": device_id,
             "x-auth-device-name": RTLPlusDefaults.DEVICE_NAME,
             "x-client-release": client_version,
             "x-customer-name": "rtlde",
-        }
+        })
         if location:
             headers["x-location"] = location
         return headers
 
     @staticmethod
-    def get_upfront_token_headers(oauth_token: str, bedrock_token: str, device_id: str, client_version: str, user_agent: str) -> dict:
-        return {
+    def get_upfront_token_headers(
+            oauth_token: str,
+            bedrock_token: str,
+            device_id: str,
+            client_version: str,
+            user_agent: str,
+    ) -> dict:
+        """Headers for upfront token request."""
+        headers = dict(RTLPlusHeaders._COMMON_HEADERS)
+        headers.update({
             "authorization": f"Bearer {oauth_token}",
-            "cache-control": "no-cache",
-            "origin": RTLPlusDefaults.BASE_WEBSITE.rstrip("/"),
-            "referer": RTLPlusDefaults.BASE_WEBSITE,
-            "request-timeout": "10000",
+            "origin": RTLPlusDefaults.BETA_WEBSITE.rstrip("/"),
+            "referer": RTLPlusDefaults.BETA_WEBSITE,
             "user-agent": user_agent,
             "x-bedrock-token": bedrock_token,
             "x-auth-device-id": device_id,
             "x-auth-device-name": RTLPlusDefaults.DEVICE_NAME,
             "x-client-release": client_version,
             "x-customer-name": "rtlde",
-        }
+        })
+        return headers
 
     @staticmethod
     def get_drm_license_headers(upfront_token: str, user_agent: str) -> dict:
-        return {
-            "accept": "*/*",
+        """Headers for DRM license request to DRMToday."""
+        headers = dict(RTLPlusHeaders._COMMON_HEADERS)
+        headers.update({
             "content-type": "application/json",
             "origin": RTLPlusDefaults.BASE_WEBSITE.rstrip("/"),
             "referer": RTLPlusDefaults.BASE_WEBSITE,
             "user-agent": user_agent,
             "x-dt-auth-token": upfront_token,
-        }
+        })
+        return headers
 
     @staticmethod
     def get_drm_headers(access_token: str, device_id: str = None, user_agent: str = None) -> dict:
         return {
-            "Cache-Control": "no-cache",
             "Origin": RTLPlusDefaults.BASE_WEBSITE.rstrip("/"),
             "Referer": RTLPlusDefaults.BASE_WEBSITE,
             "User-Agent": user_agent or RTLPlusDefaults.USER_AGENT,
@@ -357,10 +413,15 @@ class RTLPlusConfig:
         self.user_agent = config.get("user_agent", RTLPlusDefaults.USER_AGENT)
         self.platform = config.get("platform", RTLPlusDefaults.PLATFORM_DEFAULT)
 
+        # Screen size
+        self.screen_width = config.get("screen_width", RTLPlusDefaults.DEVICE_PLAYER_SIZE_WIDTH)
+        self.screen_height = config.get("screen_height", RTLPlusDefaults.DEVICE_PLAYER_SIZE_HEIGHT)
+
         # API endpoints
         self.auth_endpoint = config.get("auth_endpoint", RTLPlusDefaults.AUTH_ENDPOINT)
         self.graphql_endpoint = config.get("graphql_endpoint", RTLPlusDefaults.GRAPHQL_ENDPOINT)
         self.base_website = config.get("base_website", RTLPlusDefaults.BASE_WEBSITE)
+        self.beta_website = config.get("beta_website", RTLPlusDefaults.BETA_WEBSITE)
         self.config_endpoint = config.get("config_endpoint", RTLPlusDefaults.CONFIG_ENDPOINT)
 
         # Bedrock endpoints (Linear TV)
@@ -368,6 +429,7 @@ class RTLPlusConfig:
         self.bedrock_layout_base = config.get("bedrock_layout_base", RTLPlusDefaults.BEDROCK_LAYOUT_BASE)
         self.bedrock_drm_upfront_base = config.get("bedrock_drm_upfront_base", RTLPlusDefaults.BEDROCK_DRM_UPFRONT_BASE)
         self.bedrock_heartbeat_url = config.get("bedrock_heartbeat_url", RTLPlusDefaults.BEDROCK_HEARTBEAT_URL)
+        self.time_endpoint = config.get("time_endpoint", RTLPlusDefaults.TIME_ENDPOINT)
 
         # DRM license server
         self.drmtoday_license_url = config.get("drmtoday_license_url", RTLPlusDefaults.DRMTODAY_LICENSE_URL)
@@ -413,6 +475,17 @@ class RTLPlusConfig:
             device_id=self.device_id,
             client_version=self.client_version,
             user_agent=self.user_agent,
+        )
+
+    def get_bedrock_token_headers(self, oauth_token: str, auth_token: str, timestamp: int) -> dict:
+        """Get headers for Bedrock token request."""
+        return RTLPlusHeaders.get_bedrock_token_headers(
+            oauth_token=oauth_token,
+            device_id=self.device_id,
+            client_version=self.client_version,
+            user_agent=self.user_agent,
+            auth_token=auth_token,
+            timestamp=timestamp,
         )
 
     def get_bedrock_layout_headers(self, oauth_token: str, bedrock_token: str, location: str = None) -> dict:
