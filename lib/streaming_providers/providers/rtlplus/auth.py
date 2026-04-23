@@ -227,7 +227,7 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
 
         oauth_token = self.get_bearer_token()
 
-        response = self.http_manager.post(
+        response = self.http_manager.get(
             self.config.bedrock_auth_url,
             headers={"authorization": f"Bearer {oauth_token}"},
             operation="api",
