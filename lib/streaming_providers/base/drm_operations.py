@@ -748,6 +748,7 @@ class DRMOperations:
                         init_segment_url,
                         [p.system_id for p in pssh_list] if pssh_list else [],
                         headers=segment_headers,
+                        http_manager=http,
                     )
 
                     if segment_pssh:

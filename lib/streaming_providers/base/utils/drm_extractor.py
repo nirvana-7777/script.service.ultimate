@@ -96,6 +96,7 @@ class DRMExtractor:
             segment_url: str,
             expected_system_ids: List[str] = None,
             headers: Optional[Dict[str, str]] = None,
+            http_manager = None,
     ) -> List[PSSHData]:
         """
         Extract PSSH from a single segment URL.
@@ -114,6 +115,7 @@ class DRMExtractor:
             pssh_from_segment = MP4PSSHExtractor.extract_from_url(
                 segment_url,
                 headers=headers or {},
+                http_manager=http_manager,
             )
 
             if expected_system_ids:

@@ -24,6 +24,7 @@ class MP4PSSHExtractor:
             segment_url: str,
             timeout: int = 10,
             headers: Optional[Dict[str, str]] = None,
+            http_manager=None,
     ) -> List[PSSHData]:
         """
         Download MP4 segment and extract PSSH data.
@@ -35,24 +36,19 @@ class MP4PSSHExtractor:
                      Providers that require authentication on segment requests
                      (e.g. Authorization, X-Custom-Token) should supply these
                      via StreamingProvider.get_segment_headers().
+            http_manager: Optional http manager to use for HTTP requests
 
         Returns:
             List of PSSHData objects with extracted information
         """
-        import requests
-
         try:
-            response = requests.get(
-                segment_url,
-                timeout=timeout,
-                headers=headers or {},
-            )
+            if http_manager is not None:
+                response = http_manager.get(segment_url, headers=headers or {}, timeout=timeout, operation="api")
+            else:
+                import requests
+                response = requests.get(segment_url, timeout=timeout, headers=headers or {})
             response.raise_for_status()
-
-            # Only download first ~100KB for efficiency
-            chunk_size = 1024 * 100
-            data = response.content[:chunk_size]
-
+            data = response.content[:1024 * 100]
             return MP4PSSHExtractor.extract_from_bytes(data)
 
         except Exception as e:
