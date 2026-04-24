@@ -90,23 +90,51 @@ class RTLPlusChannelManager:
         for item in items:
             if item.get("itemType") == "epg":
                 item_content = item.get("itemContent", {})
+
+                # Extract channel info
                 channel_data = item_content.get("channel", {})
+                title = channel_data.get("title")
+                logo_id = channel_data.get("image", {}).get("id")
+
+                # Extract action target for IDs
                 action = item_content.get("action", {})
                 target = action.get("target", {})
                 value_layout = target.get("value_layout", {})
 
+                # These are the critical fields
+                slug = value_layout.get("id")  # e.g., "rtlde_rtl"
+                seo = value_layout.get("seo")  # e.g., "rtl"
+
+                # Debug log the extraction
+                logger.debug(f"Extracted: title='{title}', slug='{slug}', seo='{seo}', logo_id='{logo_id}'")
+
+                if slug is None:
+                    # Try alternative path - sometimes the ID might be directly in itemContent
+                    alt_id = item_content.get("id")
+                    if alt_id:
+                        slug = alt_id
+                        logger.debug(f"Using alternative id: {slug}")
+
+                if not slug:
+                    logger.warning(f"Could not extract slug for channel '{title}', skipping")
+                    continue
+
                 channel = {
                     "id": channel_data.get("id"),
-                    "title": channel_data.get("title"),
-                    "seo": value_layout.get("seo"),  # e.g., "rtl", "vox"
-                    "slug": value_layout.get("id"),  # e.g., "rtlde_rtl", "rtlde_vox"
-                    "logo_id": channel_data.get("image", {}).get("id"),
+                    "title": title,
+                    "seo": seo,
+                    "slug": slug,
+                    "logo_id": logo_id,
                     "channel_type": "BROADCAST",
                 }
                 channels.append(channel)
-                logger.debug(f"Found channel: {channel['title']} (slug: {channel['slug']}, seo: {channel['seo']})")
 
         logger.info(f"Found {len(channels)} channels from EPG grid")
+
+        # Log first few channels for debugging
+        for ch in channels[:3]:
+            logger.debug(f"Channel: {ch['title']} -> slug={ch['slug']}, seo={ch['seo']}")
+
         return channels
 
     def get_channels_as_streaming_channel_list(self, nb_pages: int = 3) -> List[Channel]:
