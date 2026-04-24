@@ -171,6 +171,23 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
             additional_form_data={"credentialId": "", "rememberMe": "on"},
         )
 
+    def generate_oauth_state(self) -> str:
+        """RTL+ uses a fixed state value instead of a random one."""
+        fixed_state = '{"redirectUrl":"#"}'
+        self._oauth_state = fixed_state
+        return fixed_state
+
+    def _build_token_exchange_payload(
+            self, authorization_code: str, code_verifier: str, state: str = None, **kwargs
+    ) -> Dict[str, Any]:
+        return {
+            "grant_type": "authorization_code",
+            "client_id": self.oauth_client_id,
+            "code": authorization_code,
+            "redirect_uri": f"{self.config.beta_website}silent-sso-iframe.html",
+            "code_verifier": code_verifier,
+        }
+
     def _get_client_id(self) -> str:
         if self._client_id:
             return self._client_id
