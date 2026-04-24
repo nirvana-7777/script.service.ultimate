@@ -364,6 +364,8 @@ class RTLPlusProvider(StreamingProvider):
         """Get a user-authenticated bearer token, upgrading if necessary. Returns None if impossible."""
         from ...base.auth.base_auth import TokenAuthLevel
         current_level = self.authenticator.get_current_token_level()
+        logger.debug(
+            f"get_user_bearer_token: current_level={current_level}, has_user_credentials={self.authenticator.has_user_credentials()}")
         if current_level == TokenAuthLevel.USER_AUTHENTICATED:
             return self.authenticator.get_bearer_token()
         if self.authenticator.has_user_credentials():
