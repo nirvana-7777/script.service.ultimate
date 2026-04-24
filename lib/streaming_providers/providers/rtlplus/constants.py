@@ -39,6 +39,7 @@ class RTLPlusDefaults:
     # Client and version information
     CLIENT_VERSION_FALLBACK = "2025.6.26.0"
     CLIENT_ID = f"rtlplus-{PLATFORM_DEFAULT}"
+    BEDROCK_CLIENT_ID = "bedrock-m6group_web"
 
     # API endpoints
     AUTH_BASE_URL = "https://auth.rtl.de/auth/realms/rtlplus/protocol/openid-connect"

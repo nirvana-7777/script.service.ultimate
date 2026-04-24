@@ -59,7 +59,7 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
 
     @property
     def oauth_client_id(self) -> str:
-        return self._get_client_id()
+        return RTLPlusDefaults.BEDROCK_CLIENT_ID  # "bedrock-m6group_web"
 
     @property
     def oauth_scope(self) -> str:
@@ -67,7 +67,13 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
 
     @property
     def oauth_redirect_uri(self) -> str:
-        return self.config.base_website
+        # Used in the authorize step
+        return f"{self.config.beta_website}tv-programm"
+
+    @property
+    def oauth_token_redirect_uri(self) -> str:
+        # Used in the token exchange step
+        return f"{self.config.beta_website}silent-sso-iframe.html"
 
     @property
     def config(self) -> RTLPlusConfig:
@@ -155,7 +161,13 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
             password=password,
             form_selector_pattern=r'<form id="rtlplus-form-login" action="([^"]*)"',
             login_fields={"username": "username", "password": "password"},
-            extra_params={"prompt": "login", "nonce": str(uuid.uuid4())},
+            extra_params={
+                "prompt": "login",
+                "nonce": str(uuid.uuid4()),
+                "claim": "sub",  # ← add this
+                "state": '{"redirectUrl":"#"}',  # ← add this
+                "auth_flow_type": "login",  # ← add this
+            },
             additional_form_data={"credentialId": "", "rememberMe": "on"},
         )
 

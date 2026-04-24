@@ -215,7 +215,7 @@ class RTLPlusChannelManager:
         bedrock_token = self.auth.get_bedrock_token()
 
         url = self.cfg.get_bedrock_layout_url(channel_seo=channel_seo)
-        location = f"https://plus.rtl.de/{channel_seo}/live"
+        location = f"{self.cfg.beta_website}{channel_seo}/live"
         headers = self.cfg.get_bedrock_layout_headers(oauth_token, bedrock_token, location)
 
         params = {"blockPage": 1, "nbPages": 2}
