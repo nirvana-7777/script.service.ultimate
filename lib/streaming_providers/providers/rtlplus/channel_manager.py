@@ -52,12 +52,6 @@ class RTLPlusChannelManager:
     def get_channels(self, nb_pages: int = 3) -> List[Dict[str, Any]]:
         """
         Get list of all linear TV channels from the EPG grid endpoint.
-
-        Args:
-            nb_pages: Number of EPG grid pages to fetch (default 3)
-
-        Returns:
-            List of channel dicts with id, title, logo_url, seo, etc.
         """
         try:
             oauth_token = self.auth.get_bearer_token()
@@ -65,8 +59,8 @@ class RTLPlusChannelManager:
                 logger.error("No OAuth token available")
                 return []
 
-            # Get Bedrock token using authenticator (handles auth token internally)
-            bedrock_token = self.auth.get_bedrock_token(oauth_token=oauth_token)
+            # Get Bedrock token - no parameters needed
+            bedrock_token = self.auth.get_bedrock_token()
             if not bedrock_token:
                 logger.error("Failed to obtain Bedrock token")
                 return []
@@ -172,10 +166,6 @@ class RTLPlusChannelManager:
     def fetch_channel_layout(self, channel_seo: str, force_refresh: bool = False) -> Dict[str, Any]:
         """
         Fetch the complete layout JSON for a linear TV channel with caching.
-
-        Args:
-            channel_seo: Channel SEO name (e.g., "rtl", "vox", not the slug)
-            force_refresh: Force refresh of cache
         """
         now = time.time()
 
@@ -187,8 +177,8 @@ class RTLPlusChannelManager:
 
         oauth_token = self.auth.get_bearer_token()
 
-        # Get Bedrock token (authenticator handles auth token internally)
-        bedrock_token = self.auth.get_bedrock_token(oauth_token=oauth_token)
+        # Get Bedrock token - no parameters needed
+        bedrock_token = self.auth.get_bedrock_token()
 
         url = self.cfg.get_bedrock_layout_url(channel_seo=channel_seo)
         location = f"https://plus.rtl.de/{channel_seo}/live"
@@ -323,10 +313,6 @@ class RTLPlusChannelManager:
     ) -> List[DRMConfig]:
         """
         Get DRM configuration for a linear TV channel (Widevine only for now).
-
-        Args:
-            channel_id: Can be either slug (rtlde_rtl) or seo (rtl)
-            preferred_quality
         """
         # Normalize the channel identifier to SEO name
         channel_seo = self._normalize_channel_identifier(channel_id)
@@ -354,7 +340,7 @@ class RTLPlusChannelManager:
                         logger.error(f"No user ID available for DRM on {channel_seo}")
                         continue
 
-                    # Get upfront token (authenticator handles auth token internally)
+                    # Get upfront token - no extra parameters needed
                     upfront_token = self.auth.get_upfront_token(
                         content_id=content_id,
                         uid=uid,
