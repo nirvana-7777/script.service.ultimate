@@ -207,7 +207,9 @@ class RTLPlusChannelManager:
                 logger.debug(f"Using cached layout for {channel_seo}")
                 return cached[0]
 
-        oauth_token = self.auth.get_bearer_token()
+        oauth_token = self._provider.get_user_bearer_token()
+        if not oauth_token:
+            raise RuntimeError("User authentication required to fetch channel layout")
 
         # Get Bedrock token - no parameters needed
         bedrock_token = self.auth.get_bedrock_token()
@@ -241,8 +243,14 @@ class RTLPlusChannelManager:
                         video = item.get("itemContent", {}).get("video", {})
                         assets = video.get("assets", [])
                         if assets:
-                            logger.debug(f"Found {len(assets)} assets for channel {channel_seo}")
-                            found_assets = True
+                            return assets
+                    elif item.get("itemType") == "classic":
+                        # Some live layouts use 'classic' with a nested player block
+                        item_content = item.get("itemContent", {})
+                        video = item_content.get("video", {})
+                        assets = video.get("assets", [])
+                        if assets:
+                            logger.debug(f"Found {len(assets)} assets in classic item for {channel_seo}")
                             return assets
 
         if not found_assets:
