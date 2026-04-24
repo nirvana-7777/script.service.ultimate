@@ -15,7 +15,7 @@ import json
 import time
 from datetime import date
 
-from ...base.models import DRMConfig, DRMSystem, LicenseConfig
+from ...base.models import Channel, DRMConfig, DRMSystem, LicenseConfig
 from ...base.utils.logger import logger
 
 
@@ -46,17 +46,6 @@ class RTLPlusChannelManager:
         return self._provider.authenticator
 
     # --------------------------------------------------------------------------
-    # User ID Helpers
-    # --------------------------------------------------------------------------
-
-    def _get_user_id(self) -> str:
-        """Get user ID from authenticator."""
-        uid = self.auth.get_user_id_from_token()
-        if uid:
-            return uid
-        raise ValueError("Could not determine user ID for DRM token request")
-
-    # --------------------------------------------------------------------------
     # Channel Listing (EPG Grid)
     # --------------------------------------------------------------------------
 
@@ -72,7 +61,12 @@ class RTLPlusChannelManager:
         """
         try:
             oauth_token = self.auth.get_bearer_token()
-            bedrock_token = self.auth.get_bedrock_token()
+            if not oauth_token:
+                logger.error("No OAuth token available")
+                return []
+
+            # Get Bedrock token using authenticator (handles auth token internally)
+            bedrock_token = self.auth.get_bedrock_token(oauth_token=oauth_token)
             if not bedrock_token:
                 logger.error("Failed to obtain Bedrock token")
                 return []
@@ -110,41 +104,58 @@ class RTLPlusChannelManager:
                 channel = {
                     "id": channel_data.get("id"),
                     "title": channel_data.get("title"),
-                    "seo": value_layout.get("seo"),
-                    "slug": value_layout.get("id"),
+                    "seo": value_layout.get("seo"),  # e.g., "rtl", "vox"
+                    "slug": value_layout.get("id"),  # e.g., "rtlde_rtl", "rtlde_vox"
                     "logo_id": channel_data.get("image", {}).get("id"),
                     "channel_type": "BROADCAST",
                 }
                 channels.append(channel)
+                logger.debug(f"Found channel: {channel['title']} (slug: {channel['slug']}, seo: {channel['seo']})")
 
         logger.info(f"Found {len(channels)} channels from EPG grid")
         return channels
 
-    def get_channels_as_streaming_channel_list(self, nb_pages: int = 3) -> List:
+    def get_channels_as_streaming_channel_list(self, nb_pages: int = 3) -> List[Channel]:
         """
-        Get channels as StreamingChannel objects for the provider interface.
+        Get channels as Channel objects for the provider interface.
         """
-        from ...base.models import StreamingChannel
-
         channels = self.get_channels(nb_pages=nb_pages)
         streaming_channels = []
 
         for ch in channels:
-            streaming_channel = StreamingChannel(
-                name=ch["title"],
-                content_id=ch["slug"],
+            # Get the slug - this is the content_id for manifest fetching
+            content_id = ch.get("slug")  # e.g., "rtlde_rtl"
+            seo = ch.get("seo")  # e.g., "rtl"
+            title = ch.get("title")
+            logo_id = ch.get("logo_id")
+
+            logger.debug(f"Processing channel: title='{title}', slug='{content_id}', seo='{seo}'")
+
+            if not content_id:
+                logger.warning(f"Channel {title} has no slug, skipping")
+                continue
+
+            # Create channel with proper content_id
+            streaming_channel = Channel.create_live_channel(
+                name=title,
+                channel_id=content_id,  # This sets content_id
                 provider=self._provider.provider_name,
-                logo_url=self._resolve_image_url(ch.get("logo_id")),
-                mode="live",
-                session_manifest=True,
-                manifest=None,
-                manifest_script=ch.get("seo"),
-                content_type="LIVE",
-                country="DE",
-                language="de",
             )
+
+            # Set logo URL
+            streaming_channel.logo_url = self._resolve_image_url(logo_id)
+
+            # Store SEO in manifest_script for fallback lookups
+            # This allows get_manifest to work with either slug or seo
+            if seo:
+                streaming_channel.manifest_script = seo
+
+            logger.debug(
+                f"Created channel: name={title}, id={streaming_channel.content_id}, manifest_script={streaming_channel.manifest_script}")
+
             streaming_channels.append(streaming_channel)
 
+        logger.info(f"Returning {len(streaming_channels)} channels with IDs")
         return streaming_channels
 
     @staticmethod
@@ -159,7 +170,13 @@ class RTLPlusChannelManager:
     # --------------------------------------------------------------------------
 
     def fetch_channel_layout(self, channel_seo: str, force_refresh: bool = False) -> Dict[str, Any]:
-        """Fetch the complete layout JSON for a linear TV channel with caching."""
+        """
+        Fetch the complete layout JSON for a linear TV channel with caching.
+
+        Args:
+            channel_seo: Channel SEO name (e.g., "rtl", "vox", not the slug)
+            force_refresh: Force refresh of cache
+        """
         now = time.time()
 
         if not force_refresh:
@@ -169,7 +186,9 @@ class RTLPlusChannelManager:
                 return cached[0]
 
         oauth_token = self.auth.get_bearer_token()
-        bedrock_token = self.auth.get_bedrock_token()
+
+        # Get Bedrock token (authenticator handles auth token internally)
+        bedrock_token = self.auth.get_bedrock_token(oauth_token=oauth_token)
 
         url = self.cfg.get_bedrock_layout_url(channel_seo=channel_seo)
         location = f"https://plus.rtl.de/{channel_seo}/live"
@@ -211,17 +230,48 @@ class RTLPlusChannelManager:
             self._layout_cache.clear()
 
     # --------------------------------------------------------------------------
+    # Channel ID Normalization
+    # --------------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize_channel_identifier(channel_id: str) -> str:
+        """
+        Normalize a channel identifier to the SEO name used in layouts.
+
+        Accepts either:
+        - Slug: "rtlde_rtl" -> returns "rtl"
+        - SEO: "rtl" -> returns "rtl"
+        """
+        if channel_id.startswith("rtlde_"):
+            # Convert slug to seo
+            normalized = channel_id.replace("rtlde_", "")
+            logger.debug(f"Normalized slug '{channel_id}' to seo '{normalized}'")
+            return normalized
+        return channel_id
+
+    # --------------------------------------------------------------------------
     # Manifest & DRM
     # --------------------------------------------------------------------------
 
     def get_best_manifest_url(
             self,
-            channel_seo: str,
+            channel_id: str,
             preferred_quality: str = None,
             preferred_format: str = None,
             preferred_drm_type: str = None,
     ) -> Optional[str]:
-        """Get the best manifest URL for a channel based on preferences."""
+        """
+        Get the best manifest URL for a channel based on preferences.
+
+        Args:
+            channel_id: Can be either slug (rtlde_rtl) or seo (rtl)
+            preferred_quality
+            preferred_format
+            preferred_drm_type
+        """
+        # Normalize the channel identifier to SEO name
+        channel_seo = self._normalize_channel_identifier(channel_id)
+
         assets = self.extract_stream_assets(channel_seo)
 
         quality_pref = preferred_quality or next(iter(self.cfg.preferred_qualities), "hd")
@@ -235,7 +285,7 @@ class RTLPlusChannelManager:
                     asset.get("drm", {}).get("type") == drm_pref):
                 manifest_url = asset.get("path") or asset.get("reference")
                 if manifest_url:
-                    logger.info(f"Found exact match manifest: {manifest_url}")
+                    logger.info(f"Found exact match manifest for {channel_seo}")
                     return manifest_url
 
         # Try format + quality, any DRM
@@ -243,7 +293,7 @@ class RTLPlusChannelManager:
             if asset.get("quality") == quality_pref and asset.get("format") == format_pref:
                 manifest_url = asset.get("path") or asset.get("reference")
                 if manifest_url:
-                    logger.info(f"Found format/quality match manifest: {manifest_url}")
+                    logger.info(f"Found format/quality match manifest for {channel_seo}")
                     return manifest_url
 
         # Fallback to any asset from preferred formats
@@ -253,14 +303,14 @@ class RTLPlusChannelManager:
                     if asset.get("format") == fmt and asset.get("quality") == qual:
                         manifest_url = asset.get("path") or asset.get("reference")
                         if manifest_url:
-                            logger.info(f"Found fallback manifest: {manifest_url}")
+                            logger.info(f"Found fallback manifest for {channel_seo}")
                             return manifest_url
 
         # Last resort: any manifest URL
         for asset in assets:
             manifest_url = asset.get("path") or asset.get("reference")
             if manifest_url:
-                logger.warning(f"Using last-resort manifest: {manifest_url}")
+                logger.warning(f"Using last-resort manifest for {channel_seo}")
                 return manifest_url
 
         logger.error(f"No manifest URL found for channel {channel_seo}")
@@ -268,22 +318,26 @@ class RTLPlusChannelManager:
 
     def get_drm_config_for_channel(
             self,
-            channel_seo: str,
+            channel_id: str,
             preferred_quality: str = None,
     ) -> List[DRMConfig]:
         """
-        Get DRM configuration for a linear TV channel (Widevine + PlayReady).
+        Get DRM configuration for a linear TV channel (Widevine only for now).
 
-        Note: FairPlay (HLS) is currently not fully implemented as it requires
-        additional certificate handling. Only Widevine (DASH) is fully supported.
+        Args:
+            channel_id: Can be either slug (rtlde_rtl) or seo (rtl)
+            preferred_quality
         """
+        # Normalize the channel identifier to SEO name
+        channel_seo = self._normalize_channel_identifier(channel_id)
+
         assets = self.extract_stream_assets(channel_seo)
 
         quality = preferred_quality or next(iter(self.cfg.preferred_qualities), "hd")
 
         drm_configs = []
 
-        # Process DASH (Widevine) first - this is the primary DRM
+        # Process DASH (Widevine) - this is the primary DRM
         for asset in assets:
             if asset.get("format") == "dashcenc" and asset.get("quality") == quality:
                 drm_info = asset.get("drm", {})
@@ -295,8 +349,16 @@ class RTLPlusChannelManager:
                     continue
 
                 try:
-                    uid = self._get_user_id()
-                    upfront_token = self.auth.get_upfront_token(content_id, uid)
+                    uid = self.auth.get_user_id_from_token()
+                    if not uid:
+                        logger.error(f"No user ID available for DRM on {channel_seo}")
+                        continue
+
+                    # Get upfront token (authenticator handles auth token internally)
+                    upfront_token = self.auth.get_upfront_token(
+                        content_id=content_id,
+                        uid=uid,
+                    )
 
                     license_url = self.cfg.drmtoday_license_url
                     headers = self.cfg.get_drm_license_headers(upfront_token)
@@ -316,10 +378,6 @@ class RTLPlusChannelManager:
                     logger.error(f"Failed to get Widevine DRM for {channel_seo}: {e}")
                 break  # Only need one DASH asset
 
-        # Note: PlayReady/FairPlay (HLS) support can be added here if needed
-        # The infrastructure exists in constants.py (get_playready_drm_headers)
-        # but requires additional implementation and testing.
-
         logger.info(f"Built {len(drm_configs)} DRM configs for {channel_seo}")
         return drm_configs
 
@@ -327,8 +385,9 @@ class RTLPlusChannelManager:
     # Channel Info Helpers
     # --------------------------------------------------------------------------
 
-    def get_channel_info(self, channel_seo: str) -> Optional[Dict[str, Any]]:
+    def get_channel_info(self, channel_id: str) -> Optional[Dict[str, Any]]:
         """Get basic channel information from the layout."""
+        channel_seo = self._normalize_channel_identifier(channel_id)
         try:
             layout = self.fetch_channel_layout(channel_seo)
             entity = layout.get("entity", {})
@@ -341,11 +400,12 @@ class RTLPlusChannelManager:
                 "seo": layout.get("parent", {}).get("seo"),
             }
         except Exception as e:
-            logger.error(f"Failed to get channel info for {channel_seo}: {e}")
+            logger.error(f"Failed to get channel info for {channel_id}: {e}")
             return None
 
-    def get_current_program(self, channel_seo: str) -> Optional[Dict[str, Any]]:
+    def get_current_program(self, channel_id: str) -> Optional[Dict[str, Any]]:
         """Get currently playing program info for a channel."""
+        channel_seo = self._normalize_channel_identifier(channel_id)
         try:
             layout = self.fetch_channel_layout(channel_seo)
 
@@ -371,5 +431,5 @@ class RTLPlusChannelManager:
                             }
             return None
         except Exception as e:
-            logger.error(f"Failed to get current program for {channel_seo}: {e}")
+            logger.error(f"Failed to get current program for {channel_id}: {e}")
             return None
