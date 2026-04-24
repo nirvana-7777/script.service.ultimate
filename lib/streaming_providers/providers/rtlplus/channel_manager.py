@@ -336,7 +336,11 @@ class RTLPlusChannelManager:
             preferred_format
             preferred_drm_type
         """
-        # Normalize the channel identifier to SEO name
+        token = self._provider.get_user_bearer_token()
+        if not token:
+            logger.error("User authentication required for linear TV stream, not authenticated")
+            return None  # or [] for DRM
+
         channel_seo = self._normalize_channel_identifier(channel_id)
 
         assets = self.extract_stream_assets(channel_seo)
