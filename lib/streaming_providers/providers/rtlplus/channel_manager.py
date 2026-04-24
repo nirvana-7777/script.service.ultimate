@@ -96,17 +96,19 @@ class RTLPlusChannelManager:
                 title = channel_data.get("title")
                 logo_id = channel_data.get("image", {}).get("id")
 
+                # Extract action target for IDs
                 action = item_content.get("action", {})
                 target = action.get("target", {})
+
+                # Handle "lock" wrapper — API wraps targets in a lock when consent is required
+                if target.get("type") == "lock":
+                    target = target.get("value_lock", {}).get("originalTarget", {})
+
                 value_layout = target.get("value_layout", {})
 
-                # Add this temporarily:
-                logger.debug(f"action keys: {list(action.keys())}")
-                logger.debug(f"target: {target}")
-                logger.debug(f"value_layout: {value_layout}")
+                slug = value_layout.get("id")  # e.g., "rtlde_rtl"
+                seo = value_layout.get("seo")  # e.g., "rtl"
 
-                slug = value_layout.get("id")
-                seo = value_layout.get("seo")
                 # Debug log the extraction
                 logger.debug(f"Extracted: title='{title}', slug='{slug}', seo='{seo}', logo_id='{logo_id}'")
 
