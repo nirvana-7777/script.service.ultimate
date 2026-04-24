@@ -229,7 +229,10 @@ class RTLPlusChannelManager:
         """Extract all stream assets from a channel's layout."""
         layout = self.fetch_channel_layout(channel_seo)
 
+        # Log full response for debugging when no assets found
         blocks = layout.get("blocks", [])
+        found_assets = False
+
         for block in blocks:
             if block.get("type") == "bffPaginated":
                 items = block.get("content", {}).get("items", [])
@@ -239,7 +242,49 @@ class RTLPlusChannelManager:
                         assets = video.get("assets", [])
                         if assets:
                             logger.debug(f"Found {len(assets)} assets for channel {channel_seo}")
+                            found_assets = True
                             return assets
+
+        if not found_assets:
+            # Log the entire response structure for debugging
+            logger.error(f"No stream assets found for channel {channel_seo}")
+            logger.error(f"Full response structure for {channel_seo}:")
+
+            # Log the high-level structure
+            logger.error(f"Response keys: {list(layout.keys())}")
+
+            # Log blocks information
+            logger.error(f"Number of blocks: {len(blocks)}")
+            for idx, block in enumerate(blocks):
+                block_type = block.get("type")
+                logger.error(f"  Block {idx}: type={block_type}")
+
+                if block_type == "bffPaginated":
+                    content = block.get("content", {})
+                    items = content.get("items", [])
+                    logger.error(f"    items count: {len(items)}")
+
+                    for item_idx, item in enumerate(items):
+                        item_type = item.get("itemType")
+                        logger.error(f"      Item {item_idx}: itemType={item_type}")
+
+                        if item_type == "video":
+                            item_content = item.get("itemContent", {})
+                            logger.error(f"        itemContent keys: {list(item_content.keys())}")
+                            video = item_content.get("video", {})
+                            logger.error(f"        video keys: {list(video.keys())}")
+                            assets = video.get("assets", [])
+                            logger.error(f"        assets count: {len(assets)}")
+
+                            # Log the actual video structure
+                            logger.error(f"        Full video object: {json.dumps(video, indent=2)[:1000]}")
+
+            # Also log the entity info if available
+            entity = layout.get("entity", {})
+            if entity:
+                logger.error(f"Entity info: id={entity.get('id')}, type={entity.get('type')}")
+                metadata = entity.get("metadata", {})
+                logger.error(f"Entity metadata: title={metadata.get('title')}, code={metadata.get('code')}")
 
         logger.warning(f"No stream assets found for channel {channel_seo}")
         return []
