@@ -67,8 +67,8 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
 
     @property
     def oauth_redirect_uri(self) -> str:
-        # Used in the authorize step
-        return f"{self.config.beta_website}tv-programm"
+        # Used in authorize step
+        return "https://beta.plus.rtl.de/tv-programm"
 
     @property
     def oauth_token_redirect_uri(self) -> str:
@@ -177,16 +177,25 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
         self._oauth_state = fixed_state
         return fixed_state
 
-    def _build_token_exchange_payload(
-            self, authorization_code: str, code_verifier: str, state: str = None, **kwargs
-    ) -> Dict[str, Any]:
+    def _build_token_exchange_payload(self, authorization_code, code_verifier, state=None, **kwargs):
+        token_redirect = "https://beta.plus.rtl.de/silent-sso-iframe.html"
+        logger.debug(f"Token exchange redirect_uri: {token_redirect}")
         return {
             "grant_type": "authorization_code",
             "client_id": self.oauth_client_id,
             "code": authorization_code,
-            "redirect_uri": f"{self.config.beta_website}silent-sso-iframe.html",
+            "redirect_uri": token_redirect,
             "code_verifier": code_verifier,
         }
+
+    def _get_token_exchange_headers(self, **kwargs) -> Dict[str, str]:
+        headers = self._get_auth_headers()
+        headers.update({
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": "https://beta.plus.rtl.de",
+            "Referer": "https://beta.plus.rtl.de/",
+        })
+        return headers
 
     def _get_client_id(self) -> str:
         if self._client_id:

@@ -59,6 +59,7 @@ class RTLPlusDefaults:
 
     # DRM license server
     DRMTODAY_LICENSE_URL = "https://lic.drmtoday.com/license-proxy-widevine/cenc/"
+    DRMTODAY_PLAYREADY_URL = "https://lic.drmtoday.com/license-proxy-headerauth/drmtoday/RightsManager.asmx"
 
     # Direct CDN
     ORIGIN_CDN_BASE = "https://origin.live.rtlde.bedrock.tech"
@@ -526,3 +527,8 @@ class RTLPlusConfig:
             access_token=access_token,
             device_id=self.device_id,
         )
+
+    @staticmethod
+    def get_playready_license_headers(upfront_token: str) -> dict:
+        """Get headers for PlayReady license request to DRMToday."""
+        return RTLPlusHeaders.get_playready_drm_headers(upfront_token)

@@ -12,11 +12,13 @@ Handles all linear TV (live channel) functionality:
 
 from typing import List, Optional, Dict, Any
 import json
+import urllib.parse
 import time
 from datetime import date
 
 from ...base.models import Channel, DRMConfig, DRMSystem, LicenseConfig
 from ...base.utils.logger import logger
+from .constants import RTLPlusDefaults
 
 
 class RTLPlusChannelManager:
@@ -401,60 +403,106 @@ class RTLPlusChannelManager:
             preferred_quality: str = None,
     ) -> List[DRMConfig]:
         """
-        Get DRM configuration for a linear TV channel (Widevine only for now).
+        Get DRM configuration for a linear TV channel.
+        Supports both Widevine and PlayReady.
         """
-        # Normalize the channel identifier to SEO name
         channel_seo = self._normalize_channel_identifier(channel_id)
-
         assets = self.extract_stream_assets(channel_seo)
 
         quality = preferred_quality or next(iter(self.cfg.preferred_qualities), "hd")
-
         drm_configs = []
 
-        # Process DASH (Widevine) - this is the primary DRM
+        # Process all assets
         for asset in assets:
-            if asset.get("format") == "dashcenc" and asset.get("quality") == quality:
-                drm_info = asset.get("drm", {})
-                drm_config = drm_info.get("config", {})
-                content_id = drm_config.get("contentId")
+            asset_format = asset.get("format", "")
+            asset_quality = asset.get("quality", "")
 
-                if not content_id:
-                    logger.warning(f"No contentId in DRM config for {channel_seo}")
+            if asset_quality != quality:
+                continue
+
+            drm_info = asset.get("drm", {})
+            drm_config = drm_info.get("config", {})
+            content_id = drm_config.get("contentId")
+
+            if not content_id:
+                continue
+
+            try:
+                uid = self.auth.get_user_id_from_token()
+                if not uid:
+                    logger.error(f"No user ID available for DRM on {channel_seo}")
                     continue
 
-                try:
-                    uid = self.auth.get_user_id_from_token()
-                    if not uid:
-                        logger.error(f"No user ID available for DRM on {channel_seo}")
-                        continue
+                # Get upfront token (same for both DRM systems)
+                upfront_token = self.auth.get_upfront_token(
+                    content_id=content_id,
+                    uid=uid,
+                )
 
-                    # Get upfront token - no extra parameters needed
-                    upfront_token = self.auth.get_upfront_token(
-                        content_id=content_id,
-                        uid=uid,
-                    )
+                # Handle Widevine (DASH CENC)
+                if asset_format == "dashcenc":
+                    wv_config = self._get_widevine_config(upfront_token)
+                    if wv_config:
+                        drm_configs.append(wv_config)
+                        logger.debug(f"Added Widevine DRM for {channel_seo}")
 
-                    license_url = self.cfg.drmtoday_license_url
-                    headers = self.cfg.get_drm_license_headers(upfront_token)
+                # Handle PlayReady (hlsfp or playready format)
+                elif asset_format in ["hlsfp", "playready"]:
+                    pr_config = self._get_playready_config(upfront_token)
+                    if pr_config:
+                        drm_configs.append(pr_config)
+                        logger.debug(f"Added PlayReady DRM for {channel_seo}")
 
-                    drm_configs.append(DRMConfig(
-                        system=DRMSystem.WIDEVINE,
-                        priority=3,
-                        license=LicenseConfig(
-                            server_url=license_url,
-                            req_headers=json.dumps(headers),
-                            req_data="{CHA-RAW}",
-                            use_http_get_request=False,
-                        ),
-                    ))
-                    logger.debug(f"Added Widevine DRM for {channel_seo}")
-                except Exception as e:
-                    logger.error(f"Failed to get Widevine DRM for {channel_seo}: {e}")
-                break  # Only need one DASH asset
+            except Exception as e:
+                logger.error(f"Failed to get DRM for {channel_seo}: {e}")
+                continue
 
         logger.info(f"Built {len(drm_configs)} DRM configs for {channel_seo}")
         return drm_configs
+
+    def _get_widevine_config(self, upfront_token: str) -> Optional[DRMConfig]:
+        """Get Widevine DRM configuration using existing headers from constants."""
+        if not upfront_token:
+            return None
+
+        # Use the existing method from RTLPlusConfig
+        headers = self.cfg.get_drm_license_headers(upfront_token)
+
+        # URL-encode headers for req_headers parameter
+        req_headers = urllib.parse.urlencode(headers)
+
+        return DRMConfig(
+            system=DRMSystem.WIDEVINE,
+            priority=3,
+            license=LicenseConfig(
+                server_url=self.cfg.drmtoday_license_url,
+                req_headers=req_headers,
+                req_data="{CHA-RAW}",
+                use_http_get_request=False,
+            ),
+        )
+
+    def _get_playready_config(self, upfront_token: str) -> Optional[DRMConfig]:
+        """Get PlayReady DRM configuration using existing headers from constants."""
+        if not upfront_token:
+            return None
+
+        # Use the existing method from RTLPlusConfig
+        headers = self.cfg.get_playready_license_headers(upfront_token)
+
+        # URL-encode headers for req_headers parameter
+        req_headers = urllib.parse.urlencode(headers)
+
+        return DRMConfig(
+            system=DRMSystem.PLAYREADY,
+            priority=2,  # Slightly lower priority than Widevine (fallback)
+            license=LicenseConfig(
+                server_url=RTLPlusDefaults.DRMTODAY_PLAYREADY_URL,
+                req_headers=req_headers,
+                req_data="{CHA-RAW}",  # PlayReady expects raw challenge
+                use_http_get_request=False,
+            ),
+        )
 
     # --------------------------------------------------------------------------
     # Channel Info Helpers
