@@ -178,13 +178,13 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
         return fixed_state
 
     def _build_token_exchange_payload(self, authorization_code, code_verifier, state=None, **kwargs):
-        token_redirect = "https://beta.plus.rtl.de/silent-sso-iframe.html"
+        token_redirect = self.oauth_redirect_uri  # Use the same as authorize step
         logger.debug(f"Token exchange redirect_uri: {token_redirect}")
         return {
             "grant_type": "authorization_code",
             "client_id": self.oauth_client_id,
             "code": authorization_code,
-            "redirect_uri": token_redirect,
+            "redirect_uri": token_redirect,  # Now matches: "https://beta.plus.rtl.de/tv-programm"
             "code_verifier": code_verifier,
         }
 
