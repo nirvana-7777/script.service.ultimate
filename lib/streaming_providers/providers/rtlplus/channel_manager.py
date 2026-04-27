@@ -405,60 +405,95 @@ class RTLPlusChannelManager:
         """
         Get DRM configuration for a linear TV channel.
         Supports both Widevine and PlayReady.
+
+        Uses delta provider with dashcenc format for the best compatibility.
+        Returns both DRM types using the same upfront token.
         """
         channel_seo = self._normalize_channel_identifier(channel_id)
         assets = self.extract_stream_assets(channel_seo)
 
-        quality = preferred_quality or next(iter(self.cfg.preferred_qualities), "hd")
-        drm_configs = []
+        # Priority: delta provider, then dashcenc format, then HD quality
+        quality = preferred_quality or "hd"  # HD is primary from constants
 
-        # Process all assets
+        # Find the best asset: delta provider + dashcenc + preferred quality
+        target_asset = None
+
+        # First try: delta + dashcenc + preferred quality
         for asset in assets:
-            asset_format = asset.get("format", "")
-            asset_quality = asset.get("quality", "")
+            if (asset.get("provider") == "delta" and
+                    asset.get("format") == "dashcenc" and
+                    asset.get("quality") == quality):
+                target_asset = asset
+                logger.debug(f"Found delta/dashcenc/{quality} asset for {channel_seo}")
+                break
 
-            if asset_quality != quality:
-                continue
+        # Fallback: delta + dashcenc + any quality
+        if not target_asset:
+            for asset in assets:
+                if asset.get("provider") == "delta" and asset.get("format") == "dashcenc":
+                    target_asset = asset
+                    actual_quality = asset.get("quality", "unknown")
+                    logger.debug(f"Fallback to delta/dashcenc/{actual_quality} for {channel_seo}")
+                    break
 
-            drm_info = asset.get("drm", {})
-            drm_config = drm_info.get("config", {})
-            content_id = drm_config.get("contentId")
+        # Last resort: any dashcenc asset
+        if not target_asset:
+            for asset in assets:
+                if asset.get("format") == "dashcenc":
+                    target_asset = asset
+                    provider = asset.get("provider", "unknown")
+                    logger.debug(f"Last resort: {provider}/dashcenc for {channel_seo}")
+                    break
 
-            if not content_id:
-                continue
+        if not target_asset:
+            logger.error(f"No dashcenc asset found for channel {channel_seo}")
+            return []
 
-            try:
-                uid = self.auth.get_user_id_from_token()
-                if not uid:
-                    logger.error(f"No user ID available for DRM on {channel_seo}")
-                    continue
+        # Extract contentId from the selected asset
+        drm_info = target_asset.get("drm", {})
+        drm_config = drm_info.get("config", {})
+        content_id = drm_config.get("contentId")
 
-                # Get upfront token (same for both DRM systems)
-                upfront_token = self.auth.get_upfront_token(
-                    content_id=content_id,
-                    uid=uid,
-                )
+        if not content_id:
+            logger.error(f"No contentId in asset for {channel_seo}")
+            return []
 
-                # Handle Widevine (DASH CENC)
-                if asset_format == "dashcenc":
-                    wv_config = self._get_widevine_config(upfront_token)
-                    if wv_config:
-                        drm_configs.append(wv_config)
-                        logger.debug(f"Added Widevine DRM for {channel_seo}")
+        try:
+            uid = self.auth.get_user_id_from_token()
+            if not uid:
+                logger.error(f"No user ID available for DRM on {channel_seo}")
+                return []
 
-                # Handle PlayReady (hlsfp or playready format)
-                elif asset_format in ["hlsfp", "playready"]:
-                    pr_config = self._get_playready_config(upfront_token)
-                    if pr_config:
-                        drm_configs.append(pr_config)
-                        logger.debug(f"Added PlayReady DRM for {channel_seo}")
+            # Get ONE upfront token (works for both Widevine and PlayReady)
+            upfront_token = self.auth.get_upfront_token(
+                content_id=content_id,
+                uid=uid,
+            )
 
-            except Exception as e:
-                logger.error(f"Failed to get DRM for {channel_seo}: {e}")
-                continue
+            if not upfront_token:
+                logger.error(f"Failed to get upfront token for {channel_seo}")
+                return []
 
-        logger.info(f"Built {len(drm_configs)} DRM configs for {channel_seo}")
-        return drm_configs
+            drm_configs = []
+
+            # Build Widevine config
+            wv_config = self._get_widevine_config(upfront_token)
+            if wv_config:
+                drm_configs.append(wv_config)
+                logger.debug(f"Added Widevine DRM for {channel_seo}")
+
+            # Build PlayReady config (same token works)
+            pr_config = self._get_playready_config(upfront_token)
+            if pr_config:
+                drm_configs.append(pr_config)
+                logger.debug(f"Added PlayReady DRM for {channel_seo}")
+
+            logger.info(f"Built {len(drm_configs)} DRM configs for {channel_seo} (Widevine + PlayReady)")
+            return drm_configs
+
+        except Exception as e:
+            logger.error(f"Failed to get DRM for {channel_seo}: {e}")
+            return []
 
     def _get_widevine_config(self, upfront_token: str) -> Optional[DRMConfig]:
         """Get Widevine DRM configuration using existing headers from constants."""
