@@ -22,8 +22,8 @@ class RTLPlusDefaults:
     PLAYREADY_DEVICE_NAME = "Windows Edge"
 
     # Device screen size (used in headers)
-    DEVICE_PLAYER_SIZE_WIDTH = 972
-    DEVICE_PLAYER_SIZE_HEIGHT = 919
+    DEVICE_PLAYER_SIZE_WIDTH = 3840
+    DEVICE_PLAYER_SIZE_HEIGHT = 2160
 
     # User agents
     USER_AGENT = get_user_agent("windows", "chrome")
