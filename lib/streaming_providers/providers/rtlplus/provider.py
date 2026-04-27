@@ -61,6 +61,11 @@ class RTLPlusProvider(StreamingProvider):
         try:
             self.bearer_token = self.authenticator.get_bearer_token()
             logger.debug("RTL+ authentication successful during initialization")
+
+            # Ensure a profile is selected for user-authenticated sessions
+            if self.authenticator.has_user_credentials():
+                self.authenticator.ensure_profile_selected()
+
         except Exception as e:
             logger.warning(f"RTL+ could not authenticate during initialization: {e}")
             self.bearer_token = None
@@ -363,13 +368,20 @@ class RTLPlusProvider(StreamingProvider):
     def get_user_bearer_token(self) -> Optional[str]:
         """Get a user-authenticated bearer token, upgrading if necessary. Returns None if impossible."""
         from ...base.auth.base_auth import TokenAuthLevel
+
         current_level = self.authenticator.get_current_token_level()
         logger.debug(
             f"get_user_bearer_token: current_level={current_level}, has_user_credentials={self.authenticator.has_user_credentials()}")
+
         if current_level == TokenAuthLevel.USER_AUTHENTICATED:
+            # Ensure profile is selected
+            self.authenticator.ensure_profile_selected()
             return self.authenticator.get_bearer_token()
+
         if self.authenticator.has_user_credentials():
             token = self.authenticator.get_bearer_token(force_upgrade=True)
             if self.authenticator.get_current_token_level() == TokenAuthLevel.USER_AUTHENTICATED:
+                self.authenticator.ensure_profile_selected()
                 return token
+
         return None

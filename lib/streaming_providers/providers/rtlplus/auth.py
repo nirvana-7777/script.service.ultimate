@@ -3,7 +3,7 @@ import base64
 import json
 import time
 import hashlib
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 from ...base.auth.base_auth import BaseAuthToken, TokenAuthLevel
 from ...base.auth.base_oauth2_auth import BaseOAuth2Authenticator
@@ -35,6 +35,7 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
         self._bedrock_token: Optional[str] = None
         self._bedrock_token_expiry: float = 0
         self._cached_user_id: Optional[str] = None
+        self._selected_profile_id: Optional[str] = None
 
         if proxy_config is None:
             from ...base.network import ProxyConfigManager
@@ -286,7 +287,7 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
         return token
 
     def get_bedrock_token(self, force_refresh: bool = False) -> str:
-        """Get or refresh Bedrock token."""
+        """Get or refresh Bedrock token, including profile ID if available."""
         if not force_refresh and self._bedrock_token and self._bedrock_token_expiry > time.time() + 300:
             return self._bedrock_token
 
@@ -296,8 +297,11 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
         timestamp = self._get_server_timestamp()
         auth_token = self._generate_auth_token(self.config.device_id, timestamp)
 
-        # Use headers from config
-        headers = self.config.get_bedrock_token_headers(oauth_token, auth_token, timestamp)
+        # Get profile ID if available
+        profile_id = self.get_selected_profile_id()
+
+        # Get headers with profile_id
+        headers = self.config.get_bedrock_token_headers(oauth_token, auth_token, timestamp, profile_id)
 
         response = self.http_manager.get(
             self.config.bedrock_auth_url,
@@ -319,6 +323,7 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
                         payload += "=" * padding
                     decoded = json.loads(base64.b64decode(payload))
                     self._bedrock_token_expiry = decoded.get("exp", 0)
+                    logger.debug(f"Bedrock token obtained with profile: {decoded.get('profileid', 'none')}")
             except Exception as e:
                 logger.debug(f"Could not decode Bedrock token expiry: {e}")
 
@@ -461,3 +466,81 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
         if self.has_user_credentials() and hasattr(self.credentials, "username"):
             status["username"] = self.credentials.username
         return status
+
+    def get_user_profiles(self, user_id: str = None) -> List[Dict[str, Any]]:
+        """
+        Fetch available profiles for a user.
+        """
+        if not user_id:
+            user_id = self.get_user_id_from_token()
+            if not user_id:
+                raise ValueError("No user ID available")
+
+        oauth_token = self.get_bearer_token()
+        bedrock_token = self.get_bedrock_token()
+
+        url = self.config.get_profiles_url(user_id)
+        headers = self.config.get_profiles_headers(oauth_token, bedrock_token)
+
+        response = self.http_manager.get(url, headers=headers, operation="api")
+        response.raise_for_status()
+        return response.json()
+
+    def select_profile(self, profile_id: str = None) -> bool:
+        """
+        Select a profile to use for this session.
+        If no profile_id provided, fetches profiles and selects the first adult profile.
+        """
+        if not profile_id:
+            user_id = self.get_user_id_from_token()
+            if not user_id:
+                logger.error("Cannot select profile: No user ID available")
+                return False
+
+            try:
+                profiles = self.get_user_profiles(user_id)
+                # Select first adult profile
+                adult_profiles = [p for p in profiles if p.get("profile_type") == "adult"]
+                if not adult_profiles:
+                    logger.error("No adult profiles found")
+                    return False
+
+                profile_id = adult_profiles[0].get("uid")
+                logger.info(f"Selected profile: {adult_profiles[0].get('username')} (ID: {profile_id})")
+            except Exception as e:
+                logger.error(f"Failed to fetch/select profile: {e}")
+                return False
+
+        # Store the selected profile ID
+        self._selected_profile_id = profile_id
+
+        # Save to credentials for persistence
+        if hasattr(self.credentials, "profile_id"):
+            self.credentials.profile_id = profile_id
+            self.save_credentials(self.credentials)
+
+        # Invalidate Bedrock token so it gets re-issued with the profile ID
+        self.invalidate_bedrock_token()
+
+        return True
+
+    def get_selected_profile_id(self) -> Optional[str]:
+        """Get the currently selected profile ID."""
+        if hasattr(self, "_selected_profile_id") and self._selected_profile_id:
+            return self._selected_profile_id
+
+        # Try to load from stored credentials
+        if hasattr(self.credentials, "profile_id") and self.credentials.profile_id:
+            return self.credentials.profile_id
+
+        return None
+
+    def ensure_profile_selected(self) -> bool:
+        """Ensure a profile is selected, auto-selecting if needed."""
+        if self.get_selected_profile_id():
+            return True
+
+        if self.has_user_credentials():
+            return self.select_profile()
+
+        return False

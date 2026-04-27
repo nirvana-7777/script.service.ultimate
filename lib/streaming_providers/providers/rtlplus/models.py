@@ -14,13 +14,14 @@ class RTLPlusUserCredentials(UserPasswordCredentials):
     RTL+ specific username/password credentials
     """
 
-    def __init__(self, username: str, password: str, client_id: Optional[str] = None):
+    def __init__(self, username: str, password: str, client_id: Optional[str] = None, profile_id: Optional[str] = None):
         super().__init__(
             username=username,
             password=password,
             client_id=client_id or RTLPlusDefaults.CLIENT_ID,
             grant_type="password",
         )
+        self.profile_id = profile_id  # Add this attribute
 
     def to_auth_payload(self) -> Dict[str, Any]:
         """Convert to authentication payload for RTL+"""

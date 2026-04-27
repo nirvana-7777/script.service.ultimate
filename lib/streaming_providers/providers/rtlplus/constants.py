@@ -56,6 +56,8 @@ class RTLPlusDefaults:
     BEDROCK_DRM_UPFRONT_BASE = "https://drm.rtlde.bedrock.tech/v1/customers/rtlde/platforms/m6group_web/services/rtlplus_root/users/{uid}/live"
     BEDROCK_HEARTBEAT_URL = "https://heartbeat-v2.rtlde.bedrock.tech/v2/platforms/m6group_web/notify/session_live"
     TIME_ENDPOINT = "https://time.rtlde.bedrock.tech/"
+    USERS_ENDPOINT = "https://users.rtlde.bedrock.tech"
+    PROFILES_PATH = "/v2/platforms/m6group_web/users/{user_id}/profiles"
 
     # DRM license server
     DRMTODAY_LICENSE_URL = "https://lic.drmtoday.com/license-proxy-widevine/cenc/"
@@ -295,6 +297,7 @@ class RTLPlusHeaders:
             user_agent: str,
             auth_token: str,
             timestamp: int,
+            profile_id: str = None,
     ) -> dict:
         """Headers for obtaining Bedrock token."""
         headers = dict(RTLPlusHeaders._COMMON_HEADERS)
@@ -312,6 +315,8 @@ class RTLPlusHeaders:
             "x-client-release": client_version,
             "x-customer-name": "rtlde",
         })
+        if profile_id:
+            headers["x-auth-profile-id"] = profile_id
         return headers
 
     @staticmethod
@@ -400,6 +405,26 @@ class RTLPlusHeaders:
             "X-Device-Name": RTLPlusDefaults.PLAYREADY_DEVICE_NAME,
         }
 
+    @staticmethod
+    def get_profiles_headers(
+            oauth_token: str,
+            bedrock_token: str,
+            client_version: str,
+            user_agent: str,
+    ) -> dict:
+        """Headers for fetching user profiles."""
+        headers = dict(RTLPlusHeaders._COMMON_HEADERS)
+        headers.update({
+            "authorization": f"Bearer {oauth_token}",
+            "origin": RTLPlusDefaults.BETA_WEBSITE.rstrip("/"),
+            "referer": RTLPlusDefaults.BETA_WEBSITE,
+            "user-agent": user_agent,
+            "x-bedrock-token": bedrock_token,
+            "x-client-release": client_version,
+            "x-customer-name": "rtlde",
+        })
+        return headers
+
 
 class RTLPlusConfig:
     """Configuration class that can be customized per instance"""
@@ -432,6 +457,8 @@ class RTLPlusConfig:
         self.bedrock_drm_upfront_base = config.get("bedrock_drm_upfront_base", RTLPlusDefaults.BEDROCK_DRM_UPFRONT_BASE)
         self.bedrock_heartbeat_url = config.get("bedrock_heartbeat_url", RTLPlusDefaults.BEDROCK_HEARTBEAT_URL)
         self.time_endpoint = config.get("time_endpoint", RTLPlusDefaults.TIME_ENDPOINT)
+        self.users_endpoint = config.get("users_endpoint", RTLPlusDefaults.USERS_ENDPOINT)
+        self.profiles_path = config.get("profiles_path", RTLPlusDefaults.PROFILES_PATH)
 
         # DRM license server
         self.drmtoday_license_url = config.get("drmtoday_license_url", RTLPlusDefaults.DRMTODAY_LICENSE_URL)
@@ -447,6 +474,10 @@ class RTLPlusConfig:
     def get_bedrock_layout_url(self, channel_seo: str) -> str:
         """Get Bedrock layout URL for a specific channel"""
         return f"{self.bedrock_layout_base}/live/{channel_seo}/layout"
+
+    def get_profiles_url(self, user_id: str) -> str:
+        """Get profiles URL for a specific user"""
+        return f"{self.users_endpoint}{self.profiles_path.format(user_id=user_id)}"
 
     def get_epg_grid_url(self) -> str:
         """Get EPG grid URL for channel listing"""
@@ -479,7 +510,17 @@ class RTLPlusConfig:
             user_agent=self.user_agent,
         )
 
-    def get_bedrock_token_headers(self, oauth_token: str, auth_token: str, timestamp: int) -> dict:
+    def get_profiles_headers(self, oauth_token: str, bedrock_token: str) -> dict:
+        """Get headers for profiles request."""
+        return RTLPlusHeaders.get_profiles_headers(
+            oauth_token=oauth_token,
+            bedrock_token=bedrock_token,
+            client_version=self.client_version,
+            user_agent=self.user_agent,
+        )
+
+    def get_bedrock_token_headers(self, oauth_token: str, auth_token: str, timestamp: int,
+                                  profile_id: str = None) -> dict:
         """Get headers for Bedrock token request."""
         return RTLPlusHeaders.get_bedrock_token_headers(
             oauth_token=oauth_token,
@@ -488,6 +529,7 @@ class RTLPlusConfig:
             user_agent=self.user_agent,
             auth_token=auth_token,
             timestamp=timestamp,
+            profile_id=profile_id,
         )
 
     def get_bedrock_layout_headers(self, oauth_token: str, bedrock_token: str, location: str = None) -> dict:
