@@ -16,7 +16,7 @@ import urllib.parse
 import time
 from datetime import date
 
-from ...base.models import Channel, DRMConfig, DRMSystem, LicenseConfig
+from ...base.models import Channel, DRMConfig, DRMSystem, LicenseConfig, LicenseUnwrapperParams
 from ...base.utils.logger import logger
 from .constants import RTLPlusDefaults
 
@@ -471,20 +471,20 @@ class RTLPlusChannelManager:
         # URL-encode headers for req_headers parameter
         req_headers = urllib.parse.urlencode(headers)
 
-        # Get unwrapper configuration from constants
-        unwrapper, unwrapper_params = self.cfg.get_drm_unwrapper_config()
+        # Create LicenseConfig with unwrapper settings
+        license_config = LicenseConfig(
+            server_url=self.cfg.drmtoday_license_url,
+            req_headers=req_headers,
+            req_data="{CHA-RAW}",
+            use_http_get_request=False,
+            unwrapper="json,base64",
+            unwrapper_params=LicenseUnwrapperParams(path_data="license"),
+        )
 
         return DRMConfig(
             system=DRMSystem.WIDEVINE,
             priority=3,
-            license=LicenseConfig(
-                server_url=self.cfg.drmtoday_license_url,
-                req_headers=req_headers,
-                req_data="{CHA-RAW}",
-                use_http_get_request=False,
-            ),
-            unwrapper=unwrapper,
-            unwrapper_params=unwrapper_params,
+            license=license_config,
         )
 
     def _get_playready_config(self, upfront_token: str) -> Optional[DRMConfig]:
