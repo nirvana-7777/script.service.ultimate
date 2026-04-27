@@ -5,9 +5,12 @@ Data classes for DRM license configuration, including server URLs,
 certificates, headers, and unwrapper parameters.
 """
 
+import json
+import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Dict, Optional, Union
+from urllib.parse import urlencode, unquote
 
 from .utils import safe_base64_decode, safe_base64_encode, normalize_key_id
 from .exceptions import LicenseConfigError
@@ -90,10 +93,15 @@ class LicenseConfig:
             (Widevine, FairPlay).
         use_http_get_request: Force HTTP GET for the license request instead
             of the default POST (Widevine, PlayReady, Wiseplay only).
-        req_headers: Custom HTTP headers as a URL-encoded string.
-            Format: "Header1=Value1&Header2=Value2" where values are
-            URL-encoded (use urllib.parse.urlencode() or quote_plus()).
-            Example: "Content-Type=application%2Foctet-stream&User-Agent=Mozilla%2F5.0"
+        req_headers: Custom HTTP headers for the license request.
+            Accepts multiple formats — all are normalized to a URL-encoded
+            string at construction time:
+            - ``dict``: ``{"Content-Type": "application/octet-stream"}``
+            - JSON string: ``'{"Content-Type": "application/octet-stream"}'``
+            - ``"Key: Value"`` lines (newline/semicolon/comma-separated)
+            - Already URL-encoded string: ``"Content-Type=application%2Foctet-stream"``
+            Final stored value is always URL-encoded, e.g.
+            ``"Content-Type=application%2Foctet-stream&User-Agent=Mozilla%2F5.0"``.
         req_params: Path extension or parameters appended to the license URL.
             Example: "/one/two/three-path"
         req_data: Base64-encoded custom request body template.
@@ -113,7 +121,7 @@ class LicenseConfig:
     server_url: Optional[str] = None
     server_certificate: Optional[str] = None
     use_http_get_request: bool = False
-    req_headers: Optional[str] = None
+    req_headers: Optional[Union[str, Dict[str, str]]] = None
     req_params: Optional[str] = None
     req_data: Optional[str] = None
     wrapper: Optional[str] = None
@@ -122,7 +130,9 @@ class LicenseConfig:
     keyids: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self):
-        """Normalize key IDs in keyids mapping."""
+        """Normalize req_headers to URL-encoded string and key IDs in keyids mapping."""
+        self.req_headers = self._normalize_headers(self.req_headers)
+
         if self.keyids:
             normalized_keyids = {}
             for kid, key in self.keyids.items():
@@ -157,12 +167,15 @@ class LicenseConfig:
                     f"req_data must be valid base64: {e}"
                 ) from e
 
-        # req_headers must be a URL-encoded string, NOT a JSON dict
+        # req_headers is always normalized to URL-encoded in __post_init__,
+        # so a JSON dict arriving here would only happen if someone bypassed
+        # the constructor. Warn but don't hard-fail so validate() stays useful
+        # even on partially-constructed instances.
         if self.req_headers and self.req_headers.strip().startswith("{"):
             raise LicenseConfigError(
-                "req_headers must be a URL-encoded string "
-                "(e.g. 'Content-Type=application%2Foctet-stream'), not a JSON dict. "
-                "Use urllib.parse.urlencode() to encode headers."
+                "req_headers must be a URL-encoded string after normalization — "
+                "this indicates _normalize_headers was not called. "
+                "Construct via the normal dataclass constructor to ensure normalization."
             )
 
         if self.keyids:
@@ -208,6 +221,140 @@ class LicenseConfig:
             stacklevel=2
         )
         return cls.create_with_req_data(req_data_template, **kwargs)
+
+    def _normalize_headers(
+        self, headers: Optional[Union[str, Dict[str, str]]]
+    ) -> Optional[str]:
+        """
+        Normalize any supported header format to a URL-encoded string.
+
+        Accepted inputs:
+        - ``None``                    → ``None``
+        - ``dict``                    → URL-encoded string via ``urlencode()``
+        - JSON string                 → parsed to dict, then URL-encoded
+        - Already URL-encoded string  → validated and returned as-is
+        - ``"Key: Value"`` lines      → parsed and URL-encoded
+
+        Args:
+            headers: Headers in any of the formats above.
+
+        Returns:
+            URL-encoded string (``"K1=V1&K2=V2"``) or ``None``.
+
+        Raises:
+            LicenseConfigError: If the format is unrecognised or malformed.
+        """
+        if headers is None:
+            return None
+
+        # Case 1: Already a dict
+        if isinstance(headers, dict):
+            return urlencode(headers)
+
+        # Case 2: String input
+        if isinstance(headers, str):
+            headers = headers.strip()
+            if not headers:
+                return None
+
+            # Try to parse as JSON object
+            if headers.startswith("{"):
+                try:
+                    header_dict = json.loads(headers)
+                    if isinstance(header_dict, dict):
+                        return urlencode(header_dict)
+                except json.JSONDecodeError as e:
+                    raise LicenseConfigError(
+                        f"Invalid JSON in req_headers: {e}"
+                    ) from e
+
+            # Already URL-encoded: contains '=' and at least one '&' or ';'
+            if "=" in headers and ("&" in headers or ";" in headers):
+                self._validate_urlencoded_headers(headers)
+                return headers
+
+            # "Key: Value" plain-text format (no '=' present)
+            if ":" in headers and "=" not in headers:
+                return self._parse_plain_headers(headers)
+
+            raise LicenseConfigError(
+                f"Invalid req_headers format: '{headers}'. "
+                f"Must be a dict, JSON string, URL-encoded string, "
+                f"or 'Key: Value' lines."
+            )
+
+        raise LicenseConfigError(
+            f"req_headers must be dict, string, or None, got {type(headers).__name__}"
+        )
+
+    @staticmethod
+    def _validate_urlencoded_headers(headers: str) -> None:
+        """
+        Validate the structure of an already URL-encoded header string.
+
+        Checks that every ``key=value`` pair has a non-empty key and a
+        value that can be URL-decoded without error.  Does *not* decode
+        or transform the string.
+
+        Args:
+            headers: URL-encoded header string (``"K1=V1&K2=V2"``).
+
+        Raises:
+            LicenseConfigError: If any pair is malformed.
+        """
+        for pair in re.split(r"[&;]", headers):
+            if "=" not in pair:
+                raise LicenseConfigError(
+                    f"Invalid URL-encoded header pair: '{pair}'. "
+                    f"Expected format: 'key=value'."
+                )
+            key, value = pair.split("=", 1)
+            if not key.strip():
+                raise LicenseConfigError(f"Empty header key in pair: '{pair}'")
+            try:
+                unquote(value)  # Raises if the percent-encoding is broken
+            except Exception as e:
+                raise LicenseConfigError(
+                    f"Header value is not properly URL-encoded: '{value}'"
+                ) from e
+
+    @staticmethod
+    def _parse_plain_headers(headers: str) -> str:
+        """
+        Convert ``"Key: Value"`` lines to a URL-encoded string.
+
+        Lines may be separated by newlines, carriage-returns, semicolons,
+        or commas.  Blank lines are silently skipped.
+
+        Example::
+
+            "User-Agent: Mozilla/5.0\\nContent-Type: text/plain"
+            → "User-Agent=Mozilla%2F5.0&Content-Type=text%2Fplain"
+
+        Args:
+            headers: One or more ``"Key: Value"`` lines.
+
+        Returns:
+            URL-encoded string.
+
+        Raises:
+            LicenseConfigError: If any non-blank line lacks a ``':'``.
+        """
+        header_dict: Dict[str, str] = {}
+        for line in re.split(r"[\n\r;,]+", headers):
+            line = line.strip()
+            if not line:
+                continue
+            if ":" not in line:
+                raise LicenseConfigError(
+                    f"Invalid plain header format: '{line}'. Expected 'Key: Value'."
+                )
+            key, value = line.split(":", 1)
+            key = key.strip()
+            value = value.strip()
+            if key and value:
+                header_dict[key] = value
+        return urlencode(header_dict)
 
     def to_dict(self) -> dict:
         """
