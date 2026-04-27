@@ -323,6 +323,8 @@ class DRMPluginManager:
             logger.debug("Phase 2: No DRM configs to process")
             return []
 
+        drm_configs = sorted(drm_configs, key=lambda c: c.priority)
+
         # Get system-specific plugins only (exclude GENERIC)
         from typing import Any
         system_plugins: dict[DRMSystem, Any] = {

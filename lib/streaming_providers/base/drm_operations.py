@@ -469,9 +469,33 @@ class DRMOperations:
         # out to be only partial.
         # ------------------------------------------------------------------
         provider_configs_snapshot = list(provider_drm_configs)
-        processed = self.drm_plugin_manager.process_system_specific_plugins(
-            provider_drm_configs, pssh_data_list if pssh_data_list else [], **kwargs
+        sorted_systems = sorted(
+            {c.system for c in provider_drm_configs},
+            key=lambda s: min(c.priority for c in provider_drm_configs if c.system == s)
         )
+
+        remaining = list(provider_drm_configs)
+
+        for drm_system in sorted_systems:
+            system_configs = [c for c in remaining if c.system == drm_system]
+            if not system_configs:
+                continue
+
+            batch_result = self.drm_plugin_manager.process_system_specific_plugins(
+                system_configs, pssh_data_list or [], **kwargs
+            )
+
+            # Replace this system's configs with plugin output
+            remaining = [c for c in remaining if c.system != drm_system] + batch_result
+
+            # Check coverage after each system
+            if pssh_data_list and any(c.system == DRMSystem.CLEARKEY for c in remaining):
+                remaining, has_full_coverage = self._check_clearkey_coverage(remaining, pssh_data_list)
+                if has_full_coverage:
+                    logger.info(f"Full ClearKey coverage after {drm_system.value} — stopping early")
+                    break
+
+        processed = remaining
 
         # ------------------------------------------------------------------
         # Step 6: Merge Phase 1 partial ClearKey result (if any) with Phase 2
