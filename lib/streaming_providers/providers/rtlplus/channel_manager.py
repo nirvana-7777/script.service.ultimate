@@ -465,11 +465,14 @@ class RTLPlusChannelManager:
         if not upfront_token:
             return None
 
-        # Use the existing method from RTLPlusConfig
+        # Get headers from config (which now includes origin/referer)
         headers = self.cfg.get_drm_license_headers(upfront_token)
 
         # URL-encode headers for req_headers parameter
         req_headers = urllib.parse.urlencode(headers)
+
+        # Get unwrapper configuration from constants
+        unwrapper, unwrapper_params = self.cfg.get_drm_unwrapper_config()
 
         return DRMConfig(
             system=DRMSystem.WIDEVINE,
@@ -480,6 +483,8 @@ class RTLPlusChannelManager:
                 req_data="{CHA-RAW}",
                 use_http_get_request=False,
             ),
+            unwrapper=unwrapper,
+            unwrapper_params=unwrapper_params,
         )
 
     def _get_playready_config(self, upfront_token: str) -> Optional[DRMConfig]:
