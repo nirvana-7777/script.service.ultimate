@@ -58,6 +58,7 @@ class RTLPlusDefaults:
     TIME_ENDPOINT = "https://time.rtlde.bedrock.tech/"
     USERS_ENDPOINT = "https://users.rtlde.bedrock.tech"
     PROFILES_PATH = "/v2/platforms/m6group_web/users/{user_id}/profiles"
+    VERSION_ENDPOINT = "https://beta.plus.rtl.de/version.json"
 
     # DRM license server
     DRMTODAY_LICENSE_URL = "https://lic.drmtoday.com/license-proxy-widevine/cenc/"
@@ -98,6 +99,21 @@ class RTLPlusDefaults:
     LINEAR_TV_PREFERRED_QUALITIES = ["hd", "sd"]
     LINEAR_TV_PREFERRED_FORMATS = ["dashcenc", "hlsfp"]
     LINEAR_TV_PREFERRED_DRM_TYPES = ["hardware", "software"]
+
+    # Layout path patterns
+    LAYOUT_PATH_LIVE = "/live/{id}/layout"
+    LAYOUT_PATH_VIDEO = "/video/{id}/layout"
+    LAYOUT_PATH_FOLDER = "/folder/{id}/layout"
+    LAYOUT_PATH_PROGRAM = "/program/{id}/layout"
+    LAYOUT_PATH_BLOCK = "/block/{id}"
+
+    # Default pagination values
+    DEFAULT_BLOCK_PAGE = 1
+    DEFAULT_NB_PAGES = 2
+    DEFAULT_BLOCK_NB_PAGES = 3
+
+    # Cache TTL for layouts (5 minutes)
+    LAYOUT_CACHE_TTL = 300
 
     # ---------------------------------------------------------------------------
     # VOD — stream config endpoints
@@ -152,11 +168,11 @@ _CLIENT_VERSION_CACHE: Optional[str] = None
 
 
 def _get_rtlplus_client_version() -> str:
-    """Lazy fetch RTL+ client version from config endpoint."""
+    """Lazy fetch RTL+ client version from version.json endpoint."""
     global _CLIENT_VERSION_CACHE
     if _CLIENT_VERSION_CACHE is None:
         try:
-            with urllib.request.urlopen(RTLPlusDefaults.CONFIG_ENDPOINT, timeout=4) as resp:
+            with urllib.request.urlopen(RTLPlusDefaults.VERSION_ENDPOINT, timeout=4) as resp:
                 data = json.loads(resp.read().decode())
                 _CLIENT_VERSION_CACHE = data["version"]
             logger.debug(f"Fetched RTL+ client version: {_CLIENT_VERSION_CACHE}")
@@ -602,4 +618,29 @@ class RTLPlusConfig:
         return RTLPlusHeaders.get_playready_drm_headers(
             access_token=access_token,
             device_id=self.device_id,
+        )
+
+    def get_layout_url(self, layout_type: str, content_id: str) -> str:
+        """Get layout URL by type: 'live', 'video', 'folder', 'program', 'block'"""
+        path_map = {
+            "live": RTLPlusDefaults.LAYOUT_PATH_LIVE,
+            "video": RTLPlusDefaults.LAYOUT_PATH_VIDEO,
+            "folder": RTLPlusDefaults.LAYOUT_PATH_FOLDER,
+            "program": RTLPlusDefaults.LAYOUT_PATH_PROGRAM,
+            "block": RTLPlusDefaults.LAYOUT_PATH_BLOCK,
+        }
+        path = path_map.get(layout_type)
+        if not path:
+            raise ValueError(f"Unknown layout type: {layout_type}")
+        return f"{self.bedrock_layout_base}{path.format(id=content_id)}"
+
+    def get_layout_headers(self, oauth_token: str, bedrock_token: str, location: str = None) -> dict:
+        """Common headers for all layout requests"""
+        return RTLPlusHeaders.get_bedrock_layout_headers(
+            oauth_token=oauth_token,
+            bedrock_token=bedrock_token,
+            device_id=self.device_id,
+            client_version=self.client_version,
+            user_agent=self.user_agent,
+            location=location,
         )

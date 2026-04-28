@@ -11,14 +11,10 @@ Handles all linear TV (live channel) functionality:
 """
 
 from typing import List, Optional, Dict, Any
-import json
-import urllib.parse
-import time
 from datetime import date
 
-from ...base.models import Channel, DRMConfig, DRMSystem, LicenseConfig, LicenseUnwrapperParams
+from ...base.models import Channel, DRMConfig
 from ...base.utils.logger import logger
-from .constants import RTLPlusDefaults
 
 
 class RTLPlusChannelManager:
@@ -28,12 +24,8 @@ class RTLPlusChannelManager:
     Uses the authenticator for all token management.
     """
 
-    # Cache TTL for channel layouts (5 minutes)
-    _CHANNEL_LAYOUT_CACHE_TTL = 300
-
     def __init__(self, provider):
         self._provider = provider
-        self._layout_cache: Dict[str, tuple] = {}  # seo -> (data, timestamp)
 
     @property
     def cfg(self):
@@ -111,7 +103,6 @@ class RTLPlusChannelManager:
                 slug = value_layout.get("id")  # e.g., "rtlde_rtl"
                 seo = value_layout.get("seo")  # e.g., "rtl"
 
-                # Debug log the extraction
                 logger.debug(f"Extracted: title='{title}', slug='{slug}', seo='{seo}', logo_id='{logo_id}'")
 
                 if slug is None:
@@ -166,7 +157,7 @@ class RTLPlusChannelManager:
             # Create channel with proper content_id
             streaming_channel = Channel.create_live_channel(
                 name=title,
-                channel_id=content_id,  # This sets content_id
+                channel_id=content_id,
                 provider=self._provider.provider_name,
             )
 
@@ -174,12 +165,11 @@ class RTLPlusChannelManager:
             streaming_channel.logo_url = self._resolve_image_url(logo_id)
 
             # Store SEO in manifest_script for fallback lookups
-            # This allows get_manifest to work with either slug or seo
             if seo:
                 streaming_channel.manifest_script = seo
 
-            logger.debug(
-                f"Created channel: name={title}, id={streaming_channel.content_id}, manifest_script={streaming_channel.manifest_script}")
+            logger.debug(f"Created channel: name={title}, id={streaming_channel.content_id}, "
+                        f"manifest_script={streaming_channel.manifest_script}")
 
             streaming_channels.append(streaming_channel)
 
@@ -192,119 +182,6 @@ class RTLPlusChannelManager:
         if not image_id:
             return ""
         return f"https://images.rtl.de/{image_id}?format=webp&width=200"
-
-    # --------------------------------------------------------------------------
-    # Channel Layout & Stream Assets
-    # --------------------------------------------------------------------------
-
-    def fetch_channel_layout(self, channel_seo: str, force_refresh: bool = False) -> Dict[str, Any]:
-        """
-        Fetch the complete layout JSON for a linear TV channel with caching.
-        """
-        now = time.time()
-
-        if not force_refresh:
-            cached = self._layout_cache.get(channel_seo)
-            if cached and (now - cached[1]) < self._CHANNEL_LAYOUT_CACHE_TTL:
-                logger.debug(f"Using cached layout for {channel_seo}")
-                return cached[0]
-
-        oauth_token = self._provider.get_user_bearer_token()
-        if not oauth_token:
-            raise RuntimeError("User authentication required to fetch channel layout")
-
-        # Get Bedrock token - no parameters needed
-        bedrock_token = self.auth.get_bedrock_token()
-
-        url = self.cfg.get_bedrock_layout_url(channel_seo=channel_seo)
-        location = f"{self.cfg.beta_website}{channel_seo}/live"
-        headers = self.cfg.get_bedrock_layout_headers(oauth_token, bedrock_token, location)
-
-        params = {"blockPage": 1, "nbPages": 2}
-
-        response = self.http.get(url, headers=headers, params=params, operation="api")
-        response.raise_for_status()
-
-        data = response.json()
-        self._layout_cache[channel_seo] = (data, now)
-        return data
-
-    def extract_stream_assets(self, channel_seo: str) -> List[Dict[str, Any]]:
-        """Extract all stream assets from a channel's layout."""
-        layout = self.fetch_channel_layout(channel_seo)
-
-        # Log full response for debugging when no assets found
-        blocks = layout.get("blocks", [])
-        found_assets = False
-
-        for block in blocks:
-            if block.get("type") == "bffPaginated":
-                items = block.get("content", {}).get("items", [])
-                for item in items:
-                    if item.get("itemType") == "video":
-                        video = item.get("itemContent", {}).get("video", {})
-                        assets = video.get("assets", [])
-                        if assets:
-                            return assets
-                    elif item.get("itemType") == "classic":
-                        # Some live layouts use 'classic' with a nested player block
-                        item_content = item.get("itemContent", {})
-                        video = item_content.get("video", {})
-                        assets = video.get("assets", [])
-                        if assets:
-                            logger.debug(f"Found {len(assets)} assets in classic item for {channel_seo}")
-                            return assets
-
-        if not found_assets:
-            # Log the entire response structure for debugging
-            logger.error(f"No stream assets found for channel {channel_seo}")
-            logger.error(f"Full response structure for {channel_seo}:")
-
-            # Log the high-level structure
-            logger.error(f"Response keys: {list(layout.keys())}")
-
-            # Log blocks information
-            logger.error(f"Number of blocks: {len(blocks)}")
-            for idx, block in enumerate(blocks):
-                block_type = block.get("type")
-                logger.error(f"  Block {idx}: type={block_type}")
-
-                if block_type == "bffPaginated":
-                    content = block.get("content", {})
-                    items = content.get("items", [])
-                    logger.error(f"    items count: {len(items)}")
-
-                    for item_idx, item in enumerate(items):
-                        item_type = item.get("itemType")
-                        logger.error(f"      Item {item_idx}: itemType={item_type}")
-
-                        if item_type == "video":
-                            item_content = item.get("itemContent", {})
-                            logger.error(f"        itemContent keys: {list(item_content.keys())}")
-                            video = item_content.get("video", {})
-                            logger.error(f"        video keys: {list(video.keys())}")
-                            assets = video.get("assets", [])
-                            logger.error(f"        assets count: {len(assets)}")
-
-                            # Log the actual video structure
-                            logger.error(f"        Full video object: {json.dumps(video, indent=2)[:1000]}")
-
-            # Also log the entity info if available
-            entity = layout.get("entity", {})
-            if entity:
-                logger.error(f"Entity info: id={entity.get('id')}, type={entity.get('type')}")
-                metadata = entity.get("metadata", {})
-                logger.error(f"Entity metadata: title={metadata.get('title')}, code={metadata.get('code')}")
-
-        logger.warning(f"No stream assets found for channel {channel_seo}")
-        return []
-
-    def invalidate_layout_cache(self, channel_seo: str = None):
-        """Invalidate layout cache for a specific channel or all channels."""
-        if channel_seo:
-            self._layout_cache.pop(channel_seo, None)
-        else:
-            self._layout_cache.clear()
 
     # --------------------------------------------------------------------------
     # Channel ID Normalization
@@ -327,7 +204,7 @@ class RTLPlusChannelManager:
         return channel_id
 
     # --------------------------------------------------------------------------
-    # Manifest & DRM
+    # Manifest & DRM (using provider's common methods)
     # --------------------------------------------------------------------------
 
     def get_best_manifest_url(
@@ -349,200 +226,44 @@ class RTLPlusChannelManager:
         token = self._provider.get_user_bearer_token()
         if not token:
             logger.error("User authentication required for linear TV stream, not authenticated")
-            return None  # or [] for DRM
+            return None
 
         channel_seo = self._normalize_channel_identifier(channel_id)
 
-        assets = self.extract_stream_assets(channel_seo)
+        # Use provider's common layout fetching
+        layout = self._provider.fetch_layout(
+            layout_type="live",
+            content_id=channel_seo,
+            location=f"{self.cfg.beta_website}{channel_seo}/live"
+        )
 
-        quality_pref = preferred_quality or next(iter(self.cfg.preferred_qualities), "hd")
-        format_pref = preferred_format or next(iter(self.cfg.preferred_formats), "dashcenc")
-        drm_pref = preferred_drm_type or next(iter(self.cfg.preferred_drm_types), "hardware")
+        if not layout:
+            return None
 
-        # Try exact match
-        for asset in assets:
-            if (asset.get("quality") == quality_pref and
-                    asset.get("format") == format_pref and
-                    asset.get("drm", {}).get("type") == drm_pref):
-                manifest_url = asset.get("path") or asset.get("reference")
-                if manifest_url:
-                    logger.info(f"Found exact match manifest for {channel_seo}")
-                    return manifest_url
+        # Extract assets using common method
+        assets = self._provider.extract_video_assets(layout)
 
-        # Try format + quality, any DRM
-        for asset in assets:
-            if asset.get("quality") == quality_pref and asset.get("format") == format_pref:
-                manifest_url = asset.get("path") or asset.get("reference")
-                if manifest_url:
-                    logger.info(f"Found format/quality match manifest for {channel_seo}")
-                    return manifest_url
+        # Extract best manifest URL using common method
+        return self._provider.extract_best_manifest_url(assets, preferred_quality, preferred_format)
 
-        # Fallback to any asset from preferred formats
-        for fmt in self.cfg.preferred_formats:
-            for qual in self.cfg.preferred_qualities:
-                for asset in assets:
-                    if asset.get("format") == fmt and asset.get("quality") == qual:
-                        manifest_url = asset.get("path") or asset.get("reference")
-                        if manifest_url:
-                            logger.info(f"Found fallback manifest for {channel_seo}")
-                            return manifest_url
-
-        # Last resort: any manifest URL
-        for asset in assets:
-            manifest_url = asset.get("path") or asset.get("reference")
-            if manifest_url:
-                logger.warning(f"Using last-resort manifest for {channel_seo}")
-                return manifest_url
-
-        logger.error(f"No manifest URL found for channel {channel_seo}")
-        return None
-
-    def get_drm_config_for_channel(
-            self,
-            channel_id: str,
-            preferred_quality: str = None,
-    ) -> List[DRMConfig]:
+    def get_drm_config_for_channel(self, channel_id: str) -> List[DRMConfig]:
         """
         Get DRM configuration for a linear TV channel.
-        Supports both Widevine and PlayReady.
-
-        Uses delta provider with dashcenc format for the best compatibility.
-        Returns both DRM types using the same upfront token.
         """
         channel_seo = self._normalize_channel_identifier(channel_id)
-        assets = self.extract_stream_assets(channel_seo)
 
-        # Priority: delta provider, then dashcenc format, then HD quality
-        quality = preferred_quality or "hd"  # HD is primary from constants
-
-        # Find the best asset: delta provider + dashcenc + preferred quality
-        target_asset = None
-
-        # First try: delta + dashcenc + preferred quality
-        for asset in assets:
-            if (asset.get("provider") == "delta" and
-                    asset.get("format") == "dashcenc" and
-                    asset.get("quality") == quality):
-                target_asset = asset
-                logger.debug(f"Found delta/dashcenc/{quality} asset for {channel_seo}")
-                break
-
-        # Fallback: delta + dashcenc + any quality
-        if not target_asset:
-            for asset in assets:
-                if asset.get("provider") == "delta" and asset.get("format") == "dashcenc":
-                    target_asset = asset
-                    actual_quality = asset.get("quality", "unknown")
-                    logger.debug(f"Fallback to delta/dashcenc/{actual_quality} for {channel_seo}")
-                    break
-
-        # Last resort: any dashcenc asset
-        if not target_asset:
-            for asset in assets:
-                if asset.get("format") == "dashcenc":
-                    target_asset = asset
-                    provider = asset.get("provider", "unknown")
-                    logger.debug(f"Last resort: {provider}/dashcenc for {channel_seo}")
-                    break
-
-        if not target_asset:
-            logger.error(f"No dashcenc asset found for channel {channel_seo}")
-            return []
-
-        # Extract contentId from the selected asset
-        drm_info = target_asset.get("drm", {})
-        drm_config = drm_info.get("config", {})
-        content_id = drm_config.get("contentId")
-
-        if not content_id:
-            logger.error(f"No contentId in asset for {channel_seo}")
-            return []
-
-        try:
-            uid = self.auth.get_user_id_from_token()
-            if not uid:
-                logger.error(f"No user ID available for DRM on {channel_seo}")
-                return []
-
-            # Get ONE upfront token (works for both Widevine and PlayReady)
-            upfront_token = self.auth.get_upfront_token(
-                content_id=content_id,
-                uid=uid,
-            )
-
-            if not upfront_token:
-                logger.error(f"Failed to get upfront token for {channel_seo}")
-                return []
-
-            drm_configs = []
-
-            # Build Widevine config
-            wv_config = self._get_widevine_config(upfront_token)
-            if wv_config:
-                drm_configs.append(wv_config)
-                logger.debug(f"Added Widevine DRM for {channel_seo}")
-
-            # Build PlayReady config (same token works)
-            pr_config = self._get_playready_config(upfront_token)
-            if pr_config:
-                drm_configs.append(pr_config)
-                logger.debug(f"Added PlayReady DRM for {channel_seo}")
-
-            logger.info(f"Built {len(drm_configs)} DRM configs for {channel_seo} (Widevine + PlayReady)")
-            return drm_configs
-
-        except Exception as e:
-            logger.error(f"Failed to get DRM for {channel_seo}: {e}")
-            return []
-
-    def _get_widevine_config(self, upfront_token: str) -> Optional[DRMConfig]:
-        """Get Widevine DRM configuration using existing headers from constants."""
-        if not upfront_token:
-            return None
-
-        # Get headers from config (which now includes origin/referer)
-        headers = self.cfg.get_drm_license_headers(upfront_token)
-
-        # URL-encode headers for req_headers parameter
-        req_headers = urllib.parse.urlencode(headers)
-
-        # Create LicenseConfig with unwrapper settings
-        license_config = LicenseConfig(
-            server_url=self.cfg.drmtoday_license_url,
-            req_headers=req_headers,
-            req_data="{CHA-RAW}",
-            use_http_get_request=False,
-            unwrapper="json,base64",
-            unwrapper_params=LicenseUnwrapperParams(path_data="license"),
+        # Use provider's common layout fetching
+        layout = self._provider.fetch_layout(
+            layout_type="live",
+            content_id=channel_seo,
+            location=f"{self.cfg.beta_website}{channel_seo}/live"
         )
 
-        return DRMConfig(
-            system=DRMSystem.WIDEVINE,
-            priority=3,
-            license=license_config,
-        )
+        if not layout:
+            return []
 
-    def _get_playready_config(self, upfront_token: str) -> Optional[DRMConfig]:
-        """Get PlayReady DRM configuration using existing headers from constants."""
-        if not upfront_token:
-            return None
-
-        # Use the existing method from RTLPlusConfig
-        headers = self.cfg.get_playready_license_headers(upfront_token)
-
-        # URL-encode headers for req_headers parameter
-        req_headers = urllib.parse.urlencode(headers)
-
-        return DRMConfig(
-            system=DRMSystem.PLAYREADY,
-            priority=2,  # Slightly lower priority than Widevine (fallback)
-            license=LicenseConfig(
-                server_url=RTLPlusDefaults.DRMTODAY_PLAYREADY_URL,
-                req_headers=req_headers,
-                req_data="{CHA-RAW}",  # PlayReady expects raw challenge
-                use_http_get_request=False,
-            ),
-        )
+        # Delegate to provider's common DRM method
+        return self._provider.get_drm_for_content(layout)
 
     # --------------------------------------------------------------------------
     # Channel Info Helpers
@@ -551,48 +272,57 @@ class RTLPlusChannelManager:
     def get_channel_info(self, channel_id: str) -> Optional[Dict[str, Any]]:
         """Get basic channel information from the layout."""
         channel_seo = self._normalize_channel_identifier(channel_id)
-        try:
-            layout = self.fetch_channel_layout(channel_seo)
-            entity = layout.get("entity", {})
-            metadata = entity.get("metadata", {})
-            return {
-                "id": entity.get("id"),
-                "type": entity.get("type"),
-                "title": metadata.get("title"),
-                "code": metadata.get("code"),
-                "seo": layout.get("parent", {}).get("seo"),
-            }
-        except Exception as e:
-            logger.error(f"Failed to get channel info for {channel_id}: {e}")
+
+        layout = self._provider.fetch_layout(
+            layout_type="live",
+            content_id=channel_seo,
+            location=f"{self.cfg.beta_website}{channel_seo}/live"
+        )
+
+        if not layout:
             return None
+
+        entity = layout.get("entity", {})
+        metadata = entity.get("metadata", {})
+        return {
+            "id": entity.get("id"),
+            "type": entity.get("type"),
+            "title": metadata.get("title"),
+            "code": metadata.get("code"),
+            "seo": layout.get("parent", {}).get("seo"),
+        }
 
     def get_current_program(self, channel_id: str) -> Optional[Dict[str, Any]]:
         """Get currently playing program info for a channel."""
         channel_seo = self._normalize_channel_identifier(channel_id)
-        try:
-            layout = self.fetch_channel_layout(channel_seo)
 
-            blocks = layout.get("blocks", [])
-            for block in blocks:
-                if block.get("type") == "bffPaginated":
-                    items = block.get("content", {}).get("items", [])
-                    for item in items:
-                        if item.get("itemType") == "video":
-                            content = item.get("itemContent", {})
-                            progress = content.get("progressBar", {})
-                            video = content.get("video", {})
-                            progress_data = video.get("progress", {})
+        layout = self._provider.fetch_layout(
+            layout_type="live",
+            content_id=channel_seo,
+            location=f"{self.cfg.beta_website}{channel_seo}/live"
+        )
 
-                            return {
-                                "title": content.get("title"),
-                                "episode_title": content.get("extraTitle"),
-                                "description": content.get("description"),
-                                "progress_percent": progress.get("progressValue"),
-                                "start_time": progress_data.get("startTitle"),
-                                "end_time": progress_data.get("endTitle"),
-                                "live": progress_data.get("live", {}),
-                            }
+        if not layout:
             return None
-        except Exception as e:
-            logger.error(f"Failed to get current program for {channel_id}: {e}")
-            return None
+
+        blocks = layout.get("blocks", [])
+        for block in blocks:
+            if block.get("type") == "bffPaginated":
+                items = block.get("content", {}).get("items", [])
+                for item in items:
+                    if item.get("itemType") == "video":
+                        content = item.get("itemContent", {})
+                        progress = content.get("progressBar", {})
+                        video = content.get("video", {})
+                        progress_data = video.get("progress", {})
+
+                        return {
+                            "title": content.get("title"),
+                            "episode_title": content.get("extraTitle"),
+                            "description": content.get("description"),
+                            "progress_percent": progress.get("progressValue"),
+                            "start_time": progress_data.get("startTitle"),
+                            "end_time": progress_data.get("endTitle"),
+                            "live": progress_data.get("live", {}),
+                        }
+        return None
