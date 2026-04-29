@@ -113,20 +113,21 @@ class RTLPlusProvider(StreamingProvider):
     # --------------------------------------------------------------------------
 
     def fetch_layout(
-        self,
-        layout_type: str,
-        content_id: str,
-        block_page: int = None,
-        nb_pages: int = None,
-        location: str = None,
-        force_refresh: bool = False,
+            self,
+            layout_type: str,
+            content_id: str,
+            block_page: int = None,
+            nb_pages: int = None,
+            location: str = None,
+            force_refresh: bool = False,
     ) -> Optional[Dict]:
         """
         Fetch any layout (live/video/folder/program/block) with caching.
 
         Args:
-            layout_type: 'live', 'video', 'folder', 'program', 'block'
-            content_id: The ID (seo for live, clip_id for video, folder_id for folder)
+            layout_type: 'live', 'video', 'folder', 'program', 'block', 'alias' (for root/home)
+            content_id: The ID (seo for live, clip_id for video, folder_id for folder,
+                       or 'home'/'root' for alias layouts)
             block_page: Page number for blocks (default 1)
             nb_pages: Number of pages to request (default 2)
             location: x-location header value (auto-generated if not provided)
@@ -166,11 +167,16 @@ class RTLPlusProvider(StreamingProvider):
             return None
 
         # Auto-generate location header if not provided
-        if location is None and layout_type in ("live", "video", "folder", "program"):
+        if location is None and layout_type in ("live", "video", "folder", "program", "alias"):
             location = f"{self.rtl_config.beta_website}{content_id}"
 
-        # Build request
-        url = self.rtl_config.get_layout_url(layout_type, content_id)
+        # Build request - handle alias layouts specially
+        if layout_type == "alias":
+            # For alias layouts, the URL pattern is: {base}/alias/{content_id}/layout
+            url = f"{self.rtl_config.bedrock_layout_base}/alias/{content_id}/layout"
+        else:
+            url = self.rtl_config.get_layout_url(layout_type, content_id)
+
         headers = self.rtl_config.get_layout_headers(oauth_token, bedrock_token, location)
         params = {"blockPage": block_page, "nbPages": nb_pages}
 

@@ -628,10 +628,12 @@ class RTLPlusConfig:
             "folder": RTLPlusDefaults.LAYOUT_PATH_FOLDER,
             "program": RTLPlusDefaults.LAYOUT_PATH_PROGRAM,
             "block": RTLPlusDefaults.LAYOUT_PATH_BLOCK,
+            # 'alias' is not in path_map because it uses a different URL pattern
         }
-        path = path_map.get(layout_type)
-        if not path:
-            raise ValueError(f"Unknown layout type: {layout_type}")
+        if layout_type not in path_map:
+            raise ValueError(f"Unknown layout type: {layout_type}. Valid types: {list(path_map.keys())}")
+
+        path = path_map[layout_type]
         return f"{self.bedrock_layout_base}{path.format(id=content_id)}"
 
     def get_layout_headers(self, oauth_token: str, bedrock_token: str, location: str = None) -> dict:

@@ -150,15 +150,18 @@ class RTLPlusVodManager:
         """
         entries: List[Union[VodCategory, VodItem]] = []
 
+        # Use layout_type="alias" with content_id="home"
         layout = self._provider.fetch_layout(
             layout_type="alias",
             content_id="home",
+            location=f"{self.cfg.beta_website}",
         )
 
         if not layout:
             logger.warning("Failed to fetch home layout for VOD root; returning empty")
             return {"entries": [], "next_cursor": None, "total": 0}
 
+        # Parse blocks as before...
         blocks = layout.get("blocks", [])
         for block in blocks:
             if block.get("type") != "bffPaginated":
@@ -166,8 +169,8 @@ class RTLPlusVodManager:
 
             block_title = (
                 block.get("analytics", {})
-                     .get("tealium", {})
-                     .get("block_title", "")
+                .get("tealium", {})
+                .get("block_title", "")
             )
 
             # Continue-watching items
