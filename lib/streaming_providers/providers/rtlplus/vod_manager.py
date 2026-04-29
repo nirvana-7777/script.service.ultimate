@@ -27,6 +27,7 @@ FOLDER_NAMES = {
     "6": "Sport",
 }
 
+
 class RTLPlusVodManager:
     """
     Manages VOD content for RTL+.
@@ -34,7 +35,7 @@ class RTLPlusVodManager:
     Navigation hierarchy:
         root
         └── folder:<id>        (Bedrock folder, e.g. folder:3 = Serien)
-            └── program:<id>   (program layout → seasons)
+            └── program:<id>   (program layout → seasons or direct video)
                 └── season:<block_id>  (block layout → episodes)
                     └── clip_id        (video layout, playable)
 
@@ -66,11 +67,11 @@ class RTLPlusVodManager:
     # ------------------------------------------------------------------
 
     def get_vod_category(
-        self,
-        content_id: str = "",
-        cursor: Optional[str] = None,
-        page_size: int = 24,
-        **kwargs,
+            self,
+            content_id: str = "",
+            cursor: Optional[str] = None,
+            page_size: int = 24,
+            **kwargs,
     ) -> Dict[str, Any]:
         """
         Return the children of a VOD node.
@@ -99,7 +100,7 @@ class RTLPlusVodManager:
 
         if content_id.startswith("program:"):
             program_id = content_id[len("program:"):]
-            return self._get_program_seasons(program_id, cursor, page_size)
+            return self._get_program_contents(program_id, cursor, page_size)
 
         if content_id.startswith("season:"):
             season_id = content_id[len("season:"):]
@@ -107,7 +108,7 @@ class RTLPlusVodManager:
 
         # Bare numeric ID → treat as program
         if content_id.isdigit():
-            return self._get_program_seasons(content_id, cursor, page_size)
+            return self._get_program_contents(content_id, cursor, page_size)
 
         logger.warning(f"Unrecognised VOD content_id format: {content_id!r}")
         return {"entries": [], "next_cursor": None, "total": 0}
@@ -232,10 +233,10 @@ class RTLPlusVodManager:
     # ------------------------------------------------------------------
 
     def _get_folder_contents(
-        self,
-        folder_id: str,
-        cursor: Optional[str] = None,
-        page_size: int = 24,
+            self,
+            folder_id: str,
+            cursor: Optional[str] = None,
+            page_size: int = 24,
     ) -> Dict[str, Any]:
         """
         Return the programs/sub-folders inside a Bedrock folder.
@@ -266,37 +267,68 @@ class RTLPlusVodManager:
         return {"entries": entries, "next_cursor": None, "total": len(entries)}
 
     # ------------------------------------------------------------------
-    # Program → seasons
+    # Program contents (handles both movies and series)
     # ------------------------------------------------------------------
 
-    def _get_program_seasons(
+    def _get_program_contents(
             self,
             program_id: str,
             cursor: Optional[str] = None,
             page_size: int = 24,
     ) -> Dict[str, Any]:
         """
-        Return a VodCategory per season for the given program.
-        For movies/single videos, return as a playable VodItem directly.
-        Supports simple offset-based cursor pagination over the collected list.
+        Return contents for a program.
+
+        For movies: returns a single playable VodItem directly.
+        For series: returns VodCategory for each season.
         """
         layout = self._provider.fetch_layout(
             layout_type="program",
             content_id=program_id,
             location=f"{self.cfg.beta_website}p_{program_id}"
         )
-        logger.debug(
-            f"Program {program_id} layout has blocks: "
-            + str([
-                (b.get("blockId"), b.get("content", {}).get("contentTemplateId"))
-                for b in layout.get("blocks", [])
-                if b.get("type") == "bffPaginated"
-            ])
-        )
+
         if not layout:
             return {"entries": [], "next_cursor": None, "total": 0}
 
-        # Check if this is a movie (single playable item) instead of a series
+        # FIRST: Check if this is a movie (direct playable video)
+        # Look through ALL blocks and items for video content
+        movie_item = self._find_direct_video_in_layout(layout)
+        if movie_item:
+            logger.debug(f"Program {program_id} is a movie, returning playable item")
+            return {
+                "entries": [movie_item],
+                "next_cursor": None,
+                "total": 1,
+            }
+
+        # SECOND: Look for seasons (series)
+        seasons = self._extract_seasons_from_layout(layout)
+
+        if seasons:
+            # Apply pagination
+            start = 0
+            if cursor:
+                try:
+                    start = int(cursor)
+                except ValueError:
+                    start = 0
+
+            page = seasons[start: start + page_size]
+            next_cursor = str(start + page_size) if (start + page_size) < len(seasons) else None
+
+            logger.debug(f"Program {program_id} has {len(seasons)} seasons")
+            return {"entries": page, "next_cursor": next_cursor, "total": len(seasons)}
+
+        # No movie and no seasons found
+        logger.warning(f"No seasons or movie found for program {program_id}")
+        return {"entries": [], "next_cursor": None, "total": 0}
+
+    def _find_direct_video_in_layout(self, layout: Dict) -> Optional[VodItem]:
+        """
+        Find a direct playable video item in a program layout.
+        Searches through ALL blocks and items without filtering by template.
+        """
         for block in layout.get("blocks", []):
             if block.get("type") != "bffPaginated":
                 continue
@@ -310,89 +342,106 @@ class RTLPlusVodManager:
                 if not item_content:
                     continue
 
+                # Check various places where video references can be
+
+                # 1. Direct action target (most common for movies)
                 action = item_content.get("action", {})
                 target = action.get("target", {})
                 value_layout = target.get("value_layout", {})
 
                 if value_layout.get("type") == "video":
-                    logger.debug(f"Program {program_id} is a movie, extracting VodItem")
                     vod_item = self._extract_vod_item_from_block_item(item)
                     if vod_item:
-                        logger.debug(f"Successfully extracted movie: {vod_item.name}")
-                        return {
-                            "entries": [vod_item],
-                            "next_cursor": None,
-                            "total": 1,
-                        }
-                    # Extraction failed — log and fall through to season extraction
-                    logger.warning(
-                        f"Failed to extract VodItem from movie item for program {program_id}"
-                    )
+                        return vod_item
 
-        # If we get here, it's a series with seasons
+                # 2. Primary/secondary actions
+                for action_key in ("onClickAction", "primaryAction", "secondaryAction"):
+                    alt_action = item_content.get(action_key, {})
+                    alt_target = alt_action.get("target", {})
+                    alt_value = alt_target.get("value_layout", {})
+                    if alt_value.get("type") == "video":
+                        vod_item = self._extract_vod_item_from_block_item(item)
+                        if vod_item:
+                            return vod_item
+
+                # 3. Direct itemContent type
+                if item_content.get("type") == "video":
+                    clip_id = item_content.get("id")
+                    if clip_id:
+                        vod_item = VodItem.create_episode(
+                            name=item_content.get("title", clip_id),
+                            content_id=clip_id,
+                            provider=self._provider.provider_name,
+                        )
+                        vod_item.description = item_content.get("description")
+                        vod_item.logo_url = self._extract_thumbnail(item_content)
+                        return vod_item
+
+        return None
+
+    def _extract_seasons_from_layout(self, layout: Dict) -> List[VodCategory]:
+        """
+        Extract seasons from a program layout.
+        Looks for both concurrentBlocks (season selector) and block-level seasons.
+        """
         seasons: List[VodCategory] = []
+
         for block in layout.get("blocks", []):
             if block.get("type") != "bffPaginated":
                 continue
 
-            # Concurrent blocks = individual season selectors
+            # Check for concurrent blocks (season selector)
             alternative_content = block.get("alternativeContent")
             if alternative_content:
                 for cb in alternative_content.get("concurrentBlocks", []):
+                    # Get season info from concurrent block
+                    season_title = cb.get("title", "Unbekannte Staffel")
+                    block_id = cb.get("id")
+
+                    if block_id:
+                        seasons.append(VodCategory(
+                            name=season_title,
+                            content_id=f"season:{block_id}",
+                            provider=self._provider.provider_name,
+                            description=None,
+                            child_count=(
+                                cb.get("content", {})
+                                .get("pagination", {})
+                                .get("totalItems", 0)
+                            ),
+                        ))
+
+            # Check if block itself is a season selector
+            tealium = block.get("analytics", {}).get("tealium", {})
+            if tealium.get("template_name") == "SelectorCardListM":
+                block_id = block.get("id")
+                if block_id:
                     seasons.append(VodCategory(
-                        name=cb.get("title", "Unbekannte Staffel"),
-                        content_id=f"season:{cb.get('id')}",
+                        name=(
+                            block.get("content", {})
+                            .get("title", {})
+                            .get("short", "Alle Staffeln")
+                        ),
+                        content_id=f"season:{block_id}",
                         provider=self._provider.provider_name,
-                        description=None,
                         child_count=(
-                            cb.get("content", {})
+                            block.get("content", {})
                             .get("pagination", {})
                             .get("totalItems", 0)
                         ),
                     ))
 
-            # Block itself is a season selector
-            tealium = block.get("analytics", {}).get("tealium", {})
-            if tealium.get("template_name") == "SelectorCardListM":
-                seasons.append(VodCategory(
-                    name=(
-                        block.get("content", {})
-                        .get("title", {})
-                        .get("short", "Alle Staffeln")
-                    ),
-                    content_id=f"season:{block.get('id')}",
-                    provider=self._provider.provider_name,
-                    child_count=(
-                        block.get("content", {})
-                        .get("pagination", {})
-                        .get("totalItems", 0)
-                    ),
-                ))
-
-        start = 0
-        if cursor:
-            try:
-                start = int(cursor)
-            except ValueError:
-                start = 0
-
-        page = seasons[start: start + page_size]
-        next_cursor = str(start + page_size) if (start + page_size) < len(seasons) else None
-
-        if not seasons:
-            logger.warning(f"No seasons found for program {program_id} and not a movie")
-
-        return {"entries": page, "next_cursor": next_cursor, "total": len(seasons)}
+        return seasons
 
     # ------------------------------------------------------------------
     # Season block → episodes
     # ------------------------------------------------------------------
 
     def _get_season_episodes(
-        self,
-        season_block_id: str,
-        cursor: Optional[str] = None,
-        page_size: int = 24,
+            self,
+            season_block_id: str,
+            cursor: Optional[str] = None,
+            page_size: int = 24,
     ) -> Dict[str, Any]:
         """
         Return VodItem per episode in a season block.
@@ -432,7 +481,7 @@ class RTLPlusVodManager:
     # ------------------------------------------------------------------
 
     def _extract_vod_item_from_layout(
-        self, layout: Dict, clip_id: str
+            self, layout: Dict, clip_id: str
     ) -> Optional[VodItem]:
         """Build a VodItem from a full video layout (detail view)."""
         assets = self._provider.extract_video_assets(layout)
@@ -472,13 +521,34 @@ class RTLPlusVodManager:
         if not item_content:
             return None
 
-        target = item_content.get("action", {}).get("target", {})
+        # Try to get video reference from action target first
+        action = item_content.get("action", {})
+        target = action.get("target", {})
         value_layout = target.get("value_layout", {})
 
-        if value_layout.get("type") != "video":
-            return None
+        # Also check for lock-wrapped targets
+        if target.get("type") == "lock":
+            target = target.get("value_lock", {}).get("originalTarget", {})
+            value_layout = target.get("value_layout", {})
 
-        clip_id = value_layout.get("id")
+        clip_id = None
+
+        if value_layout.get("type") == "video":
+            clip_id = value_layout.get("id")
+        elif item_content.get("type") == "video":
+            clip_id = item_content.get("id")
+
+        # Try alternative action locations
+        if not clip_id:
+            for action_key in ("onClickAction", "primaryAction", "secondaryAction"):
+                alt_action = item_content.get(action_key, {})
+                alt_target = alt_action.get("target", {})
+                alt_value = alt_target.get("value_layout", {})
+                if alt_value.get("type") == "video":
+                    clip_id = alt_value.get("id")
+                    if clip_id:
+                        break
+
         if not clip_id:
             return None
 
@@ -509,7 +579,6 @@ class RTLPlusVodManager:
         episode_number: Optional[int] = None
 
         if highlight:
-            import re
             # Look for season/folge patterns
             season_match = re.search(r"Staffel\s*(\d+)", highlight, re.IGNORECASE)
             if season_match:
@@ -533,7 +602,7 @@ class RTLPlusVodManager:
             name=full_title,
             content_id=clip_id,
             provider=self._provider.provider_name,
-            season_number=season_number if season_number is not None else -1,  # Use -1 for unknown
+            season_number=season_number if season_number is not None else -1,
             episode_number=episode_number if episode_number is not None else -1,
         )
         vod_item.description = item_content.get("description")
@@ -554,6 +623,11 @@ class RTLPlusVodManager:
 
         action = item_content.get("action", {})
         target = action.get("target", {})
+
+        # Handle lock-wrapped targets
+        if target.get("type") == "lock":
+            target = target.get("value_lock", {}).get("originalTarget", {})
+
         value_layout = target.get("value_layout", {})
 
         layout_type = value_layout.get("type")
@@ -604,8 +678,8 @@ class RTLPlusVodManager:
         """True when a block item directly carries playable video assets."""
         return bool(
             item.get("itemContent", {})
-                .get("video", {})
-                .get("assets")
+            .get("video", {})
+            .get("assets")
         )
 
     # ------------------------------------------------------------------
@@ -681,11 +755,6 @@ class RTLPlusVodManager:
     @staticmethod
     def _is_event_item(item_content: Dict) -> bool:
         """Check if item is an event (vs regular VOD content)."""
-        # Events typically have these characteristics:
-        # 1. Have a highlight with datetime
-        # 2. Action target is a folder (not program/video)
-        # 3. Often have sports or event keywords
-
         highlight = item_content.get("highlight", "")
         if not highlight:
             return False
@@ -697,10 +766,9 @@ class RTLPlusVodManager:
         action = item_content.get("action", {})
         target = action.get("target", {})
         value_layout = target.get("value_layout", {})
-        layout_type = value_layout.get("type")
 
         # Events are typically folders, not programs or videos
-        return has_datetime and layout_type == "folder"
+        return has_datetime and value_layout.get("type") == "folder"
 
     # ------------------------------------------------------------------
     # Cache management
