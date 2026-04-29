@@ -160,29 +160,46 @@ class RTLPlusVodManager:
                     continue
 
                 # Get items safely
-                items = block.get("content", {}).get("items")
+                content = block.get("content")
+                if not content:
+                    continue
+
+                items = content.get("items")
                 if not items:
                     continue
 
-                # Process each block
+                # Process each item in the block
                 for item in items:
+                    if not item:
+                        continue
+
                     # Try to extract as category first
                     cat = self._extract_vod_category_from_block_item(item)
                     if cat:
                         entries.append(cat)
+                        logger.debug(f"Added category: {cat.name} ({cat.content_id})")
                         continue
 
                     # If not a category, try as VOD item
                     vod_item = self._extract_vod_item_from_block_item(item)
                     if vod_item:
                         entries.append(vod_item)
+                        logger.debug(f"Added VOD item: {vod_item.name} ({vod_item.content_id})")
 
             logger.info(f"Found {len(entries)} entries in root VOD category")
 
+            # Filter out any entries with None names just in case
+            valid_entries = []
+            for entry in entries:
+                if hasattr(entry, 'name') and entry.name:
+                    valid_entries.append(entry)
+                else:
+                    logger.warning(f"Entry has no name: {entry}")
+
             return {
-                "entries": entries,
+                "entries": valid_entries,
                 "next_cursor": None,
-                "total": len(entries),
+                "total": len(valid_entries),
             }
         except Exception as e:
             logger.error(f"Error in _get_root_category: {e}", exc_info=True)
@@ -396,9 +413,27 @@ class RTLPlusVodManager:
         if not clip_id:
             return None
 
+        # Get name with fallback
         title = item_content.get("title", "")
         extra_title = item_content.get("extraTitle", "")
-        full_title = f"{title} - {extra_title}" if extra_title else title
+
+        if title and extra_title:
+            full_title = f"{title} - {extra_title}"
+        elif title:
+            full_title = title
+        elif extra_title:
+            full_title = extra_title
+        else:
+            # Try to get from highlight or other fields
+            highlight = item_content.get("highlight", "")
+            if highlight:
+                # Clean up highlight (remove date info)
+                if "•" in highlight:
+                    full_title = highlight.split("•")[0].strip()
+                else:
+                    full_title = highlight
+            else:
+                full_title = f"Unbekanntes Video ({clip_id})"
 
         highlight = item_content.get("highlight", "")
         season_number: Optional[int] = None
@@ -406,19 +441,31 @@ class RTLPlusVodManager:
 
         if highlight:
             import re
-            m = re.search(r"Staffel\s*(\d+)", highlight, re.IGNORECASE)
-            if m:
-                season_number = int(m.group(1))
-            m = re.search(r"Folge\s*(\d+)", highlight, re.IGNORECASE)
-            if m:
-                episode_number = int(m.group(1))
+            # Look for season/folge patterns
+            season_match = re.search(r"Staffel\s*(\d+)", highlight, re.IGNORECASE)
+            if season_match:
+                season_number = int(season_match.group(1))
+            else:
+                # Try alternative: "S01" pattern
+                season_match = re.search(r"S(\d+)", highlight, re.IGNORECASE)
+                if season_match:
+                    season_number = int(season_match.group(1))
+
+            episode_match = re.search(r"Folge\s*(\d+)", highlight, re.IGNORECASE)
+            if episode_match:
+                episode_number = int(episode_match.group(1))
+            else:
+                # Try alternative: "E01" pattern
+                episode_match = re.search(r"E(\d+)", highlight, re.IGNORECASE)
+                if episode_match:
+                    episode_number = int(episode_match.group(1))
 
         vod_item = VodItem.create_episode(
-            name=full_title or title or "Unbekannte Episode",
+            name=full_title,
             content_id=clip_id,
             provider=self._provider.provider_name,
-            season_number=season_number,
-            episode_number=episode_number,
+            season_number=season_number if season_number is not None else -1,  # Use -1 for unknown
+            episode_number=episode_number if episode_number is not None else -1,
         )
         vod_item.description = item_content.get("description")
         vod_item.logo_url = self._extract_thumbnail(item_content)
@@ -448,8 +495,21 @@ class RTLPlusVodManager:
         if not content_id:
             return None
 
+        # Get name with fallback
+        name = item_content.get("title")
+        if not name:
+            # Try to extract from other fields
+            name = item_content.get("extraTitle") or item_content.get("highlight") or f"{layout_type}_{content_id}"
+            if name:
+                # Clean up highlight if it contains date info
+                if "•" in str(name):
+                    name = name.split("•")[0].strip()
+
+        if not name:
+            name = f"Unbekannt {layout_type}"
+
         return VodCategory(
-            name=item_content.get("title", "Unbekannt"),
+            name=name,
             content_id=f"{layout_type}:{content_id}",
             provider=self._provider.provider_name,
             logo_url=self._extract_thumbnail(item_content),

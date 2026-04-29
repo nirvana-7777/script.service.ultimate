@@ -1,15 +1,4 @@
 # streaming_providers/base/models/vod.py
-"""
-VOD (Video on Demand) models.
-
-Two types:
-  VodCategory  — a browsable node (directory, collection, series, season, …).
-                 Never directly playable.
-  VodItem      — a playable leaf (movie, episode, documentary, …).
-                 Inherits full Content machinery; manifest/DRM resolved via
-                 get_manifest(content_id) / get_drm(content_id) like channels
-                 and events.
-"""
 
 import re
 import unicodedata
@@ -21,39 +10,46 @@ from ..utils.logger import logger
 
 
 # ---------------------------------------------------------------------------
-# Slug utilities
+# Slug utilities (defensive)
 # ---------------------------------------------------------------------------
 
-def slugify(text: str) -> str:
+def slugify(text: Optional[str]) -> str:
     """
     Convert an arbitrary string to a URL-safe slug.
 
-    Steps:
-      1. Unicode normalise (NFKD) and drop combining characters
-      2. Lowercase
-      3. Replace whitespace and common separators with underscores
-      4. Strip everything that is not alphanumeric or underscore/hyphen
-      5. Collapse consecutive underscores/hyphens
-      6. Strip leading/trailing underscores and hyphens
+    Args:
+        text: String to slugify (can be None)
+
+    Returns:
+        Slugified string or empty string if text is None/empty
     """
-    # 1. Normalise unicode
-    text = unicodedata.normalize("NFKD", text)
-    text = "".join(c for c in text if not unicodedata.combining(c))
-    # 2. Lowercase
-    text = text.lower()
-    # 3. Whitespace / separators → underscore
-    text = re.sub(r"[\s\-–—/\\|]+", "_", text)
-    # 4. Keep only safe characters
-    text = re.sub(r"\W", "", text)
-    # 5. Collapse runs
-    text = re.sub(r"_+", "_", text)
-    # 6. Strip edges
-    return text.strip("_-")
+    # Defensive: handle None or empty input
+    if not text:
+        logger.debug("slugify called with None or empty text, returning empty string")
+        return ""
+
+    try:
+        # 1. Normalise unicode
+        text = unicodedata.normalize("NFKD", text)
+        text = "".join(c for c in text if not unicodedata.combining(c))
+        # 2. Lowercase
+        text = text.lower()
+        # 3. Whitespace / separators → underscore
+        text = re.sub(r"[\s\-–—/\\|]+", "_", text)
+        # 4. Keep only safe characters
+        text = re.sub(r"[^\w\-_]", "", text)
+        # 5. Collapse runs
+        text = re.sub(r"_+", "_", text)
+        # 6. Strip edges
+        return text.strip("_-")
+    except Exception as e:
+        logger.warning(f"Error slugifying text '{text}': {e}, returning empty string")
+        return ""
 
 
 def build_slug_map(entries: list) -> Dict[str, str]:
     """
-    Build a slug → content_id mapping for a list of VodCategory / VodItem
+    Build a slug -> content_id mapping for a list of VodCategory / VodItem
     entries, falling back to the content_id itself as the slug when two
     siblings would produce the same slug.
 
@@ -63,24 +59,32 @@ def build_slug_map(entries: list) -> Dict[str, str]:
     # First pass: compute preferred slug for every entry
     preferred: List[tuple] = []
     for entry in entries:
+        if not hasattr(entry, 'name') or not entry.name:
+            logger.warning(f"Entry missing name: {entry}")
+            continue
         preferred.append((slugify(entry.name), entry.content_id))
 
     # Detect collisions
     seen_slugs: Dict[str, int] = {}
     for slug, _ in preferred:
-        seen_slugs[slug] = seen_slugs.get(slug, 0) + 1
+        if slug:  # Only count non-empty slugs
+            seen_slugs[slug] = seen_slugs.get(slug, 0) + 1
 
     slug_map: Dict[str, str] = {}
     for slug, content_id in preferred:
-        if seen_slugs[slug] > 1:
+        if not slug:
+            # If slug is empty, use content_id directly
+            final_slug = slugify(content_id) or content_id
+            slug_map[final_slug] = content_id
+        elif seen_slugs.get(slug, 0) > 1:
             # Fall back to the raw ID as the slug
             final_slug = slugify(content_id) or content_id
             logger.debug(
                 f"VOD slug collision for '{slug}' — using id '{final_slug}' instead"
             )
+            slug_map[final_slug] = content_id
         else:
-            final_slug = slug
-        slug_map[final_slug] = content_id
+            slug_map[slug] = content_id
 
     return slug_map
 
@@ -123,10 +127,31 @@ class VodCategory:
     # Cached slug (computed lazily if not set)
     _slug: Optional[str] = field(default=None, repr=False)
 
+    def __post_init__(self):
+        """Validate and clean up required fields."""
+        # Defensive: ensure name is a string
+        if self.name is None:
+            logger.warning(f"VodCategory created with None name for content_id {self.content_id}")
+            self.name = f"Unbenannt_{self.content_id}"
+        elif not isinstance(self.name, str):
+            logger.warning(f"VodCategory created with non-string name '{self.name}' for content_id {self.content_id}")
+            self.name = str(self.name)
+
+        # Ensure content_id is valid
+        if not self.content_id:
+            raise ValueError("VodCategory requires content_id")
+
+        # Ensure provider is valid
+        if not self.provider:
+            raise ValueError("VodCategory requires provider")
+
     @property
     def slug(self) -> str:
         if not self._slug:
             self._slug = slugify(self.name)
+            # If slugify returns empty (e.g., for non-Latin names), use a fallback
+            if not self._slug:
+                self._slug = slugify(self.content_id) or self.content_id
         return self._slug
 
     @property
@@ -168,14 +193,14 @@ class VodItem(Content):
     release_year: Optional[int] = None
 
     # Classification
-    rating: Optional[str] = None          # e.g. "FSK 12", "PG-13", "TV-MA"
-    genre: Optional[str] = None           # primary genre (mainGenre)
-    genres: Optional[List[str]] = None    # full genre list
+    rating: Optional[str] = None  # e.g. "FSK 12", "PG-13", "TV-MA"
+    genre: Optional[str] = None  # primary genre (mainGenre)
+    genres: Optional[List[str]] = None  # full genre list
 
     # Extended descriptions
     # description (short) is inherited from Content
-    long_description: Optional[str] = None    # longDescription from contentInformation
-    original_title: Optional[str] = None      # originalTitle — important for localised content
+    long_description: Optional[str] = None  # longDescription from contentInformation
+    original_title: Optional[str] = None  # originalTitle — important for localised content
 
     # People
     cast: Optional[List[str]] = None
@@ -185,8 +210,8 @@ class VodItem(Content):
     season_number: Optional[int] = None
     episode_number: Optional[int] = None
     # Back-references for episodes — lets the UI navigate up without re-parsing IDs
-    series_id: Optional[str] = None       # e.g. "GN_SERIES_184925"
-    series_title: Optional[str] = None    # e.g. "Two and a Half Men"
+    series_id: Optional[str] = None  # e.g. "GN_SERIES_184925"
+    series_title: Optional[str] = None  # e.g. "Two and a Half Men"
 
     # Promotional
     trailer_url: Optional[str] = None
@@ -200,16 +225,34 @@ class VodItem(Content):
     _slug: Optional[str] = field(default=None, repr=False)
 
     def __post_init__(self):
+        """Validate and clean up required fields."""
+        # Defensive: ensure name is a string
+        if self.name is None:
+            logger.warning(f"VodItem created with None name for content_id {self.content_id}")
+            self.name = f"Unbenanntes Video_{self.content_id}"
+        elif not isinstance(self.name, str):
+            logger.warning(f"VodItem created with non-string name '{self.name}' for content_id {self.content_id}")
+            self.name = str(self.name)
+
         # Ensure mode and content_type are set correctly for on-demand content
         if self.mode == "live":
             self.mode = "vod"
         if self.content_type == "LIVE":
             self.content_type = "VOD"
 
+        # Defensive: handle None for season/episode numbers
+        if self.season_number is not None and self.season_number < 0:
+            self.season_number = None
+        if self.episode_number is not None and self.episode_number < 0:
+            self.episode_number = None
+
     @property
     def slug(self) -> str:
         if not self._slug:
             self._slug = slugify(self.name)
+            # If slugify returns empty, use a fallback
+            if not self._slug:
+                self._slug = slugify(self.content_id) or self.content_id
         return self._slug
 
     @property
@@ -260,13 +303,20 @@ class VodItem(Content):
             warnings.append("duration_seconds must be positive")
         if self.release_year is not None and not (1888 <= self.release_year <= 2100):
             warnings.append(f"Unusual release_year: {self.release_year}")
+        if not self.name:
+            warnings.append("Name is empty or None")
+        if not self.content_id:
+            warnings.append("Content ID is empty or None")
         return warnings
 
     # Factory methods
     @classmethod
     def create_movie(
-        cls, name: str, content_id: str, provider: str, **kwargs
+            cls, name: str, content_id: str, provider: str, **kwargs
     ) -> "VodItem":
+        # Defensive: ensure name is string
+        if name is None:
+            name = f"Film_{content_id}"
         return cls(
             name=name,
             content_id=content_id,
@@ -278,14 +328,23 @@ class VodItem(Content):
 
     @classmethod
     def create_episode(
-        cls,
-        name: str,
-        content_id: str,
-        provider: str,
-        season_number: int,
-        episode_number: int,
-        **kwargs,
+            cls,
+            name: str,
+            content_id: str,
+            provider: str,
+            season_number: int,
+            episode_number: int,
+            **kwargs,
     ) -> "VodItem":
+        # Defensive: ensure name is string
+        if name is None:
+            name = f"Episode_{content_id}"
+        # Defensive: handle negative season/episode numbers
+        if season_number is not None and season_number < 0:
+            season_number = None
+        if episode_number is not None and episode_number < 0:
+            episode_number = None
+
         return cls(
             name=name,
             content_id=content_id,
