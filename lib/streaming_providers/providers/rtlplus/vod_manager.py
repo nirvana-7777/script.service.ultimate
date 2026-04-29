@@ -11,7 +11,6 @@ the upfront-token flow and all format/quality selection logic.
 """
 
 from typing import Dict, Any, List, Optional, Union
-import re
 
 from ...base.models.vod import VodCategory, VodItem
 from ...base.models import DRMConfig
