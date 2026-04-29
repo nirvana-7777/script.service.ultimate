@@ -301,14 +301,11 @@ class RTLPlusVodManager:
                 if not item_content:
                     continue
 
-                # Get the action target
                 action = item_content.get("action", {})
                 target = action.get("target", {})
                 value_layout = target.get("value_layout", {})
 
-                # Check if this directly points to a video (movie)
                 if value_layout.get("type") == "video":
-                    # This is a movie/single video
                     logger.debug(f"Program {program_id} is a movie, extracting VodItem")
                     vod_item = self._extract_vod_item_from_block_item(item)
                     if vod_item:
@@ -318,10 +315,10 @@ class RTLPlusVodManager:
                             "next_cursor": None,
                             "total": 1,
                         }
-                    else:
-                        logger.warning(f"Failed to extract VodItem from movie item for program {program_id}")
-                        # Continue to season extraction as fallback
-                        break
+                    # Extraction failed — log and fall through to season extraction
+                    logger.warning(
+                        f"Failed to extract VodItem from movie item for program {program_id}"
+                    )
 
         # If we get here, it's a series with seasons
         seasons: List[VodCategory] = []
