@@ -289,13 +289,20 @@ class RTLPlusVodManager:
         )
 
         if not layout:
+            logger.error(f"Failed to fetch layout for program {program_id}")
             return {"entries": [], "next_cursor": None, "total": 0}
 
+        # Debug: Log block structure
+        blocks = layout.get("blocks", [])
+        logger.debug(f"Program {program_id} has {len(blocks)} blocks")
+        for i, block in enumerate(blocks):
+            logger.debug(
+                f"  Block {i}: type={block.get('type')}, template={block.get('content', {}).get('contentTemplateId')}, items={len(block.get('content', {}).get('items', []))}")
+
         # FIRST: Check if this is a movie (direct playable video)
-        # Look through ALL blocks and items for video content
         movie_item = self._find_direct_video_in_layout(layout)
         if movie_item:
-            logger.debug(f"Program {program_id} is a movie, returning playable item")
+            logger.debug(f"Program {program_id} is a movie, returning playable item: {movie_item.name}")
             return {
                 "entries": [movie_item],
                 "next_cursor": None,
@@ -330,42 +337,60 @@ class RTLPlusVodManager:
         Searches through ALL blocks and items without filtering by template.
         """
         for block in layout.get("blocks", []):
-            if block.get("type") != "bffPaginated":
-                continue
+            # Check all block types, not just bffPaginated
+            block_type = block.get("type")
+            logger.debug(f"Checking block type: {block_type}")
 
-            items = block.get("content", {}).get("items", [])
-            for item in items:
+            # Get items from different possible locations
+            items = []
+
+            # Standard location
+            content = block.get("content", {})
+            if content.get("items"):
+                items.extend(content.get("items", []))
+
+            # Also check alternative content
+            alt_content = block.get("alternativeContent", {})
+            if alt_content.get("concurrentBlocks"):
+                for cb in alt_content.get("concurrentBlocks", []):
+                    if cb.get("content", {}).get("items"):
+                        items.extend(cb.get("content", {}).get("items", []))
+
+            logger.debug(f"Found {len(items)} items in block")
+
+            for idx, item in enumerate(items):
+                logger.debug(f"Processing item {idx}: itemType={item.get('itemType')}")
+
                 if item.get("itemType") != "classic":
+                    logger.debug(f"  Skipping - not classic type")
                     continue
 
                 item_content = item.get("itemContent", {})
                 if not item_content:
+                    logger.debug(f"  Skipping - no itemContent")
                     continue
 
-                # Check various places where video references can be
+                logger.debug(f"  itemContent keys: {list(item_content.keys())}")
 
-                # 1. Direct action target (most common for movies)
+                # Check action target (most common for movies)
                 action = item_content.get("action", {})
                 target = action.get("target", {})
                 value_layout = target.get("value_layout", {})
 
+                logger.debug(f"  action target type: {value_layout.get('type')}, id: {value_layout.get('id')}")
+
                 if value_layout.get("type") == "video":
+                    logger.debug(f"  Found video in action.target.value_layout")
                     vod_item = self._extract_vod_item_from_block_item(item)
                     if vod_item:
+                        logger.debug(f"  Successfully extracted VodItem: {vod_item.name}")
                         return vod_item
+                    else:
+                        logger.debug(f"  Failed to extract VodItem from item")
 
-                # 2. Primary/secondary actions
-                for action_key in ("onClickAction", "primaryAction", "secondaryAction"):
-                    alt_action = item_content.get(action_key, {})
-                    alt_target = alt_action.get("target", {})
-                    alt_value = alt_target.get("value_layout", {})
-                    if alt_value.get("type") == "video":
-                        vod_item = self._extract_vod_item_from_block_item(item)
-                        if vod_item:
-                            return vod_item
-
-                # 3. Direct itemContent type
+                # Check direct itemContent type
                 if item_content.get("type") == "video":
+                    logger.debug(f"  Found video in itemContent.type")
                     clip_id = item_content.get("id")
                     if clip_id:
                         vod_item = VodItem.create_episode(
@@ -375,7 +400,19 @@ class RTLPlusVodManager:
                         )
                         vod_item.description = item_content.get("description")
                         vod_item.logo_url = self._extract_thumbnail(item_content)
+                        logger.debug(f"  Created VodItem from direct video: {vod_item.name}")
                         return vod_item
+
+                # Check alternative action locations
+                for action_key in ("onClickAction", "primaryAction", "secondaryAction"):
+                    alt_action = item_content.get(action_key, {})
+                    alt_target = alt_action.get("target", {})
+                    alt_value = alt_target.get("value_layout", {})
+                    if alt_value.get("type") == "video":
+                        logger.debug(f"  Found video in {action_key}")
+                        vod_item = self._extract_vod_item_from_block_item(item)
+                        if vod_item:
+                            return vod_item
 
         return None
 
