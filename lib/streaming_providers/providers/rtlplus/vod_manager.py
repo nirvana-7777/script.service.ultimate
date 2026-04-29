@@ -292,12 +292,26 @@ class RTLPlusVodManager:
             logger.error(f"Failed to fetch layout for program {program_id}")
             return {"entries": [], "next_cursor": None, "total": 0}
 
-        # Debug: Log block structure
+        # Debug: Log layout structure safely
+        logger.debug(f"Layout type: {type(layout)}")
+        if not isinstance(layout, dict):
+            logger.error(f"Layout is not a dict, it's {type(layout)}")
+            return {"entries": [], "next_cursor": None, "total": 0}
+
         blocks = layout.get("blocks", [])
+        if blocks is None:
+            logger.error(f"layout.get('blocks') returned None")
+            blocks = []
+
         logger.debug(f"Program {program_id} has {len(blocks)} blocks")
         for i, block in enumerate(blocks):
-            logger.debug(
-                f"  Block {i}: type={block.get('type')}, template={block.get('content', {}).get('contentTemplateId')}, items={len(block.get('content', {}).get('items', []))}")
+            if not block:
+                logger.debug(f"  Block {i}: is None")
+                continue
+            content = block.get("content", {}) if isinstance(block, dict) else {}
+            content_template = content.get("contentTemplateId") if isinstance(content, dict) else None
+            items = content.get("items", []) if isinstance(content, dict) else []
+            logger.debug(f"  Block {i}: type={block.get('type')}, template={content_template}, items={len(items)}")
 
         # FIRST: Check if this is a movie (direct playable video)
         movie_item = self._find_direct_video_in_layout(layout)
@@ -336,61 +350,94 @@ class RTLPlusVodManager:
         Find a direct playable video item in a program layout.
         Searches through ALL blocks and items without filtering by template.
         """
-        for block in layout.get("blocks", []):
-            # Check all block types, not just bffPaginated
+        if not layout or not isinstance(layout, dict):
+            logger.error(f"_find_direct_video_in_layout: layout is {type(layout)}")
+            return None
+
+        blocks = layout.get("blocks", [])
+        if not blocks:
+            logger.debug("No blocks found in layout")
+            return None
+
+        logger.debug(f"Searching {len(blocks)} blocks for video content")
+
+        for block_idx, block in enumerate(blocks):
+            if not block or not isinstance(block, dict):
+                logger.debug(f"Block {block_idx} is invalid: {type(block)}")
+                continue
+
             block_type = block.get("type")
-            logger.debug(f"Checking block type: {block_type}")
+            logger.debug(f"Block {block_idx}: type={block_type}")
 
-            # Get items from different possible locations
-            items = []
-
-            # Standard location
+            # Get items from standard location
             content = block.get("content", {})
-            if content.get("items"):
-                items.extend(content.get("items", []))
+            if not isinstance(content, dict):
+                logger.debug(f"  Block {block_idx} content is not a dict: {type(content)}")
+                items = []
+            else:
+                items = content.get("items", [])
+                if items is None:
+                    items = []
 
-            # Also check alternative content
+            logger.debug(f"  Found {len(items)} items in block.content")
+
+            # Also check alternative content for items
             alt_content = block.get("alternativeContent", {})
-            if alt_content.get("concurrentBlocks"):
-                for cb in alt_content.get("concurrentBlocks", []):
-                    if cb.get("content", {}).get("items"):
-                        items.extend(cb.get("content", {}).get("items", []))
+            if isinstance(alt_content, dict):
+                concurrent_blocks = alt_content.get("concurrentBlocks", [])
+                if concurrent_blocks:
+                    logger.debug(f"  Found {len(concurrent_blocks)} concurrent blocks")
+                    for cb in concurrent_blocks:
+                        if isinstance(cb, dict):
+                            cb_content = cb.get("content", {})
+                            if isinstance(cb_content, dict):
+                                cb_items = cb_content.get("items", [])
+                                if cb_items:
+                                    items.extend(cb_items)
+                                    logger.debug(f"    Added {len(cb_items)} items from concurrent block")
 
-            logger.debug(f"Found {len(items)} items in block")
+            for item_idx, item in enumerate(items):
+                if not item or not isinstance(item, dict):
+                    logger.debug(f"  Item {item_idx} is invalid: {type(item)}")
+                    continue
 
-            for idx, item in enumerate(items):
-                logger.debug(f"Processing item {idx}: itemType={item.get('itemType')}")
+                item_type = item.get("itemType")
+                logger.debug(f"  Item {item_idx}: itemType={item_type}")
 
-                if item.get("itemType") != "classic":
-                    logger.debug(f"  Skipping - not classic type")
+                if item_type != "classic":
+                    logger.debug(f"    Skipping - not classic type")
                     continue
 
                 item_content = item.get("itemContent", {})
-                if not item_content:
-                    logger.debug(f"  Skipping - no itemContent")
+                if not item_content or not isinstance(item_content, dict):
+                    logger.debug(f"    Skipping - no valid itemContent")
                     continue
 
-                logger.debug(f"  itemContent keys: {list(item_content.keys())}")
+                logger.debug(f"    itemContent keys: {list(item_content.keys())}")
 
                 # Check action target (most common for movies)
                 action = item_content.get("action", {})
-                target = action.get("target", {})
-                value_layout = target.get("value_layout", {})
+                if isinstance(action, dict):
+                    target = action.get("target", {})
+                    if isinstance(target, dict):
+                        value_layout = target.get("value_layout", {})
+                        if isinstance(value_layout, dict):
+                            layout_type = value_layout.get("type")
+                            layout_id = value_layout.get("id")
+                            logger.debug(f"    action.target.value_layout: type={layout_type}, id={layout_id}")
 
-                logger.debug(f"  action target type: {value_layout.get('type')}, id: {value_layout.get('id')}")
-
-                if value_layout.get("type") == "video":
-                    logger.debug(f"  Found video in action.target.value_layout")
-                    vod_item = self._extract_vod_item_from_block_item(item)
-                    if vod_item:
-                        logger.debug(f"  Successfully extracted VodItem: {vod_item.name}")
-                        return vod_item
-                    else:
-                        logger.debug(f"  Failed to extract VodItem from item")
+                            if layout_type == "video":
+                                logger.debug(f"    Found video in action.target.value_layout")
+                                vod_item = self._extract_vod_item_from_block_item(item)
+                                if vod_item:
+                                    logger.debug(f"    Successfully extracted VodItem: {vod_item.name}")
+                                    return vod_item
+                                else:
+                                    logger.debug(f"    Failed to extract VodItem from item")
 
                 # Check direct itemContent type
                 if item_content.get("type") == "video":
-                    logger.debug(f"  Found video in itemContent.type")
+                    logger.debug(f"    Found video in itemContent.type")
                     clip_id = item_content.get("id")
                     if clip_id:
                         vod_item = VodItem.create_episode(
@@ -400,20 +447,23 @@ class RTLPlusVodManager:
                         )
                         vod_item.description = item_content.get("description")
                         vod_item.logo_url = self._extract_thumbnail(item_content)
-                        logger.debug(f"  Created VodItem from direct video: {vod_item.name}")
+                        logger.debug(f"    Created VodItem from direct video: {vod_item.name}")
                         return vod_item
 
                 # Check alternative action locations
                 for action_key in ("onClickAction", "primaryAction", "secondaryAction"):
                     alt_action = item_content.get(action_key, {})
-                    alt_target = alt_action.get("target", {})
-                    alt_value = alt_target.get("value_layout", {})
-                    if alt_value.get("type") == "video":
-                        logger.debug(f"  Found video in {action_key}")
-                        vod_item = self._extract_vod_item_from_block_item(item)
-                        if vod_item:
-                            return vod_item
+                    if isinstance(alt_action, dict):
+                        alt_target = alt_action.get("target", {})
+                        if isinstance(alt_target, dict):
+                            alt_value = alt_target.get("value_layout", {})
+                            if isinstance(alt_value, dict) and alt_value.get("type") == "video":
+                                logger.debug(f"    Found video in {action_key}")
+                                vod_item = self._extract_vod_item_from_block_item(item)
+                                if vod_item:
+                                    return vod_item
 
+        logger.debug("No video content found in any block")
         return None
 
     def _extract_seasons_from_layout(self, layout: Dict) -> List[VodCategory]:
