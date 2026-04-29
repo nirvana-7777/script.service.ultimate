@@ -474,8 +474,8 @@ class RTLPlusVodManager:
             return None
 
         # Get name with fallback
-        title = item_content.get("title", "")
-        extra_title = item_content.get("extraTitle", "")
+        title = item_content.get("title") or ""
+        extra_title = item_content.get("extraTitle") or ""
 
         if title and extra_title:
             full_title = f"{title} - {extra_title}"
