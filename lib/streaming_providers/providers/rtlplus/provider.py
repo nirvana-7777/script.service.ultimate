@@ -3,12 +3,11 @@ import json
 import time
 from datetime import datetime
 from typing import ClassVar, Dict, List, Optional, Tuple
-import urllib.parse
-
+from ..lib_drmtoday import  create_drmtoday_configs
 
 import requests
 
-from ...base.models import DRMConfig, DRMSystem, LicenseConfig, StreamingChannel, Event, LicenseUnwrapperParams
+from ...base.models import DRMConfig, StreamingChannel, Event
 from ...base.models.proxy_models import ProxyConfig
 from ...base.provider import StreamingProvider
 from ...base.utils import logger
@@ -484,7 +483,23 @@ class RTLPlusProvider(StreamingProvider):
             logger.error(f"RTL+ Manifest Unexpected Error: {str(e)}")
             return None
 
-    # Add to RTLPlusProvider class
+    def _get_drm_vod_or_event(self, content_id: str, **kwargs) -> List[DRMConfig]:
+        """
+        Get DRM configuration for VOD/event content using layout extraction.
+        """
+        # Fetch layout for the content
+        layout = self.fetch_layout(
+            layout_type="video",
+            content_id=content_id,
+            location=f"{self.rtl_config.beta_website}{content_id}"
+        )
+
+        if not layout:
+            logger.error(f"Failed to fetch layout for VOD/event content_id: {content_id}")
+            return []
+
+        # Use the common DRM extraction method
+        return self.get_drm_for_content(layout)
 
     def get_drm_for_content(self, layout_data: Dict) -> List[DRMConfig]:
         """
@@ -492,12 +507,6 @@ class RTLPlusProvider(StreamingProvider):
 
         This method works for any layout type (live channel, event folder, VOD)
         that contains video assets with DRM configuration.
-
-        Args:
-            layout_data: Layout JSON from fetch_layout()
-
-        Returns:
-            List of DRMConfig objects
         """
         assets = self.extract_video_assets(layout_data)
 
@@ -562,19 +571,14 @@ class RTLPlusProvider(StreamingProvider):
                 logger.error(f"Failed to get upfront token for {content_id}")
                 return []
 
-            drm_configs = []
-
-            # Build Widevine config
-            wv_config = self._get_widevine_config(upfront_token)
-            if wv_config:
-                drm_configs.append(wv_config)
-                logger.debug("Added Widevine DRM")
-
-            # Build PlayReady config
-            pr_config = self._get_playready_config(upfront_token)
-            if pr_config:
-                drm_configs.append(pr_config)
-                logger.debug("Added PlayReady DRM")
+            # Use the shared DRMToday factory to create both configs
+            drm_configs = create_drmtoday_configs(
+                upfront_token=upfront_token,
+                origin=self.rtl_config.beta_website.rstrip("/"),
+                referer=self.rtl_config.beta_website,
+                user_agent=self.rtl_config.user_agent,
+                playready_user_agent=RTLPlusDefaults.PLAYREADY_USER_AGENT,  # Edge for PlayReady
+            )
 
             logger.info(f"Built {len(drm_configs)} DRM configs (Widevine + PlayReady)")
             return drm_configs
@@ -583,55 +587,13 @@ class RTLPlusProvider(StreamingProvider):
             logger.error(f"Failed to get DRM: {e}")
             return []
 
-    def _get_widevine_config(self, upfront_token: str) -> Optional[DRMConfig]:
-        """Get Widevine DRM configuration."""
-        if not upfront_token:
-            return None
-
-        headers = self.rtl_config.get_drm_license_headers(upfront_token)
-        req_headers = urllib.parse.urlencode(headers)
-
-        license_config = LicenseConfig(
-            server_url=self.rtl_config.drmtoday_license_url,
-            req_headers=req_headers,
-            req_data="{CHA-RAW}",
-            use_http_get_request=False,
-            unwrapper="json,base64",
-            unwrapper_params=LicenseUnwrapperParams(path_data="license"),
-        )
-
-        return DRMConfig(
-            system=DRMSystem.WIDEVINE,
-            priority=3,
-            license=license_config,
-        )
-
-    def _get_playready_config(self, upfront_token: str) -> Optional[DRMConfig]:
-        """Get PlayReady DRM configuration."""
-        if not upfront_token:
-            return None
-
-        headers = self.rtl_config.get_playready_license_headers(upfront_token)
-        req_headers = urllib.parse.urlencode(headers)
-
-        return DRMConfig(
-            system=DRMSystem.PLAYREADY,
-            priority=2,
-            license=LicenseConfig(
-                server_url=RTLPlusDefaults.DRMTODAY_PLAYREADY_URL,
-                req_headers=req_headers,
-                req_data="{CHA-RAW}",
-                use_http_get_request=False,
-            ),
-        )
-
     def get_drm(self, content_id: str, **kwargs) -> List[DRMConfig]:
         """
         Get DRM configuration for content.
 
         Supports:
         - Linear TV channels (via channel_manager)
-        - VOD clips (via manifest extraction)
+        - VOD clips (via layout extraction)
         - Events (via event_manager)
         """
         # Try linear TV channel first
@@ -644,57 +606,16 @@ class RTLPlusProvider(StreamingProvider):
             if drm_configs:
                 return drm_configs
 
-        # Fall back to VOD/event DRM extraction
-        return self._get_drm_vod_or_event(content_id, **kwargs)
-
-    def _get_drm_vod_or_event(self, content_id: str, **kwargs) -> List[DRMConfig]:
-        """Original DRM logic for VOD/events."""
-        try:
-            manifest_data = self._fetch_manifest_data(content_id)
-            if manifest_data is None:
-                return []
-
-            drm_configs = []
-            access_token = self.authenticator.get_bearer_token()
-
-            for stream in manifest_data:
-                if stream.get("name") == "dashhd" and "licenses" in stream:
-                    licenses = stream.get("licenses", [])
-
-                    for license_info in licenses:
-                        license_url = license_info.get("uri", {}).get("href")
-                        if not license_url:
-                            continue
-
-                        if license_info.get("type") == "WIDEVINE":
-                            drm_configs.append(DRMConfig(
-                                system=DRMSystem.WIDEVINE,
-                                priority=3,
-                                license=LicenseConfig(
-                                    server_url=license_url,
-                                    req_headers=json.dumps(self.rtl_config.get_drm_headers(access_token)),
-                                    req_data="{CHA-RAW}",
-                                    use_http_get_request=False,
-                                ),
-                            ))
-                        elif license_info.get("type") == "PLAYREADY":
-                            drm_configs.append(DRMConfig(
-                                system=DRMSystem.PLAYREADY,
-                                priority=2,
-                                license=LicenseConfig(
-                                    server_url=license_url,
-                                    req_headers=json.dumps(self.rtl_config.get_playready_drm_headers(access_token)),
-                                    req_data="{CHA-RAW}",
-                                    use_http_get_request=False,
-                                ),
-                            ))
-                    break
-
+        # Fall back to VOD DRM extraction
+        # This will also handle VOD clips and any other content types
+        drm_configs = self._get_drm_vod_or_event(content_id, **kwargs)
+        if drm_configs:
             return drm_configs
 
-        except Exception as e:
-            logger.error(f"Error fetching DRM configs for RTL+ content {content_id}: {e}")
-            return []
+        # If we get here, no DRM config could be found for any content type
+        logger.error(
+            f"No DRM configuration found for content_id: {content_id} (not a valid channel, event, or VOD item)")
+        return []
 
     def _fetch_manifest_data(self, content_id: str) -> Optional[list]:
         """Fetch raw manifest data for VOD/events, with cache."""

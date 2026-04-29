@@ -29,9 +29,6 @@ class RTLPlusDefaults:
     USER_AGENT = get_user_agent("windows", "chrome")
     PLAYREADY_USER_AGENT = get_user_agent("windows", "edge")
 
-    # PlayReady SOAP action
-    PLAYREADY_SOAP_ACTION = "http://schemas.microsoft.com/DRM/2007/03/protocols/AcquireLicense"
-
     # Supported platform identifiers
     PLATFORM_WEB = "web"
     PLATFORM_DEFAULT = PLATFORM_WEB
@@ -59,14 +56,6 @@ class RTLPlusDefaults:
     USERS_ENDPOINT = "https://users.rtlde.bedrock.tech"
     PROFILES_PATH = "/v2/platforms/m6group_web/users/{user_id}/profiles"
     VERSION_ENDPOINT = "https://beta.plus.rtl.de/version.json"
-
-    # DRM license server
-    DRMTODAY_LICENSE_URL = "https://lic.drmtoday.com/license-proxy-widevine/cenc/"
-    DRMTODAY_PLAYREADY_URL = "https://lic.drmtoday.com/license-proxy-headerauth/drmtoday/RightsManager.asmx"
-
-    # DRM License Response Parsing
-    DRM_LICENSE_UNWRAPPER = "json,base64"
-    DRM_LICENSE_UNWRAPPER_PARAMS = {"path_data": "license"}
 
     # DRM Request Headers (common for all DRM types)
     DRM_COMMON_HEADERS = {
@@ -395,30 +384,6 @@ class RTLPlusHeaders:
         return headers
 
     @staticmethod
-    def get_drm_license_headers(upfront_token: str, user_agent: str) -> dict:
-        """Headers for DRM license request to DRMToday."""
-        headers = {
-            "content-type": "application/json",
-            "user-agent": user_agent,
-            "x-dt-auth-token": upfront_token,
-        }
-        # Add common DRM headers
-        headers.update(RTLPlusDefaults.DRM_COMMON_HEADERS)
-        return headers
-
-    @staticmethod
-    def get_playready_license_headers(upfront_token: str, user_agent: str = None) -> dict:
-        """Get headers for PlayReady license request to DRMToday."""
-        headers = {
-            "Content-Type": "text/xml; charset=UTF-8",
-            "SOAPAction": RTLPlusDefaults.PLAYREADY_SOAP_ACTION,
-            "User-Agent": user_agent or RTLPlusDefaults.PLAYREADY_USER_AGENT,
-            "X-Dt-Auth-Token": upfront_token,  # Note: Different case for PlayReady?
-        }
-        headers.update(RTLPlusDefaults.DRM_COMMON_HEADERS)
-        return headers
-
-    @staticmethod
     def get_drm_headers(access_token: str, device_id: str = None, user_agent: str = None) -> dict:
         return {
             "Origin": RTLPlusDefaults.BASE_WEBSITE.rstrip("/"),
@@ -427,19 +392,6 @@ class RTLPlusHeaders:
             "X-Auth-Token": access_token,
             "X-Device-Id": device_id or RTLPlusDefaults.DEVICE_ID,
             "X-Device-Name": RTLPlusDefaults.DEVICE_NAME,
-        }
-
-    @staticmethod
-    def get_playready_drm_headers(access_token: str, device_id: str = None) -> dict:
-        return {
-            "Content-Type": "text/xml; charset=UTF-8",
-            "Origin": RTLPlusDefaults.BASE_WEBSITE.rstrip("/"),
-            "Referer": RTLPlusDefaults.BASE_WEBSITE,
-            "SOAPAction": RTLPlusDefaults.PLAYREADY_SOAP_ACTION,
-            "User-Agent": RTLPlusDefaults.PLAYREADY_USER_AGENT,
-            "X-Auth-Token": access_token,
-            "X-Device-Id": device_id or RTLPlusDefaults.DEVICE_ID,
-            "X-Device-Name": RTLPlusDefaults.PLAYREADY_DEVICE_NAME,
         }
 
     @staticmethod
@@ -496,9 +448,6 @@ class RTLPlusConfig:
         self.time_endpoint = config.get("time_endpoint", RTLPlusDefaults.TIME_ENDPOINT)
         self.users_endpoint = config.get("users_endpoint", RTLPlusDefaults.USERS_ENDPOINT)
         self.profiles_path = config.get("profiles_path", RTLPlusDefaults.PROFILES_PATH)
-
-        # DRM license server
-        self.drmtoday_license_url = config.get("drmtoday_license_url", RTLPlusDefaults.DRMTODAY_LICENSE_URL)
 
         # Quality presets for linear TV
         self.preferred_qualities = config.get("preferred_qualities", RTLPlusDefaults.LINEAR_TV_PREFERRED_QUALITIES)
@@ -586,38 +535,6 @@ class RTLPlusConfig:
             device_id=self.device_id,
             client_version=self.client_version,
             user_agent=self.user_agent,
-        )
-
-    def get_drm_license_headers(self, upfront_token: str) -> dict:
-        return RTLPlusHeaders.get_drm_license_headers(
-            upfront_token=upfront_token,
-            user_agent=self.user_agent,
-        )
-
-    def get_playready_license_headers(self, upfront_token: str) -> dict:
-        return RTLPlusHeaders.get_playready_license_headers(
-            upfront_token=upfront_token,
-            user_agent=self.user_agent,
-        )
-
-    @staticmethod
-    def get_drm_unwrapper_config() -> tuple:
-        """Get unwrapper configuration for DRM license responses."""
-        return (
-            RTLPlusDefaults.DRM_LICENSE_UNWRAPPER,
-            RTLPlusDefaults.DRM_LICENSE_UNWRAPPER_PARAMS,
-        )
-    def get_drm_headers(self, access_token: str) -> dict:
-        return RTLPlusHeaders.get_drm_headers(
-            access_token=access_token,
-            device_id=self.device_id,
-            user_agent=self.user_agent,
-        )
-
-    def get_playready_drm_headers(self, access_token: str) -> dict:
-        return RTLPlusHeaders.get_playready_drm_headers(
-            access_token=access_token,
-            device_id=self.device_id,
         )
 
     def get_layout_url(self, layout_type: str, content_id: str) -> str:
