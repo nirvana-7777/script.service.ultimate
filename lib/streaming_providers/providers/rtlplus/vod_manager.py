@@ -100,7 +100,8 @@ class RTLPlusVodManager:
 
         if content_id.startswith("program:"):
             program_id = content_id[len("program:"):]
-            return self._get_program_contents(program_id, cursor, page_size)
+            slug = kwargs.get("slug")
+            return self._get_program_contents(program_id, cursor, page_size, slug=slug)
 
         if content_id.startswith("season:"):
             season_id = content_id[len("season:"):]
@@ -275,6 +276,7 @@ class RTLPlusVodManager:
             program_id: str,
             cursor: Optional[str] = None,
             page_size: int = 24,
+            slug: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Return contents for a program.
@@ -282,17 +284,22 @@ class RTLPlusVodManager:
         For movies: returns a single playable VodItem directly.
         For series: returns VodCategory for each season.
         """
+        # Build a correct x-location matching the real client URL pattern.
+        # Bedrock needs to see *-p_{id} to return the full Jumbotron action.
+        # The SEO slug prefix doesn't need to be exact; p_{id} works as fallback.
+        seo = slug or f"p_{program_id}"
+        location = f"{self.cfg.beta_website}{seo}-p_{program_id}"
+
         layout = self._provider.fetch_layout(
             layout_type="program",
             content_id=program_id,
-            location=f"{self.cfg.beta_website}p_{program_id}"
+            location=location,
         )
 
         if not layout:
             logger.error(f"Failed to fetch layout for program {program_id}")
             return {"entries": [], "next_cursor": None, "total": 0}
 
-        # Debug: Log layout structure safely
         logger.debug(f"Layout type: {type(layout)}")
         if not isinstance(layout, dict):
             logger.error(f"Layout is not a dict, it's {type(layout)}")
@@ -327,7 +334,6 @@ class RTLPlusVodManager:
         seasons = self._extract_seasons_from_layout(layout)
 
         if seasons:
-            # Apply pagination
             start = 0
             if cursor:
                 try:
@@ -725,27 +731,25 @@ class RTLPlusVodManager:
         if not content_id:
             return None
 
+        # Capture the SEO slug from the API (e.g. "american-pie")
+        seo_slug = value_layout.get("seo") or ""
+
         # Get name with fallbacks
         name = item_content.get("title")
 
         # If no title, try to get from folder mapping or other fields
         if not name and layout_type == "folder":
-            # Check if we have a mapped name for this folder ID
             if content_id in FOLDER_NAMES:
                 name = FOLDER_NAMES[content_id]
             else:
-                # Try to get from seo or other metadata
                 seo = value_layout.get("seo", "")
                 if seo:
-                    # Convert seo to readable name (e.g., "filme-rtl" -> "Filme")
                     name = seo.replace("-", " ").title()
                 else:
                     name = f"Kategorie {content_id}"
         elif not name:
-            # For programs, try alternative fields
             name = item_content.get("extraTitle") or item_content.get("highlight")
             if name:
-                # Clean up highlight if it contains date info
                 if "•" in str(name):
                     name = name.split("•")[0].strip()
 
@@ -758,6 +762,7 @@ class RTLPlusVodManager:
             provider=self._provider.provider_name,
             logo_url=self._extract_thumbnail(item_content),
             description=item_content.get("description") or item_content.get("highlight"),
+            slug=seo_slug,
         )
 
     @staticmethod
