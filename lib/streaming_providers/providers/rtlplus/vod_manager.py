@@ -421,25 +421,35 @@ class RTLPlusVodManager:
 
                 logger.debug(f"    itemContent keys: {list(item_content.keys())}")
 
-                # Check action target (most common for movies)
+                # ADD THIS DEBUGGING BLOCK HERE
                 action = item_content.get("action", {})
+                logger.debug(f"    action type: {type(action)}")
+                logger.debug(f"    action value: {action}")
+
                 if isinstance(action, dict):
                     target = action.get("target", {})
+                    logger.debug(f"    target type: {type(target)}")
+                    logger.debug(f"    target value: {target}")
+
                     if isinstance(target, dict):
                         value_layout = target.get("value_layout", {})
-                        if isinstance(value_layout, dict):
-                            layout_type = value_layout.get("type")
-                            layout_id = value_layout.get("id")
-                            logger.debug(f"    action.target.value_layout: type={layout_type}, id={layout_id}")
+                        logger.debug(f"    value_layout type: {type(value_layout)}")
+                        logger.debug(f"    value_layout value: {value_layout}")
 
-                            if layout_type == "video":
-                                logger.debug(f"    Found video in action.target.value_layout")
-                                vod_item = self._extract_vod_item_from_block_item(item)
-                                if vod_item:
-                                    logger.debug(f"    Successfully extracted VodItem: {vod_item.name}")
-                                    return vod_item
-                                else:
-                                    logger.debug(f"    Failed to extract VodItem from item")
+                        layout_type = value_layout.get("type") if isinstance(value_layout, dict) else None
+                        layout_id = value_layout.get("id") if isinstance(value_layout, dict) else None
+                        logger.debug(f"    action.target.value_layout: type={layout_type}, id={layout_id}")
+
+                        if layout_type == "video":
+                            logger.debug(f"    Found video in action.target.value_layout")
+                            vod_item = self._extract_vod_item_from_block_item(item)
+                            if vod_item:
+                                logger.debug(f"    Successfully extracted VodItem: {vod_item.name}")
+                                return vod_item
+                            else:
+                                logger.debug(f"    Failed to extract VodItem from item")
+                else:
+                    logger.debug(f"    action is not a dict, it's {type(action)}")
 
                 # Check direct itemContent type
                 if item_content.get("type") == "video":
@@ -762,7 +772,6 @@ class RTLPlusVodManager:
             provider=self._provider.provider_name,
             logo_url=self._extract_thumbnail(item_content),
             description=item_content.get("description") or item_content.get("highlight"),
-            slug=seo_slug,
         )
 
     @staticmethod
