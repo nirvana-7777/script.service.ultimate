@@ -270,13 +270,14 @@ class RTLPlusVodManager:
     # ------------------------------------------------------------------
 
     def _get_program_seasons(
-        self,
-        program_id: str,
-        cursor: Optional[str] = None,
-        page_size: int = 24,
+            self,
+            program_id: str,
+            cursor: Optional[str] = None,
+            page_size: int = 24,
     ) -> Dict[str, Any]:
         """
         Return a VodCategory per season for the given program.
+        For movies/single videos, return as a playable VodItem directly.
         Supports simple offset-based cursor pagination over the collected list.
         """
         layout = self._provider.fetch_layout(
@@ -286,26 +287,50 @@ class RTLPlusVodManager:
         if not layout:
             return {"entries": [], "next_cursor": None, "total": 0}
 
+        # Check if this is a movie (single playable item) instead of a series
+        for block in layout.get("blocks", []):
+            if block.get("type") != "bffPaginated":
+                continue
+
+            for item in block.get("content", {}).get("items", []):
+                if item.get("itemType") == "classic":
+                    action_target = item.get("itemContent", {}).get("action", {}).get("target", {})
+                    value_layout = action_target.get("value_layout", {})
+
+                    # If action targets a video directly (movie) and no seasons exist
+                    if value_layout.get("type") == "video":
+                        # This is a movie/single video - return as playable item
+                        vod_item = self._extract_vod_item_from_block_item(item)
+                        if vod_item:
+                            logger.debug(f"Program {program_id} is a movie, returning as playable item")
+                            return {
+                                "entries": [vod_item],
+                                "next_cursor": None,
+                                "total": 1,
+                            }
+                        break
+
+        # If we get here, it's a series with seasons
         seasons: List[VodCategory] = []
         for block in layout.get("blocks", []):
             if block.get("type") != "bffPaginated":
                 continue
 
             # Concurrent blocks = individual season selectors
-            for cb in (
-                block.get("alternativeContent", {}).get("concurrentBlocks", [])
-            ):
-                seasons.append(VodCategory(
-                    name=cb.get("title", "Unbekannte Staffel"),
-                    content_id=f"season:{cb.get('id')}",
-                    provider=self._provider.provider_name,
-                    description=None,
-                    child_count=(
-                        cb.get("content", {})
-                          .get("pagination", {})
-                          .get("totalItems", 0)
-                    ),
-                ))
+            alternative_content = block.get("alternativeContent")
+            if alternative_content:
+                for cb in alternative_content.get("concurrentBlocks", []):
+                    seasons.append(VodCategory(
+                        name=cb.get("title", "Unbekannte Staffel"),
+                        content_id=f"season:{cb.get('id')}",
+                        provider=self._provider.provider_name,
+                        description=None,
+                        child_count=(
+                            cb.get("content", {})
+                            .get("pagination", {})
+                            .get("totalItems", 0)
+                        ),
+                    ))
 
             # Block itself is a season selector
             tealium = block.get("analytics", {}).get("tealium", {})
@@ -313,15 +338,15 @@ class RTLPlusVodManager:
                 seasons.append(VodCategory(
                     name=(
                         block.get("content", {})
-                             .get("title", {})
-                             .get("short", "Alle Staffeln")
+                        .get("title", {})
+                        .get("short", "Alle Staffeln")
                     ),
                     content_id=f"season:{block.get('id')}",
                     provider=self._provider.provider_name,
                     child_count=(
                         block.get("content", {})
-                             .get("pagination", {})
-                             .get("totalItems", 0)
+                        .get("pagination", {})
+                        .get("totalItems", 0)
                     ),
                 ))
 
@@ -332,7 +357,7 @@ class RTLPlusVodManager:
             except ValueError:
                 start = 0
 
-        page = seasons[start : start + page_size]
+        page = seasons[start: start + page_size]
         next_cursor = str(start + page_size) if (start + page_size) < len(seasons) else None
 
         return {"entries": page, "next_cursor": next_cursor, "total": len(seasons)}
