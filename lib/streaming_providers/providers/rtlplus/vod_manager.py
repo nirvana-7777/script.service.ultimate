@@ -283,6 +283,7 @@ class RTLPlusVodManager:
         layout = self._provider.fetch_layout(
             layout_type="program",
             content_id=program_id,
+            location=f"{self.cfg.beta_website}american-pie-p_{program_id}",  # ← won't work generically
         )
         if not layout:
             return {"entries": [], "next_cursor": None, "total": 0}
