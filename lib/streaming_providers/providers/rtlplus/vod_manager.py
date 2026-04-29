@@ -143,14 +143,9 @@ class RTLPlusVodManager:
     def _get_root_category(self) -> Dict[str, Any]:
         """
         Return root VOD entries by parsing the Bedrock home layout.
-
-        Block structure observed in /alias/home/layout:
-          block[0] → "Weiterschauen" (continue watching, bffPaginated)
-          block[1] → folder navigation block (items with item_type "folder")
         """
         entries: List[Union[VodCategory, VodItem]] = []
 
-        # Use layout_type="alias" with content_id="home"
         layout = self._provider.fetch_layout(
             layout_type="alias",
             content_id="home",
@@ -161,8 +156,11 @@ class RTLPlusVodManager:
             logger.warning("Failed to fetch home layout for VOD root; returning empty")
             return {"entries": [], "next_cursor": None, "total": 0}
 
-        # Parse blocks as before...
         blocks = layout.get("blocks", [])
+        if not blocks:
+            logger.warning("No blocks found in home layout")
+            return {"entries": [], "next_cursor": None, "total": 0}
+
         for block in blocks:
             if block.get("type") != "bffPaginated":
                 continue
@@ -173,19 +171,32 @@ class RTLPlusVodManager:
                 .get("block_title", "")
             )
 
-            # Continue-watching items
-            if "Weiterschauen" in block_title or "Continue" in block_title:
-                for item in block.get("content", {}).get("items", []):
-                    vod_item = self._extract_vod_item_from_block_item(item)
-                    if vod_item:
-                        entries.append(vod_item)
+            # Get content with safe defaults
+            content = block.get("content", {})
+            items = content.get("items")
+
+            # Skip if items is None or empty
+            if not items:
+                logger.debug(f"No items in block: {block_title}")
                 continue
 
-            # Folder navigation block
-            for item in block.get("content", {}).get("items", []):
+            # Continue-watching items - look for items with video assets
+            if "Weiterschauen" in block_title or "Continue" in block_title:
+                for item in items:
+                    # Check if this item has video assets (playable content)
+                    if self._item_has_video_assets(item):
+                        vod_item = self._extract_vod_item_from_block_item(item)
+                        if vod_item:
+                            entries.append(vod_item)
+                continue
+
+            # Folder navigation block - look for folder/program navigation items
+            for item in items:
                 cat = self._extract_vod_category_from_block_item(item)
                 if cat:
                     entries.append(cat)
+
+        logger.info(f"Found {len(entries)} entries in root VOD category")
 
         return {
             "entries": entries,
@@ -382,18 +393,16 @@ class RTLPlusVodManager:
 
         return vod_item
 
-    def _extract_vod_item_from_block_item(
-        self, item: Dict
-    ) -> Optional[VodItem]:
+    def _extract_vod_item_from_block_item(self, item: Dict) -> Optional[VodItem]:
         """Build a VodItem from a list/block item (episode row)."""
-        if item.get("itemType") != "classic":
+        if not item or item.get("itemType") != "classic":
             return None
 
-        item_content = item.get("itemContent", {})
-        target = (
-            item_content.get("action", {})
-                        .get("target", {})
-        )
+        item_content = item.get("itemContent")
+        if not item_content:
+            return None
+
+        target = item_content.get("action", {}).get("target", {})
         value_layout = target.get("value_layout", {})
 
         if value_layout.get("type") != "video":
@@ -411,15 +420,17 @@ class RTLPlusVodManager:
         season_number: Optional[int] = None
         episode_number: Optional[int] = None
 
-        m = re.search(r"Staffel\s*(\d+)", highlight, re.IGNORECASE)
-        if m:
-            season_number = int(m.group(1))
-        m = re.search(r"Folge\s*(\d+)", highlight, re.IGNORECASE)
-        if m:
-            episode_number = int(m.group(1))
+        if highlight:
+            import re
+            m = re.search(r"Staffel\s*(\d+)", highlight, re.IGNORECASE)
+            if m:
+                season_number = int(m.group(1))
+            m = re.search(r"Folge\s*(\d+)", highlight, re.IGNORECASE)
+            if m:
+                episode_number = int(m.group(1))
 
         vod_item = VodItem.create_episode(
-            name=full_title or title,
+            name=full_title or title or "Unbekannte Episode",
             content_id=clip_id,
             provider=self._provider.provider_name,
             season_number=season_number,
@@ -432,19 +443,18 @@ class RTLPlusVodManager:
 
         return vod_item
 
-    def _extract_vod_category_from_block_item(
-        self, item: Dict
-    ) -> Optional[VodCategory]:
+    def _extract_vod_category_from_block_item(self, item: Dict) -> Optional[VodCategory]:
         """Build a VodCategory from a list/block item (folder or program row)."""
-        if item.get("itemType") != "classic":
+        if not item or item.get("itemType") != "classic":
             return None
 
-        item_content = item.get("itemContent", {})
-        value_layout = (
-            item_content.get("action", {})
-                        .get("target", {})
-                        .get("value_layout", {})
-        )
+        item_content = item.get("itemContent")
+        if not item_content:
+            return None
+
+        action = item_content.get("action", {})
+        target = action.get("target", {})
+        value_layout = target.get("value_layout", {})
 
         layout_type = value_layout.get("type")
         if layout_type not in ("folder", "program"):
