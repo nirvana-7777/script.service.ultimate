@@ -179,6 +179,23 @@ class RTLPlusProvider(StreamingProvider):
         headers = self.rtl_config.get_layout_headers(oauth_token, bedrock_token, location)
         params = {"blockPage": block_page, "nbPages": nb_pages}
 
+        # LOG ALL HEADERS BEING SENT
+        logger.debug(f"=== FETCH LAYOUT REQUEST HEADERS ===")
+        logger.debug(f"URL: {url}")
+        logger.debug(f"Method: GET")
+        logger.debug(f"Headers:")
+        # Mask sensitive tokens for security
+        safe_headers = {}
+        for key, value in headers.items():
+            if 'authorization' in key.lower() or 'token' in key.lower():
+                safe_headers[key] = f"{value[:20]}... (truncated)" if len(value) > 20 else "***"
+            else:
+                safe_headers[key] = value
+        logger.debug(f"{json.dumps(safe_headers, indent=2)}")
+        logger.debug(f"Params: {params}")
+        logger.debug(f"==================================")
+
+
         try:
             response = self.http_manager.get(
                 url, headers=headers, params=params, operation="api"
