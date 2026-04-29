@@ -283,7 +283,15 @@ class RTLPlusVodManager:
         layout = self._provider.fetch_layout(
             layout_type="program",
             content_id=program_id,
-            location=f"{self.cfg.beta_website}american-pie-p_{program_id}",  # ← won't work generically
+            location=f"{self.cfg.beta_website}p_{program_id}"
+        )
+        logger.debug(
+            f"Program {program_id} layout has blocks: "
+            + str([
+                (b.get("blockId"), b.get("content", {}).get("contentTemplateId"))
+                for b in layout.get("blocks", [])
+                if b.get("type") == "bffPaginated"
+            ])
         )
         if not layout:
             return {"entries": [], "next_cursor": None, "total": 0}
