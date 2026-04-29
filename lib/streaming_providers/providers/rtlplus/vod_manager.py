@@ -10,6 +10,7 @@ provider.get_manifest() / provider.get_drm() methods, which own
 the upfront-token flow and all format/quality selection logic.
 """
 
+import re
 from typing import Dict, Any, List, Optional, Union
 
 from ...base.models.vod import VodCategory, VodItem
@@ -17,6 +18,14 @@ from ...base.models import DRMConfig
 from ...base.utils.logger import logger
 from .constants import RTLPlusDefaults
 
+FOLDER_NAMES = {
+    "4": "Filme",
+    "3": "Serien",
+    "1": "Reality & Shows",
+    "148": "Kids",
+    "165": "Anime",
+    "6": "Sport",
+}
 
 class RTLPlusVodManager:
     """
@@ -142,6 +151,9 @@ class RTLPlusVodManager:
     def _get_root_category(self) -> Dict[str, Any]:
         try:
             entries: List[Union[VodCategory, VodItem]] = []
+            folder_categories = []  # For folder types (main categories)
+            program_categories = []  # For program types (shows/series)
+            future_events_count = 0
 
             layout = self._provider.fetch_layout(
                 layout_type="alias",
@@ -173,33 +185,43 @@ class RTLPlusVodManager:
                     if not item:
                         continue
 
+                    item_content = item.get("itemContent")
+                    if not item_content:
+                        continue
+
+                    # Skip future events
+                    if self._is_future_event(item_content):
+                        future_events_count += 1
+                        continue
+
                     # Try to extract as category first
                     cat = self._extract_vod_category_from_block_item(item)
                     if cat:
-                        entries.append(cat)
-                        logger.debug(f"Added category: {cat.name} ({cat.content_id})")
+                        # Separate folders from programs
+                        if cat.content_id.startswith("folder:"):
+                            folder_categories.append(cat)
+                        else:
+                            program_categories.append(cat)
                         continue
 
                     # If not a category, try as VOD item
                     vod_item = self._extract_vod_item_from_block_item(item)
                     if vod_item:
-                        entries.append(vod_item)
-                        logger.debug(f"Added VOD item: {vod_item.name} ({vod_item.content_id})")
+                        program_categories.append(vod_item)
 
-            logger.info(f"Found {len(entries)} entries in root VOD category")
+            # Combine: folders first, then programs
+            entries = folder_categories + program_categories
 
-            # Filter out any entries with None names just in case
-            valid_entries = []
-            for entry in entries:
-                if hasattr(entry, 'name') and entry.name:
-                    valid_entries.append(entry)
-                else:
-                    logger.warning(f"Entry has no name: {entry}")
+            if future_events_count > 0:
+                logger.info(f"Filtered out {future_events_count} future events from VOD root")
+
+            logger.info(f"Found {len(entries)} entries in root VOD category "
+                        f"({len(folder_categories)} folders, {len(program_categories)} programs)")
 
             return {
-                "entries": valid_entries,
+                "entries": entries,
                 "next_cursor": None,
-                "total": len(valid_entries),
+                "total": len(entries),
             }
         except Exception as e:
             logger.error(f"Error in _get_root_category: {e}", exc_info=True)
@@ -495,11 +517,25 @@ class RTLPlusVodManager:
         if not content_id:
             return None
 
-        # Get name with fallback
+        # Get name with fallbacks
         name = item_content.get("title")
-        if not name:
-            # Try to extract from other fields
-            name = item_content.get("extraTitle") or item_content.get("highlight") or f"{layout_type}_{content_id}"
+
+        # If no title, try to get from folder mapping or other fields
+        if not name and layout_type == "folder":
+            # Check if we have a mapped name for this folder ID
+            if content_id in FOLDER_NAMES:
+                name = FOLDER_NAMES[content_id]
+            else:
+                # Try to get from seo or other metadata
+                seo = value_layout.get("seo", "")
+                if seo:
+                    # Convert seo to readable name (e.g., "filme-rtl" -> "Filme")
+                    name = seo.replace("-", " ").title()
+                else:
+                    name = f"Kategorie {content_id}"
+        elif not name:
+            # For programs, try alternative fields
+            name = item_content.get("extraTitle") or item_content.get("highlight")
             if name:
                 # Clean up highlight if it contains date info
                 if "•" in str(name):
@@ -513,7 +549,7 @@ class RTLPlusVodManager:
             content_id=f"{layout_type}:{content_id}",
             provider=self._provider.provider_name,
             logo_url=self._extract_thumbnail(item_content),
-            description=item_content.get("description"),
+            description=item_content.get("description") or item_content.get("highlight"),
         )
 
     @staticmethod
@@ -562,6 +598,62 @@ class RTLPlusVodManager:
                 except ValueError:
                     pass
         return None
+
+    @staticmethod
+    def _is_future_event(item_content: Dict) -> bool:
+        """Check if item is a future event (should be excluded from VOD)."""
+        highlight = item_content.get("highlight", "")
+        if not highlight:
+            return False
+
+        import re
+        from datetime import datetime
+
+        # Check for German date patterns with future dates
+        date_patterns = [
+            r"(\d{2})\.(\d{2})\.(\d{2}),?\s*(\d{2}):(\d{2})",  # DD.MM.YY, HH:MM
+            r"(\d{2})\.(\d{2})\.(\d{2})\s+(\d{2}):(\d{2})",  # DD.MM.YY HH:MM
+        ]
+
+        for pattern in date_patterns:
+            match = re.search(pattern, highlight)
+            if match:
+                day, month, year, hour, minute = map(int, match.groups())
+                # Convert 2-digit year to 4-digit
+                if year < 100:
+                    year = 2000 + year
+                try:
+                    event_date = datetime(year, month, day, hour, minute)
+                    # If date is in the future, this is an upcoming event
+                    if event_date > datetime.now():
+                        return True
+                except ValueError:
+                    continue
+        return False
+
+    @staticmethod
+    def _is_event_item(item_content: Dict) -> bool:
+        """Check if item is an event (vs regular VOD content)."""
+        # Events typically have these characteristics:
+        # 1. Have a highlight with datetime
+        # 2. Action target is a folder (not program/video)
+        # 3. Often have sports or event keywords
+
+        highlight = item_content.get("highlight", "")
+        if not highlight:
+            return False
+
+        # Check if it has date/time info
+        has_datetime = bool(re.search(r"\d{2}\.\d{2}\.\d{2}", highlight))
+
+        # Check action target type
+        action = item_content.get("action", {})
+        target = action.get("target", {})
+        value_layout = target.get("value_layout", {})
+        layout_type = value_layout.get("type")
+
+        # Events are typically folders, not programs or videos
+        return has_datetime and layout_type == "folder"
 
     # ------------------------------------------------------------------
     # Cache management

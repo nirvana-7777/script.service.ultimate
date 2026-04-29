@@ -14,7 +14,7 @@ from ...base.utils.logger import logger
 class RTLPlusDefaults:
     """Default values for RTL+ provider"""
 
-    RTLPLUS_LOGO = "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f4/RTL%2B_Logo_2021.svg/2560px-RTL%2B_Logo_2021.svg.png"
+    RTLPLUS_LOGO = "https://upload.wikimedia.org/wikipedia/commons/0/0f/RTL_DE_Logo_2021_pink_blau_gruen.png"
 
     # Device information
     DEVICE_ID = "8c3f37cc-13a3-4141-bd0f-e4b3673fe5e4"
