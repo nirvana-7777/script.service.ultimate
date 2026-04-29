@@ -292,22 +292,35 @@ class RTLPlusVodManager:
             if block.get("type") != "bffPaginated":
                 continue
 
-            for item in block.get("content", {}).get("items", []):
-                if item.get("itemType") == "classic":
-                    action_target = item.get("itemContent", {}).get("action", {}).get("target", {})
-                    value_layout = action_target.get("value_layout", {})
+            items = block.get("content", {}).get("items", [])
+            for item in items:
+                if item.get("itemType") != "classic":
+                    continue
 
-                    # If action targets a video directly (movie) and no seasons exist
-                    if value_layout.get("type") == "video":
-                        # This is a movie/single video - return as playable item
-                        vod_item = self._extract_vod_item_from_block_item(item)
-                        if vod_item:
-                            logger.debug(f"Program {program_id} is a movie, returning as playable item")
-                            return {
-                                "entries": [vod_item],
-                                "next_cursor": None,
-                                "total": 1,
-                            }
+                item_content = item.get("itemContent", {})
+                if not item_content:
+                    continue
+
+                # Get the action target
+                action = item_content.get("action", {})
+                target = action.get("target", {})
+                value_layout = target.get("value_layout", {})
+
+                # Check if this directly points to a video (movie)
+                if value_layout.get("type") == "video":
+                    # This is a movie/single video
+                    logger.debug(f"Program {program_id} is a movie, extracting VodItem")
+                    vod_item = self._extract_vod_item_from_block_item(item)
+                    if vod_item:
+                        logger.debug(f"Successfully extracted movie: {vod_item.name}")
+                        return {
+                            "entries": [vod_item],
+                            "next_cursor": None,
+                            "total": 1,
+                        }
+                    else:
+                        logger.warning(f"Failed to extract VodItem from movie item for program {program_id}")
+                        # Continue to season extraction as fallback
                         break
 
         # If we get here, it's a series with seasons
@@ -359,6 +372,9 @@ class RTLPlusVodManager:
 
         page = seasons[start: start + page_size]
         next_cursor = str(start + page_size) if (start + page_size) < len(seasons) else None
+
+        if not seasons:
+            logger.warning(f"No seasons found for program {program_id} and not a movie")
 
         return {"entries": page, "next_cursor": next_cursor, "total": len(seasons)}
 
