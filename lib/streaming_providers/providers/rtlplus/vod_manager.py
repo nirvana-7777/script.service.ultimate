@@ -140,68 +140,53 @@ class RTLPlusVodManager:
     # ------------------------------------------------------------------
 
     def _get_root_category(self) -> Dict[str, Any]:
-        """
-        Return root VOD entries by parsing the Bedrock home layout.
-        """
-        entries: List[Union[VodCategory, VodItem]] = []
+        try:
+            entries: List[Union[VodCategory, VodItem]] = []
 
-        layout = self._provider.fetch_layout(
-            layout_type="alias",
-            content_id="home",
-            location=f"{self.cfg.beta_website}",
-        )
-
-        if not layout:
-            logger.warning("Failed to fetch home layout for VOD root; returning empty")
-            return {"entries": [], "next_cursor": None, "total": 0}
-
-        blocks = layout.get("blocks", [])
-        if not blocks:
-            logger.warning("No blocks found in home layout")
-            return {"entries": [], "next_cursor": None, "total": 0}
-
-        for block in blocks:
-            if block.get("type") != "bffPaginated":
-                continue
-
-            block_title = (
-                block.get("analytics", {})
-                .get("tealium", {})
-                .get("block_title", "")
+            layout = self._provider.fetch_layout(
+                layout_type="alias",
+                content_id="home",
+                location=f"{self.cfg.beta_website}",
             )
 
-            # Get content with safe defaults
-            content = block.get("content", {})
-            items = content.get("items")
+            if not layout:
+                logger.warning("Failed to fetch home layout for VOD root; returning empty")
+                return {"entries": [], "next_cursor": None, "total": 0}
 
-            # Skip if items is None or empty
-            if not items:
-                logger.debug(f"No items in block: {block_title}")
-                continue
+            blocks = layout.get("blocks", [])
 
-            # Continue-watching items - look for items with video assets
-            if "Weiterschauen" in block_title or "Continue" in block_title:
+            for block in blocks:
+                if block.get("type") != "bffPaginated":
+                    continue
+
+                # Get items safely
+                items = block.get("content", {}).get("items")
+                if not items:
+                    continue
+
+                # Process each block
                 for item in items:
-                    # Check if this item has video assets (playable content)
-                    if self._item_has_video_assets(item):
-                        vod_item = self._extract_vod_item_from_block_item(item)
-                        if vod_item:
-                            entries.append(vod_item)
-                continue
+                    # Try to extract as category first
+                    cat = self._extract_vod_category_from_block_item(item)
+                    if cat:
+                        entries.append(cat)
+                        continue
 
-            # Folder navigation block - look for folder/program navigation items
-            for item in items:
-                cat = self._extract_vod_category_from_block_item(item)
-                if cat:
-                    entries.append(cat)
+                    # If not a category, try as VOD item
+                    vod_item = self._extract_vod_item_from_block_item(item)
+                    if vod_item:
+                        entries.append(vod_item)
 
-        logger.info(f"Found {len(entries)} entries in root VOD category")
+            logger.info(f"Found {len(entries)} entries in root VOD category")
 
-        return {
-            "entries": entries,
-            "next_cursor": None,
-            "total": len(entries),
-        }
+            return {
+                "entries": entries,
+                "next_cursor": None,
+                "total": len(entries),
+            }
+        except Exception as e:
+            logger.error(f"Error in _get_root_category: {e}", exc_info=True)
+            return {"entries": [], "next_cursor": None, "total": 0}
 
     # ------------------------------------------------------------------
     # Folder → program listing
