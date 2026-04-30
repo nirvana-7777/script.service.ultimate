@@ -5,8 +5,6 @@ from datetime import datetime
 from typing import ClassVar, Dict, List, Optional, Tuple
 from ..lib_drmtoday import  create_drmtoday_configs
 
-import requests
-
 from ...base.models import DRMConfig, StreamingChannel, Event
 from ...base.models.proxy_models import ProxyConfig
 from ...base.provider import StreamingProvider
@@ -488,44 +486,51 @@ class RTLPlusProvider(StreamingProvider):
         )
 
     def _get_manifest_vod_or_event(self, content_id: str, **kwargs) -> Optional[str]:
-        """Original manifest logic for VOD/events using layout extraction."""
-        try:
-            manifest_data = self._fetch_manifest_data(content_id)
-            if manifest_data is None:
-                return None
+        """
+        Get manifest URL for VOD/event content using Bedrock layout extraction.
+        """
+        # Get program context from kwargs (set when navigating from VOD categories)
+        program_slug = kwargs.get("program_slug")
+        program_id = kwargs.get("program_id")
 
-            quality_preference = ["dashhd", "dashfree", "dashsd"]
+        # Build the correct location header
+        if program_slug and program_id:
+            # Convert clip_1417600 to american-pie-c_1417600
+            clip_slug = program_slug
+            if content_id.startswith("clip_"):
+                clip_slug = f"{program_slug}-c_{content_id.replace('clip_', '')}"
+            location = f"{self.rtl_config.beta_website}{program_slug}-p_{program_id}/video/{clip_slug}"
+        else:
+            # Fallback - might not work for all content
+            location = f"{self.rtl_config.beta_website}{content_id}"
 
-            for quality in quality_preference:
-                for stream in manifest_data:
-                    if stream.get("name") == quality:
-                        sources = stream.get("sources", [])
-                        non_yospace_sources = [s for s in sources if not s.get("isYospace", False)]
+        # Fetch the video layout
+        layout = self.fetch_layout(
+            layout_type="video",
+            content_id=content_id,
+            location=location
+        )
 
-                        if non_yospace_sources:
-                            selected_url = non_yospace_sources[0].get("url")
-                            logger.info(f"RTL+ Selected Manifest URL: {selected_url}")
-                            return selected_url
-
-            for stream in manifest_data:
-                sources = stream.get("sources", [])
-                if sources:
-                    fallback_url = sources[0].get("url")
-                    logger.info(f"RTL+ Using Fallback Manifest URL: {fallback_url}")
-                    return fallback_url
-
-            logger.warning("RTL+ No valid manifest URL found in response")
+        if not layout:
+            logger.error(f"Failed to fetch video layout for {content_id}")
             return None
 
-        except requests.RequestException as e:
-            logger.error(f"RTL+ Manifest HTTP Error: {str(e)}")
+        # Extract assets using the common method
+        assets = self.extract_video_assets(layout)
+
+        if not assets:
+            logger.warning(f"No video assets found for {content_id}")
             return None
-        except json.JSONDecodeError as e:
-            logger.error(f"RTL+ Manifest JSON Parse Error: {str(e)}")
-            return None
-        except Exception as e:
-            logger.error(f"RTL+ Manifest Unexpected Error: {str(e)}")
-            return None
+
+        # Select best manifest URL
+        manifest_url = self.extract_best_manifest_url(assets)
+
+        if manifest_url:
+            logger.info(f"Found manifest URL for {content_id}: {manifest_url[:100]}...")
+            return self.resolve_redirect(manifest_url)
+
+        logger.warning(f"No suitable manifest URL found for {content_id}")
+        return None
 
     def _get_drm_vod_or_event(self, content_id: str, **kwargs) -> List[DRMConfig]:
         """
