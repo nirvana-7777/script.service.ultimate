@@ -216,27 +216,43 @@ class RTLPlusProvider(StreamingProvider):
     def extract_video_assets(layout_data: Dict) -> List[Dict]:
         """
         Extract video assets from a layout response.
-
-        Returns list of asset dicts with keys: path, quality, format, drm, etc.
         """
         assets = []
         blocks = layout_data.get("blocks", [])
 
-        for block in blocks:
+        logger.debug(f"extract_video_assets: Found {len(blocks)} blocks")
+
+        for block_idx, block in enumerate(blocks):
+            block_type = block.get("type")
+            logger.debug(f"Block {block_idx}: type={block_type}")
+
             if block.get("type") != "bffPaginated":
+                logger.debug(f"  Skipping block {block_idx} - not bffPaginated")
                 continue
 
             items = block.get("content", {}).get("items", [])
-            for item in items:
+            logger.debug(f"  Block {block_idx} has {len(items)} items")
+
+            for item_idx, item in enumerate(items):
+                item_type = item.get("itemType")
+                logger.debug(f"    Item {item_idx}: itemType={item_type}")
+
                 if item.get("itemType") == "video":
                     video = item.get("itemContent", {}).get("video", {})
-                    assets.extend(video.get("assets", []))
+                    video_assets = video.get("assets", [])
+                    logger.debug(f"      Found {len(video_assets)} assets in video item")
+                    assets.extend(video_assets)
                 elif item.get("itemType") == "classic":
                     # Some layouts wrap video inside classic items
                     item_content = item.get("itemContent", {})
                     video = item_content.get("video", {})
-                    assets.extend(video.get("assets", []))
+                    video_assets = video.get("assets", [])
+                    logger.debug(f"      Found {len(video_assets)} assets in classic item")
+                    assets.extend(video_assets)
+                else:
+                    logger.debug(f"      Skipping item - unknown itemType: {item_type}")
 
+        logger.debug(f"extract_video_assets: Total assets found: {len(assets)}")
         return assets
 
     @staticmethod
