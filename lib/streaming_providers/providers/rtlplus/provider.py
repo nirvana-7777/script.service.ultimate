@@ -468,12 +468,23 @@ class RTLPlusProvider(StreamingProvider):
     @staticmethod
     def _is_linear_tv_channel(content_id: str) -> bool:
         """Determine if content_id refers to a linear TV channel."""
+        # VOD clips have patterns like "clip_123456" or contain "clip"
+        if "clip_" in content_id or content_id.startswith("clip"):
+            return False
+
+        # Also check for common VOD patterns
+        if content_id.startswith("rrn:") or "/" in content_id:
+            return False
+
+        # Event folder IDs are digits
+        if content_id.isdigit():
+            return False
+
         return (
-            ":" not in content_id
-            and not content_id.startswith("rrn:")
-            and not content_id.startswith("/")
-            and not content_id.startswith("http")
-            and not content_id.isdigit()  # Event folder IDs are digits
+                ":" not in content_id
+                and not content_id.startswith("rrn:")
+                and not content_id.startswith("/")
+                and not content_id.startswith("http")
         )
 
     def _get_manifest_vod_or_event(self, content_id: str, **kwargs) -> Optional[str]:
