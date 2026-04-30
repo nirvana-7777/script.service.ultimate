@@ -17,7 +17,8 @@ class RTLPlusDefaults:
     RTLPLUS_LOGO = "https://upload.wikimedia.org/wikipedia/commons/0/0f/RTL_DE_Logo_2021_pink_blau_gruen.png"
 
     # Device information
-    DEVICE_ID = "8c3f37cc-13a3-4141-bd0f-e4b3673fe5e4"
+#    DEVICE_ID = "8c3f37cc-13a3-4141-bd0f-e4b3673fe5e4"
+    DEVICE_ID = "_luid_f4f52150-0645-43f8-a8f5-029341f49980"
     DEVICE_NAME = "Linux Chrome"
     PLAYREADY_DEVICE_NAME = "Windows Edge"
 
