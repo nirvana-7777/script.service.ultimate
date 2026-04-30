@@ -216,16 +216,15 @@ class RTLPlusChannelManager:
     ) -> Optional[str]:
         """
         Get the best manifest URL for a channel based on preferences.
-
-        Args:
-            channel_id: Can be either slug (rtlde_rtl) or seo (rtl)
-            preferred_quality
-            preferred_format
-            preferred_drm_type
         """
         token = self._provider.get_user_bearer_token()
         if not token:
             logger.error("User authentication required for linear TV stream, not authenticated")
+            return None
+
+        # Ensure profile is selected
+        if not self.auth.ensure_profile_selected():
+            logger.error("Failed to select profile for channel stream")
             return None
 
         channel_seo = self._normalize_channel_identifier(channel_id)

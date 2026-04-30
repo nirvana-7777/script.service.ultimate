@@ -313,6 +313,7 @@ class RTLPlusHeaders:
             auth_token: str,
             timestamp: int,
             profile_id: str = None,
+            user_id: str = None,  # Add user_id parameter
     ) -> dict:
         """Headers for obtaining Bedrock token."""
         headers = dict(RTLPlusHeaders._COMMON_HEADERS)
@@ -320,8 +321,9 @@ class RTLPlusHeaders:
             "authorization": f"Bearer {oauth_token}",
             "origin": RTLPlusDefaults.BETA_WEBSITE.rstrip("/"),
             "referer": RTLPlusDefaults.BETA_WEBSITE,
-            "request-timeout": "10000",
             "user-agent": user_agent,
+            "x-auth-device-id": device_id,
+            "x-auth-device-name": RTLPlusDefaults.DEVICE_NAME,
             "x-auth-device-player-size-width": str(RTLPlusDefaults.DEVICE_PLAYER_SIZE_WIDTH),
             "x-auth-device-player-size-height": str(RTLPlusDefaults.DEVICE_PLAYER_SIZE_HEIGHT),
             "x-auth-token": auth_token,
@@ -329,8 +331,17 @@ class RTLPlusHeaders:
             "x-client-release": client_version,
             "x-customer-name": "rtlde",
         })
+
+        # Add profile_id if available
         if profile_id:
             headers["x-auth-profile-id"] = profile_id
+            logger.debug(f"Adding x-auth-profile-id header: {profile_id}")
+
+        # Add user_id as x-auth-gigya-uid if available
+        if user_id:
+            headers["x-auth-gigya-uid"] = user_id
+            logger.debug(f"Adding x-auth-gigya-uid header: {user_id}")
+
         return headers
 
     @staticmethod
@@ -372,9 +383,10 @@ class RTLPlusHeaders:
             "authorization": f"Bearer {oauth_token}",
             "origin": RTLPlusDefaults.BETA_WEBSITE.rstrip("/"),
             "referer": RTLPlusDefaults.BETA_WEBSITE,
-            "request-timeout": "10000",
             "user-agent": user_agent,
             "x-bedrock-token": bedrock_token,
+            "x-auth-device-id": device_id,
+            "x-auth-device-name": RTLPlusDefaults.DEVICE_NAME,
             "x-client-release": client_version,
             "x-customer-name": "rtlde",
         })
@@ -503,7 +515,7 @@ class RTLPlusConfig:
         )
 
     def get_bedrock_token_headers(self, oauth_token: str, auth_token: str, timestamp: int,
-                                  profile_id: str = None) -> dict:
+                                  profile_id: str = None, user_id: str = None) -> dict:
         """Get headers for Bedrock token request."""
         return RTLPlusHeaders.get_bedrock_token_headers(
             oauth_token=oauth_token,
@@ -513,6 +525,7 @@ class RTLPlusConfig:
             auth_token=auth_token,
             timestamp=timestamp,
             profile_id=profile_id,
+            user_id=user_id,  # Pass through
         )
 
     def get_bedrock_layout_headers(self, oauth_token: str, bedrock_token: str, location: str = None) -> dict:

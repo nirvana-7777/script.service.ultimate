@@ -283,25 +283,50 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
         data = f"{device_id}{ts_str}"
         token = hashlib.sha1(data.encode()).hexdigest()
 
-        logger.debug(f"Generated auth token: {token} for device {device_id[:8]}... at {timestamp}")
+        # Alternative: Try with colon separator
+        # data = f"{device_id}:{ts_str}"
+        # token = hashlib.sha1(data.encode()).hexdigest()
+
+        logger.debug(f"Generated auth token for device {device_id} at {timestamp}: {token}")
         return token
 
     def get_bedrock_token(self, force_refresh: bool = False) -> str:
         """Get or refresh Bedrock token, including profile ID if available."""
         if not force_refresh and self._bedrock_token and self._bedrock_token_expiry > time.time() + 300:
+            logger.debug(f"Using cached bedrock token (expires at {self._bedrock_token_expiry})")
             return self._bedrock_token
 
         oauth_token = self.get_bearer_token()
+        if not oauth_token:
+            raise ValueError("No OAuth token available for Bedrock token request")
+
+        # Get user ID (Gigya UID)
+        user_id = self.get_user_id_from_token()
+        if not user_id:
+            logger.warning("No user ID available for Bedrock token request")
+            # Continue without user_id - might still work for anonymous?
 
         # Get timestamp and generate auth token
         timestamp = self._get_server_timestamp()
         auth_token = self._generate_auth_token(self.config.device_id, timestamp)
 
+        logger.debug(f"Timestamp: {timestamp}, Auth token: {auth_token}")
+
         # Get profile ID if available
         profile_id = self.get_selected_profile_id()
+        logger.debug(f"Using profile_id: {profile_id}")
 
-        # Get headers with profile_id
-        headers = self.config.get_bedrock_token_headers(oauth_token, auth_token, timestamp, profile_id)
+        # Get headers with profile_id and user_id
+        headers = self.config.get_bedrock_token_headers(
+            oauth_token=oauth_token,
+            auth_token=auth_token,
+            timestamp=timestamp,
+            profile_id=profile_id,
+            user_id=user_id,  # Add user_id parameter
+        )
+
+        logger.debug(
+            f"Requesting Bedrock token with headers: { {k: v[:20] if 'token' in k.lower() or 'authorization' in k.lower() else v for k, v in headers.items()} }")
 
         response = self.http_manager.get(
             self.config.bedrock_auth_url,
@@ -312,6 +337,7 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
 
         data = response.json()
         self._bedrock_token = data.get("token")
+        logger.debug(f"Bedrock token response: {data.keys() if data else 'empty'}")
 
         if self._bedrock_token:
             try:
@@ -323,9 +349,12 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
                         payload += "=" * padding
                     decoded = json.loads(base64.b64decode(payload))
                     self._bedrock_token_expiry = decoded.get("exp", 0)
-                    logger.debug(f"Bedrock token obtained with profile: {decoded.get('profileid', 'none')}")
+                    logger.debug(
+                        f"Bedrock token obtained with profile: {decoded.get('profileid', 'none')}, expires: {self._bedrock_token_expiry}")
             except Exception as e:
                 logger.debug(f"Could not decode Bedrock token expiry: {e}")
+                # Set default expiry (1 hour)
+                self._bedrock_token_expiry = time.time() + 3600
 
         logger.debug("RTL+ Bedrock token obtained successfully")
         return self._bedrock_token
@@ -499,14 +528,17 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
 
             try:
                 profiles = self.get_user_profiles(user_id)
-                # Select first adult profile
+                logger.debug(f"Fetched profiles: {profiles}")
+
+                # Select first adult profile (not kid profile)
                 adult_profiles = [p for p in profiles if p.get("profile_type") == "adult"]
                 if not adult_profiles:
                     logger.error("No adult profiles found")
                     return False
 
                 profile_id = adult_profiles[0].get("uid")
-                logger.info(f"Selected profile: {adult_profiles[0].get('username')} (ID: {profile_id})")
+                profile_username = adult_profiles[0].get("username")
+                logger.info(f"Selected profile: {profile_username} (ID: {profile_id})")
             except Exception as e:
                 logger.error(f"Failed to fetch/select profile: {e}")
                 return False
@@ -522,6 +554,7 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
         # Invalidate Bedrock token so it gets re-issued with the profile ID
         self.invalidate_bedrock_token()
 
+        logger.info(f"Profile selected successfully: {profile_id}")
         return True
 
     def get_selected_profile_id(self) -> Optional[str]:

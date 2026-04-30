@@ -521,10 +521,12 @@ class RTLPlusProvider(StreamingProvider):
     def get_drm_for_content(self, layout_data: Dict) -> List[DRMConfig]:
         """
         Extract DRM configuration from layout data.
-
-        This method works for any layout type (live channel, event folder, VOD)
-        that contains video assets with DRM configuration.
         """
+        # Ensure profile is selected for user-authenticated sessions
+        if self.authenticator.has_user_credentials():
+            if not self.authenticator.ensure_profile_selected():
+                logger.warning("Failed to select profile for DRM request")
+
         assets = self.extract_video_assets(layout_data)
 
         if not assets:
