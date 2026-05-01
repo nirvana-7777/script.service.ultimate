@@ -34,9 +34,9 @@ class RTLPlusVodManager:
 
     Navigation hierarchy:
         root
-        └── folder:<id>        (Bedrock folder, e.g. folder:3 = Serien)
-            └── program:<id>   (program layout → seasons or direct video)
-                └── season:<block_id>  (block layout → episodes)
+        └── folder_<id>        (Bedrock folder, e.g. folder_3 = Serien)
+            └── program_<id>   (program layout → seasons or direct video)
+                └── season_<block_id>  (block layout → episodes)
                     └── clip_id        (video layout, playable)
 
     Manifest and DRM for playable items are always resolved through
@@ -78,10 +78,10 @@ class RTLPlusVodManager:
 
         content_id conventions
         ----------------------
-        ""              → root (fetched from home layout)
-        "folder:<id>"   → Bedrock folder  (e.g. "folder:3")
-        "p_<id>"        → program/series  (e.g. "p_68137")
-        "season:<id>"   → season block    (e.g. "season:abc-123")
+        ""               → root (fetched from home layout)
+        "folder_<id>"    → Bedrock folder  (e.g. "folder_3")
+        "program_<id>"   → program/series  (e.g. "program_68137")
+        "season_<id>"    → season block    (e.g. "season_abc-123")
 
         Returns
         -------
@@ -94,22 +94,22 @@ class RTLPlusVodManager:
         if not content_id:
             return self._get_root_category()
 
-        if content_id.startswith("folder:"):
+        if content_id.startswith("folder_"):
             folder_id = content_id[7:]  # "3"
             return self._get_folder_contents(folder_id, cursor, page_size)
 
-        if content_id.startswith("program:"):
+        if content_id.startswith("program_"):
             program_id = content_id[8:]  # "68137" (numeric)
             slug = kwargs.get("slug")
             return self._get_program_contents(program_id, cursor, page_size, slug=slug)
 
-        if content_id.startswith("season:"):
+        if content_id.startswith("season_"):
             season_id = content_id[7:]
             return self._get_season_episodes(season_id, cursor, page_size)
 
         # Bare numeric ID → treat as program (backward compatibility)
         if content_id.isdigit():
-            return self._get_program_contents(f"p_{content_id}", cursor, page_size)
+            return self._get_program_contents(content_id, cursor, page_size)
 
         logger.warning(f"Unrecognised VOD content_id format: {content_id!r}")
         return {"entries": [], "next_cursor": None, "total": 0}
@@ -200,7 +200,7 @@ class RTLPlusVodManager:
                     cat = self._extract_vod_category_from_block_item(item)
                     if cat:
                         # Separate folders from programs
-                        if cat.content_id.startswith("folder:"):
+                        if cat.content_id.startswith("folder_"):
                             folder_categories.append(cat)
                         else:
                             program_categories.append(cat)
@@ -439,35 +439,27 @@ class RTLPlusVodManager:
 
                         if layout_type == "video":
                             logger.debug(f"    Found video in action.target.value_layout")
-                            clip_id = value_layout.get("id")  # "clip_1417600"
+                            vod_item = self._extract_vod_item_from_block_item(item)
+                            if vod_item:
+                                # Make sure the content_id is the clip_id, not the program_id
+                                clip_id = value_layout.get("id")  # This should be "clip_1417600"
+                                logger.debug(f"    Setting VodItem content_id to: {clip_id}")
+                                vod_item.content_id = clip_id  # Ensure it's set correctly
 
-                            # Resolve title: itemContent.title in Jumbotron blocks is
-                            # often the genre label ("Film"), not the real title.
-                            # analytics.tealium.program_title is authoritative.
-                            analytics = action.get("analytics", {})
-                            tealium = analytics.get("tealium", {}) if isinstance(analytics, dict) else {}
-                            program_title = tealium.get("program_title")
-                            clip_title = tealium.get("clip_title")
-                            item_content_title = item_content.get("title", "")
-                            title = (
-                                program_title
-                                or clip_title
-                                or (item_content_title if item_content_title else clip_id)
-                            )
+                                # Store program context for potential future use
+                                parent = value_layout.get("parent", {})
+                                import json
+                                vod_item.manifest_script = json.dumps({
+                                    "program_id": parent.get("id"),
+                                    "program_slug": parent.get("seo"),
+                                    "clip_id": clip_id
+                                })
 
-                            vod_item = VodItem.create_movie(
-                                name=title,
-                                content_id=clip_id,
-                                provider=self._provider.provider_name,
-                            )
-                            vod_item.description = item_content.get("description")
-                            vod_item.logo_url = self._extract_thumbnail(item_content)
-                            # manifest_script must not be set on VodItems —
-                            # manifest resolution is handled by get_manifest()
-
-                            logger.debug(
-                                f"    Successfully extracted VodItem: {vod_item.name} (ID: {vod_item.content_id})")
-                            return vod_item
+                                logger.debug(
+                                    f"    Successfully extracted VodItem: {vod_item.name} (ID: {vod_item.content_id})")
+                                return vod_item
+                            else:
+                                logger.debug(f"    Failed to extract VodItem from item")
                 else:
                     logger.debug(f"    action is not a dict, it's {type(action)}")
 
@@ -476,14 +468,19 @@ class RTLPlusVodManager:
                     logger.debug(f"    Found video in itemContent.type")
                     clip_id = item_content.get("id")
                     if clip_id:
-                        vod_item = VodItem.create_movie(
+                        vod_item = VodItem.create_episode(
                             name=item_content.get("title", clip_id),
                             content_id=clip_id,
                             provider=self._provider.provider_name,
                         )
                         vod_item.description = item_content.get("description")
                         vod_item.logo_url = self._extract_thumbnail(item_content)
-                        # manifest_script must not be set on VodItems
+
+                        # Store program context
+                        import json
+                        vod_item.manifest_script = json.dumps({
+                            "clip_id": clip_id
+                        })
 
                         logger.debug(
                             f"    Created VodItem from direct video: {vod_item.name} (ID: {vod_item.content_id})")
@@ -532,7 +529,7 @@ class RTLPlusVodManager:
                     if block_id:
                         seasons.append(VodCategory(
                             name=season_title,
-                            content_id=f"season:{block_id}",
+                            content_id=f"season_{block_id}",
                             provider=self._provider.provider_name,
                             description=None,
                             child_count=(
@@ -553,7 +550,7 @@ class RTLPlusVodManager:
                             .get("title", {})
                             .get("short", "Alle Staffeln")
                         ),
-                        content_id=f"season:{block_id}",
+                        content_id=f"season_{block_id}",
                         provider=self._provider.provider_name,
                         child_count=(
                             block.get("content", {})
@@ -758,10 +755,15 @@ class RTLPlusVodManager:
         vod_item.duration_seconds = self._extract_duration(item_content)
         vod_item.progress = item_content.get("progress", 0)
 
-        # manifest_script must not be set on VodItems — manifest resolution
-        # is handled by provider.get_manifest(content_id) upstream.
+        # Store program context in manifest_script for later use (e.g., manifest fetching)
         if program_id or program_slug:
-            logger.debug(f"    Program context: program_id={program_id}, program_slug={program_slug} (not stored in manifest_script)")
+            import json
+            vod_item.manifest_script = json.dumps({
+                "program_id": program_id,
+                "program_slug": program_slug,
+                "clip_id": clip_id
+            })
+            logger.debug(f"    Stored program context: program_id={program_id}, program_slug={program_slug}")
 
         logger.debug(f"    Created VodItem: '{vod_item.name}' with content_id='{vod_item.content_id}'")
         return vod_item
@@ -794,9 +796,9 @@ class RTLPlusVodManager:
 
         # Store with type prefix for clarity
         if layout_type == "folder":
-            content_id = f"folder:{content_id}"  # folder:3
+            content_id = f"folder_{content_id}"  # folder_3
         elif layout_type == "program":
-            content_id = f"program:{content_id}"  # program:68137
+            content_id = f"program_{content_id}"  # program_68137
 
         # Capture the SEO slug from the API (e.g. "american-pie")
         seo_slug = value_layout.get("seo") or ""
@@ -825,7 +827,7 @@ class RTLPlusVodManager:
 
         return VodCategory(
             name=name,
-            content_id=content_id,  # "folder:3" or "p_68137"
+            content_id=content_id,  # "folder_3" or "program_68137"
             provider=self._provider.provider_name,
             logo_url=self._extract_thumbnail(item_content),
             description=item_content.get("description") or item_content.get("highlight"),
@@ -942,8 +944,8 @@ class RTLPlusVodManager:
             self._provider.invalidate_layout_cache()
             return
 
-        if content_id.startswith("program:"):
-            program_id = content_id[len("program:"):]
+        if content_id.startswith("program_"):
+            program_id = content_id[len("program_"):]
             # Program layouts are cached under "program:<id>:<page>:<nb>"
             cache_key = (
                 f"program:{program_id}"
@@ -952,8 +954,8 @@ class RTLPlusVodManager:
             )
             self._provider.invalidate_layout_cache(cache_key)
 
-        elif content_id.startswith("season:"):
-            season_id = content_id[len("season:"):].split("?")[0]
+        elif content_id.startswith("season_"):
+            season_id = content_id[len("season_"):].split("?")[0]
             cache_key = (
                 f"block:{season_id}"
                 f":{RTLPlusDefaults.DEFAULT_BLOCK_PAGE}"
@@ -961,8 +963,8 @@ class RTLPlusVodManager:
             )
             self._provider.invalidate_layout_cache(cache_key)
 
-        elif content_id.startswith("folder:"):
-            folder_id = content_id[len("folder:"):]
+        elif content_id.startswith("folder_"):
+            folder_id = content_id[len("folder_"):]
             cache_key = (
                 f"folder:{folder_id}"
                 f":{RTLPlusDefaults.DEFAULT_BLOCK_PAGE}"
