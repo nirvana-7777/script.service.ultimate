@@ -342,30 +342,6 @@ class RTLPlusProvider(StreamingProvider):
 
         return None
 
-    def resolve_redirect(self, url: str) -> str:
-        """
-        Resolve HTTP redirects to get final manifest URL.
-        """
-        if not url:
-            return url
-
-        try:
-            response = self.http_manager.head(
-                url,
-                headers={"User-Agent": self.rtl_config.user_agent},
-                follow_redirects=False,
-                timeout=10
-            )
-            if 300 <= response.status_code < 400:
-                location = response.headers.get("location")
-                if location:
-                    logger.debug(f"Resolved redirect: {url} -> {location}")
-                    return location
-        except Exception as e:
-            logger.debug(f"Redirect resolution failed: {e}")
-
-        return url
-
     def invalidate_layout_cache(self, cache_key: str = None):
         """Invalidate layout cache for a specific key or all keys."""
         if cache_key:
@@ -527,7 +503,7 @@ class RTLPlusProvider(StreamingProvider):
 
         if manifest_url:
             logger.info(f"Found manifest URL for {content_id}: {manifest_url[:100]}...")
-            return self.resolve_redirect(manifest_url)
+            return manifest_url
 
         logger.warning(f"No suitable manifest URL found for {content_id}")
         return None

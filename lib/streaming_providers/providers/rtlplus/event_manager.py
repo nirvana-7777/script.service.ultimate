@@ -142,7 +142,7 @@ class RTLPlusEventManager:
         manifest_url = self._provider.extract_best_manifest_url(assets)
         if manifest_url:
             logger.debug(f"Found manifest for event {event_id}: {manifest_url}")
-            return self._provider.resolve_redirect(manifest_url)
+            return manifest_url
 
         return None
 
