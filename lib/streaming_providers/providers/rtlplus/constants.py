@@ -556,13 +556,20 @@ class RTLPlusConfig:
             "folder": RTLPlusDefaults.LAYOUT_PATH_FOLDER,
             "program": RTLPlusDefaults.LAYOUT_PATH_PROGRAM,
             "block": RTLPlusDefaults.LAYOUT_PATH_BLOCK,
-            # 'alias' is not in path_map because it uses a different URL pattern
         }
         if layout_type not in path_map:
             raise ValueError(f"Unknown layout type: {layout_type}. Valid types: {list(path_map.keys())}")
 
         path = path_map[layout_type]
-        return f"{self.bedrock_layout_base}{path.format(id=content_id)}"
+
+        # Ensure content_id doesn't have type prefixes for the URL
+        clean_id = content_id
+        if ":" in clean_id:
+            # If it has a colon, extract the part after the colon
+            clean_id = clean_id.split(":", 1)[-1]
+            logger.debug(f"Cleaned content_id for URL: '{content_id}' -> '{clean_id}'")
+
+        return f"{self.bedrock_layout_base}{path.format(id=clean_id)}"
 
     def get_layout_headers(self, oauth_token: str, bedrock_token: str, location: str = None) -> dict:
         """Common headers for all layout requests"""
