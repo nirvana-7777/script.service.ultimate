@@ -130,28 +130,28 @@ class RTLPlusProvider(StreamingProvider):
         original_content_id = content_id
         clean_content_id = content_id
 
-        if layout_type == "program" and content_id.startswith("program:"):
-            # Remove "program:" prefix to get just the numeric ID
-            clean_content_id = content_id[8:]  # "program:68137" -> "68137"
+        if layout_type == "program" and content_id.startswith("program_"):
+            # Remove "program_" prefix to get just the numeric ID
+            clean_content_id = content_id[8:]  # "program_68137" -> "68137"
             logger.debug(f"Cleaned program content_id: '{original_content_id}' -> '{clean_content_id}'")
 
-        elif layout_type == "folder" and content_id.startswith("folder:"):
-            # Remove "folder:" prefix
+        elif layout_type == "folder" and content_id.startswith("folder_"):
+            # Remove "folder_" prefix
             clean_content_id = content_id[7:]
             logger.debug(f"Cleaned folder content_id: '{original_content_id}' -> '{clean_content_id}'")
 
-        elif layout_type == "season" and content_id.startswith("season:"):
-            # Remove "season:" prefix
+        elif layout_type == "season" and content_id.startswith("season_"):
+            # Remove "season_" prefix
             clean_content_id = content_id[7:]
             logger.debug(f"Cleaned season content_id: '{original_content_id}' -> '{clean_content_id}'")
 
-        # For video layouts, if content_id has "program:" prefix, that's an error
-        if layout_type == "video" and ":" in content_id:
-            logger.warning(f"Possible error: fetching video layout with content_id containing colon: '{content_id}'")
-            # Try to extract just the clip ID if it's in format like "program:68137/clip_xxx"
-            if "/" in content_id:
-                clean_content_id = content_id.split("/")[-1]
-                logger.debug(f"Extracted clip_id: '{clean_content_id}'")
+        # For video layouts, a prefix is always an error
+        if layout_type == "video" and "_" in content_id and not content_id.startswith("clip"):
+            logger.error(
+                f"fetch_layout: 'video' layout requested with non-clip content_id '{content_id}'. "
+                f"Pass the clip_id (e.g. 'clip_1417600') instead."
+            )
+            return None
 
         cache_key = f"{layout_type}:{clean_content_id}:{block_page}:{nb_pages}"
         now = time.time()
