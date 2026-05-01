@@ -94,19 +94,18 @@ class RTLPlusVodManager:
         if not content_id:
             return self._get_root_category()
 
-        # Folder type (has explicit prefix)
         if content_id.startswith("folder:"):
-            folder_id = content_id[7:]  # Remove "folder:"
+            folder_id = content_id[7:]  # "3"
             return self._get_folder_contents(folder_id, cursor, page_size)
 
-        # Season type (has explicit prefix)
+        if content_id.startswith("program:"):
+            program_id = content_id[8:]  # "68137" (numeric)
+            slug = kwargs.get("slug")
+            return self._get_program_contents(program_id, cursor, page_size, slug=slug)
+
         if content_id.startswith("season:"):
             season_id = content_id[7:]
             return self._get_season_episodes(season_id, cursor, page_size)
-
-        # Program type (starts with p_)
-        if content_id.startswith("p_"):
-            return self._get_program_contents(content_id, cursor, page_size)
 
         # Bare numeric ID → treat as program (backward compatibility)
         if content_id.isdigit():
@@ -274,33 +273,24 @@ class RTLPlusVodManager:
 
     def _get_program_contents(
             self,
-            program_id: str,  # Now receives "p_68137"
+            program_id: str,  # "68137" (numeric)
             cursor: Optional[str] = None,
             page_size: int = 24,
             slug: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Return contents for a program.
-
-        program_id format: "p_68137" (with p_ prefix)
-
-        For movies: returns a single playable VodItem directly.
-        For series: returns VodCategory for each season.
+        program_id format: "68137" (numeric)
         """
-        # Use directly - no conversion needed! API expects "p_68137"
-        api_program_id = program_id  # Already "p_68137"
+        # For API URL: use numeric ID directly
+        api_program_id = program_id  # "68137"
 
-        # Extract numeric ID if needed elsewhere (e.g., for logging)
-        numeric_id = program_id[2:] if program_id.startswith("p_") else program_id
-
-        # Build a correct x-location matching the real client URL pattern.
-        # Bedrock needs to see *-p_{id} to return the full Jumbotron action.
-        seo = slug or program_id
-        location = f"{self.cfg.beta_website}{seo}-{program_id}"
+        # For location header: use p_ prefix
+        seo = slug or f"p_{program_id}"
+        location = f"{self.cfg.beta_website}{seo}-p_{program_id}"
 
         layout = self._provider.fetch_layout(
             layout_type="program",
-            content_id=api_program_id,  # Pass "p_68137" directly to API
+            content_id=api_program_id,  # "68137" (no p_ prefix)
             location=location,
         )
 
@@ -749,14 +739,11 @@ class RTLPlusVodManager:
         if not content_id:
             return None
 
-        # Store IDs in their natural format
+        # Store with type prefix for clarity
         if layout_type == "folder":
-            # Folders are numeric, need prefix to distinguish from programs
-            content_id = f"folder:{content_id}"
+            content_id = f"folder:{content_id}"  # folder:3
         elif layout_type == "program":
-            # Programs already have p_ prefix from API, store as-is
-            # Example: "p_68137"
-            content_id = content_id
+            content_id = f"program:{content_id}"  # program:68137
 
         # Capture the SEO slug from the API (e.g. "american-pie")
         seo_slug = value_layout.get("seo") or ""
