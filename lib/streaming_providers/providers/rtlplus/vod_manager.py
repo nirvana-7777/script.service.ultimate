@@ -80,7 +80,7 @@ class RTLPlusVodManager:
         ----------------------
         ""              → root (fetched from home layout)
         "folder:<id>"   → Bedrock folder  (e.g. "folder:3")
-        "program:<id>"  → program/series  (e.g. "program:10438")
+        "p_<id>"        → program/series  (e.g. "p_68137")
         "season:<id>"   → season block    (e.g. "season:abc-123")
 
         Returns
@@ -94,22 +94,23 @@ class RTLPlusVodManager:
         if not content_id:
             return self._get_root_category()
 
+        # Folder type (has explicit prefix)
         if content_id.startswith("folder:"):
-            folder_id = content_id[len("folder:"):]
+            folder_id = content_id[7:]  # Remove "folder:"
             return self._get_folder_contents(folder_id, cursor, page_size)
 
-        if content_id.startswith("program:"):
-            program_id = content_id[len("program:"):]
-            slug = kwargs.get("slug")
-            return self._get_program_contents(program_id, cursor, page_size, slug=slug)
-
+        # Season type (has explicit prefix)
         if content_id.startswith("season:"):
-            season_id = content_id[len("season:"):]
+            season_id = content_id[7:]
             return self._get_season_episodes(season_id, cursor, page_size)
 
-        # Bare numeric ID → treat as program
-        if content_id.isdigit():
+        # Program type (starts with p_)
+        if content_id.startswith("p_"):
             return self._get_program_contents(content_id, cursor, page_size)
+
+        # Bare numeric ID → treat as program (backward compatibility)
+        if content_id.isdigit():
+            return self._get_program_contents(f"p_{content_id}", cursor, page_size)
 
         logger.warning(f"Unrecognised VOD content_id format: {content_id!r}")
         return {"entries": [], "next_cursor": None, "total": 0}
@@ -273,7 +274,7 @@ class RTLPlusVodManager:
 
     def _get_program_contents(
             self,
-            program_id: str,
+            program_id: str,  # Now receives "p_68137"
             cursor: Optional[str] = None,
             page_size: int = 24,
             slug: Optional[str] = None,
@@ -281,18 +282,25 @@ class RTLPlusVodManager:
         """
         Return contents for a program.
 
+        program_id format: "p_68137" (with p_ prefix)
+
         For movies: returns a single playable VodItem directly.
         For series: returns VodCategory for each season.
         """
+        # Use directly - no conversion needed! API expects "p_68137"
+        api_program_id = program_id  # Already "p_68137"
+
+        # Extract numeric ID if needed elsewhere (e.g., for logging)
+        numeric_id = program_id[2:] if program_id.startswith("p_") else program_id
+
         # Build a correct x-location matching the real client URL pattern.
         # Bedrock needs to see *-p_{id} to return the full Jumbotron action.
-        # The SEO slug prefix doesn't need to be exact; p_{id} works as fallback.
-        seo = slug or f"p_{program_id}"
-        location = f"{self.cfg.beta_website}{seo}-p_{program_id}"
+        seo = slug or program_id
+        location = f"{self.cfg.beta_website}{seo}-{program_id}"
 
         layout = self._provider.fetch_layout(
             layout_type="program",
-            content_id=program_id,
+            content_id=api_program_id,  # Pass "p_68137" directly to API
             location=location,
         )
 
@@ -741,6 +749,15 @@ class RTLPlusVodManager:
         if not content_id:
             return None
 
+        # Store IDs in their natural format
+        if layout_type == "folder":
+            # Folders are numeric, need prefix to distinguish from programs
+            content_id = f"folder:{content_id}"
+        elif layout_type == "program":
+            # Programs already have p_ prefix from API, store as-is
+            # Example: "p_68137"
+            content_id = content_id
+
         # Capture the SEO slug from the API (e.g. "american-pie")
         seo_slug = value_layout.get("seo") or ""
 
@@ -768,7 +785,7 @@ class RTLPlusVodManager:
 
         return VodCategory(
             name=name,
-            content_id=f"{layout_type}:{content_id}",
+            content_id=content_id,  # "folder:3" or "p_68137"
             provider=self._provider.provider_name,
             logo_url=self._extract_thumbnail(item_content),
             description=item_content.get("description") or item_content.get("highlight"),
