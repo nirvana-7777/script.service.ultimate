@@ -120,25 +120,40 @@ class RTLPlusProvider(StreamingProvider):
     ) -> Optional[Dict]:
         """
         Fetch any layout (live/video/folder/program/block) with caching.
-
-        Args:
-            layout_type: 'live', 'video', 'folder', 'program', 'block', 'alias' (for root/home)
-            content_id: The ID (seo for live, clip_id for video, folder_id for folder,
-                       or 'home'/'root' for alias layouts)
-            block_page: Page number for blocks (default 1)
-            nb_pages: Number of pages to request (default 2)
-            location: x-location header value (auto-generated if not provided)
-            force_refresh: Ignore cache
-
-        Returns:
-            Layout JSON or None
         """
         if block_page is None:
             block_page = RTLPlusDefaults.DEFAULT_BLOCK_PAGE
         if nb_pages is None:
             nb_pages = RTLPlusDefaults.DEFAULT_NB_PAGES
 
-        cache_key = f"{layout_type}:{content_id}:{block_page}:{nb_pages}"
+        # 🔧 FIX: Clean up content_id based on layout_type
+        original_content_id = content_id
+        clean_content_id = content_id
+
+        if layout_type == "program" and content_id.startswith("program:"):
+            # Remove "program:" prefix to get just the numeric ID
+            clean_content_id = content_id[8:]  # "program:68137" -> "68137"
+            logger.debug(f"Cleaned program content_id: '{original_content_id}' -> '{clean_content_id}'")
+
+        elif layout_type == "folder" and content_id.startswith("folder:"):
+            # Remove "folder:" prefix
+            clean_content_id = content_id[7:]
+            logger.debug(f"Cleaned folder content_id: '{original_content_id}' -> '{clean_content_id}'")
+
+        elif layout_type == "season" and content_id.startswith("season:"):
+            # Remove "season:" prefix
+            clean_content_id = content_id[7:]
+            logger.debug(f"Cleaned season content_id: '{original_content_id}' -> '{clean_content_id}'")
+
+        # For video layouts, if content_id has "program:" prefix, that's an error
+        if layout_type == "video" and ":" in content_id:
+            logger.warning(f"Possible error: fetching video layout with content_id containing colon: '{content_id}'")
+            # Try to extract just the clip ID if it's in format like "program:68137/clip_xxx"
+            if "/" in content_id:
+                clean_content_id = content_id.split("/")[-1]
+                logger.debug(f"Extracted clip_id: '{clean_content_id}'")
+
+        cache_key = f"{layout_type}:{clean_content_id}:{block_page}:{nb_pages}"
         now = time.time()
 
         if not force_refresh and cache_key in self._layout_cache:
@@ -165,14 +180,15 @@ class RTLPlusProvider(StreamingProvider):
 
         # Auto-generate location header if not provided
         if location is None and layout_type in ("live", "video", "folder", "program", "alias"):
-            location = f"{self.rtl_config.beta_website}{content_id}"
+            location = f"{self.rtl_config.beta_website}{clean_content_id}"
 
         # Build request - handle alias layouts specially
         if layout_type == "alias":
             # For alias layouts, the URL pattern is: {base}/alias/{content_id}/layout
-            url = f"{self.rtl_config.bedrock_layout_base}/alias/{content_id}/layout"
+            url = f"{self.rtl_config.bedrock_layout_base}/alias/{clean_content_id}/layout"
         else:
-            url = self.rtl_config.get_layout_url(layout_type, content_id)
+            # Use the cleaned content_id for the URL
+            url = self.rtl_config.get_layout_url(layout_type, clean_content_id)
 
         headers = self.rtl_config.get_layout_headers(oauth_token, bedrock_token, location)
         params = {"blockPage": block_page, "nbPages": nb_pages}
@@ -193,7 +209,6 @@ class RTLPlusProvider(StreamingProvider):
         logger.debug(f"Params: {params}")
         logger.debug(f"==================================")
 
-
         try:
             response = self.http_manager.get(
                 url, headers=headers, params=params, operation="api"
@@ -202,12 +217,12 @@ class RTLPlusProvider(StreamingProvider):
             data = response.json()
 
             self._layout_cache[cache_key] = (data, now)
-            logger.debug(f"Fetched {layout_type} layout for {content_id}")
+            logger.debug(f"Fetched {layout_type} layout for {clean_content_id}")
 
             return data
 
         except Exception as e:
-            logger.error(f"Failed to fetch {layout_type} layout for {content_id}: {e}")
+            logger.error(f"Failed to fetch {layout_type} layout for {clean_content_id}: {e}")
             return None
 
     @staticmethod
