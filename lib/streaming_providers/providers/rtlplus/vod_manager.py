@@ -419,7 +419,6 @@ class RTLPlusVodManager:
 
                 logger.debug(f"    itemContent keys: {list(item_content.keys())}")
 
-                # ADD THIS DEBUGGING BLOCK HERE
                 action = item_content.get("action", {})
                 logger.debug(f"    action type: {type(action)}")
                 logger.debug(f"    action value: {action}")
@@ -442,7 +441,22 @@ class RTLPlusVodManager:
                             logger.debug(f"    Found video in action.target.value_layout")
                             vod_item = self._extract_vod_item_from_block_item(item)
                             if vod_item:
-                                logger.debug(f"    Successfully extracted VodItem: {vod_item.name}")
+                                # Make sure the content_id is the clip_id, not the program_id
+                                clip_id = value_layout.get("id")  # This should be "clip_1417600"
+                                logger.debug(f"    Setting VodItem content_id to: {clip_id}")
+                                vod_item.content_id = clip_id  # Ensure it's set correctly
+
+                                # Store program context for potential future use
+                                parent = value_layout.get("parent", {})
+                                import json
+                                vod_item.manifest_script = json.dumps({
+                                    "program_id": parent.get("id"),
+                                    "program_slug": parent.get("seo"),
+                                    "clip_id": clip_id
+                                })
+
+                                logger.debug(
+                                    f"    Successfully extracted VodItem: {vod_item.name} (ID: {vod_item.content_id})")
                                 return vod_item
                             else:
                                 logger.debug(f"    Failed to extract VodItem from item")
@@ -461,7 +475,15 @@ class RTLPlusVodManager:
                         )
                         vod_item.description = item_content.get("description")
                         vod_item.logo_url = self._extract_thumbnail(item_content)
-                        logger.debug(f"    Created VodItem from direct video: {vod_item.name}")
+
+                        # Store program context
+                        import json
+                        vod_item.manifest_script = json.dumps({
+                            "clip_id": clip_id
+                        })
+
+                        logger.debug(
+                            f"    Created VodItem from direct video: {vod_item.name} (ID: {vod_item.content_id})")
                         return vod_item
 
                 # Check alternative action locations
@@ -475,6 +497,11 @@ class RTLPlusVodManager:
                                 logger.debug(f"    Found video in {action_key}")
                                 vod_item = self._extract_vod_item_from_block_item(item)
                                 if vod_item:
+                                    # Make sure content_id is the clip_id
+                                    clip_id = alt_value.get("id")
+                                    if clip_id:
+                                        vod_item.content_id = clip_id
+                                        logger.debug(f"    Setting VodItem content_id from {action_key} to: {clip_id}")
                                     return vod_item
 
         logger.debug("No video content found in any block")
@@ -633,24 +660,40 @@ class RTLPlusVodManager:
             value_layout = target.get("value_layout", {})
 
         clip_id = None
+        program_id = None
+        program_slug = None
 
         if value_layout.get("type") == "video":
             clip_id = value_layout.get("id")
+            # Get program context from parent if available
+            parent = value_layout.get("parent", {})
+            program_id = parent.get("id")
+            program_slug = parent.get("seo")
+            logger.debug(f"    Extracted clip_id: {clip_id}, program_id: {program_id}, program_slug: {program_slug}")
         elif item_content.get("type") == "video":
             clip_id = item_content.get("id")
+            logger.debug(f"    Extracted clip_id from itemContent: {clip_id}")
 
         # Try alternative action locations
         if not clip_id:
             for action_key in ("onClickAction", "primaryAction", "secondaryAction"):
                 alt_action = item_content.get(action_key, {})
-                alt_target = alt_action.get("target", {})
-                alt_value = alt_target.get("value_layout", {})
-                if alt_value.get("type") == "video":
-                    clip_id = alt_value.get("id")
-                    if clip_id:
-                        break
+                if isinstance(alt_action, dict):
+                    alt_target = alt_action.get("target", {})
+                    if isinstance(alt_target, dict):
+                        alt_value = alt_target.get("value_layout", {})
+                        if isinstance(alt_value, dict) and alt_value.get("type") == "video":
+                            clip_id = alt_value.get("id")
+                            # Get program context from parent
+                            parent = alt_value.get("parent", {})
+                            program_id = parent.get("id")
+                            program_slug = parent.get("seo")
+                            logger.debug(f"    Extracted clip_id from {action_key}: {clip_id}")
+                            if clip_id:
+                                break
 
         if not clip_id:
+            logger.debug(f"    No clip_id found in item")
             return None
 
         # Get name with fallback
@@ -699,9 +742,10 @@ class RTLPlusVodManager:
                 if episode_match:
                     episode_number = int(episode_match.group(1))
 
+        # Create VodItem with the clip_id as content_id
         vod_item = VodItem.create_episode(
             name=full_title,
-            content_id=clip_id,
+            content_id=clip_id,  # This should be "clip_1417600"
             provider=self._provider.provider_name,
             season_number=season_number if season_number is not None else -1,
             episode_number=episode_number if episode_number is not None else -1,
@@ -711,6 +755,17 @@ class RTLPlusVodManager:
         vod_item.duration_seconds = self._extract_duration(item_content)
         vod_item.progress = item_content.get("progress", 0)
 
+        # Store program context in manifest_script for later use (e.g., manifest fetching)
+        if program_id or program_slug:
+            import json
+            vod_item.manifest_script = json.dumps({
+                "program_id": program_id,
+                "program_slug": program_slug,
+                "clip_id": clip_id
+            })
+            logger.debug(f"    Stored program context: program_id={program_id}, program_slug={program_slug}")
+
+        logger.debug(f"    Created VodItem: '{vod_item.name}' with content_id='{vod_item.content_id}'")
         return vod_item
 
     def _extract_vod_category_from_block_item(self, item: Dict) -> Optional[VodCategory]:
