@@ -443,21 +443,51 @@ class RTLPlusProvider(StreamingProvider):
 
         content_id may be:
         - "clip_1417600"
-        - "program_68137/clip_1417600" (extract clip_id)
+        - "program_68137" (we need to extract the clip_id from the program)
+        - "program_68137/clip_1417600"
         """
-        # NEW: Handle combined paths
+        logger.debug(f"get_manifest called with content_id={content_id}, kwargs={list(kwargs.keys())}")
+
+        # Check if we have a stored context from the VOD item
+        # Kodi passes the program_id as content_id, but we stored the clip context
+        if "program_context" in kwargs:
+            # This should contain the clip_id we need
+            if kwargs["program_context"].get("clip_id"):
+                content_id = kwargs["program_context"]["clip_id"]
+                logger.debug(f"Using clip_id from program_context: {content_id}")
+
+        # Handle combined paths
         if "/" in content_id:
             parts = content_id.split("/")
-            # Check if this is a program/clip combination
-            if len(parts) == 2 and parts[0].startswith("program_") and parts[1].startswith("clip_"):
-                content_id = parts[1]  # Extract just the clip_id
+            if len(parts) == 2 and parts[0].startswith("program_"):
+                content_id = parts[1]  # clip_1417600
                 logger.debug(f"Extracted clip_id from path: {content_id}")
+
+        # If content_id starts with program_, we need to find the clip_id from the program
+        if content_id.startswith("program_"):
+            program_id = content_id[8:]  # Remove "program_" prefix
+            logger.debug(f"Program ID detected: {program_id}, need to find clip_id")
+
+            # Fetch the program layout to find the clip_id
+            layout = self._fetch_program_layout(program_id)
+            if layout:
+                # Find the video clip in the layout
+                clip_id = self._find_clip_id_in_program_layout(layout)
+                if clip_id:
+                    content_id = clip_id
+                    logger.debug(f"Found clip_id {clip_id} from program {program_id}")
+                else:
+                    logger.error(f"No clip_id found for program {program_id}")
+                    return None
+            else:
+                logger.error(f"Failed to fetch program layout for {program_id}")
+                return None
 
         # Try linear TV channel first
         if self._is_linear_tv_channel(content_id):
             return self.channel_manager.get_best_manifest_url(content_id)
 
-        # Try as event (folder) - event_manager will return manifest if available
+        # Try as event (folder)
         if content_id.isdigit() and int(content_id) > 0:
             manifest = self.event_manager.get_manifest_for_event(content_id)
             if manifest:
@@ -466,26 +496,111 @@ class RTLPlusProvider(StreamingProvider):
         # Fall back to VOD/event manifest extraction
         return self._get_manifest_vod_or_event(content_id, **kwargs)
 
+    def _fetch_program_layout(self, program_id: str) -> Optional[Dict]:
+        """Fetch a program layout by program ID."""
+        # Ensure we have the right tokens
+        oauth_token = self.get_user_bearer_token()
+        if not oauth_token:
+            logger.error("No user authentication for program layout")
+            return None
+
+        try:
+            bedrock_token = self.authenticator.get_bedrock_token()
+            if not bedrock_token:
+                logger.error("Failed to get Bedrock token")
+                return None
+        except Exception as e:
+            logger.error(f"Failed to get Bedrock token: {e}")
+            return None
+
+        # Build URL for program layout
+        # The program ID should be numeric, not with "program_" prefix
+        clean_id = program_id.replace("program_", "")
+        url = f"{self.rtl_config.bedrock_layout_base}/program/{clean_id}/layout"
+        location = f"{self.rtl_config.beta_website}p_{clean_id}-p_{clean_id}"
+
+        headers = self.rtl_config.get_layout_headers(oauth_token, bedrock_token, location)
+        params = {"blockPage": 1, "nbPages": 2}
+
+        try:
+            response = self.http_manager.get(url, headers=headers, params=params, operation="api")
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Failed to fetch program layout for {program_id}: {e}")
+            return None
+
+    def _find_clip_id_in_program_layout(self, layout: Dict) -> Optional[str]:
+        """Extract the clip_id from a program layout."""
+        if not layout:
+            return None
+
+        # First check if this is a movie (direct video)
+        movie_item = self._vod_manager._find_direct_video_in_layout(layout)
+        if movie_item:
+            return movie_item.content_id
+
+        # Look for video assets in blocks
+        assets = self.extract_video_assets(layout)
+        if assets:
+            # Return the first asset's ID or reference
+            for asset in assets:
+                # Look for clip_id in various fields
+                clip_id = asset.get("clipId") or asset.get("id") or asset.get("reference")
+                if clip_id:
+                    return clip_id
+
+        # Check blocks for action targets
+        for block in layout.get("blocks", []):
+            if block.get("type") != "bffPaginated":
+                continue
+            for item in block.get("content", {}).get("items", []):
+                if item.get("itemType") != "classic":
+                    continue
+
+                item_content = item.get("itemContent", {})
+                action = item_content.get("action", {})
+                target = action.get("target", {})
+
+                if target.get("type") == "lock":
+                    target = target.get("value_lock", {}).get("originalTarget", {})
+
+                value_layout = target.get("value_layout", {})
+                if value_layout.get("type") == "video":
+                    return value_layout.get("id")
+
+        return None
+
     def get_drm(self, content_id: str, **kwargs) -> List[DRMConfig]:
         """
         Get DRM configuration for content.
-
-        Supports:
-        - Linear TV channels (via channel_manager)
-        - VOD clips (via layout extraction)
-        - Events (via event_manager)
-
-        content_id may be:
-        - "clip_1417600"
-        - "program_68137/clip_1417600" (extract clip_id)
         """
-        # NEW: Handle combined paths
+        logger.debug(f"get_drm called with content_id={content_id}")
+
+        # Handle combined paths and program IDs similar to get_manifest
         if "/" in content_id:
             parts = content_id.split("/")
-            # Check if this is a program/clip combination
-            if len(parts) == 2 and parts[0].startswith("program_") and parts[1].startswith("clip_"):
-                content_id = parts[1]  # Extract just the clip_id
+            if len(parts) == 2 and parts[0].startswith("program_"):
+                content_id = parts[1]
                 logger.debug(f"Extracted clip_id from path for DRM: {content_id}")
+
+        # If content_id starts with program_, find the clip_id
+        if content_id.startswith("program_"):
+            program_id = content_id[8:]
+            logger.debug(f"Program ID detected for DRM: {program_id}")
+
+            layout = self._fetch_program_layout(program_id)
+            if layout:
+                clip_id = self._find_clip_id_in_program_layout(layout)
+                if clip_id:
+                    content_id = clip_id
+                    logger.debug(f"Found clip_id {clip_id} from program {program_id}")
+                else:
+                    logger.error(f"No clip_id found for program {program_id} in DRM request")
+                    return []
+            else:
+                logger.error(f"Failed to fetch program layout for {program_id}")
+                return []
 
         # Try linear TV channel first
         if self._is_linear_tv_channel(content_id):
@@ -498,14 +613,11 @@ class RTLPlusProvider(StreamingProvider):
                 return drm_configs
 
         # Fall back to VOD DRM extraction
-        # This will also handle VOD clips and any other content types
         drm_configs = self._get_drm_vod_or_event(content_id, **kwargs)
         if drm_configs:
             return drm_configs
 
-        # If we get here, no DRM config could be found for any content type
-        logger.error(
-            f"No DRM configuration found for content_id: {content_id} (not a valid channel, event, or VOD item)")
+        logger.error(f"No DRM configuration found for content_id: {content_id}")
         return []
 
     @staticmethod
@@ -534,24 +646,32 @@ class RTLPlusProvider(StreamingProvider):
         """
         Get manifest URL for VOD/event content using Bedrock layout extraction.
         """
+        # If content_id doesn't start with "clip_", it might still be a clip
+        # Make sure we're fetching the video layout, not live layout
+        if not content_id.startswith("clip_"):
+            # Try to find if this is a known clip ID pattern
+            if content_id.isdigit():
+                # This might be an event or program ID
+                logger.warning(f"Non-clip content_id for manifest: {content_id}")
+
         # Get program context from kwargs (set when navigating from VOD categories)
         program_slug = kwargs.get("program_slug")
         program_id = kwargs.get("program_id")
 
         # Build the correct location header
-        if program_slug and program_id:
+        if program_slug and program_id and content_id.startswith("clip_"):
             # Convert clip_1417600 to american-pie-c_1417600
-            clip_slug = program_slug
-            if content_id.startswith("clip_"):
-                clip_slug = f"{program_slug}-c_{content_id.replace('clip_', '')}"
+            clip_slug = f"{program_slug}-c_{content_id.replace('clip_', '')}"
             location = f"{self.rtl_config.beta_website}{program_slug}-p_{program_id}/video/{clip_slug}"
         else:
             # Fallback - might not work for all content
             location = f"{self.rtl_config.beta_website}{content_id}"
 
-        # Fetch the video layout
+        logger.debug(f"Fetching video layout for content_id={content_id}, location={location}")
+
+        # Fetch the video layout - CRITICAL: use layout_type="video", not "live"!
         layout = self.fetch_layout(
-            layout_type="video",
+            layout_type="video",  # This must be "video" for VOD content
             content_id=content_id,
             location=location
         )
