@@ -448,12 +448,12 @@ class RTLPlusVodManager:
 
                                 # Store program context for potential future use
                                 parent = value_layout.get("parent", {})
-                                import json
-                                vod_item.manifest_script = json.dumps({
-                                    "program_id": parent.get("id"),
-                                    "program_slug": parent.get("seo"),
-                                    "clip_id": clip_id
-                                })
+#                                import json
+ #                               vod_item.manifest_script = json.dumps({
+  #                                  "program_id": parent.get("id"),
+   #                                 "program_slug": parent.get("seo"),
+    #                                "clip_id": clip_id
+     #                           })
 
                                 logger.debug(
                                     f"    Successfully extracted VodItem: {vod_item.name} (ID: {vod_item.content_id})")
