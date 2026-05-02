@@ -477,10 +477,10 @@ class RTLPlusVodManager:
                         vod_item.logo_url = self._extract_thumbnail(item_content)
 
                         # Store program context
-                        import json
-                        vod_item.manifest_script = json.dumps({
-                            "clip_id": clip_id
-                        })
+ #                       import json
+ #                       vod_item.manifest_script = json.dumps({
+ #                           "clip_id": clip_id
+ #                       })
 
                         logger.debug(
                             f"    Created VodItem from direct video: {vod_item.name} (ID: {vod_item.content_id})")
@@ -756,14 +756,14 @@ class RTLPlusVodManager:
         vod_item.progress = item_content.get("progress", 0)
 
         # Store program context in manifest_script for later use (e.g., manifest fetching)
-        if program_id or program_slug:
-            import json
-            vod_item.manifest_script = json.dumps({
-                "program_id": program_id,
-                "program_slug": program_slug,
-                "clip_id": clip_id
-            })
-            logger.debug(f"    Stored program context: program_id={program_id}, program_slug={program_slug}")
+#        if program_id or program_slug:
+#            import json
+#            vod_item.manifest_script = json.dumps({
+#                "program_id": program_id,
+#                "program_slug": program_slug,
+#                "clip_id": clip_id
+#            })
+#            logger.debug(f"    Stored program context: program_id={program_id}, program_slug={program_slug}")
 
         logger.debug(f"    Created VodItem: '{vod_item.name}' with content_id='{vod_item.content_id}'")
         return vod_item
