@@ -440,7 +440,19 @@ class RTLPlusProvider(StreamingProvider):
         - Linear TV channels (via channel_manager)
         - VOD clips (via layout extraction)
         - Events (via event_manager)
+
+        content_id may be:
+        - "clip_1417600"
+        - "program_68137/clip_1417600" (extract clip_id)
         """
+        # NEW: Handle combined paths
+        if "/" in content_id:
+            parts = content_id.split("/")
+            # Check if this is a program/clip combination
+            if len(parts) == 2 and parts[0].startswith("program_") and parts[1].startswith("clip_"):
+                content_id = parts[1]  # Extract just the clip_id
+                logger.debug(f"Extracted clip_id from path: {content_id}")
+
         # Try linear TV channel first
         if self._is_linear_tv_channel(content_id):
             return self.channel_manager.get_best_manifest_url(content_id)
@@ -453,6 +465,48 @@ class RTLPlusProvider(StreamingProvider):
 
         # Fall back to VOD/event manifest extraction
         return self._get_manifest_vod_or_event(content_id, **kwargs)
+
+    def get_drm(self, content_id: str, **kwargs) -> List[DRMConfig]:
+        """
+        Get DRM configuration for content.
+
+        Supports:
+        - Linear TV channels (via channel_manager)
+        - VOD clips (via layout extraction)
+        - Events (via event_manager)
+
+        content_id may be:
+        - "clip_1417600"
+        - "program_68137/clip_1417600" (extract clip_id)
+        """
+        # NEW: Handle combined paths
+        if "/" in content_id:
+            parts = content_id.split("/")
+            # Check if this is a program/clip combination
+            if len(parts) == 2 and parts[0].startswith("program_") and parts[1].startswith("clip_"):
+                content_id = parts[1]  # Extract just the clip_id
+                logger.debug(f"Extracted clip_id from path for DRM: {content_id}")
+
+        # Try linear TV channel first
+        if self._is_linear_tv_channel(content_id):
+            return self.channel_manager.get_drm_config_for_channel(content_id)
+
+        # Try as event (folder)
+        if content_id.isdigit() and int(content_id) > 0:
+            drm_configs = self.event_manager.get_drm_for_event(content_id)
+            if drm_configs:
+                return drm_configs
+
+        # Fall back to VOD DRM extraction
+        # This will also handle VOD clips and any other content types
+        drm_configs = self._get_drm_vod_or_event(content_id, **kwargs)
+        if drm_configs:
+            return drm_configs
+
+        # If we get here, no DRM config could be found for any content type
+        logger.error(
+            f"No DRM configuration found for content_id: {content_id} (not a valid channel, event, or VOD item)")
+        return []
 
     @staticmethod
     def _is_linear_tv_channel(content_id: str) -> bool:
@@ -628,36 +682,6 @@ class RTLPlusProvider(StreamingProvider):
         except Exception as e:
             logger.error(f"Failed to get DRM: {e}")
             return []
-
-    def get_drm(self, content_id: str, **kwargs) -> List[DRMConfig]:
-        """
-        Get DRM configuration for content.
-
-        Supports:
-        - Linear TV channels (via channel_manager)
-        - VOD clips (via layout extraction)
-        - Events (via event_manager)
-        """
-        # Try linear TV channel first
-        if self._is_linear_tv_channel(content_id):
-            return self.channel_manager.get_drm_config_for_channel(content_id)
-
-        # Try as event (folder)
-        if content_id.isdigit() and int(content_id) > 0:
-            drm_configs = self.event_manager.get_drm_for_event(content_id)
-            if drm_configs:
-                return drm_configs
-
-        # Fall back to VOD DRM extraction
-        # This will also handle VOD clips and any other content types
-        drm_configs = self._get_drm_vod_or_event(content_id, **kwargs)
-        if drm_configs:
-            return drm_configs
-
-        # If we get here, no DRM config could be found for any content type
-        logger.error(
-            f"No DRM configuration found for content_id: {content_id} (not a valid channel, event, or VOD item)")
-        return []
 
     def _fetch_manifest_data(self, content_id: str) -> Optional[list]:
         """Fetch raw manifest data for VOD/events, with cache."""

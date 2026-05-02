@@ -78,19 +78,32 @@ class RTLPlusVodManager:
 
         content_id conventions
         ----------------------
-        ""               → root (fetched from home layout)
-        "folder_<id>"    → Bedrock folder  (e.g. "folder_3")
-        "program_<id>"   → program/series  (e.g. "program_68137")
-        "season_<id>"    → season block    (e.g. "season_abc-123")
-
-        Returns
-        -------
-        {
-            "entries":     List[VodCategory | VodItem],
-            "next_cursor": Optional[str],
-            "total":       Optional[int],
-        }
+        ""                       → root
+        "folder_<id>"            → Bedrock folder
+        "program_<id>"           → program/series
+        "season_<id>"            → season block
+        "program_<id>/clip_<id>" → direct clip (playable item)
+        "clip_<id>"              → direct clip (playable item)
         """
+        # NEW: Handle combined paths like "program_68137/clip_1417600"
+        if "/" in content_id:
+            parts = content_id.split("/")
+            # Check if this is a program/clip combination
+            if len(parts) == 2 and parts[0].startswith("program_") and parts[1].startswith("clip_"):
+                # Extract the clip_id and return it as a direct playable item
+                clip_id = parts[1]
+                program_id = parts[0][8:]  # Remove "program_" prefix
+
+                # For a direct clip, we can fetch and return it immediately
+                # Since it's a leaf node, return it as a single-entry list
+                vod_item = self._get_direct_clip_item(clip_id, program_id, **kwargs)
+                if vod_item:
+                    logger.debug(f"Returning direct clip item: {vod_item.name} (ID: {vod_item.content_id})")
+                    return {"entries": [vod_item], "next_cursor": None, "total": 1}
+
+                # Fall through to normal handling
+                content_id = clip_id
+
         if not content_id:
             return self._get_root_category()
 
@@ -113,6 +126,71 @@ class RTLPlusVodManager:
 
         logger.warning(f"Unrecognised VOD content_id format: {content_id!r}")
         return {"entries": [], "next_cursor": None, "total": 0}
+
+    def _get_direct_clip_item(self, clip_id: str, program_id: Optional[str] = None, **kwargs) -> Optional[VodItem]:
+        """
+        Fetch a direct clip item by its clip_id.
+        This is used when we have a path like program_68137/clip_1417600.
+        """
+        # Fetch the video layout for this clip
+        layout = self._provider.fetch_layout(
+            layout_type="video",
+            content_id=clip_id,
+            location=f"{self.cfg.beta_website}{clip_id}",
+        )
+
+        if not layout:
+            logger.warning(f"Failed to fetch layout for direct clip {clip_id}")
+            # Fallback: create a basic VodItem with what we know
+            return VodItem(
+                name=kwargs.get("item_name", f"Video {clip_id}"),
+                content_id=clip_id,
+                provider=self._provider.provider_name,
+                mode="vod",
+                content_type="VOD",
+            )
+
+        # Extract the VodItem from the layout
+        vod_item = self._extract_vod_item_from_layout(layout, clip_id)
+
+        if not vod_item:
+            # Extract from block items as fallback
+            vod_item = self._extract_vod_item_from_layout_items(layout, clip_id)
+
+        return vod_item
+
+    def _extract_vod_item_from_layout_items(self, layout: Dict, clip_id: str) -> Optional[VodItem]:
+        """Extract VodItem from layout items (fallback method)."""
+        for block in layout.get("blocks", []):
+            if block.get("type") != "bffPaginated":
+                continue
+            for item in block.get("content", {}).get("items", []):
+                if item.get("itemType") != "classic":
+                    continue
+
+                item_content = item.get("itemContent", {})
+                action = item_content.get("action", {})
+                target = action.get("target", {})
+
+                # Handle lock-wrapped targets
+                if target.get("type") == "lock":
+                    target = target.get("value_lock", {}).get("originalTarget", {})
+
+                value_layout = target.get("value_layout", {})
+
+                if value_layout.get("type") == "video" and value_layout.get("id") == clip_id:
+                    vod_item = self._extract_vod_item_from_block_item(item)
+                    if vod_item:
+                        return vod_item
+
+                # Also check direct itemContent
+                if item_content.get("type") == "video" and item_content.get("id") == clip_id:
+                    return VodItem.create_episode(
+                        name=item_content.get("title", clip_id),
+                        content_id=clip_id,
+                        provider=self._provider.provider_name,
+                    )
+        return None
 
     def get_vod_item_info(self, clip_id: str) -> Optional[VodItem]:
         """
@@ -756,14 +834,14 @@ class RTLPlusVodManager:
         vod_item.progress = item_content.get("progress", 0)
 
         # Store program context in manifest_script for later use (e.g., manifest fetching)
-#        if program_id or program_slug:
-#            import json
-#            vod_item.manifest_script = json.dumps({
-#                "program_id": program_id,
-#                "program_slug": program_slug,
-#                "clip_id": clip_id
-#            })
-#            logger.debug(f"    Stored program context: program_id={program_id}, program_slug={program_slug}")
+        if program_id or program_slug:
+            import json
+            vod_item.manifest_script = json.dumps({
+                "program_id": program_id,
+                "program_slug": program_slug,
+                "clip_id": clip_id
+            })
+            logger.debug(f"    Stored program context: program_id={program_id}, program_slug={program_slug}")
 
         logger.debug(f"    Created VodItem: '{vod_item.name}' with content_id='{vod_item.content_id}'")
         return vod_item
