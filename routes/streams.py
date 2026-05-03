@@ -371,14 +371,14 @@ def setup_stream_routes(app, manager, service):
                             )
                         }
 
-                    manifest_text, _, _, _ = service.fetch_manifest_for_rewriter(
+                    manifest_text, _, _, _, effective_url = service.fetch_manifest_for_rewriter(
                         provider, content_id, manifest_url
                     )
 
                     # Inject the upstream manifest URL as a BaseURL so the player can
                     # resolve relative segment URLs correctly. Without this, segments
                     # resolve against the local server URL and all requests fail.
-                    manifest_text = _inject_base_url(manifest_text, manifest_url)
+                    manifest_text = _inject_base_url(manifest_text, effective_url)
 
                     response.content_type = "application/dash+xml; charset=utf-8"
                     return manifest_text
