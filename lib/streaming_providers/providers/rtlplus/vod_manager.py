@@ -797,14 +797,19 @@ class RTLPlusVodManager:
     # Thumbnail / duration helpers (pure, no I/O)
     # ------------------------------------------------------------------
 
-    @classmethod
-    def _build_image_url(cls, image_id: str, image_hash: str = None) -> str:
-        """Build a Bedrock CDN image URL, appending the hash when available."""
+    @staticmethod
+    def _build_image_url(image_id: str) -> str:
+        """Build a signed Bedrock CDN image URL.
+
+        Hash formula: SHA1("/v2/images/{id}/raw?{params}" + signing_key)
+        """
+        import hashlib
         from .constants import RTLPlusDefaults
-        url = f"{RTLPlusDefaults.IMAGE_BASE_URL}/{image_id}/raw?{RTLPlusDefaults.IMAGE_PARAMS}"
-        if image_hash:
-            url += f"&hash={image_hash}"
-        return url
+        path_and_query = f"/v2/images/{image_id}/raw?{RTLPlusDefaults.IMAGE_PARAMS}"
+        image_hash = hashlib.sha1(
+            (path_and_query + RTLPlusDefaults.IMAGE_SIGNING_KEY).encode()
+        ).hexdigest()
+        return f"{RTLPlusDefaults.IMAGE_BASE_URL}{path_and_query}&hash={image_hash}"
 
     @classmethod
     def _extract_thumbnail(cls, item_content: Dict) -> Optional[str]:
@@ -814,19 +819,17 @@ class RTLPlusVodManager:
         for ratio in ("16:9", "3:1", "1:1", "2:3"):
             image_id = image.get("idsByRatio", {}).get(ratio)
             if image_id:
-                image_hash = image.get("hashesByRatio", {}).get(ratio) or image.get("hash")
-                return cls._build_image_url(image_id, image_hash)
+                return cls._build_image_url(image_id)
         image_id = image.get("id")
         if image_id:
-            return cls._build_image_url(image_id, image.get("hash"))
+            return cls._build_image_url(image_id)
         return None
 
     @classmethod
     def _extract_thumbnail_from_layout(cls, layout: Dict) -> Optional[str]:
-        image = layout.get("seo", {}).get("image", {})
-        image_id = image.get("id")
+        image_id = layout.get("seo", {}).get("image", {}).get("id")
         if image_id:
-            return cls._build_image_url(image_id, image.get("hash"))
+            return cls._build_image_url(image_id)
         return None
 
     @staticmethod
