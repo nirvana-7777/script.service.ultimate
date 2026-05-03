@@ -367,6 +367,22 @@ class RTLPlusVodManager:
         # FIRST: Check if this is a movie (direct playable video)
         movie_item = self._find_direct_video_in_layout(layout)
         if movie_item:
+            # The item-level title is often a generic category label (e.g. "Film").
+            # Prefer the authoritative title from the program layout metadata.
+            layout_title = (
+                layout.get("entity", {}).get("metadata", {}).get("title")
+                or layout.get("seo", {}).get("title")
+            )
+            if layout_title:
+                movie_item.name = layout_title
+            # Enrich thumbnail and description from layout metadata if missing
+            if not movie_item.logo_url:
+                movie_item.logo_url = self._extract_thumbnail_from_layout(layout)
+            if not movie_item.description:
+                movie_item.description = (
+                    layout.get("entity", {}).get("metadata", {}).get("description")
+                    or layout.get("seo", {}).get("description")
+                )
             return {
                 "entries": [movie_item],
                 "next_cursor": None,
@@ -781,25 +797,38 @@ class RTLPlusVodManager:
     # Thumbnail / duration helpers (pure, no I/O)
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _extract_thumbnail(item_content: Dict) -> Optional[str]:
+    _IMAGE_BASE = "https://images-fio.rtlde.bedrock.tech/v2/images"
+    _IMAGE_PARAMS = "auto=webp&blur=0&fit=scale_crop&height=320&interlace=1&optimize=high&width=213"
+
+    @classmethod
+    def _build_image_url(cls, image_id: str, image_hash: str = None) -> str:
+        """Build a Bedrock CDN image URL, appending the hash when available."""
+        url = f"{cls._IMAGE_BASE}/{image_id}/raw?{cls._IMAGE_PARAMS}"
+        if image_hash:
+            url += f"&hash={image_hash}"
+        return url
+
+    @classmethod
+    def _extract_thumbnail(cls, item_content: Dict) -> Optional[str]:
         image = item_content.get("image", {})
         if not image:
             return None
         for ratio in ("16:9", "3:1", "1:1", "2:3"):
             image_id = image.get("idsByRatio", {}).get(ratio)
             if image_id:
-                return f"https://images.rtl.de/{image_id}?format=webp&width=400"
+                image_hash = image.get("hashesByRatio", {}).get(ratio) or image.get("hash")
+                return cls._build_image_url(image_id, image_hash)
         image_id = image.get("id")
         if image_id:
-            return f"https://images.rtl.de/{image_id}?format=webp&width=400"
+            return cls._build_image_url(image_id, image.get("hash"))
         return None
 
-    @staticmethod
-    def _extract_thumbnail_from_layout(layout: Dict) -> Optional[str]:
-        image_id = layout.get("seo", {}).get("image", {}).get("id")
+    @classmethod
+    def _extract_thumbnail_from_layout(cls, layout: Dict) -> Optional[str]:
+        image = layout.get("seo", {}).get("image", {})
+        image_id = image.get("id")
         if image_id:
-            return f"https://images.rtl.de/{image_id}?format=webp&width=400"
+            return cls._build_image_url(image_id, image.get("hash"))
         return None
 
     @staticmethod
