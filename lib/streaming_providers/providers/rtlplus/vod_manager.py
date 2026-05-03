@@ -10,6 +10,7 @@ provider.get_manifest() / provider.get_drm() methods, which own
 the upfront-token flow and all format/quality selection logic.
 """
 
+import json
 import re
 from typing import Dict, Any, List, Optional, Union
 
@@ -85,34 +86,28 @@ class RTLPlusVodManager:
         "program_<id>/clip_<id>" → direct clip (playable item)
         "clip_<id>"              → direct clip (playable item)
         """
-        # NEW: Handle combined paths like "program_68137/clip_1417600"
+        # Handle combined paths like "program_68137/clip_1417600"
         if "/" in content_id:
             parts = content_id.split("/")
-            # Check if this is a program/clip combination
             if len(parts) == 2 and parts[0].startswith("program_") and parts[1].startswith("clip_"):
-                # Extract the clip_id and return it as a direct playable item
                 clip_id = parts[1]
                 program_id = parts[0][8:]  # Remove "program_" prefix
 
-                # For a direct clip, we can fetch and return it immediately
-                # Since it's a leaf node, return it as a single-entry list
                 vod_item = self._get_direct_clip_item(clip_id, program_id, **kwargs)
                 if vod_item:
-                    logger.debug(f"Returning direct clip item: {vod_item.name} (ID: {vod_item.content_id})")
                     return {"entries": [vod_item], "next_cursor": None, "total": 1}
 
-                # Fall through to normal handling
                 content_id = clip_id
 
         if not content_id:
             return self._get_root_category()
 
         if content_id.startswith("folder_"):
-            folder_id = content_id[7:]  # "3"
+            folder_id = content_id[7:]
             return self._get_folder_contents(folder_id, cursor, page_size)
 
         if content_id.startswith("program_"):
-            program_id = content_id[8:]  # "68137" (numeric)
+            program_id = content_id[8:]
             slug = kwargs.get("slug")
             return self._get_program_contents(program_id, cursor, page_size, slug=slug)
 
@@ -132,7 +127,6 @@ class RTLPlusVodManager:
         Fetch a direct clip item by its clip_id.
         This is used when we have a path like program_68137/clip_1417600.
         """
-        # Fetch the video layout for this clip
         layout = self._provider.fetch_layout(
             layout_type="video",
             content_id=clip_id,
@@ -150,11 +144,9 @@ class RTLPlusVodManager:
                 content_type="VOD",
             )
 
-        # Extract the VodItem from the layout
         vod_item = self._extract_vod_item_from_layout(layout, clip_id)
 
         if not vod_item:
-            # Extract from block items as fallback
             vod_item = self._extract_vod_item_from_layout_items(layout, clip_id)
 
         return vod_item
@@ -230,9 +222,8 @@ class RTLPlusVodManager:
 
     def _get_root_category(self) -> Dict[str, Any]:
         try:
-            entries: List[Union[VodCategory, VodItem]] = []
-            folder_categories = []  # For folder types (main categories)
-            program_categories = []  # For program types (shows/series)
+            folder_categories = []
+            program_categories = []
             future_events_count = 0
 
             layout = self._provider.fetch_layout(
@@ -245,13 +236,10 @@ class RTLPlusVodManager:
                 logger.warning("Failed to fetch home layout for VOD root; returning empty")
                 return {"entries": [], "next_cursor": None, "total": 0}
 
-            blocks = layout.get("blocks", [])
-
-            for block in blocks:
+            for block in layout.get("blocks", []):
                 if block.get("type") != "bffPaginated":
                     continue
 
-                # Get items safely
                 content = block.get("content")
                 if not content:
                     continue
@@ -260,7 +248,6 @@ class RTLPlusVodManager:
                 if not items:
                     continue
 
-                # Process each item in the block
                 for item in items:
                     if not item:
                         continue
@@ -274,17 +261,14 @@ class RTLPlusVodManager:
                         future_events_count += 1
                         continue
 
-                    # Try to extract as category first
                     cat = self._extract_vod_category_from_block_item(item)
                     if cat:
-                        # Separate folders from programs
                         if cat.content_id.startswith("folder_"):
                             folder_categories.append(cat)
                         else:
                             program_categories.append(cat)
                         continue
 
-                    # If not a category, try as VOD item
                     vod_item = self._extract_vod_item_from_block_item(item)
                     if vod_item:
                         program_categories.append(vod_item)
@@ -295,8 +279,10 @@ class RTLPlusVodManager:
             if future_events_count > 0:
                 logger.info(f"Filtered out {future_events_count} future events from VOD root")
 
-            logger.info(f"Found {len(entries)} entries in root VOD category "
-                        f"({len(folder_categories)} folders, {len(program_categories)} programs)")
+            logger.info(
+                f"Found {len(entries)} entries in root VOD category "
+                f"({len(folder_categories)} folders, {len(program_categories)} programs)"
+            )
 
             return {
                 "entries": entries,
@@ -359,16 +345,12 @@ class RTLPlusVodManager:
         """
         program_id format: "68137" (numeric)
         """
-        # For API URL: use numeric ID directly
-        api_program_id = program_id  # "68137"
-
-        # For location header: use p_ prefix
         seo = slug or f"p_{program_id}"
         location = f"{self.cfg.beta_website}{seo}-p_{program_id}"
 
         layout = self._provider.fetch_layout(
             layout_type="program",
-            content_id=api_program_id,  # "68137" (no p_ prefix)
+            content_id=program_id,
             location=location,
         )
 
@@ -376,30 +358,15 @@ class RTLPlusVodManager:
             logger.error(f"Failed to fetch layout for program {program_id}")
             return {"entries": [], "next_cursor": None, "total": 0}
 
-        logger.debug(f"Layout type: {type(layout)}")
         if not isinstance(layout, dict):
-            logger.error(f"Layout is not a dict, it's {type(layout)}")
+            logger.error(f"Unexpected layout type for program {program_id}: {type(layout)}")
             return {"entries": [], "next_cursor": None, "total": 0}
 
-        blocks = layout.get("blocks", [])
-        if blocks is None:
-            logger.error(f"layout.get('blocks') returned None")
-            blocks = []
-
-        logger.debug(f"Program {program_id} has {len(blocks)} blocks")
-        for i, block in enumerate(blocks):
-            if not block:
-                logger.debug(f"  Block {i}: is None")
-                continue
-            content = block.get("content", {}) if isinstance(block, dict) else {}
-            content_template = content.get("contentTemplateId") if isinstance(content, dict) else None
-            items = content.get("items", []) if isinstance(content, dict) else []
-            logger.debug(f"  Block {i}: type={block.get('type')}, template={content_template}, items={len(items)}")
+        blocks = layout.get("blocks") or []
 
         # FIRST: Check if this is a movie (direct playable video)
         movie_item = self._find_direct_video_in_layout(layout)
         if movie_item:
-            logger.debug(f"Program {program_id} is a movie, returning playable item: {movie_item.name}")
             return {
                 "entries": [movie_item],
                 "next_cursor": None,
@@ -419,11 +386,8 @@ class RTLPlusVodManager:
 
             page = seasons[start: start + page_size]
             next_cursor = str(start + page_size) if (start + page_size) < len(seasons) else None
-
-            logger.debug(f"Program {program_id} has {len(seasons)} seasons")
             return {"entries": page, "next_cursor": next_cursor, "total": len(seasons)}
 
-        # No movie and no seasons found
         logger.warning(f"No seasons or movie found for program {program_id}")
         return {"entries": [], "next_cursor": None, "total": 0}
 
@@ -433,117 +397,49 @@ class RTLPlusVodManager:
         Searches through ALL blocks and items without filtering by template.
         """
         if not layout or not isinstance(layout, dict):
-            logger.error(f"_find_direct_video_in_layout: layout is {type(layout)}")
             return None
 
-        blocks = layout.get("blocks", [])
-        if not blocks:
-            logger.debug("No blocks found in layout")
-            return None
-
-        logger.debug(f"Searching {len(blocks)} blocks for video content")
-
-        for block_idx, block in enumerate(blocks):
+        for block in layout.get("blocks", []):
             if not block or not isinstance(block, dict):
-                logger.debug(f"Block {block_idx} is invalid: {type(block)}")
                 continue
 
-            block_type = block.get("type")
-            logger.debug(f"Block {block_idx}: type={block_type}")
-
-            # Get items from standard location
+            # Collect items from standard content location
             content = block.get("content", {})
-            if not isinstance(content, dict):
-                logger.debug(f"  Block {block_idx} content is not a dict: {type(content)}")
-                items = []
-            else:
-                items = content.get("items", [])
-                if items is None:
-                    items = []
+            items = list(content.get("items", []) or []) if isinstance(content, dict) else []
 
-            logger.debug(f"  Found {len(items)} items in block.content")
-
-            # Also check alternative content for items
+            # Also check alternativeContent for concurrent blocks
             alt_content = block.get("alternativeContent", {})
             if isinstance(alt_content, dict):
-                concurrent_blocks = alt_content.get("concurrentBlocks", [])
-                if concurrent_blocks:
-                    logger.debug(f"  Found {len(concurrent_blocks)} concurrent blocks")
-                    for cb in concurrent_blocks:
-                        if isinstance(cb, dict):
-                            cb_content = cb.get("content", {})
-                            if isinstance(cb_content, dict):
-                                cb_items = cb_content.get("items", [])
-                                if cb_items:
-                                    items.extend(cb_items)
-                                    logger.debug(f"    Added {len(cb_items)} items from concurrent block")
+                for cb in alt_content.get("concurrentBlocks", []):
+                    if isinstance(cb, dict):
+                        cb_items = cb.get("content", {}).get("items", [])
+                        if cb_items:
+                            items.extend(cb_items)
 
-            for item_idx, item in enumerate(items):
+            for item in items:
                 if not item or not isinstance(item, dict):
-                    logger.debug(f"  Item {item_idx} is invalid: {type(item)}")
                     continue
-
-                item_type = item.get("itemType")
-                logger.debug(f"  Item {item_idx}: itemType={item_type}")
-
-                if item_type != "classic":
-                    logger.debug(f"    Skipping - not classic type")
+                if item.get("itemType") != "classic":
                     continue
 
                 item_content = item.get("itemContent", {})
                 if not item_content or not isinstance(item_content, dict):
-                    logger.debug(f"    Skipping - no valid itemContent")
                     continue
 
-                logger.debug(f"    itemContent keys: {list(item_content.keys())}")
-
                 action = item_content.get("action", {})
-                logger.debug(f"    action type: {type(action)}")
-                logger.debug(f"    action value: {action}")
-
                 if isinstance(action, dict):
                     target = action.get("target", {})
-                    logger.debug(f"    target type: {type(target)}")
-                    logger.debug(f"    target value: {target}")
-
                     if isinstance(target, dict):
                         value_layout = target.get("value_layout", {})
-                        logger.debug(f"    value_layout type: {type(value_layout)}")
-                        logger.debug(f"    value_layout value: {value_layout}")
-
-                        layout_type = value_layout.get("type") if isinstance(value_layout, dict) else None
-                        layout_id = value_layout.get("id") if isinstance(value_layout, dict) else None
-                        logger.debug(f"    action.target.value_layout: type={layout_type}, id={layout_id}")
-
-                        if layout_type == "video":
-                            logger.debug(f"    Found video in action.target.value_layout")
+                        if isinstance(value_layout, dict) and value_layout.get("type") == "video":
                             vod_item = self._extract_vod_item_from_block_item(item)
                             if vod_item:
-                                # Make sure the content_id is the clip_id, not the program_id
-                                clip_id = value_layout.get("id")  # This should be "clip_1417600"
-                                logger.debug(f"    Setting VodItem content_id to: {clip_id}")
-                                vod_item.content_id = clip_id  # Ensure it's set correctly
-
-                                # Store program context for potential future use
-                                parent = value_layout.get("parent", {})
-#                                import json
- #                               vod_item.manifest_script = json.dumps({
-  #                                  "program_id": parent.get("id"),
-   #                                 "program_slug": parent.get("seo"),
-    #                                "clip_id": clip_id
-     #                           })
-
-                                logger.debug(
-                                    f"    Successfully extracted VodItem: {vod_item.name} (ID: {vod_item.content_id})")
+                                clip_id = value_layout.get("id")
+                                vod_item.content_id = clip_id
                                 return vod_item
-                            else:
-                                logger.debug(f"    Failed to extract VodItem from item")
-                else:
-                    logger.debug(f"    action is not a dict, it's {type(action)}")
 
                 # Check direct itemContent type
                 if item_content.get("type") == "video":
-                    logger.debug(f"    Found video in itemContent.type")
                     clip_id = item_content.get("id")
                     if clip_id:
                         vod_item = VodItem.create_episode(
@@ -553,15 +449,6 @@ class RTLPlusVodManager:
                         )
                         vod_item.description = item_content.get("description")
                         vod_item.logo_url = self._extract_thumbnail(item_content)
-
-                        # Store program context
- #                       import json
- #                       vod_item.manifest_script = json.dumps({
- #                           "clip_id": clip_id
- #                       })
-
-                        logger.debug(
-                            f"    Created VodItem from direct video: {vod_item.name} (ID: {vod_item.content_id})")
                         return vod_item
 
                 # Check alternative action locations
@@ -572,17 +459,13 @@ class RTLPlusVodManager:
                         if isinstance(alt_target, dict):
                             alt_value = alt_target.get("value_layout", {})
                             if isinstance(alt_value, dict) and alt_value.get("type") == "video":
-                                logger.debug(f"    Found video in {action_key}")
                                 vod_item = self._extract_vod_item_from_block_item(item)
                                 if vod_item:
-                                    # Make sure content_id is the clip_id
                                     clip_id = alt_value.get("id")
                                     if clip_id:
                                         vod_item.content_id = clip_id
-                                        logger.debug(f"    Setting VodItem content_id from {action_key} to: {clip_id}")
                                     return vod_item
 
-        logger.debug("No video content found in any block")
         return None
 
     def _extract_seasons_from_layout(self, layout: Dict) -> List[VodCategory]:
@@ -600,7 +483,6 @@ class RTLPlusVodManager:
             alternative_content = block.get("alternativeContent")
             if alternative_content:
                 for cb in alternative_content.get("concurrentBlocks", []):
-                    # Get season info from concurrent block
                     season_title = cb.get("title", "Unbekannte Staffel")
                     block_id = cb.get("id")
 
@@ -743,14 +625,11 @@ class RTLPlusVodManager:
 
         if value_layout.get("type") == "video":
             clip_id = value_layout.get("id")
-            # Get program context from parent if available
             parent = value_layout.get("parent", {})
             program_id = parent.get("id")
             program_slug = parent.get("seo")
-            logger.debug(f"    Extracted clip_id: {clip_id}, program_id: {program_id}, program_slug: {program_slug}")
         elif item_content.get("type") == "video":
             clip_id = item_content.get("id")
-            logger.debug(f"    Extracted clip_id from itemContent: {clip_id}")
 
         # Try alternative action locations
         if not clip_id:
@@ -762,16 +641,13 @@ class RTLPlusVodManager:
                         alt_value = alt_target.get("value_layout", {})
                         if isinstance(alt_value, dict) and alt_value.get("type") == "video":
                             clip_id = alt_value.get("id")
-                            # Get program context from parent
                             parent = alt_value.get("parent", {})
                             program_id = parent.get("id")
                             program_slug = parent.get("seo")
-                            logger.debug(f"    Extracted clip_id from {action_key}: {clip_id}")
                             if clip_id:
                                 break
 
         if not clip_id:
-            logger.debug(f"    No clip_id found in item")
             return None
 
         # Get name with fallback
@@ -785,14 +661,9 @@ class RTLPlusVodManager:
         elif extra_title:
             full_title = extra_title
         else:
-            # Try to get from highlight or other fields
             highlight = item_content.get("highlight", "")
             if highlight:
-                # Clean up highlight (remove date info)
-                if "•" in highlight:
-                    full_title = highlight.split("•")[0].strip()
-                else:
-                    full_title = highlight
+                full_title = highlight.split("•")[0].strip() if "•" in highlight else highlight
             else:
                 full_title = f"Unbekanntes Video ({clip_id})"
 
@@ -801,12 +672,10 @@ class RTLPlusVodManager:
         episode_number: Optional[int] = None
 
         if highlight:
-            # Look for season/folge patterns
             season_match = re.search(r"Staffel\s*(\d+)", highlight, re.IGNORECASE)
             if season_match:
                 season_number = int(season_match.group(1))
             else:
-                # Try alternative: "S01" pattern
                 season_match = re.search(r"S(\d+)", highlight, re.IGNORECASE)
                 if season_match:
                     season_number = int(season_match.group(1))
@@ -815,15 +684,13 @@ class RTLPlusVodManager:
             if episode_match:
                 episode_number = int(episode_match.group(1))
             else:
-                # Try alternative: "E01" pattern
                 episode_match = re.search(r"E(\d+)", highlight, re.IGNORECASE)
                 if episode_match:
                     episode_number = int(episode_match.group(1))
 
-        # Create VodItem with the clip_id as content_id
         vod_item = VodItem.create_episode(
             name=full_title,
-            content_id=clip_id,  # This should be "clip_1417600"
+            content_id=clip_id,
             provider=self._provider.provider_name,
             season_number=season_number if season_number is not None else -1,
             episode_number=episode_number if episode_number is not None else -1,
@@ -833,17 +700,14 @@ class RTLPlusVodManager:
         vod_item.duration_seconds = self._extract_duration(item_content)
         vod_item.progress = item_content.get("progress", 0)
 
-        # Store program context in manifest_script for later use (e.g., manifest fetching)
+        # Store program context for manifest fetching
         if program_id or program_slug:
-            import json
             vod_item.manifest_script = json.dumps({
                 "program_id": program_id,
                 "program_slug": program_slug,
                 "clip_id": clip_id
             })
-            logger.debug(f"    Stored program context: program_id={program_id}, program_slug={program_slug}")
 
-        logger.debug(f"    Created VodItem: '{vod_item.name}' with content_id='{vod_item.content_id}'")
         return vod_item
 
     def _extract_vod_category_from_block_item(self, item: Dict) -> Optional[VodCategory]:
@@ -874,38 +738,31 @@ class RTLPlusVodManager:
 
         # Store with type prefix for clarity
         if layout_type == "folder":
-            content_id = f"folder_{content_id}"  # folder_3
+            content_id = f"folder_{content_id}"
         elif layout_type == "program":
-            content_id = f"program_{content_id}"  # program_68137
+            content_id = f"program_{content_id}"
 
-        # Capture the SEO slug from the API (e.g. "american-pie")
         seo_slug = value_layout.get("seo") or ""
 
-        # Get name with fallbacks
         name = item_content.get("title")
 
-        # If no title, try to get from folder mapping or other fields
         if not name and layout_type == "folder":
             if content_id in FOLDER_NAMES:
                 name = FOLDER_NAMES[content_id]
             else:
                 seo = value_layout.get("seo", "")
-                if seo:
-                    name = seo.replace("-", " ").title()
-                else:
-                    name = f"Kategorie {content_id}"
+                name = seo.replace("-", " ").title() if seo else f"Kategorie {content_id}"
         elif not name:
             name = item_content.get("extraTitle") or item_content.get("highlight")
-            if name:
-                if "•" in str(name):
-                    name = name.split("•")[0].strip()
+            if name and "•" in str(name):
+                name = name.split("•")[0].strip()
 
         if not name:
             name = f"Unbekannt {layout_type}"
 
         return VodCategory(
             name=name,
-            content_id=content_id,  # "folder_3" or "program_68137"
+            content_id=content_id,
             provider=self._provider.provider_name,
             logo_url=self._extract_thumbnail(item_content),
             description=item_content.get("description") or item_content.get("highlight"),
@@ -965,25 +822,21 @@ class RTLPlusVodManager:
         if not highlight:
             return False
 
-        import re
         from datetime import datetime
 
-        # Check for German date patterns with future dates
         date_patterns = [
             r"(\d{2})\.(\d{2})\.(\d{2}),?\s*(\d{2}):(\d{2})",  # DD.MM.YY, HH:MM
-            r"(\d{2})\.(\d{2})\.(\d{2})\s+(\d{2}):(\d{2})",  # DD.MM.YY HH:MM
+            r"(\d{2})\.(\d{2})\.(\d{2})\s+(\d{2}):(\d{2})",    # DD.MM.YY HH:MM
         ]
 
         for pattern in date_patterns:
             match = re.search(pattern, highlight)
             if match:
                 day, month, year, hour, minute = map(int, match.groups())
-                # Convert 2-digit year to 4-digit
                 if year < 100:
                     year = 2000 + year
                 try:
                     event_date = datetime(year, month, day, hour, minute)
-                    # If date is in the future, this is an upcoming event
                     if event_date > datetime.now():
                         return True
                 except ValueError:
@@ -997,10 +850,8 @@ class RTLPlusVodManager:
         if not highlight:
             return False
 
-        # Check if it has date/time info
         has_datetime = bool(re.search(r"\d{2}\.\d{2}\.\d{2}", highlight))
 
-        # Check action target type
         action = item_content.get("action", {})
         target = action.get("target", {})
         value_layout = target.get("value_layout", {})
@@ -1024,7 +875,6 @@ class RTLPlusVodManager:
 
         if content_id.startswith("program_"):
             program_id = content_id[len("program_"):]
-            # Program layouts are cached under "program:<id>:<page>:<nb>"
             cache_key = (
                 f"program:{program_id}"
                 f":{RTLPlusDefaults.DEFAULT_BLOCK_PAGE}"
@@ -1052,8 +902,4 @@ class RTLPlusVodManager:
 
         else:
             # Unknown prefix — wipe everything rather than silently doing nothing
-            logger.debug(
-                f"invalidate_cache: unknown content_id format {content_id!r}, "
-                "clearing full layout cache"
-            )
             self._provider.invalidate_layout_cache()

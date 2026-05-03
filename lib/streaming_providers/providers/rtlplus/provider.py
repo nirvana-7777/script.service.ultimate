@@ -1,5 +1,4 @@
 # streaming_providers/providers/rtlplus/provider.py
-import json
 import time
 from datetime import datetime
 from typing import ClassVar, Dict, List, Optional, Tuple
@@ -63,7 +62,6 @@ class RTLPlusProvider(StreamingProvider):
         # Try authentication
         try:
             self.bearer_token = self.authenticator.get_bearer_token()
-            logger.debug("RTL+ authentication successful during initialization")
 
             # Ensure a profile is selected for user-authenticated sessions
             if self.authenticator.has_user_credentials():
@@ -126,24 +124,14 @@ class RTLPlusProvider(StreamingProvider):
         if nb_pages is None:
             nb_pages = RTLPlusDefaults.DEFAULT_NB_PAGES
 
-        # 🔧 FIX: Clean up content_id based on layout_type
-        original_content_id = content_id
+        # Strip known type prefixes so the correct URL and cache key are used
         clean_content_id = content_id
-
         if layout_type == "program" and content_id.startswith("program_"):
-            # Remove "program_" prefix to get just the numeric ID
-            clean_content_id = content_id[8:]  # "program_68137" -> "68137"
-            logger.debug(f"Cleaned program content_id: '{original_content_id}' -> '{clean_content_id}'")
-
+            clean_content_id = content_id[8:]
         elif layout_type == "folder" and content_id.startswith("folder_"):
-            # Remove "folder_" prefix
             clean_content_id = content_id[7:]
-            logger.debug(f"Cleaned folder content_id: '{original_content_id}' -> '{clean_content_id}'")
-
         elif layout_type == "season" and content_id.startswith("season_"):
-            # Remove "season_" prefix
             clean_content_id = content_id[7:]
-            logger.debug(f"Cleaned season content_id: '{original_content_id}' -> '{clean_content_id}'")
 
         # For video layouts, a prefix is always an error
         if layout_type == "video" and "_" in content_id and not content_id.startswith("clip"):
@@ -159,7 +147,6 @@ class RTLPlusProvider(StreamingProvider):
         if not force_refresh and cache_key in self._layout_cache:
             cached_data, cached_time = self._layout_cache[cache_key]
             if (now - cached_time) < self.LAYOUT_CACHE_TTL:
-                logger.debug(f"Layout cache hit: {cache_key}")
                 return cached_data
 
         # Get tokens
@@ -167,7 +154,6 @@ class RTLPlusProvider(StreamingProvider):
         if not oauth_token:
             try:
                 oauth_token = self.authenticator.get_bearer_token()
-                logger.debug("Using anonymous token for layout")
             except Exception as e:
                 logger.error(f"Failed to get OAuth token for layout: {e}")
                 return None
@@ -184,30 +170,12 @@ class RTLPlusProvider(StreamingProvider):
 
         # Build request - handle alias layouts specially
         if layout_type == "alias":
-            # For alias layouts, the URL pattern is: {base}/alias/{content_id}/layout
             url = f"{self.rtl_config.bedrock_layout_base}/alias/{clean_content_id}/layout"
         else:
-            # Use the cleaned content_id for the URL
             url = self.rtl_config.get_layout_url(layout_type, clean_content_id)
 
         headers = self.rtl_config.get_layout_headers(oauth_token, bedrock_token, location)
         params = {"blockPage": block_page, "nbPages": nb_pages}
-
-        # LOG ALL HEADERS BEING SENT
-        logger.debug(f"=== FETCH LAYOUT REQUEST HEADERS ===")
-        logger.debug(f"URL: {url}")
-        logger.debug(f"Method: GET")
-        logger.debug(f"Headers:")
-        # Mask sensitive tokens for security
-        safe_headers = {}
-        for key, value in headers.items():
-            if 'authorization' in key.lower() or 'token' in key.lower():
-                safe_headers[key] = f"{value[:20]}... (truncated)" if len(value) > 20 else "***"
-            else:
-                safe_headers[key] = value
-        logger.debug(f"{json.dumps(safe_headers, indent=2)}")
-        logger.debug(f"Params: {params}")
-        logger.debug(f"==================================")
 
         try:
             response = self.http_manager.get(
@@ -217,8 +185,6 @@ class RTLPlusProvider(StreamingProvider):
             data = response.json()
 
             self._layout_cache[cache_key] = (data, now)
-            logger.debug(f"Fetched {layout_type} layout for {clean_content_id}")
-
             return data
 
         except Exception as e:
@@ -233,39 +199,20 @@ class RTLPlusProvider(StreamingProvider):
         assets = []
         blocks = layout_data.get("blocks", [])
 
-        logger.debug(f"extract_video_assets: Found {len(blocks)} blocks")
-
-        for block_idx, block in enumerate(blocks):
-            block_type = block.get("type")
-            logger.debug(f"Block {block_idx}: type={block_type}")
-
+        for block in blocks:
             if block.get("type") != "bffPaginated":
-                logger.debug(f"  Skipping block {block_idx} - not bffPaginated")
                 continue
 
             items = block.get("content", {}).get("items", [])
-            logger.debug(f"  Block {block_idx} has {len(items)} items")
-
-            for item_idx, item in enumerate(items):
-                item_type = item.get("itemType")
-                logger.debug(f"    Item {item_idx}: itemType={item_type}")
-
+            for item in items:
                 if item.get("itemType") == "video":
-                    video = item.get("itemContent", {}).get("video", {})
-                    video_assets = video.get("assets", [])
-                    logger.debug(f"      Found {len(video_assets)} assets in video item")
+                    video_assets = item.get("itemContent", {}).get("video", {}).get("assets", [])
                     assets.extend(video_assets)
                 elif item.get("itemType") == "classic":
                     # Some layouts wrap video inside classic items
-                    item_content = item.get("itemContent", {})
-                    video = item_content.get("video", {})
-                    video_assets = video.get("assets", [])
-                    logger.debug(f"      Found {len(video_assets)} assets in classic item")
+                    video_assets = item.get("itemContent", {}).get("video", {}).get("assets", [])
                     assets.extend(video_assets)
-                else:
-                    logger.debug(f"      Skipping item - unknown itemType: {item_type}")
 
-        logger.debug(f"extract_video_assets: Total assets found: {len(assets)}")
         return assets
 
     @staticmethod
@@ -325,22 +272,16 @@ class RTLPlusProvider(StreamingProvider):
         quality = preferred_quality or next(iter(self.rtl_config.preferred_qualities), "hd")
         format_pref = preferred_format or next(iter(self.rtl_config.preferred_formats), "dashcenc")
 
-        # Try exact match
-        for asset in assets:
-            if (asset.get("quality") == quality and
-                    asset.get("format") == format_pref):
-                manifest_url = asset.get("path") or asset.get("reference")
-                if manifest_url:
-                    return manifest_url
+        # Try preferred format + quality first, then broaden search
+        for fmt in (format_pref,):
+            for qual in (quality,):
+                for asset in assets:
+                    if asset.get("quality") == qual and asset.get("format") == fmt:
+                        manifest_url = asset.get("path") or asset.get("reference")
+                        if manifest_url:
+                            return manifest_url
 
-        # Try format + quality, any DRM
-        for asset in assets:
-            if asset.get("quality") == quality and asset.get("format") == format_pref:
-                manifest_url = asset.get("path") or asset.get("reference")
-                if manifest_url:
-                    return manifest_url
-
-        # Try by preferred formats/qualities
+        # Try by all preferred formats/qualities
         for fmt in self.rtl_config.preferred_formats:
             for qual in self.rtl_config.preferred_qualities:
                 for asset in assets:
@@ -446,36 +387,25 @@ class RTLPlusProvider(StreamingProvider):
         - "program_68137" (we need to extract the clip_id from the program)
         - "program_68137/clip_1417600"
         """
-        logger.debug(f"get_manifest called with content_id={content_id}, kwargs={list(kwargs.keys())}")
-
         # Check if we have a stored context from the VOD item
-        # Kodi passes the program_id as content_id, but we stored the clip context
         if "program_context" in kwargs:
-            # This should contain the clip_id we need
             if kwargs["program_context"].get("clip_id"):
                 content_id = kwargs["program_context"]["clip_id"]
-                logger.debug(f"Using clip_id from program_context: {content_id}")
 
         # Handle combined paths
         if "/" in content_id:
             parts = content_id.split("/")
             if len(parts) == 2 and parts[0].startswith("program_"):
                 content_id = parts[1]  # clip_1417600
-                logger.debug(f"Extracted clip_id from path: {content_id}")
 
         # If content_id starts with program_, we need to find the clip_id from the program
         if content_id.startswith("program_"):
             program_id = content_id[8:]  # Remove "program_" prefix
-            logger.debug(f"Program ID detected: {program_id}, need to find clip_id")
-
-            # Fetch the program layout to find the clip_id
             layout = self._fetch_program_layout(program_id)
             if layout:
-                # Find the video clip in the layout
                 clip_id = self._find_clip_id_in_program_layout(layout)
                 if clip_id:
                     content_id = clip_id
-                    logger.debug(f"Found clip_id {clip_id} from program {program_id}")
                 else:
                     logger.error(f"No clip_id found for program {program_id}")
                     return None
@@ -498,7 +428,6 @@ class RTLPlusProvider(StreamingProvider):
 
     def _fetch_program_layout(self, program_id: str) -> Optional[Dict]:
         """Fetch a program layout by program ID."""
-        # Ensure we have the right tokens
         oauth_token = self.get_user_bearer_token()
         if not oauth_token:
             logger.error("No user authentication for program layout")
@@ -513,8 +442,6 @@ class RTLPlusProvider(StreamingProvider):
             logger.error(f"Failed to get Bedrock token: {e}")
             return None
 
-        # Build URL for program layout
-        # The program ID should be numeric, not with "program_" prefix
         clean_id = program_id.replace("program_", "")
         url = f"{self.rtl_config.bedrock_layout_base}/program/{clean_id}/layout"
         location = f"{self.rtl_config.beta_website}p_{clean_id}-p_{clean_id}"
@@ -543,9 +470,7 @@ class RTLPlusProvider(StreamingProvider):
         # Look for video assets in blocks
         assets = self.extract_video_assets(layout)
         if assets:
-            # Return the first asset's ID or reference
             for asset in assets:
-                # Look for clip_id in various fields
                 clip_id = asset.get("clipId") or asset.get("id") or asset.get("reference")
                 if clip_id:
                     return clip_id
@@ -575,26 +500,20 @@ class RTLPlusProvider(StreamingProvider):
         """
         Get DRM configuration for content.
         """
-        logger.debug(f"get_drm called with content_id={content_id}")
-
         # Handle combined paths and program IDs similar to get_manifest
         if "/" in content_id:
             parts = content_id.split("/")
             if len(parts) == 2 and parts[0].startswith("program_"):
                 content_id = parts[1]
-                logger.debug(f"Extracted clip_id from path for DRM: {content_id}")
 
         # If content_id starts with program_, find the clip_id
         if content_id.startswith("program_"):
             program_id = content_id[8:]
-            logger.debug(f"Program ID detected for DRM: {program_id}")
-
             layout = self._fetch_program_layout(program_id)
             if layout:
                 clip_id = self._find_clip_id_in_program_layout(layout)
                 if clip_id:
                     content_id = clip_id
-                    logger.debug(f"Found clip_id {clip_id} from program {program_id}")
                 else:
                     logger.error(f"No clip_id found for program {program_id} in DRM request")
                     return []
@@ -623,15 +542,10 @@ class RTLPlusProvider(StreamingProvider):
     @staticmethod
     def _is_linear_tv_channel(content_id: str) -> bool:
         """Determine if content_id refers to a linear TV channel."""
-        # VOD clips have patterns like "clip_123456" or contain "clip"
         if "clip_" in content_id or content_id.startswith("clip"):
             return False
-
-        # Also check for common VOD patterns
         if content_id.startswith("rrn:") or "/" in content_id:
             return False
-
-        # Event folder IDs are digits
         if content_id.isdigit():
             return False
 
@@ -646,13 +560,8 @@ class RTLPlusProvider(StreamingProvider):
         """
         Get manifest URL for VOD/event content using Bedrock layout extraction.
         """
-        # If content_id doesn't start with "clip_", it might still be a clip
-        # Make sure we're fetching the video layout, not live layout
-        if not content_id.startswith("clip_"):
-            # Try to find if this is a known clip ID pattern
-            if content_id.isdigit():
-                # This might be an event or program ID
-                logger.warning(f"Non-clip content_id for manifest: {content_id}")
+        if not content_id.startswith("clip_") and content_id.isdigit():
+            logger.warning(f"Non-clip content_id for manifest: {content_id}")
 
         # Get program context from kwargs (set when navigating from VOD categories)
         program_slug = kwargs.get("program_slug")
@@ -660,18 +569,13 @@ class RTLPlusProvider(StreamingProvider):
 
         # Build the correct location header
         if program_slug and program_id and content_id.startswith("clip_"):
-            # Convert clip_1417600 to american-pie-c_1417600
             clip_slug = f"{program_slug}-c_{content_id.replace('clip_', '')}"
             location = f"{self.rtl_config.beta_website}{program_slug}-p_{program_id}/video/{clip_slug}"
         else:
-            # Fallback - might not work for all content
             location = f"{self.rtl_config.beta_website}{content_id}"
 
-        logger.debug(f"Fetching video layout for content_id={content_id}, location={location}")
-
-        # Fetch the video layout - CRITICAL: use layout_type="video", not "live"!
         layout = self.fetch_layout(
-            layout_type="video",  # This must be "video" for VOD content
+            layout_type="video",
             content_id=content_id,
             location=location
         )
@@ -680,28 +584,23 @@ class RTLPlusProvider(StreamingProvider):
             logger.error(f"Failed to fetch video layout for {content_id}")
             return None
 
-        # Extract assets using the common method
         assets = self.extract_video_assets(layout)
 
         if not assets:
             logger.warning(f"No video assets found for {content_id}")
             return None
 
-        # Select best manifest URL
         manifest_url = self.extract_best_manifest_url(assets)
 
-        if manifest_url:
-            logger.info(f"Found manifest URL for {content_id}: {manifest_url[:100]}...")
-            return manifest_url
+        if not manifest_url:
+            logger.warning(f"No suitable manifest URL found for {content_id}")
 
-        logger.warning(f"No suitable manifest URL found for {content_id}")
-        return None
+        return manifest_url
 
     def _get_drm_vod_or_event(self, content_id: str, **kwargs) -> List[DRMConfig]:
         """
         Get DRM configuration for VOD/event content using layout extraction.
         """
-        # Fetch layout for the content
         layout = self.fetch_layout(
             layout_type="video",
             content_id=content_id,
@@ -712,14 +611,12 @@ class RTLPlusProvider(StreamingProvider):
             logger.error(f"Failed to fetch layout for VOD/event content_id: {content_id}")
             return []
 
-        # Use the common DRM extraction method
         return self.get_drm_for_content(layout)
 
     def get_drm_for_content(self, layout_data: Dict) -> List[DRMConfig]:
         """
         Extract DRM configuration from layout data.
         """
-        # Ensure profile is selected for user-authenticated sessions
         if self.authenticator.has_user_credentials():
             if not self.authenticator.ensure_profile_selected():
                 logger.warning("Failed to select profile for DRM request")
@@ -727,7 +624,6 @@ class RTLPlusProvider(StreamingProvider):
         assets = self.extract_video_assets(layout_data)
 
         if not assets:
-            logger.debug("No video assets found in layout")
             return []
 
         # Priority: delta provider dashcenc format (best quality)
@@ -739,7 +635,6 @@ class RTLPlusProvider(StreamingProvider):
                     asset.get("format") == "dashcenc" and
                     asset.get("quality") == "hd"):
                 target_asset = asset
-                logger.debug("Found delta/dashcenc/hd asset")
                 break
 
         # Fallback: delta + dashcenc + any quality
@@ -747,7 +642,6 @@ class RTLPlusProvider(StreamingProvider):
             for asset in assets:
                 if asset.get("provider") == "delta" and asset.get("format") == "dashcenc":
                     target_asset = asset
-                    logger.debug(f"Fallback to delta/dashcenc/{asset.get('quality', 'unknown')} asset")
                     break
 
         # Last resort: any dashcenc asset
@@ -755,14 +649,12 @@ class RTLPlusProvider(StreamingProvider):
             for asset in assets:
                 if asset.get("format") == "dashcenc":
                     target_asset = asset
-                    logger.debug(f"Last resort: {asset.get('provider', 'unknown')}/dashcenc asset")
                     break
 
         if not target_asset:
             logger.warning("No suitable DRM asset found")
             return []
 
-        # Extract contentId from the selected asset
         drm_info = target_asset.get("drm", {})
         drm_config = drm_info.get("config", {})
         content_id = drm_config.get("contentId")
@@ -777,7 +669,6 @@ class RTLPlusProvider(StreamingProvider):
                 logger.error("No user ID available for DRM")
                 return []
 
-            # Get upfront token (works for both Widevine and PlayReady)
             upfront_token = self.authenticator.get_upfront_token(
                 content_id=content_id,
                 uid=uid,
@@ -787,16 +678,14 @@ class RTLPlusProvider(StreamingProvider):
                 logger.error(f"Failed to get upfront token for {content_id}")
                 return []
 
-            # Use the shared DRMToday factory to create both configs
             drm_configs = create_drmtoday_configs(
                 upfront_token=upfront_token,
                 origin=self.rtl_config.beta_website.rstrip("/"),
                 referer=self.rtl_config.beta_website,
                 user_agent=self.rtl_config.user_agent,
-                playready_user_agent=RTLPlusDefaults.PLAYREADY_USER_AGENT,  # Edge for PlayReady
+                playready_user_agent=RTLPlusDefaults.PLAYREADY_USER_AGENT,
             )
 
-            logger.info(f"Built {len(drm_configs)} DRM configs (Widevine + PlayReady)")
             return drm_configs
 
         except Exception as e:
@@ -810,7 +699,6 @@ class RTLPlusProvider(StreamingProvider):
         if cached is not None:
             data, ts = cached
             if (now - ts) < _MANIFEST_CACHE_TTL:
-                logger.debug(f"RTL+ Manifest cache hit for {content_id}")
                 return data
 
         # TODO: This legacy endpoint may eventually be migrated to Bedrock
@@ -829,11 +717,8 @@ class RTLPlusProvider(StreamingProvider):
         from ...base.auth.base_auth import TokenAuthLevel
 
         current_level = self.authenticator.get_current_token_level()
-        logger.debug(
-            f"get_user_bearer_token: current_level={current_level}, has_user_credentials={self.authenticator.has_user_credentials()}")
 
         if current_level == TokenAuthLevel.USER_AUTHENTICATED:
-            # Ensure profile is selected
             self.authenticator.ensure_profile_selected()
             return self.authenticator.get_bearer_token()
 
