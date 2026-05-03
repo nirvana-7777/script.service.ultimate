@@ -801,15 +801,22 @@ class RTLPlusVodManager:
     def _build_image_url(image_id: str) -> str:
         """Build a signed Bedrock CDN image URL.
 
-        Hash formula: SHA1("/v2/images/{id}/raw?{params}" + signing_key)
+        Hash formula: SHA1("/v2/images/{id}/raw?{params}" + IMAGE_SIGNING_KEY)
+        Note: path_and_query starts with /{id}/raw since IMAGE_BASE_URL already
+        contains /v2/images — the full signed path is /v2/images/{id}/raw?{params}.
+        This is a keyed hash (secret-suffix construction), verified against
+        three known-good URLs from network traces.
         """
         import hashlib
         from .constants import RTLPlusDefaults
-        path_and_query = f"/v2/images/{image_id}/raw?{RTLPlusDefaults.IMAGE_PARAMS}"
+        # IMAGE_BASE_URL already contains /v2/images — only append /{id}/raw?{params}
+        # but the hash must be signed over the full path /v2/images/{id}/raw?{params}
+        suffix = f"/{image_id}/raw?{RTLPlusDefaults.IMAGE_PARAMS}"
+        signed_path = f"/v2/images{suffix}"
         image_hash = hashlib.sha1(
-            (path_and_query + RTLPlusDefaults.IMAGE_SIGNING_KEY).encode()
+            (signed_path + RTLPlusDefaults.IMAGE_SIGNING_KEY).encode()
         ).hexdigest()
-        return f"{RTLPlusDefaults.IMAGE_BASE_URL}{path_and_query}&hash={image_hash}"
+        return f"{RTLPlusDefaults.IMAGE_BASE_URL}{suffix}&hash={image_hash}"
 
     @classmethod
     def _extract_thumbnail(cls, item_content: Dict) -> Optional[str]:
