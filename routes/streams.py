@@ -603,7 +603,7 @@ def setup_stream_routes(app, manager, service):
             # Use existing helper to fetch manifest
             # _fetch_manifest_for_rewriter expects (provider, channel_id, manifest_url)
             # but we can pass content_id as channel_id since it's just an identifier
-            manifest_text, _, _, _ = service.fetch_manifest_for_rewriter(
+            manifest_text, _, _, _, _ = service.fetch_manifest_for_rewriter(
                 provider, content_id, manifest_url
             )
 
