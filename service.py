@@ -348,7 +348,10 @@ class UltimateService:
         Fetch a manifest and collect everything MPDRewriter needs.
 
         Returns:
-            (manifest_text, ttl, provider_proxy_url, segment_headers)
+            (manifest_text, ttl, provider_proxy_url, segment_headers, effective_manifest_url)
+            effective_manifest_url is the post-redirect URL (may differ from manifest_url
+            if the CDN issues a 302). Always use this for MPD rewriting so that relative
+            segment paths are resolved against the correct base.
 
         Raises:
             ValueError: if the provider HTTP manager is not available
@@ -388,7 +391,7 @@ class UltimateService:
                 f"{proxy_cfg.proxy_type.value.lower()}://{proxy_cfg.host}:{proxy_cfg.port}"
             )
 
-        return manifest_response.text, ttl, provider_proxy_url, segment_headers
+        return manifest_response.text, ttl, provider_proxy_url, segment_headers, manifest_response.url
 
     def get_decrypted_manifest(
             self, provider: str, channel_id: str, keyids: dict,
@@ -427,7 +430,7 @@ class UltimateService:
             )
 
         try:
-            manifest_text, _ttl, provider_proxy_url, segment_headers = self.fetch_manifest_for_rewriter(
+            manifest_text, _ttl, provider_proxy_url, segment_headers, effective_url = self.fetch_manifest_for_rewriter(
                 provider, channel_id, manifest_url
             )
 
@@ -441,7 +444,7 @@ class UltimateService:
                 clearkey_receiver_side=receiver_side,
                 segment_headers=segment_headers,
             )
-            rewritten_mpd = rewriter.rewrite_mpd(manifest_text, manifest_url)
+            rewritten_mpd = rewriter.rewrite_mpd(manifest_text, effective_url)
 
             response.content_type = "application/dash+xml; charset=utf-8"
             return rewritten_mpd
@@ -498,7 +501,7 @@ class UltimateService:
             return json.dumps({"error": "Catchup manifest not available"})
 
         try:
-            manifest_text, ttl, provider_proxy_url, segment_headers = self.fetch_manifest_for_rewriter(
+            manifest_text, ttl, provider_proxy_url, segment_headers, effective_url = self.fetch_manifest_for_rewriter(
                 provider, channel_id, manifest_url
             )
 
@@ -511,7 +514,7 @@ class UltimateService:
                 channel=channel_id,
                 segment_headers=segment_headers,
             )
-            rewritten_mpd = rewriter.rewrite_mpd(manifest_text, manifest_url)
+            rewritten_mpd = rewriter.rewrite_mpd(manifest_text, effective_url)
 
             self.mpd_cache.set(
                 provider=provider,
@@ -559,7 +562,7 @@ class UltimateService:
                 {"error": f'Manifest not available for channel "{channel_id}" from provider "{provider}"'})
 
         try:
-            manifest_text, ttl, provider_proxy_url, segment_headers = self.fetch_manifest_for_rewriter(
+            manifest_text, ttl, provider_proxy_url, segment_headers, effective_url = self.fetch_manifest_for_rewriter(
                 provider, channel_id, manifest_url
             )
 
@@ -572,7 +575,7 @@ class UltimateService:
                 channel=channel_id,
                 segment_headers=segment_headers,
             )
-            rewritten_mpd = rewriter.rewrite_mpd(manifest_text, manifest_url)
+            rewritten_mpd = rewriter.rewrite_mpd(manifest_text, effective_url)
 
             if not highest_quality_only:
                 self.mpd_cache.set(provider=provider, channel_id=channel_id,
