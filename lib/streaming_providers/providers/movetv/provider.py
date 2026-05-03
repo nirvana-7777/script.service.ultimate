@@ -362,9 +362,16 @@ class MoveTVProvider(StreamingProvider):
             # content_id IS the contentId — resolve to liveId via channel cache
             channel = self._channel_by_id(content_id)
             if channel is None:
-                logger.error(
+                logger.info(
                     f"move.tv: Channel not found in cache for content_id={content_id!r}; "
-                    "cannot resolve liveId for manifest fetch"
+                    "attempting to rebuild channel cache before manifest fetch"
+                )
+                self.get_channels()
+                channel = self._channel_by_id(content_id)
+            if channel is None:
+                logger.error(
+                    f"move.tv: Channel still not found after cache rebuild for "
+                    f"content_id={content_id!r}; cannot resolve liveId for manifest fetch"
                 )
                 return None
             live_id = channel.live_id
@@ -415,9 +422,16 @@ class MoveTVProvider(StreamingProvider):
         try:
             channel = self._channel_by_id(content_id)
             if channel is None:
-                logger.error(
+                logger.info(
                     f"move.tv: Channel not found for content_id={content_id!r}; "
-                    "cannot resolve liveId for play-auth fetch"
+                    "attempting to rebuild channel cache before play-auth fetch"
+                )
+                self.get_channels()
+                channel = self._channel_by_id(content_id)
+            if channel is None:
+                logger.error(
+                    f"move.tv: Channel still not found after cache rebuild for "
+                    f"content_id={content_id!r}; cannot resolve liveId for play-auth fetch"
                 )
                 return None
             live_id = channel.live_id
