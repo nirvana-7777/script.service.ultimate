@@ -797,13 +797,11 @@ class RTLPlusVodManager:
     # Thumbnail / duration helpers (pure, no I/O)
     # ------------------------------------------------------------------
 
-    _IMAGE_BASE = "https://images-fio.rtlde.bedrock.tech/v2/images"
-    _IMAGE_PARAMS = "auto=webp&blur=0&fit=scale_crop&height=320&interlace=1&optimize=high&width=213"
-
     @classmethod
     def _build_image_url(cls, image_id: str, image_hash: str = None) -> str:
         """Build a Bedrock CDN image URL, appending the hash when available."""
-        url = f"{cls._IMAGE_BASE}/{image_id}/raw?{cls._IMAGE_PARAMS}"
+        from .constants import RTLPlusDefaults
+        url = f"{RTLPlusDefaults.IMAGE_BASE_URL}/{image_id}/raw?{RTLPlusDefaults.IMAGE_PARAMS}"
         if image_hash:
             url += f"&hash={image_hash}"
         return url

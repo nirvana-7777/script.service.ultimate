@@ -67,6 +67,10 @@ class RTLPlusDefaults:
     # Direct CDN
     ORIGIN_CDN_BASE = "https://origin.live.rtlde.bedrock.tech"
 
+    # Image CDN
+    IMAGE_BASE_URL = "https://images-fio.rtlde.bedrock.tech/v2/images"
+    IMAGE_PARAMS = "auto=webp&blur=0&fit=scale_crop&height=320&interlace=1&optimize=high&width=213"
+
     # Anonymous credentials (fallback)
     ANONYMOUS_CLIENT_ID = "anonymous-user"
     ANONYMOUS_CLIENT_SECRET = "4bfeb73f-1c4a-4e9f-a7fa-96aa1ad3d94c"
@@ -165,7 +169,6 @@ def _get_rtlplus_client_version() -> str:
             with urllib.request.urlopen(RTLPlusDefaults.VERSION_ENDPOINT, timeout=4) as resp:
                 data = json.loads(resp.read().decode())
                 _CLIENT_VERSION_CACHE = data["version"]
-            logger.debug(f"Fetched RTL+ client version: {_CLIENT_VERSION_CACHE}")
         except Exception as exc:
             logger.warning(
                 f"Could not fetch RTL+ client version ({exc}); using fallback {RTLPlusDefaults.CLIENT_VERSION_FALLBACK}")
@@ -336,12 +339,10 @@ class RTLPlusHeaders:
         # Add profile_id if available
         if profile_id:
             headers["x-auth-profile-id"] = profile_id
-            logger.debug(f"Adding x-auth-profile-id header: {profile_id}")
 
         # Add user_id as x-auth-gigya-uid if available
         if user_id:
             headers["x-auth-gigya-uid"] = user_id
-            logger.debug(f"Adding x-auth-gigya-uid header: {user_id}")
 
         return headers
 
@@ -567,7 +568,6 @@ class RTLPlusConfig:
         if ":" in clean_id:
             # If it has a colon, extract the part after the colon
             clean_id = clean_id.split(":", 1)[-1]
-            logger.debug(f"Cleaned content_id for URL: '{content_id}' -> '{clean_id}'")
 
         return f"{self.bedrock_layout_base}{path.format(id=clean_id)}"
 
