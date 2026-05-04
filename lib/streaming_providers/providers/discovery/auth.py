@@ -1199,9 +1199,12 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         anon_token = self._perform_anonymous_auth()
         assert isinstance(anon_token, DiscoveryAuthToken)
 
-        # Step 3: Fetch feature flags with anon token
+        # Step 3: Fetch feature flags with anon token (optional)
         logger.debug("Fetching feature flags for GI SDK client ID")
-        self._fetch_feature_flags(anon_token.access_token)
+        try:
+            self._fetch_feature_flags(anon_token.access_token)
+        except Exception as e:
+            logger.debug(f"Feature flags fetch failed (non-critical): {e}")
 
         # Step 4: Fetch Arkose blob and solve the challenge.
         logger.debug("Fetching Arkose blob for login challenge")
@@ -1210,7 +1213,7 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         arkose_token = self._solve_arkose(arkose_blob)
         logger.debug("Arkose challenge solved")
 
-        # Step 4: Upgrade anonymous session to user session
+        # Step 5: Upgrade anonymous session to user session
         logger.debug(
             f"Upgrading anonymous token to user token for "
             f"{self.credentials.username}"
@@ -1236,7 +1239,7 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             data=payload_str,
         )
 
-        # Handle the "already logged in" error by clearing the session and retrying
+        # Handle the "already logged in" error by generating a new device ID and retrying
         if response.status_code == 400:
             try:
                 error_data = response.json()
@@ -1244,21 +1247,36 @@ class DiscoveryAuthenticator(BaseAuthenticator):
                 for error in errors:
                     if error.get('code') == 'invalid.token' and 'already logged in' in error.get('detail', ''):
                         logger.warning(
-                            f"Device already logged in - clearing stored session and retrying"
+                            f"Device already logged in - generating new device ID and retrying"
                         )
-                        # Clear the stored session data
+                        # Generate a completely new device ID
+                        import uuid
+                        new_device_id = str(uuid.uuid4())
+                        logger.info(f"New device ID: {new_device_id}")
+
+                        # Update the authenticator's device ID
+                        self.device_id = new_device_id
+
+                        # Also update the settings manager if available
+                        if self.settings_manager:
+                            try:
+                                self.settings_manager.set_device_id("discovery", self.country, new_device_id)
+                                logger.debug("Saved new device ID to settings")
+                            except Exception as e:
+                                logger.debug(f"Could not save device ID to settings: {e}")
+
+                        # Clear any stored session data
                         self.invalidate_token()
-                        # Clear the st= cookie
+
+                        # Clear cookies
                         try:
-                            self.http_manager._session.cookies.clear(
-                                domain="api.discoveryplus.com", path="/", name="st"
-                            )
+                            self.http_manager._session.cookies.clear()
+                            logger.debug("Cleared all cookies")
                         except:
                             pass
-                        # Generate a new device ID
-                        import uuid
-                        self.device_id = str(uuid.uuid4())
-                        # Retry once
+
+                        # Retry the entire authentication process
+                        logger.info("Retrying authentication with new device ID")
                         return self._perform_user_auth()
             except Exception as parse_err:
                 logger.debug(f"Could not parse error response: {parse_err}")
