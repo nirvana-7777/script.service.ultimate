@@ -50,7 +50,6 @@ from .constants import (
 from .exceptions import (
     InvalidCredentialsError,
     UnsupportedCredentialTypeError,
-    EndpointDiscoveryError,
 )
 
 
@@ -1322,34 +1321,24 @@ class DiscoveryAuthenticator(BaseAuthenticator):
     def _establish_session(self) -> None:
         """
         Establish a live session (session headers + endpoints) using whatever
-        credentials are available, without replacing the currently stored token.
-
-        Called on the stored-token path when session headers are missing.
-        The st= cookie (if present in the jar) causes /token to return the
-        previously authenticated token rather than a fresh anonymous one.
-
-        Flow:
-          1. Run /token two-step → populates session headers + captures token
-          2. If result is anonymous but we have user credentials → re-login
-          3. Either way → bootstrap runs at the end of the auth method
+        credentials are available.
         """
         if isinstance(self.credentials, DiscoveryUserCredentials):
-            # Run the full user flow: /token two-step + /login upgrade.
-            # If the st= cookie is still valid, /token already returns the user
-            # token and /login may be skipped by the server — but we still call
-            # it to be safe and to guarantee session headers are correct.
             logger.debug(
                 "User credentials available — running full user auth to "
                 "establish session"
             )
-            self._perform_user_auth()
+            token = self._perform_user_auth()
+            # Ensure the token is stored
+            self._current_token = token
         else:
-            # Anonymous path — just the /token two-step
             logger.debug(
                 "No user credentials — running anonymous /token negotiation "
                 "to establish session for bootstrap"
             )
-            self._perform_anonymous_auth()
+            token = self._perform_anonymous_auth()
+            # Ensure the token is stored
+            self._current_token = token
 
     def _restore_session_cookie(self, st_cookie: str) -> None:
         """
@@ -1372,41 +1361,21 @@ class DiscoveryAuthenticator(BaseAuthenticator):
     def get_bearer_token(self, force_refresh: bool = False) -> str:
         """
         Get bearer token for API requests.
-
-        Handles three stored-token scenarios before returning:
-          1. Stored token is anonymous but we have user credentials → upgrade
-             via login so the caller always gets a user-level token.
-          2. Stored token is already a user token → use as-is.
-          3. Stored token is anonymous and no user credentials → use as-is.
-
-        Also ensures endpoint discovery (bootstrap) has run regardless of
-        whether the token came from storage or a fresh auth flow.
-
-        Args:
-            force_refresh: Force token refresh
-
-        Returns:
-            Bearer token string
         """
         token = self.authenticate(force_refresh=force_refresh)
 
         # Restore the st= cookie into the http_manager session if we have one
-        # stored but it's not yet in the active cookie jar. This must happen
-        # before any subsequent requests so the server recognises our session.
         if isinstance(token, DiscoveryAuthToken) and token.st_cookie:
             self._restore_session_cookie(token.st_cookie)
 
-        # Upgrade anonymous stored token when user credentials are available.
-        # The base class may return a BaseAuthToken (not DiscoveryAuthToken) when
-        # loading from storage, so we read the anonymous flag from the raw token
-        # info dict rather than inspecting the object type.
         token_info = self.get_token_info() or {}
         is_anonymous_token = token_info.get("anonymous", True)
         has_user_credentials = isinstance(self.credentials, DiscoveryUserCredentials)
 
         logger.debug(
             f"Token state: anonymous={is_anonymous_token}, "
-            f"has_user_credentials={has_user_credentials}"
+            f"has_user_credentials={has_user_credentials}, "
+            f"has_session_headers={bool(self._session_state)}"  # Added this
         )
 
         if is_anonymous_token and has_user_credentials:
@@ -1416,19 +1385,25 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             )
             token = self._perform_user_auth()
         elif not self._endpoints:
-            # No upgrade needed, but bootstrap hasn't run yet.
-            # Happens when token was loaded from storage (auth flow bypassed)
-            # or when a previous bootstrap attempt failed.
             logger.debug(
                 "Endpoints not yet discovered — establishing session for bootstrap"
             )
+            # CRITICAL FIX: Even if we have a token, we need session headers
+            # for CMS requests. The token alone isn't enough.
             if not self._session_state:
                 # No live session headers — need to run auth flow to get them.
-                # _establish_session routes to the right flow by credential type
-                # and always calls _discover_endpoints at the end.
                 self._establish_session()
+                # After _establish_session, we need to get the updated token
+                token = self._current_token
             else:
                 self._discover_endpoints(self._build_authenticated_headers(token))
+
+        # ADD THIS: Ensure session headers are populated even if endpoints exist
+        # but session headers are missing (happens on stored token restore)
+        elif not self._session_state:
+            logger.debug("Token exists but session headers missing - re-establishing session")
+            self._establish_session()
+            token = self._current_token
 
         return token.bearer_token
 
