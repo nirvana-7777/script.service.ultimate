@@ -1,5 +1,3 @@
-# [file name]: constants.py
-# [file content begin]
 # streaming_providers/providers/hrti/constants.py
 """
 HRTi provider constants and default configurations
@@ -10,7 +8,7 @@ class HRTiDefaults:
     """Default values for HRTi provider"""
 
     # Provider information
-    PROVIDER_LOGO = "https://upload.wikimedia.org/wikipedia/en/thumb/9/9e/Logo_of_the_HRT.svg/2560px-Logo_of_the_HRT.svg.png"
+    PROVIDER_LOGO = "https://upload.wikimedia.org/wikipedia/en/thumb/9/9e/Logo_of_the_HRT.svg/960px-Logo_of_the_HRT.svg.png"
     PROVIDER_NAME = "HRTi"
 
     # Website and base URLs
@@ -33,6 +31,14 @@ class HRTiDefaults:
         "register_device": f"{HSAPI_BASE_URL}/RegisterDevice",
         "content_ratings": f"{HSAPI_BASE_URL}/ContentRatingsGet",
         "profiles": f"{HSAPI_BASE_URL}/ProfilesGet",
+        # VOD endpoints
+        "catalogue_structure": f"{BASE_URL}/api/api/ott/GetCatalogueStructure",
+        "catalogue": f"{BASE_URL}/api/api/ott/GetCatalogue",
+        "vod_details": f"{BASE_URL}/api/api/ott/GetVodDetails",
+        "seasons": f"{BASE_URL}/api/api/ott/GetSeasons",
+        "episodes": f"{BASE_URL}/api/api/ott/GetEpisodes",
+        "watch_later": f"{BASE_URL}/api/api/ott/GetWatchLater",
+        "editors_choice": f"{BASE_URL}/api/api/ott/GetEditorsChoice",
     }
 
     # Device information
@@ -49,6 +55,10 @@ class HRTiDefaults:
 
     # HTTP settings
     DEFAULT_TIMEOUT = 30
+
+    # VOD settings
+    VOD_ITEMS_PER_PAGE = 24
+    MAX_VOD_PAGES = 100
 
 
 class HRTiConfig:
@@ -92,6 +102,9 @@ class HRTiConfig:
         # Web API URL (can be updated from config)
         self.web_api_url = config.get("web_api_url", "api/api/ott")
 
+        # VOD settings
+        self.vod_items_per_page = config.get("vod_items_per_page", HRTiDefaults.VOD_ITEMS_PER_PAGE)
+
     def update_from_api(self, env_data: dict, config_data: dict):
         """Update configuration from API responses"""
         try:
@@ -114,6 +127,13 @@ class HRTiConfig:
                         "channels": f"{base_api_url}/GetChannels",
                         "programme": f"{base_api_url}/GetProgramme",
                         "authorize_session": f"{base_api_url}/AuthorizeSession",
+                        "catalogue_structure": f"{base_api_url}/GetCatalogueStructure",
+                        "catalogue": f"{base_api_url}/GetCatalogue",
+                        "vod_details": f"{base_api_url}/GetVodDetails",
+                        "seasons": f"{base_api_url}/GetSeasons",
+                        "episodes": f"{base_api_url}/GetEpisodes",
+                        "watch_later": f"{base_api_url}/GetWatchLater",
+                        "editors_choice": f"{base_api_url}/GetEditorsChoice",
                     }
                 )
 
@@ -128,7 +148,6 @@ class HRTiConfig:
         except Exception as e:
             # Log error but don't raise - use defaults if update fails
             import logging
-
             logging.debug(f"Error updating HRTi config from API: {e}")
 
     def get_base_headers(self) -> dict:
@@ -140,7 +159,7 @@ class HRTiConfig:
         }
 
     def get_auth_headers(
-        self, device_id: str = None, ip_address: str = None, token: str = None
+            self, device_id: str = None, ip_address: str = None, token: str = None
     ) -> dict:
         """Get authenticated headers for API requests"""
         headers = self.get_base_headers()
@@ -154,7 +173,7 @@ class HRTiConfig:
 
         headers.update(
             {
-                "devicetypeid": self.device_reference_id,  # Added devicetypeid
+                "devicetypeid": self.device_reference_id,
                 "operatorreferenceid": self.operator_reference_id,
                 "origin": self.base_website,
                 "referer": self.base_website,
@@ -162,6 +181,3 @@ class HRTiConfig:
         )
 
         return headers
-
-
-# [file content end]

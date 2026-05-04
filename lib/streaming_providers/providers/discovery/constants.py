@@ -368,8 +368,8 @@ def get_default_capabilities(platform_os: Optional[PlatformOS] = None) -> Dict[s
                         "profiles": ["high", "main", "baseline"],
                         "maxLevel": "5.2",
                         "levelConstraints": {
-                            "width": {"min": 0, "max": 973},
-                            "height": {"min": 0, "max": 919},
+                            "width": {"min": 0, "max": 3840},
+                            "height": {"min": 0, "max": 2160},
                             "framerate": {"min": 0, "max": 60},
                         },
                     },
@@ -378,8 +378,8 @@ def get_default_capabilities(platform_os: Optional[PlatformOS] = None) -> Dict[s
                         "profiles": ["main10", "main"],
                         "maxLevel": "5.2",
                         "levelConstraints": {
-                            "width": {"min": 0, "max": 973},
-                            "height": {"min": 0, "max": 919},
+                            "width": {"min": 0, "max": 3840},
+                            "height": {"min": 0, "max": 2160},
                             "framerate": {"min": 0, "max": 60},
                         },
                     },

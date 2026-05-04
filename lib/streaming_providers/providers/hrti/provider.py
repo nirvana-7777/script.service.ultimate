@@ -1,16 +1,24 @@
-# lib/streaming_providers/providers/hrti/provider.py
+# streaming_providers/providers/hrti/provider.py
 import json
 import datetime
-from typing import ClassVar, Dict, List, Optional
+import traceback
+from urllib.parse import urlparse
+from typing import ClassVar, Dict, List, Optional, Union
 
 import requests
 
-from ...base.models import DRMConfig, DRMSystem, StreamingChannel, Event
+from ...base.models import DRMConfig, StreamingChannel, Event
 from ...base.models.proxy_models import ProxyConfig
 from ...base.provider import AuthType, StreamingProvider
 from ...base.utils import logger
+from ..lib_drmtoday import create_drmtoday_widevine_config
 from .auth import HRTiAuthenticator
 from .constants import HRTiConfig, HRTiDefaults
+from .vod_manager import HRTiVodManager
+
+# VOD content_id prefixes — any id starting with one of these is a VOD node,
+# not a live channel id.
+_VOD_PREFIXES = ("catalogue:", "series:", "season:", "details:", "special:")
 
 
 class HRTiProvider(StreamingProvider):
@@ -19,7 +27,7 @@ class HRTiProvider(StreamingProvider):
     """
 
     # ============================================================================
-    # STATIC METADATA (NEW)
+    # STATIC METADATA
     # ============================================================================
     PROVIDER_LABEL: ClassVar[str] = "HRTi"
     SUPPORTED_AUTH_TYPES: ClassVar[List[str]] = [
@@ -41,6 +49,12 @@ class HRTiProvider(StreamingProvider):
         self.hrti_config = HRTiConfig(config)
         self.channels_cache = None
 
+        # Short-lived session cache: {channel_id: session_data}.
+        # Populated by _get_live_manifest so that a subsequent _get_live_drm
+        # call for the same channel (same playback request) can reuse the
+        # already-authorized session instead of making a second round trip.
+        self._session_cache: Dict[str, dict] = {}
+
         # Setup HTTP manager using abstraction
         self.http_manager = self._setup_http_manager(
             provider_name="hrti",
@@ -54,15 +68,21 @@ class HRTiProvider(StreamingProvider):
             proxy_config=proxy_config, http_manager=self.http_manager
         )
 
-        # Share HTTP manager for consistency
+        # Share HTTP manager
         self.http_manager = self._share_http_manager_with_authenticator(self.authenticator)
 
+        # Initialize VOD manager
+        self._vod_manager = HRTiVodManager(self)
+
         try:
-            # Initialize authentication
-            bearer_token = self.authenticator.get_bearer_token()
-            logger.debug(f"HRTi authentication successful during initialization")
+            self.authenticator.get_bearer_token()
+            logger.debug("HRTi authentication successful during initialization")
         except Exception as e:
             logger.warning(f"HRTi could not authenticate during initialization: {e}")
+
+    # ============================================================================
+    # Provider properties
+    # ============================================================================
 
     @property
     def provider_name(self) -> str:
@@ -70,17 +90,14 @@ class HRTiProvider(StreamingProvider):
 
     @property
     def provider_label(self) -> str:
-        # Override to use static metadata with country context
         return self.get_static_label(self.country)
 
     @property
     def provider_logo(self) -> str:
-        # Use instance config for backward compatibility
         return self.hrti_config.logo or self.PROVIDER_LOGO
 
     @property
     def uses_dynamic_manifests(self) -> bool:
-        # HRTi requires session authorization for manifests
         return True
 
     @property
@@ -88,15 +105,19 @@ class HRTiProvider(StreamingProvider):
         return False
 
     @property
+    def implements_vod(self) -> bool:
+        return True
+
+    @property
     def supported_auth_types(self) -> List[str]:
-        return self.SUPPORTED_AUTH_TYPES  # Use class attribute
+        return self.SUPPORTED_AUTH_TYPES
+
+    # ============================================================================
+    # Internal helpers
+    # ============================================================================
 
     def _get_hrti_authenticated_headers(self) -> Dict[str, str]:
-        """
-        Get headers with HRTi authentication for API requests
-
-        This is a provider-specific wrapper that uses the base class abstraction.
-        """
+        """Build authenticated headers for HRTi API requests."""
         return self._build_provider_headers(
             auth_type=AuthType.CLIENT,
             token_key="authorization",  # HRTi uses lowercase
@@ -110,390 +131,361 @@ class HRTiProvider(StreamingProvider):
             },
         )
 
+    @staticmethod
+    def _is_vod_id(content_id: str) -> bool:
+        """Return True when content_id belongs to the VOD namespace."""
+        return any(content_id.startswith(p) for p in _VOD_PREFIXES)
+
+    @staticmethod
+    def _derive_content_drm_id(streaming_url: str) -> Optional[str]:
+        """
+        Derive the content DRM ID from a streaming URL.
+
+        HRTi expects the first two path segments joined by '_'.
+        Example: /cdn1oiv/hrtliveorigin/... → "cdn1oiv_hrtliveorigin"
+        """
+        parts = urlparse(streaming_url).path.strip("/").split("/")
+        if len(parts) >= 2:
+            return f"{parts[0]}_{parts[1]}"
+        return None
+
+    def _find_channel(self, content_id: str) -> Optional[StreamingChannel]:
+        """Return the cached channel for *content_id*, fetching if needed."""
+        channels = self.channels if (hasattr(self, "channels") and self.channels) else self.get_channels()
+        for ch in channels:
+            if ch.channel_id == content_id:
+                return ch
+        return None
+
+    def _authorize_live_session(self, content_id: str) -> Optional[dict]:
+        """
+        Authorize a live playback session for *content_id*.
+
+        Looks up the channel to determine the correct content_type
+        (``rlive`` for radio, ``tlive`` for TV) and derives the DRM ID
+        from the streaming URL.  Reports the session-start event on
+        success and stores the result in ``_session_cache``.
+
+        Returns the raw session dict, or None on failure.
+        """
+        channel = self._find_channel(content_id)
+        if not channel:
+            logger.error(f"Channel {content_id} not found for session authorization")
+            return None
+
+        content_type = "rlive" if channel.content_type == "AUDIO" else "tlive"
+        content_drm_id = self._derive_content_drm_id(channel.manifest_script or "")
+
+        logger.debug(
+            f"Authorizing session — channel: {content_id}, "
+            f"content_type: {content_type}, drm_id: {content_drm_id}"
+        )
+
+        session_data = self.authenticator.authorize_session(
+            content_type=content_type,
+            content_ref_id=content_id,
+            content_drm_id=content_drm_id,
+            video_store_ids=None,
+            channel_id=content_id,
+            start_time=None,
+            end_time=None,
+        )
+
+        if not session_data or not session_data.get("Authorized", False):
+            logger.error(f"Session authorization failed for channel {content_id}")
+            return None
+
+        logger.debug(f"Session authorized for channel {content_id}")
+
+        session_id = session_data.get("SessionId")
+        if session_id:
+            self.authenticator.report_session_event(session_id, content_id)
+
+        # Cache so a same-request get_drm() call can skip a second auth round trip
+        self._session_cache[content_id] = session_data
+        return session_data
+
+    def _build_widevine_drm_config(
+        self,
+        session_data: dict,
+        content_id: str,
+        referer_path: str,
+    ) -> List[DRMConfig]:
+        """
+        Build a Widevine DRMConfig list from an already-authorized session.
+
+        Args:
+            session_data:  Authorized session dict containing at least ``DrmId``.
+            content_id:    Used only for log messages.
+            referer_path:  Appended to base_website for the Referer header
+                           (e.g. ``"/"`` for live, ``"/videostore"`` for VOD).
+        """
+        drm_id = session_data.get("DrmId")
+        if not drm_id:
+            logger.error(f"No DrmId in session data for {content_id}")
+            return []
+
+        license_data = self.authenticator.get_license_data(drm_id)
+        if not license_data:
+            logger.error(f"Failed to generate license data for {content_id}")
+            return []
+
+        drm_config = create_drmtoday_widevine_config(
+            upfront_token=license_data,
+            origin=self.hrti_config.base_website,
+            referer=f"{self.hrti_config.base_website}{referer_path}",
+            user_agent=self.hrti_config.user_agent,
+            auth_header_name="dt-custom-data",
+        )
+
+        if not drm_config:
+            logger.error(f"create_drmtoday_widevine_config returned nothing for {content_id}")
+            return []
+
+        logger.debug(f"Created Widevine DRM config for {content_id}")
+        return [drm_config]
+
+    # ============================================================================
+    # Channel fetching
+    # ============================================================================
+
+    def _fetch_channels_once(self) -> List[StreamingChannel]:
+        """Single attempt to fetch and parse the channel list."""
+        headers = self._get_hrti_authenticated_headers()
+        logger.debug(
+            "Fetching HRTi channels with authorization: "
+            f"{'Client ...' if 'authorization' in headers else 'NO AUTHORIZATION'}"
+        )
+
+        response = self.http_manager.post(
+            self.hrti_config.api_endpoints["channels"],
+            operation="api",
+            headers=headers,
+            data=json.dumps({}),
+        )
+        response.raise_for_status()
+
+        channels_data = response.json()
+        if not channels_data.get("Result"):
+            logger.warning("No channels found in HRTi response")
+            logger.debug(f"HRTi channels response: {channels_data}")
+            return []
+
+        channels = []
+        for raw in channels_data["Result"]:
+            ch = self._parse_channel_data(raw)
+            if ch:
+                channels.append(ch)
+
+        self.channels = channels
+        return channels
+
     def get_channels(self, **kwargs) -> List[StreamingChannel]:
-        """
-        Fetch channels from HRTi API
-        """
+        """Fetch channels from HRTi API, with one auth-refresh retry on failure."""
         try:
-            # Use provider-specific method
-            headers = self._get_hrti_authenticated_headers()
-
-            # Log the request for debugging
-            logger.debug(
-                f"Fetching HRTi channels with authorization: {'Client ...' if 'authorization' in headers else 'NO AUTHORIZATION'}"
-            )
-
-            response = self.http_manager.post(
-                self.hrti_config.api_endpoints["channels"],
-                operation="api",
-                headers=headers,
-                data=json.dumps({}),
-            )
-            response.raise_for_status()
-
-            channels_data = response.json()
-            if "Result" in channels_data and channels_data["Result"]:
-                channels = []
-                for channel in channels_data["Result"]:
-                    streaming_channel = self._parse_channel_data(channel)
-                    if streaming_channel:
-                        channels.append(streaming_channel)
-
-                self.channels = channels
-                logger.info(f"Successfully fetched {len(channels)} channels from HRTi")
-                return channels
-            else:
-                logger.warning("No channels found in HRTi response")
-                if "Result" in channels_data:
-                    logger.debug(f"HRTi channels response: {channels_data}")
-                return []
-
+            channels = self._fetch_channels_once()
+            logger.info(f"Successfully fetched {len(channels)} channels from HRTi")
+            return channels
         except requests.RequestException as e:
             logger.error(f"Error fetching HRTi channels: {e}")
-            # Try to refresh auth and retry once
+            logger.info("Attempting to refresh authentication and retry...")
+            self.authenticator.invalidate_token()
             try:
-                logger.info("Attempting to refresh authentication and retry...")
-                self.authenticator.invalidate_token()
-                headers = self._get_hrti_authenticated_headers()
-
-                response = self.http_manager.post(
-                    self.hrti_config.api_endpoints["channels"],
-                    operation="api",
-                    headers=headers,
-                    data=json.dumps({}),
-                )
-                response.raise_for_status()
-
-                channels_data = response.json()
-                if "Result" in channels_data and channels_data["Result"]:
-                    channels = []
-                    for channel in channels_data["Result"]:
-                        streaming_channel = self._parse_channel_data(channel)
-                        if streaming_channel:
-                            channels.append(streaming_channel)
-
-                    self.channels = channels
-                    logger.info(f"Successfully fetched {len(channels)} channels from HRTi on retry")
-                    return channels
-                else:
-                    logger.warning("No channels found in HRTi retry response")
-                    return []
-
+                channels = self._fetch_channels_once()
+                logger.info(f"Successfully fetched {len(channels)} channels from HRTi on retry")
+                return channels
             except Exception as retry_e:
                 logger.error(f"Retry failed: {retry_e}")
                 return []
-
         except Exception as e:
             logger.error(f"Error parsing HRTi channels: {e}")
             return []
 
     def get_events(
-            self,
-            start_time: Optional[datetime] = None,
-            end_time: Optional[datetime] = None,
-            **kwargs,
+        self,
+        start_time: Optional[datetime.datetime] = None,
+        end_time: Optional[datetime.datetime] = None,
+        **kwargs,
     ) -> List[Event]:
         return []
 
     def _parse_channel_data(self, channel_data: Dict) -> Optional[StreamingChannel]:
-        """
-        Parse HRTi channel data to StreamingChannel
-        """
+        """Parse a raw HRTi channel dict into a StreamingChannel."""
         try:
             name = channel_data.get("Name", "")
-            # FIX: API returns 'ReferenceID' (capital ID), not 'ReferenceId'
+            # API returns 'ReferenceID' (capital ID), not 'ReferenceId'
             channel_id = channel_data.get("ReferenceID", "")
             streaming_url = channel_data.get("StreamingURL", "")
             is_radio = channel_data.get("Radio", False)
             icon_url = channel_data.get("Icon", "")
 
             if not name or not channel_id:
-                logger.debug(f"Skipping channel - missing name or ID: {channel_data}")
+                logger.debug(f"Skipping channel — missing name or ID: {channel_data}")
                 return None
 
-            # Create channel object
             channel = StreamingChannel(
                 name=name,
                 content_id=channel_id,
                 provider=self.provider_name,
                 logo_url=icon_url,
                 mode="live",
-                session_manifest=True,  # HRTi requires session authorization
-                manifest=None,  # Will be set dynamically
-                manifest_script=streaming_url,  # Store streaming URL for manifest fetching
+                session_manifest=True,
+                manifest=None,
+                manifest_script=streaming_url,
                 content_type="AUDIO" if is_radio else "LIVE",
                 country=self.country,
                 is_radio=is_radio,
-                language="hr",  # Croatian
+                language="hr",
             )
-
-            # HRTi uses DRM for most content
             channel.use_cdm = True
             channel.cdm_type = "widevine"
 
-            logger.debug(f"Parsed HRTi channel: {name} ({channel_id}) - radio: {is_radio}")
+            logger.debug(f"Parsed HRTi channel: {name} ({channel_id}) — radio: {is_radio}")
             return channel
 
         except Exception as e:
             logger.error(f"Error parsing channel {channel_data}: {e}")
             return None
 
-    def enrich_channel_data(
-        self, channel: StreamingChannel, **kwargs
-    ) -> Optional[StreamingChannel]:
+    # ============================================================================
+    # VOD
+    # ============================================================================
+
+    def get_vod_category(
+        self,
+        content_id: str = "",
+        cursor: Optional[str] = None,
+        page_size: int = 24,
+        **kwargs,
+    ) -> Union[List, Dict]:
         """
-        Enrich channel with manifest URL and DRM configuration.
-        This method pre-authorizes a session and passes session_data to get_drm().
+        Get VOD category children. Delegates to HRTiVodManager.
+
+        Args:
+            content_id: Opaque node identifier (see HRTiVodManager docstring)
+            cursor:     Pagination cursor
+            page_size:  Items per page
+
+        Returns:
+            Dict with ``entries``, ``next_cursor``, ``total`` keys.
         """
-        try:
-            logger.debug(f"Enriching channel: {channel.name} ({channel.channel_id})")
+        result = self._vod_manager.get_category(content_id, cursor, page_size)
 
-            # For live channels, we need to authorize a session first
-            content_type = "rlive" if channel.content_type == "AUDIO" else "tlive"
+        if isinstance(result, dict):
+            return result
+        if isinstance(result, list):
+            return {"entries": result, "next_cursor": None, "total": None}
+        return {"entries": [], "next_cursor": None, "total": None}
 
-            # Parse the streaming URL to get content DRM ID
-            from urllib.parse import urlparse
-
-            parts = urlparse(channel.manifest_script)
-            path_parts = parts.path.strip("/").split("/")
-
-            # Content DRM ID format: directory1_directory2
-            # Example: /cdn1oiv/hrtliveorigin/... -> cdn1oiv_hrtliveorigin
-            content_drm_id = None
-            if len(path_parts) >= 2:
-                content_drm_id = f"{path_parts[0]}_{path_parts[1]}"
-
-            logger.debug(f"Content DRM ID for {channel.name}: {content_drm_id}")
-
-            # Authorize session
-            session_data = self.authenticator.authorize_session(
-                content_type=content_type,
-                content_ref_id=channel.channel_id,
-                content_drm_id=content_drm_id,
-                video_store_ids=None,
-                channel_id=channel.channel_id,
-                start_time=None,
-                end_time=None,
-            )
-
-            if not session_data:
-                logger.warning(f"Failed to authorize session for channel {channel.name}")
-                return channel
-
-            # Check if authorized
-            if not session_data.get("Authorized", False):
-                logger.warning(f"Session not authorized for channel {channel.name}")
-                return channel
-
-            logger.debug(f"Session authorized for {channel.name}")
-
-            # Report session event (play start) - use full SessionId
-            session_id = session_data.get("SessionId")
-            if session_id:
-                self.authenticator.report_session_event(session_id, channel.channel_id)
-
-            # Set the manifest URL - use the streaming URL from channel data
-            manifest_url = channel.manifest_script
-            if manifest_url:
-                channel.set_dynamic_manifest(manifest_url)
-                logger.debug(f"Set manifest for {channel.name}: {manifest_url}")
-
-            # Set DRM configuration with session data
-            # Pass session_data to avoid re-authorizing
-            drm_configs = self.get_drm(channel.channel_id, session_data=session_data, **kwargs)
-            if drm_configs:
-                channel.use_cdm = True
-                channel.cdm_type = "widevine"
-
-                # Set license URL from the first Widevine config
-                for config in drm_configs:
-                    if config.system == DRMSystem.WIDEVINE:
-                        channel.license_url = config.license.server_url
-
-                        # Build the complete license key for inputstream.adaptive
-                        # Format: server_url|req_headers|req_data|response_format
-                        license_key_parts = [
-                            config.license.server_url,
-                            config.license.req_headers,
-                            "R{SSM}",  # Placeholder - inputstream will replace with actual challenge
-                            "JBlicense",  # Response is JSON, extract 'license' field
-                        ]
-                        channel.license_key = "|".join(license_key_parts)
-
-                        logger.debug(f"Set DRM config for {channel.name}")
-                        logger.debug(f"License URL: {config.license.server_url}")
-                        break
-            else:
-                logger.warning(f"No DRM config for {channel.name}")
-                channel.use_cdm = False
-                channel.cdm_type = None
-
-            return channel
-
-        except Exception as e:
-            logger.error(f"Error enriching channel data for {channel.name}: {e}")
-            import traceback
-
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            return channel
+    # ============================================================================
+    # Manifest
+    # ============================================================================
 
     def get_manifest(self, content_id: str, **kwargs) -> Optional[str]:
         """
-        Get manifest URL for a channel by authorizing a session
+        Return the playback manifest URL for *content_id*.
+
+        Routing is done purely from the content_id format:
+        - VOD ids carry a well-known prefix (``catalogue:``, ``series:``, …)
+        - Everything else is treated as a live channel id
+
+        For live channels the session is authorized here and cached so that
+        a subsequent ``get_drm()`` call can reuse it without a second round trip.
         """
+        if self._is_vod_id(content_id):
+            return self._vod_manager.get_vod_streaming_url(content_id)
+        return self._get_live_manifest(content_id, **kwargs)
+
+    def _get_live_manifest(self, content_id: str, **kwargs) -> Optional[str]:
+        """Authorize a session and return the streaming URL for a live channel."""
         try:
-            # Authorize session for this channel
-            session_data = self.authenticator.authorize_session(
-                content_type="tlive",  # TV live
-                content_ref_id=content_id,
-                channel_id=content_id,
-            )
+            session_data = self._authorize_live_session(content_id)
+            if not session_data:
+                return None
 
-            if session_data and session_data.get("Authorized", False):
-                # For live channels, use the streaming URL from channel data
-                # The actual manifest will be resolved during playback with session authorization
-                channels = self.get_channels()
-                for channel in channels:
-                    if channel.channel_id == content_id:
-                        return channel.manifest_script  # This is the streaming URL
+            channel = self._find_channel(content_id)
+            if channel and channel.manifest_script:
+                return channel.manifest_script
 
-            logger.warning(f"Session authorization failed for channel {content_id}")
+            logger.warning(f"No streaming URL found for channel {content_id}")
             return None
 
         except Exception as e:
             logger.error(f"Error getting manifest for channel {content_id}: {e}")
             return None
 
-    def get_drm(self, content_id: str, session_data: Dict = None, **kwargs) -> List[DRMConfig]:
+    # ============================================================================
+    # DRM
+    # ============================================================================
+
+    def get_drm(self, content_id: str, **kwargs) -> List[DRMConfig]:
         """
-        Get DRM configurations for a channel with proper license data.
-        If session_data is not provided, will authorize a new session.
+        Return Widevine DRM config(s) for *content_id*.
+
+        Routing mirrors get_manifest() — VOD prefix → VOD path,
+        everything else → live path.
+
+        For live channels: checks ``_session_cache`` first (populated by a
+        preceding ``get_manifest()`` call), then falls back to a fresh session
+        authorization so the method works when called in isolation.
         """
+        if self._is_vod_id(content_id):
+            return self._get_vod_drm(content_id, **kwargs)
+        return self._get_live_drm(content_id, **kwargs)
+
+    def _get_live_drm(self, content_id: str, **kwargs) -> List[DRMConfig]:
+        """Get Widevine DRM config for a live channel."""
         try:
-            # If no session data provided, authorize a new session
+            # Prefer session data passed explicitly by the caller, then the
+            # cache populated by _get_live_manifest, then authorize fresh.
+            session_data = (
+                kwargs.get("session_data")
+                or self._session_cache.get(content_id)
+                or self._authorize_live_session(content_id)
+            )
+
             if not session_data:
-                logger.debug(
-                    f"No session data provided for DRM - authorizing new session for channel {content_id}"
-                )
-
-                # Find the channel to get content type and streaming URL
-                channels = (
-                    self.get_channels()
-                    if not hasattr(self, "channels") or not self.channels
-                    else self.channels
-                )
-                target_channel = None
-                for ch in channels:
-                    if ch.channel_id == content_id:
-                        target_channel = ch
-                        break
-
-                if not target_channel:
-                    logger.error(f"Channel {content_id} not found for DRM authorization")
-                    return []
-
-                # Determine content type
-                content_type = "rlive" if target_channel.content_type == "AUDIO" else "tlive"
-
-                # Parse the streaming URL to get content DRM ID
-                from urllib.parse import urlparse
-
-                parts = urlparse(target_channel.manifest_script)
-                path_parts = parts.path.strip("/").split("/")
-
-                # Content DRM ID format: directory1_directory2
-                content_drm_id = None
-                if len(path_parts) >= 2:
-                    content_drm_id = f"{path_parts[0]}_{path_parts[1]}"
-
-                logger.debug(
-                    f"Authorizing session for DRM - channel: {content_id}, content_type: {content_type}, drm_id: {content_drm_id}"
-                )
-
-                # Authorize session
-                session_data = self.authenticator.authorize_session(
-                    content_type=content_type,
-                    content_ref_id=content_id,
-                    content_drm_id=content_drm_id,
-                    video_store_ids=None,
-                    channel_id=content_id,
-                    start_time=None,
-                    end_time=None,
-                )
-
-                if not session_data:
-                    logger.error(f"Failed to authorize session for DRM - channel {content_id}")
-                    return []
-
-                # Check if authorized
-                if not session_data.get("Authorized", False):
-                    logger.warning(f"Session not authorized for DRM - channel {content_id}")
-                    return []
-
-                logger.debug(f"Session authorized for DRM - channel {content_id}")
-
-                # Report session event (use full SessionId, not DrmId)
-                session_id = session_data.get("SessionId")
-                if session_id:
-                    self.authenticator.report_session_event(session_id, content_id)
-
-            # IMPORTANT: For license data, use DrmId (not SessionId)
-            # DrmId is the short random string for DRM
-            # SessionId is the full identifier like "6:hrt:userid:uuid"
-            drm_id = session_data.get("DrmId")
-            session_id = session_data.get("SessionId")  # Keep for session reporting
-
-            if not drm_id:
-                logger.error("No DRM ID in session data")
-                logger.debug(f"Session data keys: {list(session_data.keys())}")
                 return []
 
-            logger.debug(
-                f"Using DrmId for license: {drm_id[:20]}... (full SessionId: {session_id})"
+            return self._build_widevine_drm_config(
+                session_data=session_data,
+                content_id=content_id,
+                referer_path="/",
             )
-
-            # Generate license data (base64 encoded) - use DrmId not SessionId
-            license_data = self.authenticator.get_license_data(drm_id)
-            if not license_data:
-                logger.error("Failed to generate license data")
-                return []
-
-            logger.debug(f"Generated license data for session {session_id}")
-
-            # Use DRMToday helper with HRTi-specific header name
-            from ..lib_drmtoday import create_drmtoday_widevine_config
-
-            # Create Widevine config using DRMToday helper
-            # HRTi uses 'dt-custom-data' header instead of 'x-dt-auth-token'
-            drm_config = create_drmtoday_widevine_config(
-                upfront_token=license_data,
-                origin=self.hrti_config.base_website,
-                referer=f"{self.hrti_config.base_website}/",
-                user_agent=self.hrti_config.user_agent,
-                auth_header_name="dt-custom-data",  # HRTi-specific header name
-            )
-
-            if drm_config:
-                logger.debug(f"Created DRM config for channel {content_id} with DrmId {drm_id}")
-                return [drm_config]
-            else:
-                logger.error("Failed to create DRM config")
-                return []
 
         except Exception as e:
             logger.error(f"Error getting DRM config for channel {content_id}: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
+            logger.error(traceback.format_exc())
             return []
 
+    def _get_vod_drm(self, content_id: str, **kwargs) -> List[DRMConfig]:
+        """Get Widevine DRM config for a VOD item."""
+        try:
+            session_data = self._vod_manager.get_vod_session_data(content_id)
+
+            if not session_data or not session_data.get("Authorized", False):
+                logger.error(f"Failed to authorize session for VOD DRM: {content_id}")
+                return []
+
+            return self._build_widevine_drm_config(
+                session_data=session_data,
+                content_id=content_id,
+                referer_path="/videostore",
+            )
+
+        except Exception as e:
+            logger.error(f"Error getting DRM for VOD {content_id}: {e}")
+            logger.error(traceback.format_exc())
+            return []
+
+    # ============================================================================
+    # EPG and ancillary methods
+    # ============================================================================
+
     def get_epg(self, channel_id: str, **kwargs) -> List[Dict]:
-        """
-        Get EPG data for a channel
-        """
+        """Get EPG data for a channel."""
         try:
             headers = self._get_hrti_authenticated_headers()
-
-            # Get current time range (4 hours before and after)
             start_time = self.authenticator.get_time_offset(-4)
             end_time = self.authenticator.get_time_offset(4)
 
@@ -513,19 +505,16 @@ class HRTiProvider(StreamingProvider):
 
             epg_data = response.json()
             if "Result" in epg_data:
-                # Convert to standard EPG format
-                epg_entries = []
-                for entry in epg_data["Result"]:
-                    epg_entries.append(
-                        {
-                            "title": entry.get("Title", ""),
-                            "description": entry.get("Description", ""),
-                            "start": entry.get("StartTime", ""),
-                            "end": entry.get("EndTime", ""),
-                            "genre": entry.get("Genre", ""),
-                        }
-                    )
-                return epg_entries
+                return [
+                    {
+                        "title": entry.get("Title", ""),
+                        "description": entry.get("Description", ""),
+                        "start": entry.get("StartTime", ""),
+                        "end": entry.get("EndTime", ""),
+                        "genre": entry.get("Genre", ""),
+                    }
+                    for entry in epg_data["Result"]
+                ]
             return []
 
         except Exception as e:
@@ -533,47 +522,21 @@ class HRTiProvider(StreamingProvider):
             return []
 
     def get_license_url(self, channel: StreamingChannel, **kwargs) -> Optional[str]:
-        """
-        Get license URL for a DRM-protected channel
-        """
+        """Return the Widevine license server URL for *channel*."""
         drm_configs = self.get_drm(channel.channel_id, **kwargs)
         if drm_configs:
             return drm_configs[0].license.server_url
         return None
 
-    # ============================================================================
-    # CATCHUP METHODS (Implementing abstract methods)
-    # ============================================================================
-
     @property
     def catchup_window(self) -> int:
-        """
-        Return the catchup window in HOURS for HRTi.
-
-        Note: HRTi doesn't officially support catchup for live channels,
-        but may have some VOD content available.
-        """
-        return 0  # No catchup support for live streams
+        """HRTi does not support live-channel catchup."""
+        return 0
 
     def get_epg_xmltv(self, **kwargs) -> Optional[str]:
-        """
-        Get complete EPG data for HRTi in XMLTV format.
-
-        Returns:
-            XMLTV formatted string, or None if not available
-        """
-        # HRTi doesn't provide XMLTV format natively
+        """HRTi does not provide XMLTV natively."""
         return None
 
     def get_dynamic_manifest_params(self, channel: StreamingChannel, **kwargs) -> Optional[str]:
-        """
-        Get dynamic manifest parameters for HRTi channels.
-
-        Args:
-            channel: StreamingChannel to get parameters for
-
-        Returns:
-            Parameters string or None
-        """
-        # HRTi requires session authorization which is handled in enrich_channel_data
+        """Session authorization is handled inside get_manifest(); nothing extra needed here."""
         return None
