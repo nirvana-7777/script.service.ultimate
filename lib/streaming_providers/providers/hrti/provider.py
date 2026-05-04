@@ -5,7 +5,7 @@ from typing import ClassVar, Dict, List, Optional
 
 import requests
 
-from ...base.models import DRMConfig, DRMSystem, LicenseConfig, LicenseUnwrapperParams, StreamingChannel, Event
+from ...base.models import DRMConfig, DRMSystem, StreamingChannel, Event
 from ...base.models.proxy_models import ProxyConfig
 from ...base.provider import AuthType, StreamingProvider
 from ...base.utils import logger
@@ -460,39 +460,29 @@ class HRTiProvider(StreamingProvider):
 
             logger.debug(f"Generated license data for session {session_id}")
 
-            # Build the license request headers in the format expected by inputstream.adaptive
-            # Format: Key1=Value1&Key2=Value2
-            license_headers = "&".join(
-                [
-                    f"User-Agent={self.hrti_config.user_agent}",
-                    f"origin={self.hrti_config.base_website}",
-                    f"referer={self.hrti_config.base_website}/",
-                    f"dt-custom-data={license_data}",
-                ]
+            # Use DRMToday helper with HRTi-specific header name
+            from ..lib_drmtoday import create_drmtoday_widevine_config
+
+            # Create Widevine config using DRMToday helper
+            # HRTi uses 'dt-custom-data' header instead of 'x-dt-auth-token'
+            drm_config = create_drmtoday_widevine_config(
+                upfront_token=license_data,
+                origin=self.hrti_config.base_website,
+                referer=f"{self.hrti_config.base_website}/",
+                user_agent=self.hrti_config.user_agent,
+                auth_header_name="dt-custom-data",  # HRTi-specific header name
             )
 
-            # Create the license configuration
-            # Use the class method to create LicenseConfig with base64 encoded req_data
-            license_config = LicenseConfig.create_with_req_data(
-                req_data_template="{CHA-RAW}",  # The placeholder string
-                server_url=self.hrti_config.license_url,
-                use_http_get_request=False,
-                req_headers=license_headers,
-                wrapper=None,
-                unwrapper="json,base64",
-                unwrapper_params=LicenseUnwrapperParams(path_data="license"),
-            )
-
-            # Create the DRM configuration
-            drm_config = DRMConfig(system=DRMSystem.WIDEVINE, priority=1, license=license_config)
-
-            logger.debug(f"Created DRM config for channel {content_id} with DrmId {drm_id}")
-            return [drm_config]
+            if drm_config:
+                logger.debug(f"Created DRM config for channel {content_id} with DrmId {drm_id}")
+                return [drm_config]
+            else:
+                logger.error("Failed to create DRM config")
+                return []
 
         except Exception as e:
             logger.error(f"Error getting DRM config for channel {content_id}: {e}")
             import traceback
-
             logger.error(f"Traceback: {traceback.format_exc()}")
             return []
 

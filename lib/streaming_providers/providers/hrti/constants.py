@@ -35,9 +35,6 @@ class HRTiDefaults:
         "profiles": f"{HSAPI_BASE_URL}/ProfilesGet",
     }
 
-    # DRM and License endpoints
-    LICENSE_URL = "https://lic.drmtoday.com/license-proxy-widevine/cenc/"
-
     # Device information
     DEVICE_REFERENCE_ID = "6"  # String '6' as required by headers
     OPERATOR_REFERENCE_ID = "hrt"
@@ -72,9 +69,6 @@ class HRTiConfig:
 
         # API endpoints configuration
         self.api_endpoints = config.get("api_endpoints", HRTiDefaults.API_ENDPOINTS.copy())
-
-        # DRM and License
-        self.license_url = config.get("license_url", HRTiDefaults.LICENSE_URL)
 
         # Device configuration
         self.device_reference_id = config.get(

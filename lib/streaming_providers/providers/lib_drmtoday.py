@@ -36,20 +36,19 @@ def create_drmtoday_widevine_config(
         user_agent: str,
         license_url: Optional[str] = None,
         priority: int = 3,
+        auth_header_name: str = "x-dt-auth-token",  # NEW parameter
 ) -> DRMConfig:
     """
     Create Widevine DRM configuration for DRMToday.
 
     Args:
-        upfront_token: DRMToday upfront token (x-dt-auth-token)
-        origin: Origin header value (e.g., "https://plus.rtl.de")
+        upfront_token: DRMToday upfront token
+        origin: Origin header value
         referer: Referer header value
         user_agent: User-Agent string
-        license_url: Optional custom license URL (uses default if not provided)
-        priority: DRM priority (default 3)
-
-    Returns:
-        DRMConfig ready for use in ISA
+        license_url: Optional custom license URL
+        priority: DRM priority
+        auth_header_name: Header name for the token (default: x-dt-auth-token)
     """
     license_url = license_url or DRMTodayConfig.DEFAULT_WIDEVINE_URL
 
@@ -57,12 +56,12 @@ def create_drmtoday_widevine_config(
         "user-agent": user_agent,
         "origin": origin,
         "referer": referer,
-        "x-dt-auth-token": upfront_token,
+        auth_header_name: upfront_token,  # Use dynamic header name
     }
 
     license_config = LicenseConfig(
         server_url=license_url,
-        req_headers=headers,  # LicenseConfig will normalize this to URL-encoded
+        req_headers=headers,
         req_data="{CHA-RAW}",
         use_http_get_request=False,
         unwrapper=DRMTodayConfig.UNWRAPPER,
