@@ -1059,13 +1059,19 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             return token
 
         elif response.status_code == 200:
-            # Fallback: server skipped header negotiation (uncommon)
+            # The server returned 200 directly, skipping the 400 header-negotiation
+            # step. This happens when the st= session cookie in the jar is still
+            # valid — the server recognises the existing session and returns the
+            # current token (which may already be a user-level token, not anonymous).
+            # The caller (_perform_user_auth) MUST check anon_token.anonymous before
+            # proceeding to POST /login, otherwise the server will reject it with
+            # 400 "Log in attempt with already logged in token".
             logger.debug("Received 200 directly without header negotiation")
             token_data = response.json()
             token = self._create_token_from_response(token_data, response=response)
             assert isinstance(token, DiscoveryAuthToken)
             self._discover_endpoints(self._build_authenticated_headers(token))
-            return token
+            return token  # may be user-level — _perform_user_auth handles this
 
         else:
             logger.error(f"Unexpected response status: {response.status_code}")
@@ -1199,6 +1205,20 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         anon_token = self._perform_anonymous_auth()
         assert isinstance(anon_token, DiscoveryAuthToken)
 
+        # Short-circuit: if /token returned a 200 directly (because the st= session
+        # cookie is still alive), the token is already a fully authenticated user
+        # token — NOT an anonymous one. Posting it to /login would trigger:
+        #   400 "Log in attempt with already logged in token on deviceId: [...]"
+        # In this case we skip the upgrade entirely and return the existing session.
+        if not anon_token.anonymous:
+            logger.info(
+                f"Anonymous auth returned an existing user session for "
+                f"{self.credentials.username} — skipping /login upgrade"
+            )
+            self._current_token = anon_token
+            self._save_session()
+            return anon_token
+
         # Step 3: Fetch feature flags with anon token (optional)
         logger.debug("Fetching feature flags for GI SDK client ID")
         try:
@@ -1239,7 +1259,12 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             data=payload_str,
         )
 
-        # Handle the "already logged in" error by generating a new device ID and retrying
+        # Handle the "already logged in" error.
+        # Root cause: the st= session cookie in the jar still identifies a live
+        # session for this device, so /token returns a user token directly (200)
+        # instead of a fresh anon token. The short-circuit above handles the
+        # normal case; this branch is a last-resort safety net for edge cases
+        # where the token reports anonymous=True but the device is already bound.
         if response.status_code == 400:
             try:
                 error_data = response.json()
@@ -1247,36 +1272,21 @@ class DiscoveryAuthenticator(BaseAuthenticator):
                 for error in errors:
                     if error.get('code') == 'invalid.token' and 'already logged in' in error.get('detail', ''):
                         logger.warning(
-                            f"Device already logged in - generating new device ID and retrying"
+                            "Login rejected — device session already active. "
+                            "Clearing st= cookie and session state, then retrying."
                         )
-                        # Generate a completely new device ID
-                        import uuid
-                        new_device_id = str(uuid.uuid4())
-                        logger.info(f"New device ID: {new_device_id}")
-
-                        # Update the authenticator's device ID
-                        self.device_id = new_device_id
-
-                        # Also update the settings manager if available
-                        if self.settings_manager:
-                            try:
-                                self.settings_manager.set_device_id("discovery", self.country, new_device_id)
-                                logger.debug("Saved new device ID to settings")
-                            except Exception as e:
-                                logger.debug(f"Could not save device ID to settings: {e}")
-
-                        # Clear any stored session data
+                        # Clear the stale st= cookie — this is the real culprit.
+                        # Rotating the device ID alone does not help because the
+                        # server uses the st= cookie to identify the session.
                         self.invalidate_token()
-
-                        # Clear cookies
                         try:
                             self.http_manager._session.cookies.clear()
                             logger.debug("Cleared all cookies")
-                        except:
+                        except Exception:
                             pass
 
-                        # Retry the entire authentication process
-                        logger.info("Retrying authentication with new device ID")
+                        # Retry the entire authentication process with a clean slate.
+                        logger.info("Retrying authentication after clearing session cookie")
                         return self._perform_user_auth()
             except Exception as parse_err:
                 logger.debug(f"Could not parse error response: {parse_err}")
