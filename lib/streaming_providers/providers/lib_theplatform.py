@@ -421,8 +421,8 @@ def build_widevine_drm_config(
     return DRMConfig(
         system=DRMSystem.WIDEVINE,
         priority=2,
-        license=LicenseConfig.create_with_req_data(
-            req_data_template="{CHA-RAW}",
+        license=LicenseConfig(
+            req_data="{CHA-RAW}",
             server_url=licence_url,
             server_certificate=None,
             req_headers=headers,
