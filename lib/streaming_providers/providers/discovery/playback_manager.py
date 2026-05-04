@@ -9,7 +9,6 @@ Handles all streaming/playback concerns:
 - Populating StreamingChannel objects with streaming data
 """
 import base64
-import json
 import secrets
 import time
 import uuid
@@ -534,7 +533,7 @@ class DiscoveryPlaybackManager:
             priority=1,
             license=LicenseConfig(
                 server_url=license_url,
-                req_headers=json.dumps(license_headers),
+                req_headers=license_headers,
                 req_data="{CHA-RAW}",
                 use_http_get_request=False,
             ),
