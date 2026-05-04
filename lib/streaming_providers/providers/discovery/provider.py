@@ -299,6 +299,23 @@ class DiscoveryProvider(StreamingProvider):
     # =========================================================================
 
     def get_auth_headers(self) -> Dict[str, str]:
+        # Discovery+ requires x-disco-client, x-disco-params, and x-device-info
+        # on every CMS/playback request in addition to Authorization: Bearer.
+        # These are built by the authenticator's _build_base_headers(), which
+        # also includes any live session headers (x-disco-id, x-wbd-session-state,
+        # x-wbd-ace) populated during the /token negotiation.
+        # We therefore delegate fully to the authenticator rather than building
+        # a minimal header set here, which would strip out the required headers.
+        try:
+            token = self.authenticator._current_token
+            if token:
+                headers = self.authenticator._build_authenticated_headers(token)
+                headers.setdefault("Accept", "application/json")
+                return headers
+        except Exception as e:
+            logger.debug(f"Could not build headers from authenticator: {e}")
+
+        # Fallback: minimal headers (authenticator not yet initialised)
         return self._build_provider_headers(
             base_headers={
                 "User-Agent": get_user_agent(self.platform_os),
