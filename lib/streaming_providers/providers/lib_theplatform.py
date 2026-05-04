@@ -43,7 +43,6 @@ Usage (magentaeu):
 """
 
 import base64
-import json
 from dataclasses import dataclass, field
 from typing import List, Optional
 from urllib.parse import quote
@@ -426,7 +425,7 @@ def build_widevine_drm_config(
             req_data_template="{CHA-RAW}",
             server_url=licence_url,
             server_certificate=None,
-            req_headers=json.dumps(headers),
+            req_headers=headers,
             use_http_get_request=False,
         ),
     )
