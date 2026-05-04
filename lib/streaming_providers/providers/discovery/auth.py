@@ -1174,23 +1174,6 @@ class DiscoveryAuthenticator(BaseAuthenticator):
     def _perform_user_auth(self) -> BaseAuthToken:
         """
         Perform user authentication by upgrading an anonymous token.
-
-        Discovery+ does not accept a bare credentials POST to /login.
-        The session must first be established anonymously, then the anonymous
-        token is used as a Bearer token to POST credentials to /login, which
-        returns a new token with anonymous=False and full user entitlements.
-
-        Flow:
-          1. Obtain anonymous token via two-step header negotiation (reuses
-             _perform_anonymous_auth, which also populates session headers).
-          2. POST /login with Authorization: Bearer <anon_token> and the
-             username/password payload to upgrade to a user token.
-
-        Returns:
-            User-level authentication token (anonymous=False)
-
-        Raises:
-            InvalidCredentialsError: If credentials are missing or rejected
         """
         if not isinstance(self.credentials, DiscoveryUserCredentials):
             raise InvalidCredentialsError(
@@ -1202,15 +1185,12 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             f"(user: {self.credentials.username})"
         )
 
-        # Step 1+2: Obtain anonymous token (also populates session headers
-        # self._disco_id / self._session_state / self._wbd_ace).
+        # Step 1+2: Obtain anonymous token
         logger.debug("Obtaining anonymous base token for user auth upgrade")
         anon_token = self._perform_anonymous_auth()
         assert isinstance(anon_token, DiscoveryAuthToken)
 
-        # Step 3: Fetch feature flags with anon token — provides session-specific
-        # GI SDK client ID needed for x-gisdk header and HMAC validation.
-        # Must be called AFTER /token since it requires Authorization: Bearer.
+        # Step 3: Fetch feature flags with anon token
         logger.debug("Fetching feature flags for GI SDK client ID")
         self._fetch_feature_flags(anon_token.access_token)
 
@@ -1218,7 +1198,6 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         logger.debug("Fetching Arkose blob for login challenge")
         self._current_anon_token = anon_token.access_token
         arkose_blob = self._fetch_arkose_blob()
-
         arkose_token = self._solve_arkose(arkose_blob)
         logger.debug("Arkose challenge solved")
 
@@ -1229,10 +1208,6 @@ class DiscoveryAuthenticator(BaseAuthenticator):
         )
 
         payload = self.credentials.to_login_payload()
-        # Serialize body once — used for both HMAC signing and the actual request.
-        # requests' json= re-serializes with spaces (", "/": ") which would
-        # produce a different body than our compact HMAC input.
-        # Sending as data= with Content-Type set avoids re-serialization.
         payload_str = json.dumps(payload, separators=(',', ':'))
 
         # Build headers: session headers + Bearer anon token + Origin/Referer + Arkose
@@ -1249,8 +1224,35 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             self.login_endpoint,
             operation="auth",
             headers=upgrade_headers,
-            data=payload_str,  # raw string — no re-serialization by requests
+            data=payload_str,
         )
+
+        # Handle the "already logged in" error by clearing the session and retrying
+        if response.status_code == 400:
+            try:
+                error_data = response.json()
+                errors = error_data.get('errors', [])
+                for error in errors:
+                    if error.get('code') == 'invalid.token' and 'already logged in' in error.get('detail', ''):
+                        logger.warning(
+                            f"Device already logged in - clearing stored session and retrying"
+                        )
+                        # Clear the stored session data
+                        self.invalidate_token()
+                        # Clear the st= cookie
+                        try:
+                            self.http_manager._session.cookies.clear(
+                                domain="api.discoveryplus.com", path="/", name="st"
+                            )
+                        except:
+                            pass
+                        # Generate a new device ID
+                        import uuid
+                        self.device_id = str(uuid.uuid4())
+                        # Retry once
+                        return self._perform_user_auth()
+            except Exception as parse_err:
+                logger.debug(f"Could not parse error response: {parse_err}")
 
         if response.status_code == 401:
             raise InvalidCredentialsError(
@@ -1269,8 +1271,6 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             logger.warning("No st= cookie in /login response — user session may not persist")
 
         if user_token.anonymous:
-            # Login succeeded but token still anonymous — credentials were
-            # accepted but the account may lack an active subscription.
             logger.warning(
                 f"Login succeeded for {self.credentials.username} but token "
                 "is still anonymous — account may lack an active subscription"
@@ -1280,11 +1280,7 @@ class DiscoveryAuthenticator(BaseAuthenticator):
                 f"User authentication successful for {self.credentials.username}"
             )
 
-        # Re-run bootstrap with the user token so endpoints reflect full
-        # user entitlements (country routing may differ from anonymous session).
         self._discover_endpoints(self._build_authenticated_headers(user_token))
-
-        # Persist the user token immediately so it survives restarts.
         self._current_token = user_token
         self._save_session()
 
