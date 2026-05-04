@@ -597,11 +597,17 @@ class DiscoveryAuthenticator(BaseAuthenticator):
             bearer_token: Anonymous access token from /token
         """
         try:
-            # Use _build_authenticated_headers to get all required headers
-            # We need a token object for _build_authenticated_headers
-            temp_token = DiscoveryAuthToken(access_token=bearer_token)
+            # Create a proper token object with all required fields
+            # Use current time for issued_at
+            import time
+            temp_token = DiscoveryAuthToken(
+                access_token=bearer_token,
+                token_type="Bearer",
+                expires_in=3600,  # Temporary - won't be used
+                issued_at=time.time(),
+            )
             headers = self._build_authenticated_headers(temp_token)
-            # Remove Content-Type as feature flags expects it but we're sending JSON
+            # Ensure Content-Type is set for this request
             headers["Content-Type"] = "application/json"
 
             response = self.http_manager.post(
