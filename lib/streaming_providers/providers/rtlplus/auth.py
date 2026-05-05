@@ -74,7 +74,7 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
     @property
     def oauth_token_redirect_uri(self) -> str:
         # Used in the token exchange step
-        return f"{self.config.beta_website}silent-sso-iframe.html"
+        return f"{self.config.base_website}silent-sso-iframe.html"
 
     @property
     def config(self) -> RTLPlusConfig:

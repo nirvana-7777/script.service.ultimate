@@ -166,7 +166,7 @@ class RTLPlusProvider(StreamingProvider):
 
         # Auto-generate location header if not provided
         if location is None and layout_type in ("live", "video", "folder", "program", "alias"):
-            location = f"{self.rtl_config.beta_website}{clean_content_id}"
+            location = f"{self.rtl_config.base_website}{clean_content_id}"
 
         # Build request - handle alias layouts specially
         if layout_type == "alias":
@@ -444,7 +444,7 @@ class RTLPlusProvider(StreamingProvider):
 
         clean_id = program_id.replace("program_", "")
         url = f"{self.rtl_config.bedrock_layout_base}/program/{clean_id}/layout"
-        location = f"{self.rtl_config.beta_website}p_{clean_id}-p_{clean_id}"
+        location = f"{self.rtl_config.base_website}p_{clean_id}-p_{clean_id}"
 
         headers = self.rtl_config.get_layout_headers(oauth_token, bedrock_token, location)
         params = {"blockPage": 1, "nbPages": 2}
@@ -570,9 +570,9 @@ class RTLPlusProvider(StreamingProvider):
         # Build the correct location header
         if program_slug and program_id and content_id.startswith("clip_"):
             clip_slug = f"{program_slug}-c_{content_id.replace('clip_', '')}"
-            location = f"{self.rtl_config.beta_website}{program_slug}-p_{program_id}/video/{clip_slug}"
+            location = f"{self.rtl_config.base_website}{program_slug}-p_{program_id}/video/{clip_slug}"
         else:
-            location = f"{self.rtl_config.beta_website}{content_id}"
+            location = f"{self.rtl_config.base_website}{content_id}"
 
         layout = self.fetch_layout(
             layout_type="video",
@@ -604,7 +604,7 @@ class RTLPlusProvider(StreamingProvider):
         layout = self.fetch_layout(
             layout_type="video",
             content_id=content_id,
-            location=f"{self.rtl_config.beta_website}{content_id}"
+            location=f"{self.rtl_config.base_website}{content_id}"
         )
 
         if not layout:
@@ -680,8 +680,8 @@ class RTLPlusProvider(StreamingProvider):
 
             drm_configs = create_drmtoday_configs(
                 upfront_token=upfront_token,
-                origin=self.rtl_config.beta_website.rstrip("/"),
-                referer=self.rtl_config.beta_website,
+                origin=self.rtl_config.base_website.rstrip("/"),
+                referer=self.rtl_config.base_website,
                 user_agent=self.rtl_config.user_agent,
                 playready_user_agent=RTLPlusDefaults.PLAYREADY_USER_AGENT,
             )

@@ -45,7 +45,6 @@ class RTLPlusDefaults:
     AUTH_AUTHORIZE_ENDPOINT = f"{AUTH_BASE_URL}/auth"
     GRAPHQL_ENDPOINT = "https://cdn.gateway.now-plus-prod.aws-cbc.cloud/graphql"
     BASE_WEBSITE = "https://plus.rtl.de/"
-    BETA_WEBSITE = "https://beta.plus.rtl.de/"
     CONFIG_ENDPOINT = "https://plus.rtl.de/assets/config/config.json"
 
     # Bedrock API endpoints (Linear TV)
@@ -60,8 +59,8 @@ class RTLPlusDefaults:
 
     # DRM Request Headers (common for all DRM types)
     DRM_COMMON_HEADERS = {
-        "origin": BETA_WEBSITE.rstrip("/"),
-        "referer": BETA_WEBSITE,
+        "origin": BASE_WEBSITE.rstrip("/"),
+        "referer": BASE_WEBSITE,
     }
 
     # Direct CDN
@@ -324,8 +323,8 @@ class RTLPlusHeaders:
         headers = dict(RTLPlusHeaders._COMMON_HEADERS)
         headers.update({
             "authorization": f"Bearer {oauth_token}",
-            "origin": RTLPlusDefaults.BETA_WEBSITE.rstrip("/"),
-            "referer": RTLPlusDefaults.BETA_WEBSITE,
+            "origin": RTLPlusDefaults.BASE_WEBSITE.rstrip("/"),
+            "referer": RTLPlusDefaults.BASE_WEBSITE,
             "user-agent": user_agent,
             "x-auth-device-id": device_id,
             "x-auth-device-name": RTLPlusDefaults.DEVICE_NAME,
@@ -360,8 +359,8 @@ class RTLPlusHeaders:
         headers = dict(RTLPlusHeaders._COMMON_HEADERS)
         headers.update({
             "authorization": f"Bearer {oauth_token}",
-            "origin": RTLPlusDefaults.BETA_WEBSITE.rstrip("/"),
-            "referer": RTLPlusDefaults.BETA_WEBSITE,
+            "origin": RTLPlusDefaults.BASE_WEBSITE.rstrip("/"),
+            "referer": RTLPlusDefaults.BASE_WEBSITE,
             "request-timeout": "10000",
             "user-agent": user_agent,
             "x-bedrock-token": bedrock_token,
@@ -384,8 +383,8 @@ class RTLPlusHeaders:
         headers = dict(RTLPlusHeaders._COMMON_HEADERS)
         headers.update({
             "authorization": f"Bearer {oauth_token}",
-            "origin": RTLPlusDefaults.BETA_WEBSITE.rstrip("/"),
-            "referer": RTLPlusDefaults.BETA_WEBSITE,
+            "origin": RTLPlusDefaults.BASE_WEBSITE.rstrip("/"),
+            "referer": RTLPlusDefaults.BASE_WEBSITE,
             "user-agent": user_agent,
             "x-bedrock-token": bedrock_token,
             "x-auth-device-id": device_id,
@@ -417,8 +416,8 @@ class RTLPlusHeaders:
         headers = dict(RTLPlusHeaders._COMMON_HEADERS)
         headers.update({
             "authorization": f"Bearer {oauth_token}",
-            "origin": RTLPlusDefaults.BETA_WEBSITE.rstrip("/"),
-            "referer": RTLPlusDefaults.BETA_WEBSITE,
+            "origin": RTLPlusDefaults.BASE_WEBSITE.rstrip("/"),
+            "referer": RTLPlusDefaults.BASE_WEBSITE,
             "user-agent": user_agent,
             "x-bedrock-token": bedrock_token,
             "x-client-release": client_version,
@@ -449,7 +448,6 @@ class RTLPlusConfig:
         self.auth_endpoint = config.get("auth_endpoint", RTLPlusDefaults.AUTH_ENDPOINT)
         self.graphql_endpoint = config.get("graphql_endpoint", RTLPlusDefaults.GRAPHQL_ENDPOINT)
         self.base_website = config.get("base_website", RTLPlusDefaults.BASE_WEBSITE)
-        self.beta_website = config.get("beta_website", RTLPlusDefaults.BETA_WEBSITE)
         self.config_endpoint = config.get("config_endpoint", RTLPlusDefaults.CONFIG_ENDPOINT)
 
         # Bedrock endpoints (Linear TV)
