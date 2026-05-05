@@ -69,7 +69,7 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
     @property
     def oauth_redirect_uri(self) -> str:
         # Used in authorize step
-        return "https://beta.plus.rtl.de/tv-programm"
+        return "https://plus.rtl.de/tv-programm"
 
     @property
     def oauth_token_redirect_uri(self) -> str:
@@ -185,7 +185,7 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
             "grant_type": "authorization_code",
             "client_id": self.oauth_client_id,
             "code": authorization_code,
-            "redirect_uri": token_redirect,  # Now matches: "https://beta.plus.rtl.de/tv-programm"
+            "redirect_uri": token_redirect,
             "code_verifier": code_verifier,
         }
 
@@ -193,8 +193,8 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
         headers = self._get_auth_headers()
         headers.update({
             "Content-Type": "application/x-www-form-urlencoded",
-            "Origin": "https://beta.plus.rtl.de",
-            "Referer": "https://beta.plus.rtl.de/",
+            "Origin": "https://base.plus.rtl.de",
+            "Referer": "https://base.plus.rtl.de/",
         })
         return headers
 

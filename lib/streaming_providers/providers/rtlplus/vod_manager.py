@@ -130,7 +130,7 @@ class RTLPlusVodManager:
         layout = self._provider.fetch_layout(
             layout_type="video",
             content_id=clip_id,
-            location=f"{self.cfg.beta_website}{clip_id}",
+            location=f"{self.cfg.base_website}{clip_id}",
         )
 
         if not layout:
@@ -192,7 +192,7 @@ class RTLPlusVodManager:
         layout = self._provider.fetch_layout(
             layout_type="video",
             content_id=clip_id,
-            location=f"{self.cfg.beta_website}{clip_id}",
+            location=f"{self.cfg.base_website}{clip_id}",
         )
         if not layout:
             return None
@@ -229,7 +229,7 @@ class RTLPlusVodManager:
             layout = self._provider.fetch_layout(
                 layout_type="alias",
                 content_id="home",
-                location=f"{self.cfg.beta_website}",
+                location=f"{self.cfg.base_website}",
             )
 
             if not layout:
@@ -346,7 +346,7 @@ class RTLPlusVodManager:
         program_id format: "68137" (numeric)
         """
         seo = slug or f"p_{program_id}"
-        location = f"{self.cfg.beta_website}{seo}-p_{program_id}"
+        location = f"{self.cfg.base_website}{seo}-p_{program_id}"
 
         layout = self._provider.fetch_layout(
             layout_type="program",

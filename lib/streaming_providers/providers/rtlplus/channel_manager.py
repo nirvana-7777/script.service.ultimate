@@ -233,7 +233,7 @@ class RTLPlusChannelManager:
         layout = self._provider.fetch_layout(
             layout_type="live",
             content_id=channel_seo,
-            location=f"{self.cfg.beta_website}{channel_seo}/live"
+            location=f"{self.cfg.base_website}{channel_seo}/live"
         )
 
         if not layout:
@@ -255,7 +255,7 @@ class RTLPlusChannelManager:
         layout = self._provider.fetch_layout(
             layout_type="live",
             content_id=channel_seo,
-            location=f"{self.cfg.beta_website}{channel_seo}/live"
+            location=f"{self.cfg.base_website}{channel_seo}/live"
         )
 
         if not layout:
@@ -275,7 +275,7 @@ class RTLPlusChannelManager:
         layout = self._provider.fetch_layout(
             layout_type="live",
             content_id=channel_seo,
-            location=f"{self.cfg.beta_website}{channel_seo}/live"
+            location=f"{self.cfg.base_website}{channel_seo}/live"
         )
 
         if not layout:
@@ -298,7 +298,7 @@ class RTLPlusChannelManager:
         layout = self._provider.fetch_layout(
             layout_type="live",
             content_id=channel_seo,
-            location=f"{self.cfg.beta_website}{channel_seo}/live"
+            location=f"{self.cfg.base_website}{channel_seo}/live"
         )
 
         if not layout:
