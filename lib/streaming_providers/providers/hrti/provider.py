@@ -3,7 +3,7 @@ import json
 import datetime
 import traceback
 from urllib.parse import urlparse
-from typing import ClassVar, Dict, List, Optional, Union
+from typing import ClassVar, Dict, List, Optional, Union, Tuple
 
 import requests
 
@@ -15,6 +15,7 @@ from ..lib_drmtoday import create_drmtoday_widevine_config
 from .auth import HRTiAuthenticator
 from .constants import HRTiConfig, HRTiDefaults
 from .vod_manager import HRTiVodManager
+from .epg_manager import HRTiEPGManager
 
 # Navigation-only prefixes — these content_ids are category/series containers.
 # They are never directly playable and must never be sent to get_manifest/get_drm.
@@ -76,6 +77,9 @@ class HRTiProvider(StreamingProvider):
 
         # Initialize VOD manager
         self._vod_manager = HRTiVodManager(self)
+
+        # Initialize EPG manager
+        self._epg_manager = HRTiEPGManager(self)
 
         try:
             self.authenticator.get_bearer_token()
@@ -527,50 +531,19 @@ class HRTiProvider(StreamingProvider):
     # ============================================================================
 
     def get_epg(self, channel_id: str, **kwargs) -> List[Dict]:
-        """Get EPG data for a channel."""
-        try:
-            headers = self._get_hrti_authenticated_headers()
-            start_time = self.authenticator.get_time_offset(-4)
-            end_time = self.authenticator.get_time_offset(4)
+        """
+        Get EPG data for a channel.
 
-            payload = {
-                "ChannelReferenceIds": [channel_id],
-                "StartTime": f"/Date({start_time})/",
-                "EndTime": f"/Date({end_time})/",
-            }
+        Returns list of dictionaries for backward compatibility.
+        """
+        entries = self._epg_manager.get_epg_for_channel(channel_id)
+        # Convert EPGEntry objects to dict for backward compatibility
+        return [entry.to_dict() for entry in entries]
 
-            response = self.http_manager.post(
-                self.hrti_config.api_endpoints["programme"],
-                operation="api",
-                headers=headers,
-                data=json.dumps(payload),
-            )
-            response.raise_for_status()
-
-            epg_data = response.json()
-            if "Result" in epg_data:
-                return [
-                    {
-                        "title": entry.get("Title", ""),
-                        "description": entry.get("Description", ""),
-                        "start": entry.get("StartTime", ""),
-                        "end": entry.get("EndTime", ""),
-                        "genre": entry.get("Genre", ""),
-                    }
-                    for entry in epg_data["Result"]
-                ]
-            return []
-
-        except Exception as e:
-            logger.error(f"Error getting EPG data for channel {channel_id}: {e}")
-            return []
-
-    def get_license_url(self, channel: StreamingChannel, **kwargs) -> Optional[str]:
-        """Return the Widevine license server URL for *channel*."""
-        drm_configs = self.get_drm(channel.channel_id, **kwargs)
-        if drm_configs:
-            return drm_configs[0].license.server_url
-        return None
+    @property
+    def epg_window(self) -> Tuple[int, int]:
+        """Return EPG window as (past_days, future_days)."""
+        return self._epg_manager.get_epg_window()
 
     @property
     def catchup_window(self) -> int:
