@@ -20,10 +20,6 @@ from .vod_manager import HRTiVodManager
 # not a live channel id.
 _VOD_PREFIXES = ("catalogue:", "series:", "season:", "details:", "special:")
 
-_PLAYABLE_VOD_PREFIXES = ("details:", "series:", "season:", "special:")
-# catalogue: is a category, not directly playable
-# raw UUIDs (no prefix) are playable VOD items from catalogue listings
-
 
 class HRTiProvider(StreamingProvider):
     """
@@ -137,15 +133,8 @@ class HRTiProvider(StreamingProvider):
 
     @staticmethod
     def _is_vod_id(content_id: str) -> bool:
-        if any(content_id.startswith(p) for p in _PLAYABLE_VOD_PREFIXES):
-            return True
-        # Raw ReferenceIds from _parse_vod_catalogue_item have no prefix
-        # and look like UUIDs or legacy alphanumeric IDs (e.g. "85b273d1-...")
-        # catalogue: prefix = category node, not playable
-        if content_id.startswith("catalogue:"):
-            return False
-        # Anything else (no prefix) treat as a raw VOD ref id
-        return True
+        """Return True when content_id belongs to the VOD namespace."""
+        return any(content_id.startswith(p) for p in _VOD_PREFIXES)
 
     @staticmethod
     def _derive_content_drm_id(streaming_url: str) -> Optional[str]:
@@ -164,7 +153,10 @@ class HRTiProvider(StreamingProvider):
         """Return the cached channel for *content_id*, fetching if needed."""
         channels = self.channels if (hasattr(self, "channels") and self.channels) else self.get_channels()
         for ch in channels:
-            if ch.channel_id == content_id:
+            # StreamingChannel is constructed with content_id= kwarg; some base-class
+            # versions also alias it as channel_id — check both to be safe.
+            ch_id = getattr(ch, "content_id", None) or getattr(ch, "channel_id", None)
+            if ch_id == content_id:
                 return ch
         return None
 
