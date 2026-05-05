@@ -36,7 +36,7 @@ class HRTiDefaults:
         "catalogue": f"{BASE_URL}/api/api/ott/GetCatalogue",
         "vod_details": f"{BASE_URL}/api/api/ott/GetVodDetails",
         "seasons": f"{BASE_URL}/api/api/ott/GetSeasons",
-        "episodes": f"{BASE_URL}/api/api/ott/GetEpisodes",
+        "episodes": f"{BASE_URL}/api/api/ott/GetSeries",
         "watch_later": f"{BASE_URL}/api/api/ott/GetWatchLater",
         "editors_choice": f"{BASE_URL}/api/api/ott/GetEditorsChoice",
     }
@@ -131,7 +131,7 @@ class HRTiConfig:
                         "catalogue": f"{base_api_url}/GetCatalogue",
                         "vod_details": f"{base_api_url}/GetVodDetails",
                         "seasons": f"{base_api_url}/GetSeasons",
-                        "episodes": f"{base_api_url}/GetEpisodes",
+                        "episodes": f"{base_api_url}/GetSeries",
                         "watch_later": f"{base_api_url}/GetWatchLater",
                         "editors_choice": f"{base_api_url}/GetEditorsChoice",
                     }

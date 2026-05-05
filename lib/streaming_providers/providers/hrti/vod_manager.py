@@ -8,24 +8,35 @@ This module contains all VOD-specific logic including:
 - Special collections (Watch Later, Editor's Choice)
 - VOD item parsing and conversion to VodCategory/VodItem
 
-Field mapping notes (from observed GetCatalogue API responses):
-  Catalogue item Type values:
-    Type 2  → playable VOD item  (VodData sub-object present)
-    Type 3  → series             (SeriesData sub-object present)
-    absent  → navigable folder   (no VodData / SeriesData)
+Field mapping notes (from real API responses):
 
-  Key field names differ from what the old code assumed:
-    Title           (not Name for items)
-    PosterLandscape / PosterPortrait  (not ImageLandscape / ImageUrl / Icon)
-    VodData.Duration        (not top-level Duration)
-    VodData.ProductionYear  (not ReleaseYear)
-    VodData.ContentRating   (not Rating)
-    SeriesData.SeriesReferenceId  (not top-level SeriesReferenceId)
-    NumberOfItems   (not TotalCount — used for pagination)
-    no HasMore field — derived from page * page_size < NumberOfItems
+  GetCatalogue item Type values:
+    Type 2  → playable VOD  (VodData sub-object)
+    Type 3  → series        (SeriesData sub-object)
+    Type 5  → episode in a series listing (EpisodeData sub-object)
+    absent  → navigable folder
 
-Token access: authenticator exposes the token via _current_token.access_token
-(there is no get_access_token() method — use the pattern from auth.py directly).
+  GetCatalogue vs GetVodDetails field names:
+    Listing: Title, PosterLandscape, VodData.Duration (ms), VodData.ProductionYear,
+             VodData.ContentRating, SeriesData.SeriesReferenceId, EpisodeData.*
+    Details: Title, PosterLandscape, DurationInFrames (frames at ~25fps → /25 for sec),
+             ProductionYear, ContentRating, SeriesReferenceId, SeasonNr, EpisodeNr,
+             FileName (streaming URL), SVODVideostores, IsSVOD, Actors, Directors,
+             Writers, Editors, Producers, ReferenceID (capital ID in details)
+    GetSeries: Result.Items list; each item uses EpisodeData sub-object
+
+  FileName URL parsing (e.g. https://cdn1oiv.akamaized.net/hrtvodorigin/REF.smil/manifest.mpd):
+    path[0] = origin          (e.g. "hrtvodorigin")
+    path[1] = ref.smil        (e.g. "1870699590_delin.smil")
+    ContentReferenceId = path[1] without ".smil"
+    ContentDrmId       = "{origin}_{ref}.smil"
+
+  AuthorizeSession ContentType:
+    SVODVideostores non-empty → "svod", pass VideostoreReferenceIds
+    SVODVideostores empty     → "vod",  VideostoreReferenceIds = null
+
+  Pagination: NumberOfItems (not TotalCount), no HasMore field.
+  Token: _current_token.access_token (no get_access_token() method exists).
 """
 
 import json
@@ -35,9 +46,13 @@ from ...base.models.vod import VodCategory, VodItem
 from ...base.utils.logger import logger
 from .constants import HRTiDefaults
 
-# GetCatalogue Type discriminator values
+# GetCatalogue / GetSeries Type discriminator values
 _TYPE_VOD = 2
 _TYPE_SERIES = 3
+_TYPE_EPISODE = 5  # episode within a series listing (GetSeries Result.Items)
+
+# Frames-per-second assumed for DurationInFrames → seconds conversion
+_ASSUMED_FPS = 25
 
 
 class HRTiVodManager:
@@ -488,10 +503,11 @@ class HRTiVodManager:
         season_ref_id: str,
     ) -> List[VodItem]:
         """
-        Get episodes for a season from GetEpisodes.
+        Get episodes for a season from GetSeries.
 
-        Result is a list of episode objects — parsed via _parse_vod_details_item
-        since episode responses share the details schema.
+        The endpoint is GetSeries (not GetEpisodes — that endpoint does not exist).
+        Result is a dict: { "Items": [...], "LastWatchedEpisodeReferenceId": ..., ... }
+        Each item uses EpisodeData sub-object (not VodData) and Type 5.
         """
         payload = {
             "SeriesReferenceId": series_ref_id,
@@ -499,15 +515,16 @@ class HRTiVodManager:
         }
         result = self._post("episodes", payload, "/videostore")
 
-        if not result or not isinstance(result, list):
+        # Result is a dict with an Items list (not a bare list)
+        if not result or not isinstance(result, dict):
             logger.warning(f"No episodes returned for season {season_ref_id}")
             return []
 
+        raw_items = result.get("Items") or []
         episodes = []
-        for ep in result:
-            vod_item = self._parse_vod_details_item(ep)
+        for ep in raw_items:
+            vod_item = self._parse_series_episode_item(ep, series_ref_id)
             if vod_item:
-                vod_item.series_id = series_ref_id  # ensure series context is set
                 episodes.append(vod_item)
 
         logger.info(
@@ -515,6 +532,55 @@ class HRTiVodManager:
             f"of series {series_ref_id}"
         )
         return episodes
+
+    def _parse_series_episode_item(self, item: Dict, series_ref_id: str) -> Optional[VodItem]:
+        """
+        Parse a Type-5 episode from a GetSeries Result.Items list.
+
+        Schema differs from both catalogue items and vod_details:
+          ReferenceId, Title, PosterLandscape, PosterPortrait, VodCategoryNames
+          EpisodeData.EpisodeNr, EpisodeData.SeasonNr, EpisodeData.Duration (ms),
+          EpisodeData.ContentRating
+          SeriesData.SeriesReferenceId, SeriesData.SeriesName
+        """
+        ref_id = item.get("ReferenceId")
+        title = (item.get("Title") or "").strip()
+        if not ref_id or not title:
+            return None
+
+        ep_data = item.get("EpisodeData") or {}
+        series_data = item.get("SeriesData") or {}
+
+        duration_ms = ep_data.get("Duration")
+        duration_sec = int(duration_ms / 1000) if duration_ms else None
+
+        category_str = item.get("VodCategoryNames") or ""
+        genres = [g.strip() for g in category_str.split(",") if g.strip()] or None
+
+        return VodItem(
+            name=title,
+            content_id=ref_id,
+            provider=self.provider.provider_name,
+            logo_url=item.get("PosterLandscape") or item.get("PosterPortrait"),
+            description=None,
+            long_description=None,
+            original_title=None,
+            duration_seconds=duration_sec,
+            release_year=None,
+            rating=ep_data.get("ContentRating"),
+            genre=genres[0] if genres else None,
+            genres=genres,
+            cast=None,
+            director=None,
+            season_number=ep_data.get("SeasonNr"),
+            episode_number=ep_data.get("EpisodeNr"),
+            series_id=series_data.get("SeriesReferenceId") or series_ref_id,
+            series_title=series_data.get("SeriesName"),
+            trailer_url=None,
+            is_highlight=False,
+            content_type="SERIES",
+            manifest_script=None,  # only available via GetVodDetails
+        )
 
     # --------------------------------------------------------------------------
     # VOD item details  (GetVodDetails)
@@ -536,81 +602,84 @@ class HRTiVodManager:
 
     def _parse_vod_details_item(self, item: Dict) -> Optional[VodItem]:
         """
-        Parse a rich VOD item as returned by GetVodDetails or GetEpisodes.
+        Parse a rich VOD item as returned by GetVodDetails.
 
-        These responses have a flat structure with top-level fields:
-          ReferenceId, Title, Description, DescriptionLong, OriginalTitle,
-          StreamingURL, TrailerUrl, VideoType,
-          Duration / DurationSec (ms),
-          ReleaseYear, Rating, Genre, Genres (list), Cast (list), Director,
-          Season, EpisodeNr, SeriesReferenceId, SeriesTitle,
-          ImageUrl, ImageLandscape
+        Real field names (verified from API):
+          ReferenceID (capital ID!), Title, OriginalTitle, Description,
+          FileName (streaming URL — NOT StreamingURL),
+          DurationInFrames (frames, divide by _ASSUMED_FPS for seconds),
+          ProductionYear, ContentRating, SeriesReferenceId, SeriesName,
+          SeasonNr, EpisodeNr, TrailerUrl, Type ("vod" / "episode"),
+          PosterLandscape, PosterPortrait,
+          Actors / Directors / Writers / Editors / Producers (strings or null),
+          SVODVideostores (list of store ids, governs auth type),
+          IsSVOD (bool — but SVODVideostores non-empty is the reliable signal).
         """
         try:
-            ref_id = item.get("ReferenceId")
+            # Details uses "ReferenceID" (capital ID), listings use "ReferenceId"
+            ref_id = item.get("ReferenceID") or item.get("ReferenceId")
             title = (item.get("Title") or "").strip()
 
             if not ref_id or not title:
                 logger.debug("Skipping VOD details item — missing ReferenceId or Title")
                 return None
 
-            # Duration: details endpoint provides ms under Duration or DurationSec
-            duration_ms = item.get("DurationSec") or item.get("Duration")
-            duration_sec = int(duration_ms / 1000) if duration_ms else None
+            # DurationInFrames at ~25fps → seconds
+            frames = item.get("DurationInFrames")
+            duration_sec = int(frames / _ASSUMED_FPS) if frames else None
 
-            # Genres — may be a list of dicts, list of strings, or a plain string
-            genres = item.get("Genres")
-            if isinstance(genres, list):
-                genres = [
-                    (g.get("Name") if isinstance(g, dict) else str(g))
-                    for g in genres if g
-                ]
-                genres = [g for g in genres if g] or None
-            elif isinstance(genres, str):
-                genres = [genres] if genres else None
-
-            # Cast — same polymorphism as genres
-            cast = item.get("Cast")
-            if isinstance(cast, list):
-                cast = [
-                    (c.get("Name") if isinstance(c, dict) else str(c))
-                    for c in cast if c
-                ]
-                cast = [c for c in cast if c] or None
-            elif isinstance(cast, str):
-                cast = [cast] if cast else None
-
-            video_type = item.get("VideoType", "")
-            content_type = (
-                "SERIES" if video_type == "EPISODE"
-                else "MOVIE" if video_type == "MOVIE"
-                else "VOD"
+            # Actors field is a string (comma-separated or null), not a list
+            actors_str = item.get("Actors")
+            cast = (
+                [a.strip() for a in actors_str.split(",") if a.strip()]
+                if actors_str else None
             )
 
-            return VodItem(
+            # Directors, Writers also strings
+            directors_str = item.get("Directors") or ""
+            genre_from_category = item.get("AssetCategory") or ""
+
+            # Type field: "vod" or "episode"
+            item_type_str = (item.get("Type") or "").lower()
+            content_type = "SERIES" if item_type_str == "episode" else "MOVIE"
+
+            # Streaming URL is in FileName, not StreamingURL
+            filename = item.get("FileName") or ""
+
+            # Store SVOD data on the item for use by get_vod_session_data
+            svod_videostores = item.get("SVODVideostores") or []
+
+            vod_item = VodItem(
                 name=title,
                 content_id=ref_id,
                 provider=self.provider.provider_name,
-                logo_url=item.get("ImageLandscape") or item.get("ImageUrl"),
+                logo_url=item.get("PosterLandscape") or item.get("PosterPortrait"),
                 description=item.get("Description"),
-                long_description=item.get("DescriptionLong"),
+                long_description=None,
                 original_title=item.get("OriginalTitle"),
                 duration_seconds=duration_sec,
-                release_year=item.get("ReleaseYear"),
-                rating=item.get("Rating"),
-                genre=item.get("Genre"),
-                genres=genres,
+                release_year=item.get("ProductionYear"),
+                rating=item.get("ContentRating"),
+                genre=genre_from_category or None,
+                genres=[genre_from_category] if genre_from_category else None,
                 cast=cast,
-                director=item.get("Director"),
-                season_number=item.get("Season"),
+                director=directors_str or None,
+                season_number=item.get("SeasonNr"),
                 episode_number=item.get("EpisodeNr"),
                 series_id=item.get("SeriesReferenceId"),
-                series_title=item.get("SeriesTitle"),
+                series_title=item.get("SeriesName"),
                 trailer_url=item.get("TrailerUrl"),
-                is_highlight=(video_type == "CLIP"),
+                is_highlight=False,
                 content_type=content_type,
-                manifest_script=item.get("StreamingURL"),
+                manifest_script=filename or None,
             )
+
+            # Stash SVOD stores so get_vod_session_data can read them without
+            # a second GetVodDetails call
+            vod_item._svod_videostores = svod_videostores
+
+            logger.debug(f"Parsed VOD details: {title} ({ref_id}), svod={bool(svod_videostores)}")
+            return vod_item
 
         except Exception as e:
             logger.error(f"Error parsing VOD details item: {e}")
@@ -652,48 +721,69 @@ class HRTiVodManager:
 
     def get_vod_streaming_url(self, content_id: str) -> Optional[str]:
         """
-        Return the streaming URL for a playable VOD item.
+        Return the DASH manifest URL for a playable VOD item.
 
-        StreamingURL is only available from GetVodDetails, never from
-        catalogue listings, so we always fetch details.
+        The URL comes from the ``FileName`` field in GetVodDetails
+        (stored as ``manifest_script`` on the VodItem).
         """
         details = self._fetch_vod_details(content_id)
         if details and details.manifest_script:
             return details.manifest_script
 
-        logger.warning(f"No StreamingURL found for VOD item {content_id}")
+        logger.warning(f"No FileName/StreamingURL found for VOD item {content_id}")
         return None
 
     def get_vod_session_data(self, content_id: str) -> Optional[Dict]:
         """
         Authorize a VOD playback session and return the session dict.
 
-        The content_drm_id for VOD is derived from the streaming URL
-        (same two-segment path convention as live channels).  We fetch
-        the details first so we have the URL.
+        Derives all AuthorizeSession parameters from GetVodDetails:
+
+          FileName = https://cdn1oiv.akamaized.net/hrtvodorigin/REF.smil/manifest.mpd
+            → path[0] = "hrtvodorigin"   (origin)
+            → path[1] = "REF.smil"       (ref with extension)
+            → ContentReferenceId = "REF"              (stem without .smil)
+            → ContentDrmId = "hrtvodorigin_REF.smil"  (origin_ref.smil)
+
+          SVODVideostores non-empty → ContentType="svod", pass VideostoreReferenceIds
+          SVODVideostores empty     → ContentType="vod",  VideostoreReferenceIds=null
         """
         try:
             details = self._fetch_vod_details(content_id)
-            streaming_url = details.manifest_script if details else None
+            if not details or not details.manifest_script:
+                logger.error(f"Cannot authorize VOD session — no FileName for {content_id}")
+                return None
 
-            # Derive content_drm_id from streaming URL the same way live does
-            content_drm_id = None
-            if streaming_url:
-                from urllib.parse import urlparse
-                parts = urlparse(streaming_url).path.strip("/").split("/")
-                if len(parts) >= 2:
-                    content_drm_id = f"{parts[0]}_{parts[1]}"
+            filename = details.manifest_script  # e.g. https://.../hrtvodorigin/REF.smil/manifest.mpd
+            svod_stores = getattr(details, "_svod_videostores", []) or []
+
+            # Parse ContentReferenceId and ContentDrmId from FileName path
+            from urllib.parse import urlparse
+            path_parts = urlparse(filename).path.strip("/").split("/")
+            # path_parts: ["hrtvodorigin", "REF.smil", "manifest.mpd"]
+            if len(path_parts) < 2:
+                logger.error(f"Cannot parse FileName path for {content_id}: {filename}")
+                return None
+
+            origin = path_parts[0]          # "hrtvodorigin"
+            ref_with_ext = path_parts[1]    # "REF.smil"
+            ref_id = ref_with_ext.removesuffix(".smil") if ref_with_ext.endswith(".smil") else ref_with_ext
+            content_drm_id = f"{origin}_{ref_with_ext}"  # "hrtvodorigin_REF.smil"
+
+            content_type = "svod" if svod_stores else "vod"
+            video_store_ids = svod_stores if svod_stores else None
 
             logger.debug(
                 f"Authorizing VOD session — content_id: {content_id}, "
-                f"content_drm_id: {content_drm_id}"
+                f"ref: {ref_id}, drm: {content_drm_id}, "
+                f"type: {content_type}, stores: {video_store_ids}"
             )
 
             return self._authenticator.authorize_session(
-                content_type="vod",
-                content_ref_id=content_id,
+                content_type=content_type,
+                content_ref_id=ref_id,
                 content_drm_id=content_drm_id,
-                video_store_ids=None,
+                video_store_ids=video_store_ids,
                 channel_id=None,
                 start_time=None,
                 end_time=None,

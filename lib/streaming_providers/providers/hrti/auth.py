@@ -552,7 +552,7 @@ class HRTiAuthenticator(BaseAuthenticator):
 
             result = response.json()
             session_result = result.get("Result")
-            if session_result:  # guards against None/null
+            if session_result:
                 authorized = session_result.get("Authorized", False)
                 session_id = session_result.get("SessionId") or session_result.get("DrmId")
                 logger.debug(
