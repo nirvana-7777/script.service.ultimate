@@ -23,6 +23,9 @@ Field mapping notes (from observed GetCatalogue API responses):
     SeriesData.SeriesReferenceId  (not top-level SeriesReferenceId)
     NumberOfItems   (not TotalCount — used for pagination)
     no HasMore field — derived from page * page_size < NumberOfItems
+
+Token access: authenticator exposes the token via _current_token.access_token
+(there is no get_access_token() method — use the pattern from auth.py directly).
 """
 
 import json
@@ -137,8 +140,11 @@ class HRTiVodManager:
             "Content-Type": "application/json",
         }
 
-        # Use the public accessor rather than touching private state directly
-        token = self._authenticator.get_access_token()
+        token = (
+            self._authenticator._current_token.access_token
+            if self._authenticator._current_token
+            else ""
+        )
         if token:
             headers["authorization"] = f"Client {token}"
 
