@@ -16,9 +16,12 @@ from .auth import HRTiAuthenticator
 from .constants import HRTiConfig, HRTiDefaults
 from .vod_manager import HRTiVodManager
 
-# VOD content_id prefixes — any id starting with one of these is a VOD node,
-# not a live channel id.
-_VOD_PREFIXES = ("catalogue:", "series:", "season:", "details:", "special:")
+# Navigation-only prefixes — these content_ids are category/series/season containers.
+# They are never directly playable and must never be sent to get_manifest/get_drm.
+_NAV_PREFIXES = ("catalogue:", "series:", "season:", "special:")
+
+# Playable VOD prefix — "details:{ref_id}" is an explicit single-item request.
+_DETAILS_PREFIX = "details:"
 
 
 class HRTiProvider(StreamingProvider):
@@ -132,9 +135,33 @@ class HRTiProvider(StreamingProvider):
         )
 
     @staticmethod
-    def _is_vod_id(content_id: str) -> bool:
-        """Return True when content_id belongs to the VOD namespace."""
-        return any(content_id.startswith(p) for p in _VOD_PREFIXES)
+    def _is_nav_node(content_id: str) -> bool:
+        """Return True for navigation-only ids (category/series/season/special).
+        These are never playable and must not be passed to get_manifest/get_drm."""
+        return any(content_id.startswith(p) for p in _NAV_PREFIXES)
+
+    @staticmethod
+    def _is_playable_vod(content_id: str) -> bool:
+        """Return True for ids that represent a playable VOD item.
+
+        Two forms are playable:
+          - ``details:{ref_id}``  — explicit single-item request
+          - bare ref-id (no prefix) — raw ReferenceId from catalogue listing
+            (UUIDs like "85b273d1-..." or legacy ids like "1870699590_delin")
+
+        Live channel ids are also bare numeric strings (e.g. "40013") so this
+        method alone does not distinguish VOD from live — callers must first
+        exclude nav nodes, then check against the live channel list.
+        """
+        if any(content_id.startswith(p) for p in _NAV_PREFIXES):
+            return False
+        # "details:" prefix is an explicit VOD request
+        if content_id.startswith(_DETAILS_PREFIX):
+            return True
+        # Bare id — could be VOD or live; live ids are short numerics.
+        # We treat any non-numeric bare id as VOD; live channel lookup
+        # will confirm or deny for numeric ids.
+        return not content_id.isdigit()
 
     @staticmethod
     def _derive_content_drm_id(streaming_url: str) -> Optional[str]:
@@ -388,15 +415,24 @@ class HRTiProvider(StreamingProvider):
         """
         Return the playback manifest URL for *content_id*.
 
-        Routing is done purely from the content_id format:
-        - VOD ids carry a well-known prefix (``catalogue:``, ``series:``, …)
-        - Everything else is treated as a live channel id
-
-        For live channels the session is authorized here and cached so that
-        a subsequent ``get_drm()`` call can reuse it without a second round trip.
+        Routing:
+          - Navigation nodes (catalogue:/series:/season:/special:) → error, not playable
+          - details:{ref} or bare non-numeric id → VOD
+          - bare numeric id → live channel
         """
-        if self._is_vod_id(content_id):
-            return self._vod_manager.get_vod_streaming_url(content_id)
+        if self._is_nav_node(content_id):
+            logger.error(
+                f"get_manifest called with navigation node '{content_id}' — "
+                f"this is a category/series/season container, not a playable item"
+            )
+            return None
+
+        # Strip "details:" prefix before passing to VOD manager
+        vod_ref = content_id[len(_DETAILS_PREFIX):] if content_id.startswith(_DETAILS_PREFIX) else content_id
+
+        if self._is_playable_vod(content_id):
+            return self._vod_manager.get_vod_streaming_url(vod_ref)
+
         return self._get_live_manifest(content_id, **kwargs)
 
     def _get_live_manifest(self, content_id: str, **kwargs) -> Optional[str]:
@@ -425,15 +461,20 @@ class HRTiProvider(StreamingProvider):
         """
         Return Widevine DRM config(s) for *content_id*.
 
-        Routing mirrors get_manifest() — VOD prefix → VOD path,
-        everything else → live path.
-
-        For live channels: checks ``_session_cache`` first (populated by a
-        preceding ``get_manifest()`` call), then falls back to a fresh session
-        authorization so the method works when called in isolation.
+        Routing mirrors get_manifest() — nav nodes are rejected, playable VOD
+        goes to _get_vod_drm, live channels go to _get_live_drm.
         """
-        if self._is_vod_id(content_id):
-            return self._get_vod_drm(content_id, **kwargs)
+        if self._is_nav_node(content_id):
+            logger.error(
+                f"get_drm called with navigation node '{content_id}' — "
+                f"this is a category/series/season container, not a playable item"
+            )
+            return []
+
+        vod_ref = content_id[len(_DETAILS_PREFIX):] if content_id.startswith(_DETAILS_PREFIX) else content_id
+
+        if self._is_playable_vod(content_id):
+            return self._get_vod_drm(vod_ref, **kwargs)
         return self._get_live_drm(content_id, **kwargs)
 
     def _get_live_drm(self, content_id: str, **kwargs) -> List[DRMConfig]:
