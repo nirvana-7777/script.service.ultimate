@@ -1,5 +1,3 @@
-# [file name]: auth.py
-# [file content begin]
 # streaming_providers/providers/hrti/auth.py
 import base64
 import json
@@ -553,15 +551,19 @@ class HRTiAuthenticator(BaseAuthenticator):
             response.raise_for_status()
 
             result = response.json()
-            if "Result" in result:
-                authorized = result["Result"].get("Authorized", False)
-                session_id = result["Result"].get("SessionId") or result["Result"].get("DrmId")
+            session_result = result.get("Result")
+            if session_result:  # guards against None/null
+                authorized = session_result.get("Authorized", False)
+                session_id = session_result.get("SessionId") or session_result.get("DrmId")
                 logger.debug(
                     f"Session authorization result - authorized: {authorized}, session_id: {session_id}"
                 )
-                return result["Result"]
+                return session_result
             else:
-                logger.warning("No result in session authorization response")
+                logger.warning(
+                    f"No result in session authorization response "
+                    f"(ErrorCode={result.get('ErrorCode')}: {result.get('ErrorDescription')})"
+                )
                 return None
 
         except Exception as e:
@@ -794,6 +796,3 @@ class HRTiAuthenticator(BaseAuthenticator):
         except Exception as e:
             logger.error(f"HRTi token refresh failed: {e}")
             return None
-
-
-# [file content end]
