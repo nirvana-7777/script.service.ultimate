@@ -16,9 +16,9 @@ from .auth import HRTiAuthenticator
 from .constants import HRTiConfig, HRTiDefaults
 from .vod_manager import HRTiVodManager
 
-# Navigation-only prefixes — these content_ids are category/series/season containers.
+# Navigation-only prefixes — these content_ids are category/series containers.
 # They are never directly playable and must never be sent to get_manifest/get_drm.
-_NAV_PREFIXES = ("catalogue:", "series:", "season:", "special:")
+_NAV_PREFIXES = ("catalogue:", "series:", "special:")
 
 # Playable VOD prefix — "details:{ref_id}" is an explicit single-item request.
 _DETAILS_PREFIX = "details:"
