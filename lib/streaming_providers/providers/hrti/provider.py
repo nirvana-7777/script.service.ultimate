@@ -3,7 +3,7 @@ import json
 import datetime
 import traceback
 from urllib.parse import urlparse
-from typing import ClassVar, Dict, List, Optional, Union, Tuple
+from typing import ClassVar, Dict, List, Optional, Union
 
 import requests
 
@@ -15,14 +15,13 @@ from ..lib_drmtoday import create_drmtoday_widevine_config
 from .auth import HRTiAuthenticator
 from .constants import HRTiConfig, HRTiDefaults
 from .vod_manager import HRTiVodManager
-from .epg_manager import HRTiEPGManager
 
 # Navigation-only prefixes — these content_ids are category/series containers.
 # They are never directly playable and must never be sent to get_manifest/get_drm.
-_NAV_PREFIXES = ("catalogue:", "series:", "special:")
+_NAV_PREFIXES = ("catalogue_", "series_", "special_")
 
-# Playable VOD prefix — "details:{ref_id}" is an explicit single-item request.
-_DETAILS_PREFIX = "details:"
+# Playable VOD prefix — "details_{ref_id}" is an explicit single-item request.
+_DETAILS_PREFIX = "details_"
 
 
 class HRTiProvider(StreamingProvider):
@@ -77,9 +76,6 @@ class HRTiProvider(StreamingProvider):
 
         # Initialize VOD manager
         self._vod_manager = HRTiVodManager(self)
-
-        # Initialize EPG manager
-        self._epg_manager = HRTiEPGManager(self)
 
         try:
             self.authenticator.get_bearer_token()
@@ -159,7 +155,7 @@ class HRTiProvider(StreamingProvider):
         """
         if any(content_id.startswith(p) for p in _NAV_PREFIXES):
             return False
-        # "details:" prefix is an explicit VOD request
+        # "details_" prefix is an explicit VOD request
         if content_id.startswith(_DETAILS_PREFIX):
             return True
         # Bare id — could be VOD or live; live ids are short numerics.
@@ -421,7 +417,7 @@ class HRTiProvider(StreamingProvider):
 
         Routing:
           - Navigation nodes (catalogue:/series:/season:/special:) → error, not playable
-          - details:{ref} or bare non-numeric id → VOD
+          - details_{ref} or bare non-numeric id → VOD
           - bare numeric id → live channel
         """
         if self._is_nav_node(content_id):
@@ -431,7 +427,7 @@ class HRTiProvider(StreamingProvider):
             )
             return None
 
-        # Strip "details:" prefix before passing to VOD manager
+        # Strip "details_" prefix before passing to VOD manager
         vod_ref = content_id[len(_DETAILS_PREFIX):] if content_id.startswith(_DETAILS_PREFIX) else content_id
 
         if self._is_playable_vod(content_id):
@@ -531,19 +527,50 @@ class HRTiProvider(StreamingProvider):
     # ============================================================================
 
     def get_epg(self, channel_id: str, **kwargs) -> List[Dict]:
-        """
-        Get EPG data for a channel.
+        """Get EPG data for a channel."""
+        try:
+            headers = self._get_hrti_authenticated_headers()
+            start_time = self.authenticator.get_time_offset(-4)
+            end_time = self.authenticator.get_time_offset(4)
 
-        Returns list of dictionaries for backward compatibility.
-        """
-        entries = self._epg_manager.get_epg_for_channel(channel_id)
-        # Convert EPGEntry objects to dict for backward compatibility
-        return [entry.to_dict() for entry in entries]
+            payload = {
+                "ChannelReferenceIds": [channel_id],
+                "StartTime": f"/Date({start_time})/",
+                "EndTime": f"/Date({end_time})/",
+            }
 
-    @property
-    def epg_window(self) -> Tuple[int, int]:
-        """Return EPG window as (past_days, future_days)."""
-        return self._epg_manager.get_epg_window()
+            response = self.http_manager.post(
+                self.hrti_config.api_endpoints["programme"],
+                operation="api",
+                headers=headers,
+                data=json.dumps(payload),
+            )
+            response.raise_for_status()
+
+            epg_data = response.json()
+            if "Result" in epg_data:
+                return [
+                    {
+                        "title": entry.get("Title", ""),
+                        "description": entry.get("Description", ""),
+                        "start": entry.get("StartTime", ""),
+                        "end": entry.get("EndTime", ""),
+                        "genre": entry.get("Genre", ""),
+                    }
+                    for entry in epg_data["Result"]
+                ]
+            return []
+
+        except Exception as e:
+            logger.error(f"Error getting EPG data for channel {channel_id}: {e}")
+            return []
+
+    def get_license_url(self, channel: StreamingChannel, **kwargs) -> Optional[str]:
+        """Return the Widevine license server URL for *channel*."""
+        drm_configs = self.get_drm(channel.channel_id, **kwargs)
+        if drm_configs:
+            return drm_configs[0].license.server_url
+        return None
 
     @property
     def catchup_window(self) -> int:

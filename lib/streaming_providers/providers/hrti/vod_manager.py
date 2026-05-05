@@ -18,19 +18,19 @@ Navigation model
   Every navigable node at every level uses ``catalogue:{ReferenceId}``.
   There is no separate seasons API — seasons appear as Children of a
   series node inside GetCatalogueStructure and are therefore already
-  handled by the catalogue: routing.
+  handled by the catalogue_ routing.
 
   Type-3 series items in GetCatalogue listings link to GetSeries via:
-    content_id = "series:{SeriesReferenceId}:{SeasonReferenceId}"
+    content_id = "series_{SeriesReferenceId}--{SeasonReferenceId}"
   The default SeasonReferenceId is "{SeriesReferenceId}_S01".
 
 Content ID scheme
 -----------------
   ""                                     root  (GetCatalogueStructure)
-  "catalogue:{ref_id}"                   items (GetCatalogue, paginated)
-  "series:{series_ref}:{season_ref}"     episodes (GetSeries)
-  "special:watch_later"                  GetWatchLater
-  "special:editors_choice"               GetEditorsChoice
+  "catalogue_{ref_id}"                   items (GetCatalogue, paginated)
+  "series_{series_ref}--{season_ref}"     episodes (GetSeries)
+  "special_watch_later"                   GetWatchLater
+  "special_editors_choice"              GetEditorsChoice
 
 Field mapping (verified from real API responses)
 -------------------------------------------------
@@ -106,29 +106,29 @@ class HRTiVodManager:
 
         Routing by content_id prefix:
           ""                    → GetCatalogueStructure (root, top-level categories)
-          "catalogue:{ref_id}"  → GetCatalogue items (paginated)
-          "series:{sid}:{ssid}" → GetSeries episodes
-          "special:*"           → special collections
+          "catalogue_{ref_id}"  → GetCatalogue items (paginated)
+          "series_{sid}--{ssid}" → GetSeries episodes
+          "special_*"           → special collections
         """
         if not content_id:
             return self._fetch_catalogue_structure()
 
-        if content_id.startswith("catalogue:"):
-            ref_id = content_id[len("catalogue:"):]
+        if content_id.startswith("catalogue_"):
+            ref_id = content_id[len("catalogue_"):]
             return self._fetch_catalogue_items(ref_id, cursor, page_size)
 
-        if content_id.startswith("series:"):
+        if content_id.startswith("series_"):
             # Format: series:{series_ref_id}:{season_ref_id}
-            parts = content_id[len("series:"):].split(":", 1)
+            parts = content_id[len("series_"):].split("--", 1)
             if len(parts) == 2:
                 return self._fetch_series_episodes(parts[0], parts[1])
-            logger.warning(f"Malformed series content_id (expected series:SID:SSID): {content_id}")
+            logger.warning(f"Malformed series content_id (expected series_SID--SSID): {content_id}")
             return []
 
-        if content_id == "special:watch_later":
+        if content_id == "special_watch_later":
             return self._fetch_watch_later()
 
-        if content_id == "special:editors_choice":
+        if content_id == "special_editors_choice":
             return self._fetch_editors_choice()
 
         logger.warning(f"Unknown VOD content_id format: {content_id}")
@@ -249,7 +249,7 @@ class HRTiVodManager:
             children = node.get("Children") or []
             return VodCategory(
                 name=name,
-                content_id=f"catalogue:{ref_id}",
+                content_id=f"catalogue_{ref_id}",
                 provider=self.provider.provider_name,
                 logo_url=node.get("PosterLandscape"),
                 description=None,
@@ -343,7 +343,7 @@ class HRTiVodManager:
             return None
         return VodCategory(
             name=name,
-            content_id=f"catalogue:{ref_id}",
+            content_id=f"catalogue_{ref_id}",
             provider=self.provider.provider_name,
             logo_url=item.get("PosterLandscape") or item.get("PosterPortrait"),
             description=None,
@@ -371,7 +371,7 @@ class HRTiVodManager:
 
         return VodCategory(
             name=name,
-            content_id=f"series:{series_ref_id}:{default_season_ref}",
+            content_id=f"series_{series_ref_id}--{default_season_ref}",
             provider=self.provider.provider_name,
             logo_url=item.get("PosterLandscape") or item.get("PosterPortrait"),
             description=None,
