@@ -45,8 +45,38 @@ from streaming_providers.base.utils import logger
 
 def setup_vod_routes(app, manager):
 
-    def _serialize(entries) -> list:
-        return [e.to_dict() for e in entries]
+    def _base_url() -> str:
+        return f"{request.urlparts.scheme}://{request.urlparts.netloc}"
+
+    def _serialize(entries, provider: str) -> list:
+        """
+        Serialize VOD entries to dicts.
+
+        For VodItem entries (type == "vod"), inject absolute ``manifest_url``
+        and ``stream_url`` built from the item's own ``content_id``.
+
+        The client constructs stream URLs from the browsing path (the URL it
+        used to navigate to this listing), not from the item's ``id`` field.
+        For container nodes (catalogue_, series_) this produces a nav-node id
+        that get_manifest correctly rejects. Injecting explicit URLs here gives
+        the client an unambiguous playback target for each item, regardless of
+        what navigation path led to this listing.
+
+        VodCategory entries are left unchanged — they are never playable.
+        """
+        base = _base_url()
+        result = []
+        for e in entries:
+            d = e.to_dict()
+            if d.get("type") == "vod" and e.content_id:
+                d["manifest_url"] = (
+                    f"{base}/api/providers/{provider}/vod/{e.content_id}/manifest"
+                )
+                d["stream_url"] = (
+                    f"{base}/api/providers/{provider}/vod/{e.content_id}/stream/index.mpd"
+                )
+            result.append(d)
+        return result
 
     def _parse_paging_params() -> tuple[str | None, int]:
         """
@@ -81,7 +111,7 @@ def setup_vod_routes(app, manager):
             logger.error(f"Failed to get VOD root from provider: {e}")
             response.status = 500
             return {"error": "Failed to get VOD entries", "message": str(e), "provider": provider}
-        serialized = _serialize(result["entries"])
+        serialized = _serialize(result["entries"], provider)
         response.status = 200
         return {
             "provider": provider,
@@ -125,7 +155,7 @@ def setup_vod_routes(app, manager):
             logger.error(f"Failed to get VOD node from provider: {e}")
             response.status = 500
             return {"error": "Failed to get VOD entries", "message": str(e), "provider": provider, "content_id": content_id}
-        serialized = _serialize(result["entries"])
+        serialized = _serialize(result["entries"], provider)
         response.status = 200
         return {
             "provider": provider,
