@@ -39,8 +39,8 @@ class RTLPlusVodManager:
         root
         └── folder_<id>        (Bedrock folder, e.g. folder_3 = Serien)
             └── program_<id>   (program layout → seasons or direct video)
-                ├── month_<block_id>  (monthly archive selector)
-                │   └── episodes (via block fetch)
+                ├── month_<program_id>::<block_id>  (monthly archive selector)
+                │   └── episodes (via /program/{id}/block/{block_id} fetch)
                 ├── season_<block_id> (numbered season selector)
                 │   └── episodes (via block fetch)
                 └── clip_id           (video layout, playable)
@@ -87,7 +87,7 @@ class RTLPlusVodManager:
         - "folder_<id>"            → Bedrock folder
         - "program_<id>"           → program/series (handles movies, numbered seasons, monthly archives)
         - "season_<id>"            → numbered season block (Staffel 1, 2, etc.)
-        - "month_<block_id>"       → monthly archive block (2026-05, 2026-04, etc.)
+        - "month_<program_id>::<block_id>" → monthly archive block (2026-05, 2026-04, etc.)
         - "clip_<id>"              → direct clip (playable item)
         - "program_<id>/clip_<id>" → explicit program+clip path
         """
@@ -111,10 +111,14 @@ class RTLPlusVodManager:
                 return {"entries": [vod_item], "next_cursor": None, "total": 1}
             return {"entries": [], "next_cursor": None, "total": 0}
 
-        # Handle month block (monthly episode archives)
+        # Handle month block (monthly episode archives) - NEW FORMAT with program_id
         if content_id.startswith("month_"):
-            block_id = content_id[6:]  # Remove "month_" prefix
-            return self._get_block_episodes(block_id, cursor, page_size, block_type="month")
+            rest = content_id[6:]  # Remove "month_" prefix
+            if "::" in rest:
+                program_id, block_id = rest.split("::", 1)
+                return self._get_program_block_episodes(program_id, block_id, cursor, page_size)
+            # Legacy fallback (shouldn't occur after fix)
+            return self._get_block_episodes(rest, cursor, page_size, block_type="month")
 
         # Handle numbered season block
         if content_id.startswith("season_"):
@@ -145,6 +149,65 @@ class RTLPlusVodManager:
         logger.warning(f"Unrecognised VOD content_id format: {content_id!r}")
         return {"entries": [], "next_cursor": None, "total": 0}
 
+    def _get_program_block_episodes(
+        self,
+        program_id: str,
+        block_id: str,
+        cursor: Optional[str] = None,
+        page_size: int = 24,
+    ) -> Dict[str, Any]:
+        """
+        Fetch episodes from a month block using the /program/{id}/block/{block_id} endpoint.
+        The block_id must be the full page_... ID from concurrentBlocks.
+        """
+        page = 1
+        if cursor:
+            try:
+                page = int(cursor)
+            except ValueError:
+                page = 1
+
+        oauth_token = self._provider.get_user_bearer_token() or self.auth.get_bearer_token()
+        if not oauth_token:
+            logger.error("No OAuth token available for program block episodes")
+            return {"entries": [], "next_cursor": None, "total": 0}
+
+        bedrock_token = self.auth.get_bedrock_token()
+        if not bedrock_token:
+            logger.error("No Bedrock token available for program block episodes")
+            return {"entries": [], "next_cursor": None, "total": 0}
+
+        location = f"{self.cfg.base_website}p_{program_id}-p_{program_id}"
+
+        url = f"{self.cfg.bedrock_layout_base}/program/{program_id}/block/{block_id}"
+        params = {
+            "nbPages": RTLPlusDefaults.DEFAULT_BLOCK_NB_PAGES,
+            "page": page,
+        }
+        headers = self.cfg.get_layout_headers(oauth_token, bedrock_token, location)
+
+        try:
+            response = self.http.get(url, headers=headers, params=params, operation="api")
+            response.raise_for_status()
+            layout = response.json()
+        except Exception as e:
+            logger.error(f"Failed to fetch program block {block_id} for program {program_id}: {e}")
+            return {"entries": [], "next_cursor": None, "total": 0}
+
+        episodes: List[VodItem] = []
+        for item in layout.get("content", {}).get("items", []):
+            vod_item = self._extract_vod_item_from_block_item(item)
+            if vod_item:
+                episodes.append(vod_item)
+
+        pagination = layout.get("content", {}).get("pagination", {})
+        total = pagination.get("totalItems", len(episodes))
+        next_page = pagination.get("nextPage")
+        next_cursor = str(next_page) if next_page else None
+
+        logger.debug(f"Fetched {len(episodes)}/{total} episodes from program {program_id} block {block_id} (page {page})")
+        return {"entries": episodes, "next_cursor": next_cursor, "total": total}
+
     def _get_block_episodes(
             self,
             block_id: str,
@@ -153,7 +216,7 @@ class RTLPlusVodManager:
             block_type: str = "block"
     ) -> Dict[str, Any]:
         """
-        Fetch episodes from a block (works for both numbered seasons and monthly archives).
+        Fetch episodes from a block (works for numbered seasons).
 
         Args:
             block_id: The block ID (e.g., "c7916bb9-d111-49db-9a99-ab40ef6413da_39638")
@@ -168,6 +231,7 @@ class RTLPlusVodManager:
             except ValueError:
                 page = 1
 
+        # Use generic block endpoint for numbered seasons
         layout = self._provider.fetch_layout(
             layout_type="block",
             content_id=block_id,
@@ -211,7 +275,7 @@ class RTLPlusVodManager:
         if not layout:
             return {"entries": [], "next_cursor": None, "total": 0}
 
-        _, current_episodes = self._extract_season_selector_with_episodes(layout)
+        _, current_episodes = self._extract_season_selector_with_episodes(layout, program_id)
         if not current_episodes:
             return {"entries": [], "next_cursor": None, "total": 0}
 
@@ -448,7 +512,7 @@ class RTLPlusVodManager:
             return {"entries": [], "next_cursor": None, "total": 0}
 
         # FIRST: Check for monthly archive selector (series with monthly episodes)
-        season_selector, current_episodes = self._extract_season_selector_with_episodes(layout)
+        season_selector, current_episodes = self._extract_season_selector_with_episodes(layout, program_id)
         if season_selector:
             logger.debug(f"Found monthly selector with {len(season_selector)} months for program {program_id}")
             return self._handle_series_response(program_id, season_selector, current_episodes, cursor, page_size)
@@ -541,7 +605,7 @@ class RTLPlusVodManager:
         next_cursor = str(start + page_size) if (start + page_size) < len(numbered_seasons) else None
         return {"entries": page, "next_cursor": next_cursor, "total": len(numbered_seasons)}
 
-    def _extract_season_selector_with_episodes(self, layout: Dict) -> Tuple[List[VodCategory], List[VodItem]]:
+    def _extract_season_selector_with_episodes(self, layout: Dict, program_id: Optional[str] = None) -> Tuple[List[VodCategory], List[VodItem]]:
         logger.debug("Starting _extract_season_selector_with_episodes")
         seasons = []
         current_episodes = []
@@ -579,9 +643,11 @@ class RTLPlusVodManager:
                                 .get("totalItems", 0)
                             )
 
+                            # Store with program_id for proper endpoint routing
+                            content_id = f"month_{program_id}::{block_id}" if program_id else f"month_{block_id}"
                             seasons.append(VodCategory(
                                 name=month_title,
-                                content_id=f"month_{block_id}",
+                                content_id=content_id,
                                 provider=self._provider.provider_name,
                                 child_count=total_episodes,
                             ))
@@ -1213,9 +1279,10 @@ class RTLPlusVodManager:
             self._provider.invalidate_layout_cache(cache_key)
 
         elif content_id.startswith("month_"):
-            month_id = content_id[len("month_"):].split("?")[0]
+            rest = content_id[6:]
+            block_id = rest.split("::", 1)[-1] if "::" in rest else rest.split("?")[0]
             cache_key = (
-                f"block:{month_id}"
+                f"block:{block_id}"
                 f":{RTLPlusDefaults.DEFAULT_BLOCK_PAGE}"
                 f":{RTLPlusDefaults.DEFAULT_BLOCK_NB_PAGES}"
             )

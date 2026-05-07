@@ -133,6 +133,15 @@ class LicenseConfig:
         """Normalize req_headers to URL-encoded string and key IDs in keyids mapping."""
         self.req_headers = self._normalize_headers(self.req_headers)
 
+        # NEW: Auto-encode req_data if it looks like plain text
+        if self.req_data and not self._is_base64(self.req_data):
+            # Assume it's plain text that needs encoding
+            try:
+                self.req_data = safe_base64_encode(self.req_data.encode('utf-8'))
+            except Exception:
+                # If it fails, keep as-is but validation will catch it
+                pass
+
         if self.keyids:
             normalized_keyids = {}
             for kid, key in self.keyids.items():
@@ -143,6 +152,20 @@ class LicenseConfig:
                 except Exception:
                     pass
             self.keyids = normalized_keyids
+
+    @staticmethod
+    def _is_base64(s: str) -> bool:
+        """Check if string appears to be base64 encoded."""
+        import base64
+        import re
+        # Base64 pattern: only valid chars, length multiple of 4
+        if not re.match(r'^[A-Za-z0-9+/]*={0,2}$', s):
+            return False
+        try:
+            base64.b64decode(s)
+            return True
+        except Exception:
+            return False
 
     def validate(self) -> None:
         """
