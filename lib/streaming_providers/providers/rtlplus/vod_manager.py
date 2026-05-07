@@ -573,7 +573,6 @@ class RTLPlusVodManager:
                         block_id = cb.get("id")
 
                         if month_title and block_id:
-                            clean_block_id = self._extract_block_id_from_url(block_id)
                             total_episodes = (
                                 cb.get("content", {})
                                 .get("pagination", {})
@@ -582,7 +581,7 @@ class RTLPlusVodManager:
 
                             seasons.append(VodCategory(
                                 name=month_title,
-                                content_id=f"month_{clean_block_id}",
+                                content_id=f"month_{block_id}",
                                 provider=self._provider.provider_name,
                                 child_count=total_episodes,
                             ))
