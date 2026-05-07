@@ -146,6 +146,7 @@ class MoveTVProvider(StreamingProvider):
         # on self.channels being populated (get_channels may not have been called).
         self._play_auth_cache: Dict[str, tuple] = {}
         self._manifest_url_cache: Dict[str, str] = {}
+        self._last_content_id: Optional[str] = None
 
         # Attempt authentication at startup; non-fatal if it fails
         try:
@@ -348,6 +349,16 @@ class MoveTVProvider(StreamingProvider):
     # ------------------------------------------------------------------
 
     def get_manifest(self, content_id: str, **kwargs) -> Optional[str]:
+        if content_id != self._last_content_id:
+            logger.debug(
+                f"move.tv: Channel switch detected "
+                f"({self._last_content_id!r} → {content_id!r}), "
+                f"invalidating play-auth and manifest URL cache"
+            )
+            self._play_auth_cache.pop(content_id, None)
+            self._manifest_url_cache.pop(content_id, None)
+            self._last_content_id = content_id
+
         channel = self._channel_by_id(content_id)
         if channel is None:
             logger.info(
