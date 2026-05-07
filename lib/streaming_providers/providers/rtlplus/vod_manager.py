@@ -418,7 +418,16 @@ class RTLPlusVodManager:
     # Program contents (handles movies, numbered seasons, monthly archives)
     # ------------------------------------------------------------------
 
-    def _get_program_contents(self, program_id: str, cursor=None, page_size=24, slug=None):
+    def _get_program_contents(
+            self,
+            program_id: str,
+            cursor: Optional[str] = None,
+            page_size: int = 24,
+            slug: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Get program contents - handles movies, series with season selectors.
+        """
         seo = slug or f"p_{program_id}"
         location = f"{self.cfg.base_website}{seo}-p_{program_id}"
 
@@ -432,26 +441,27 @@ class RTLPlusVodManager:
             logger.error(f"Failed to fetch layout for program {program_id}")
             return {"entries": [], "next_cursor": None, "total": 0}
 
-        # DEBUG: Log layout structure
-        logger.debug(f"Layout keys for program {program_id}: {layout.keys()}")
-        logger.debug(f"Blocks count: {len(layout.get('blocks', []))}")
+        # FIRST: Check for monthly archive selector (series with monthly episodes)
+        season_selector, current_episodes = self._extract_season_selector_with_episodes(layout)
+        if season_selector:
+            logger.debug(f"Found monthly selector with {len(season_selector)} months for program {program_id}")
+            return self._handle_series_response(program_id, season_selector, current_episodes, cursor, page_size)
 
-        # FIRST: Check if this is a movie (direct playable video)
-        logger.debug("Calling _find_direct_video_in_layout")
-        try:
-            movie_item = self._find_direct_video_in_layout(layout)
-            logger.debug(f"_find_direct_video_in_layout returned: {movie_item is not None}")
-        except Exception as e:
-            logger.error(f"Error in _find_direct_video_in_layout: {e}", exc_info=True)
-            movie_item = None
+        # SECOND: Check for numbered seasons (traditional series with Staffel 1, 2, etc.)
+        numbered_seasons = self._extract_seasons_from_layout(layout)
+        if numbered_seasons:
+            logger.debug(f"Found {len(numbered_seasons)} numbered seasons for program {program_id}")
+            return self._handle_numbered_seasons_response(numbered_seasons, cursor, page_size)
 
+        # THIRD: No seasons found - this is likely a movie or direct video
+        movie_item = self._find_direct_video_in_layout(layout, is_series=False)
         if movie_item:
-            logger.debug(f"Found movie: {movie_item.name}")
+            # Enhance movie metadata from layout
             layout_title = (
                     layout.get("entity", {}).get("metadata", {}).get("title")
                     or layout.get("seo", {}).get("title")
             )
-            if layout_title:
+            if layout_title and layout_title != movie_item.name:
                 movie_item.name = layout_title
             if not movie_item.logo_url:
                 movie_item.logo_url = self._extract_thumbnail_from_layout(layout)
@@ -460,97 +470,70 @@ class RTLPlusVodManager:
                         layout.get("entity", {}).get("metadata", {}).get("description")
                         or layout.get("seo", {}).get("description")
                 )
-            return {
-                "entries": [movie_item],
-                "next_cursor": None,
-                "total": 1,
-            }
+            return {"entries": [movie_item], "next_cursor": None, "total": 1}
 
-        # SECOND: Extract monthly archive selector
-        logger.debug("Calling _extract_season_selector_with_episodes")
-        try:
-            season_selector, current_episodes = self._extract_season_selector_with_episodes(layout)
-            logger.debug(f"Got {len(season_selector)} months, {len(current_episodes)} episodes")
-        except Exception as e:
-            logger.error(f"Error in _extract_season_selector_with_episodes: {e}", exc_info=True)
-            season_selector, current_episodes = [], []
-
-        if season_selector:
-            # We have monthly folders - return the selector for navigation
-            entries = season_selector
-
-            # If a cursor is provided, it might be for pagination of current episodes
-            if cursor and cursor.startswith("episodes:"):
-                # User wants paginated episodes from current month
-                page = int(cursor.split(":")[1]) if ":" in cursor else 1
-                paginated_episodes, next_cursor = self._paginate_episodes(
-                    current_episodes, page, page_size
-                )
-                return {
-                    "entries": paginated_episodes,
-                    "next_cursor": next_cursor,
-                    "total": len(current_episodes),
-                }
-
-            # First load - show selector and optionally first page of current episodes
-            if current_episodes and len(current_episodes) > 0:
-                # Add a special category for current episodes at the top
-                current_month_name = self._get_current_month_name()
-                if current_month_name:
-                    preview_category = VodCategory(
-                        name=f"Aktuelle Folgen ({current_month_name})",
-                        content_id=f"episodes_current_{program_id}",
-                        provider=self._provider.provider_name,
-                        child_count=len(current_episodes),
-                    )
-                    entries = [preview_category] + entries
-
-            next_cursor = None
-            if len(current_episodes) > page_size:
-                next_cursor = "episodes:2"
-
-            return {
-                "entries": entries,
-                "next_cursor": next_cursor,
-                "total": len(season_selector) + (1 if current_episodes else 0),
-            }
-
-        # THIRD: Extract numbered seasons (for traditional series)
-        try:
-            numbered_seasons = self._extract_seasons_from_layout(layout)
-            logger.debug(f"Numbered seasons: {len(numbered_seasons)}")
-        except Exception as e:
-            logger.error(f"Error in _extract_seasons_from_layout: {e}", exc_info=True)
-            numbered_seasons = []
-        if numbered_seasons:
-            start = 0
-            if cursor:
-                try:
-                    start = int(cursor)
-                except ValueError:
-                    start = 0
-
-            page = numbered_seasons[start: start + page_size]
-            next_cursor = str(start + page_size) if (start + page_size) < len(numbered_seasons) else None
-            return {"entries": page, "next_cursor": next_cursor, "total": len(numbered_seasons)}
-
-        # FOURTH: No selectors - check for direct episodes in the layout
+        # FOURTH: Fallback - look for direct episodes
         direct_episodes = self._extract_direct_episodes_from_layout(layout)
         if direct_episodes:
-            page = 1
-            if cursor and cursor.isdigit():
-                page = int(cursor)
-
+            page = int(cursor) if cursor and cursor.isdigit() else 1
             paginated, next_cursor = self._paginate_episodes(direct_episodes, page, page_size)
-
-            return {
-                "entries": paginated,
-                "next_cursor": next_cursor,
-                "total": len(direct_episodes),
-            }
+            return {"entries": paginated, "next_cursor": next_cursor, "total": len(direct_episodes)}
 
         logger.warning(f"No content found for program {program_id}")
         return {"entries": [], "next_cursor": None, "total": 0}
+
+    def _handle_series_response(self, program_id: str, season_selector: List[VodCategory],
+                                current_episodes: List[VodItem], cursor: Optional[str],
+                                page_size: int) -> Dict[str, Any]:
+        """Handle series response with monthly selector."""
+        entries = season_selector
+
+        # If a cursor is provided, it might be for pagination of current episodes
+        if cursor and cursor.startswith("episodes:"):
+            page = int(cursor.split(":")[1]) if ":" in cursor else 1
+            paginated_episodes, next_cursor = self._paginate_episodes(current_episodes, page, page_size)
+            return {
+                "entries": paginated_episodes,
+                "next_cursor": next_cursor,
+                "total": len(current_episodes),
+            }
+
+        # First load - show selector and optionally first page of current episodes
+        if current_episodes and len(current_episodes) > 0:
+            current_month_name = self._get_current_month_name()
+            if current_month_name:
+                preview_category = VodCategory(
+                    name=f"Aktuelle Folgen ({current_month_name})",
+                    content_id=f"episodes_current_{program_id}",
+                    provider=self._provider.provider_name,
+                    child_count=len(current_episodes),
+                )
+                entries = [preview_category] + entries
+
+        next_cursor = None
+        if len(current_episodes) > page_size:
+            next_cursor = "episodes:2"
+
+        return {
+            "entries": entries,
+            "next_cursor": next_cursor,
+            "total": len(season_selector) + (1 if current_episodes else 0),
+        }
+
+    @staticmethod
+    def _handle_numbered_seasons_response(numbered_seasons: List[VodCategory],
+                                          cursor: Optional[str], page_size: int) -> Dict[str, Any]:
+        """Handle series response with numbered seasons."""
+        start = 0
+        if cursor:
+            try:
+                start = int(cursor)
+            except ValueError:
+                start = 0
+
+        page = numbered_seasons[start: start + page_size]
+        next_cursor = str(start + page_size) if (start + page_size) < len(numbered_seasons) else None
+        return {"entries": page, "next_cursor": next_cursor, "total": len(numbered_seasons)}
 
     def _extract_season_selector_with_episodes(self, layout: Dict) -> Tuple[List[VodCategory], List[VodItem]]:
         logger.debug("Starting _extract_season_selector_with_episodes")
@@ -671,49 +654,54 @@ class RTLPlusVodManager:
 
         return seasons
 
-    def _find_direct_video_in_layout(self, layout: Dict) -> Optional[VodItem]:
-        logger.debug("Entering _find_direct_video_in_layout")
+    def _find_direct_video_in_layout(self, layout: Dict, is_series: bool = False) -> Optional[VodItem]:
+        """
+        Find a direct playable video item in a program layout.
 
+        Args:
+            layout: The program layout
+            is_series: If True, skip Jumbotron blocks (for series)
+                       If False, include Jumbotron blocks (for movies)
+        """
         if not layout or not isinstance(layout, dict):
-            logger.warning("Layout is None or not a dict")
             return None
 
         for block_idx, block in enumerate(layout.get("blocks", [])):
-            logger.debug(f"Processing block {block_idx} in _find_direct_video_in_layout")
-
             if not block or not isinstance(block, dict):
-                logger.debug(f"Block {block_idx} is None or not dict")
                 continue
 
-            # Skip blocks that are selectors
+            # For series, skip Jumbotron blocks (they're just promos)
+            if is_series:
+                block_analytics = block.get("analytics", {})
+                tealium = block_analytics.get("tealium", {})
+                if tealium.get("template_name") == "Jumbotron":
+                    logger.debug(f"Skipping Jumbotron block {block_idx} (is_series=True)")
+                    continue
+
+            # Skip selector blocks
             alt_content = block.get("alternativeContent", {})
             if alt_content and alt_content.get("selectorTemplateId") == "Selector":
-                logger.debug(f"Block {block_idx} is a Selector, skipping")
                 continue
 
-            # Check block type - skip season selectors
-            tealium = block.get("analytics", {}).get("tealium", {})
+            # Skip season selectors
+            block_analytics = block.get("analytics", {})
+            tealium = block_analytics.get("tealium", {})
             if tealium.get("template_name") == "SelectorCardListM":
-                logger.debug(f"Block {block_idx} is SelectorCardListM, skipping")
                 continue
 
-            # Collect items
+            # Collect items from standard content location
             content = block.get("content", {})
-            items = content.get("items", []) if isinstance(content, dict) else []
-            logger.debug(f"Block {block_idx} has {len(items)} items")
+            items = list(content.get("items", []) or []) if isinstance(content, dict) else []
 
-            # Also check alternativeContent
+            # Also check alternativeContent for concurrent blocks
             if isinstance(alt_content, dict):
                 for cb in alt_content.get("concurrentBlocks", []):
                     if isinstance(cb, dict):
                         cb_items = cb.get("content", {}).get("items", [])
                         if cb_items:
                             items.extend(cb_items)
-                            logger.debug(f"Added {len(cb_items)} items from concurrentBlocks")
 
-            for item_idx, item in enumerate(items):
-                logger.debug(f"Processing item {item_idx}")
-
+            for item in items:
                 if not item or not isinstance(item, dict):
                     continue
                 if item.get("itemType") != "classic":
@@ -736,18 +724,17 @@ class RTLPlusVodManager:
 
                         value_layout = target.get("value_layout", {})
                         if isinstance(value_layout, dict) and value_layout.get("type") == "video":
-                            logger.debug(f"Found video in action target: {value_layout.get('id')}")
                             vod_item = self._extract_vod_item_from_block_item(item)
                             if vod_item:
                                 clip_id = value_layout.get("id")
-                                vod_item.content_id = clip_id
+                                if clip_id:
+                                    vod_item.content_id = clip_id
                                 return vod_item
 
                 # Check direct itemContent type
                 if item_content.get("type") == "video":
                     clip_id = item_content.get("id")
                     if clip_id:
-                        logger.debug(f"Found direct video: {clip_id}")
                         vod_item = VodItem.create_episode(
                             name=item_content.get("title", clip_id),
                             content_id=clip_id,
@@ -759,7 +746,6 @@ class RTLPlusVodManager:
                         vod_item.logo_url = self._extract_thumbnail(item_content)
                         return vod_item
 
-        logger.debug("No video found in _find_direct_video_in_layout")
         return None
 
     def _extract_direct_episodes_from_layout(self, layout: Dict) -> List[VodItem]:
