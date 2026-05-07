@@ -559,33 +559,38 @@ class RTLPlusVodManager:
         return {"entries": [], "next_cursor": None, "total": 0}
 
     def _extract_season_selector_with_episodes(self, layout: Dict) -> Tuple[List[VodCategory], List[VodItem]]:
-        """
-        Extract the monthly archive selector and current episodes from program layout.
-
-        Returns:
-            tuple: (list of month VodCategories, list of current month VodItems)
-        """
+        logger.debug("Starting _extract_season_selector_with_episodes")
         seasons = []
         current_episodes = []
 
-        for block in layout.get("blocks", []):
+        for block_idx, block in enumerate(layout.get("blocks", [])):
+            logger.debug(f"Processing block {block_idx}, type: {block.get('type')}")
+
             if block.get("type") != "bffPaginated":
+                logger.debug(f"Skipping block {block_idx} - not bffPaginated")
                 continue
 
-            # Check for selector in alternativeContent
             alt_content = block.get("alternativeContent", {})
+            logger.debug(f"Block {block_idx} alt_content keys: {alt_content.keys() if alt_content else 'None'}")
+
             if alt_content.get("selectorTemplateId") == "Selector":
-                # Extract months from concurrent blocks
-                concurrent_blocks = alt_content.get("concurrentBlocks", [])
-                for cb in concurrent_blocks:
-                    month_title = cb.get("title")
-                    block_id = cb.get("id")
+                logger.debug(f"Found Selector block {block_idx}")
+
+                # SAFEGUARD: concurrentBlocks might be None
+                concurrent_blocks = alt_content.get("concurrentBlocks")
+                logger.debug(f"concurrentBlocks type: {type(concurrent_blocks)}, value: {concurrent_blocks}")
+
+                if concurrent_blocks is None:
+                    logger.warning(f"concurrentBlocks is None in block {block_idx}")
+                    concurrent_blocks = []
+
+                for cb_idx, cb in enumerate(concurrent_blocks):
+                    logger.debug(f"Processing concurrent block {cb_idx}: {cb.get('title') if cb else 'None'}")
+                    month_title = cb.get("title") if cb else None
+                    block_id = cb.get("id") if cb else None
 
                     if month_title and block_id:
-                        # Extract the clean block ID (the part after the last underscore or --)
                         clean_block_id = self._extract_block_id_from_url(block_id)
-
-                        # Get total episodes count for this month
                         total_episodes = (
                             cb.get("content", {})
                             .get("pagination", {})
@@ -594,20 +599,25 @@ class RTLPlusVodManager:
 
                         seasons.append(VodCategory(
                             name=month_title,
-                            content_id=f"month_{clean_block_id}",  # Use month_ prefix for reliable dispatch
+                            content_id=f"month_{clean_block_id}",
                             provider=self._provider.provider_name,
                             child_count=total_episodes,
                         ))
+                        logger.debug(f"Added month: {month_title}")
 
-                # Extract current month episodes from the main items
-                for item in block.get("content", {}).get("items", []):
+                # Extract current month episodes
+                items = block.get("content", {}).get("items", [])
+                logger.debug(f"Processing {len(items)} items for current episodes")
+
+                for item_idx, item in enumerate(items):
                     vod_item = self._extract_vod_item_from_block_item(item)
                     if vod_item:
                         current_episodes.append(vod_item)
+                        logger.debug(f"Added episode {item_idx}: {vod_item.name}")
 
-                # Keep the order as received from API (assumed chronological)
                 break  # Found the selector block, no need to continue
 
+        logger.debug(f"Returning {len(seasons)} seasons, {len(current_episodes)} episodes")
         return seasons, current_episodes
 
     def _extract_seasons_from_layout(self, layout: Dict) -> List[VodCategory]:
@@ -886,15 +896,25 @@ class RTLPlusVodManager:
         return vod_item
 
     def _extract_vod_item_from_block_item(self, item: Dict) -> Optional[VodItem]:
-        """Build a VodItem from a list/block item (episode row)."""
-        if not item or not isinstance(item, dict):
+        # Early validation
+        if not item:
+            logger.warning("_extract_vod_item_from_block_item: item is None")
             return None
 
-        if not item or item.get("itemType") != "classic":
+        if not isinstance(item, dict):
+            logger.warning(f"_extract_vod_item_from_block_item: item is {type(item)}, not dict")
+            return None
+
+        if item.get("itemType") != "classic":
             return None
 
         item_content = item.get("itemContent")
         if not item_content:
+            logger.debug("_extract_vod_item_from_block_item: no itemContent")
+            return None
+
+        if not isinstance(item_content, dict):
+            logger.warning(f"_extract_vod_item_from_block_item: item_content is {type(item_content)}")
             return None
 
         # Try to get video reference from action target first
