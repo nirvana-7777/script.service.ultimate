@@ -198,7 +198,9 @@ class RTLPlusVodManager:
             "total": total,
         }
 
-    def _get_current_episodes_preview(self, program_id, cursor=None, page_size=24):
+    def _get_current_episodes_preview(self, program_id: str, cursor: Optional[str] = None, page_size: int = 24) -> Dict[
+        str, Any]:
+        """Get paginated current episodes for the program preview."""
         seo = f"p_{program_id}"
         location = f"{self.cfg.base_website}{seo}-p_{program_id}"
         layout = self._provider.fetch_layout(
@@ -208,7 +210,11 @@ class RTLPlusVodManager:
         )
         if not layout:
             return {"entries": [], "next_cursor": None, "total": 0}
+
         _, current_episodes = self._extract_season_selector_with_episodes(layout)
+        if not current_episodes:
+            return {"entries": [], "next_cursor": None, "total": 0}
+
         page = int(cursor) if cursor and cursor.isdigit() else 1
         paginated, next_cursor = self._paginate_episodes(current_episodes, page, page_size)
         return {"entries": paginated, "next_cursor": next_cursor, "total": len(current_episodes)}
@@ -547,46 +553,48 @@ class RTLPlusVodManager:
                 logger.debug(f"Skipping block {block_idx} - not bffPaginated")
                 continue
 
-            alt_content = block.get("alternativeContent", {})
-            logger.debug(f"Block {block_idx} alt_content keys: {alt_content.keys() if alt_content else 'None'}")
+            alt_content = block.get("alternativeContent")
+            logger.debug(f"Block {block_idx} alt_content type: {type(alt_content)}")
 
-            if alt_content.get("selectorTemplateId") == "Selector":
+            # CRITICAL FIX: Check if alt_content is a dict before calling .get()
+            if alt_content and isinstance(alt_content, dict) and alt_content.get("selectorTemplateId") == "Selector":
                 logger.debug(f"Found Selector block {block_idx}")
 
                 # SAFEGUARD: concurrentBlocks might be None
                 concurrent_blocks = alt_content.get("concurrentBlocks")
-                logger.debug(f"concurrentBlocks type: {type(concurrent_blocks)}, value: {concurrent_blocks}")
+                logger.debug(f"concurrentBlocks type: {type(concurrent_blocks)}")
 
-                if concurrent_blocks is None:
-                    logger.warning(f"concurrentBlocks is None in block {block_idx}")
-                    concurrent_blocks = []
+                if concurrent_blocks and isinstance(concurrent_blocks, list):
+                    for cb_idx, cb in enumerate(concurrent_blocks):
+                        if not cb or not isinstance(cb, dict):
+                            continue
 
-                for cb_idx, cb in enumerate(concurrent_blocks):
-                    logger.debug(f"Processing concurrent block {cb_idx}: {cb.get('title') if cb else 'None'}")
-                    month_title = cb.get("title") if cb else None
-                    block_id = cb.get("id") if cb else None
+                        month_title = cb.get("title")
+                        block_id = cb.get("id")
 
-                    if month_title and block_id:
-                        clean_block_id = self._extract_block_id_from_url(block_id)
-                        total_episodes = (
-                            cb.get("content", {})
-                            .get("pagination", {})
-                            .get("totalItems", 0)
-                        )
+                        if month_title and block_id:
+                            clean_block_id = self._extract_block_id_from_url(block_id)
+                            total_episodes = (
+                                cb.get("content", {})
+                                .get("pagination", {})
+                                .get("totalItems", 0)
+                            )
 
-                        seasons.append(VodCategory(
-                            name=month_title,
-                            content_id=f"month_{clean_block_id}",
-                            provider=self._provider.provider_name,
-                            child_count=total_episodes,
-                        ))
-                        logger.debug(f"Added month: {month_title}")
+                            seasons.append(VodCategory(
+                                name=month_title,
+                                content_id=f"month_{clean_block_id}",
+                                provider=self._provider.provider_name,
+                                child_count=total_episodes,
+                            ))
+                            logger.debug(f"Added month: {month_title}")
 
                 # Extract current month episodes
                 items = block.get("content", {}).get("items", [])
                 logger.debug(f"Processing {len(items)} items for current episodes")
 
                 for item_idx, item in enumerate(items):
+                    if not item or not isinstance(item, dict):
+                        continue
                     vod_item = self._extract_vod_item_from_block_item(item)
                     if vod_item:
                         current_episodes.append(vod_item)
@@ -598,10 +606,7 @@ class RTLPlusVodManager:
         return seasons, current_episodes
 
     def _extract_seasons_from_layout(self, layout: Dict) -> List[VodCategory]:
-        """
-        Extract numbered seasons from a program layout.
-        Looks for both concurrentBlocks (season selector) and block-level seasons.
-        """
+        """Extract numbered seasons from a program layout."""
         seasons: List[VodCategory] = []
 
         for block in layout.get("blocks", []):
@@ -610,27 +615,34 @@ class RTLPlusVodManager:
 
             # Check for concurrent blocks (season selector)
             alternative_content = block.get("alternativeContent")
-            if alternative_content:
-                # Skip if this is a monthly selector (not numbered seasons)
+
+            # CRITICAL FIX: Check if alternative_content is a dict
+            if alternative_content and isinstance(alternative_content, dict):
+                # Skip if this is a monthly selector
                 if alternative_content.get("selectorTemplateId") == "Selector":
                     continue
 
-                for idx, cb in enumerate(alternative_content.get("concurrentBlocks", [])):
-                    season_title = cb.get("title", f"Staffel {idx + 1}")
-                    block_id = cb.get("id")
+                concurrent_blocks = alternative_content.get("concurrentBlocks")
+                if concurrent_blocks and isinstance(concurrent_blocks, list):
+                    for idx, cb in enumerate(concurrent_blocks):
+                        if not cb or not isinstance(cb, dict):
+                            continue
 
-                    if block_id:
-                        seasons.append(VodCategory(
-                            name=season_title,
-                            content_id=f"season_{block_id}",
-                            provider=self._provider.provider_name,
-                            description=None,
-                            child_count=(
-                                cb.get("content", {})
-                                .get("pagination", {})
-                                .get("totalItems", 0)
-                            ),
-                        ))
+                        season_title = cb.get("title", f"Staffel {idx + 1}")
+                        block_id = cb.get("id")
+
+                        if block_id:
+                            seasons.append(VodCategory(
+                                name=season_title,
+                                content_id=f"season_{block_id}",
+                                provider=self._provider.provider_name,
+                                description=None,
+                                child_count=(
+                                    cb.get("content", {})
+                                    .get("pagination", {})
+                                    .get("totalItems", 0)
+                                ),
+                            ))
 
             # Check if block itself is a season selector
             tealium = block.get("analytics", {}).get("tealium", {})
