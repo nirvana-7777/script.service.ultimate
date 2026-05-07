@@ -447,6 +447,10 @@ class RTLPlusVodManager:
             logger.error(f"Failed to fetch layout for program {program_id}")
             return {"entries": [], "next_cursor": None, "total": 0}
 
+        # DEBUG: Log layout structure
+        logger.debug(f"Layout keys for program {program_id}: {layout.keys()}")
+        logger.debug(f"Blocks count: {len(layout.get('blocks', []))}")
+
         # FIRST: Check if this is a movie (direct playable video)
         movie_item = self._find_direct_video_in_layout(layout)
         if movie_item:
@@ -470,7 +474,13 @@ class RTLPlusVodManager:
             }
 
         # SECOND: Extract monthly archive selector (for news/reality shows)
-        season_selector, current_episodes = self._extract_season_selector_with_episodes(layout)
+        try:
+            season_selector, current_episodes = self._extract_season_selector_with_episodes(layout)
+            logger.debug(f"Monthly selector: {len(season_selector)} months, {len(current_episodes)} current episodes")
+        except Exception as e:
+            logger.error(f"Error in _extract_season_selector_with_episodes: {e}", exc_info=True)
+            season_selector, current_episodes = [], []
+
         if season_selector:
             # We have monthly folders - return the selector for navigation
             entries = season_selector
@@ -512,7 +522,12 @@ class RTLPlusVodManager:
             }
 
         # THIRD: Extract numbered seasons (for traditional series)
-        numbered_seasons = self._extract_seasons_from_layout(layout)
+        try:
+            numbered_seasons = self._extract_seasons_from_layout(layout)
+            logger.debug(f"Numbered seasons: {len(numbered_seasons)}")
+        except Exception as e:
+            logger.error(f"Error in _extract_seasons_from_layout: {e}", exc_info=True)
+            numbered_seasons = []
         if numbered_seasons:
             start = 0
             if cursor:
@@ -872,6 +887,9 @@ class RTLPlusVodManager:
 
     def _extract_vod_item_from_block_item(self, item: Dict) -> Optional[VodItem]:
         """Build a VodItem from a list/block item (episode row)."""
+        if not item or not isinstance(item, dict):
+            return None
+
         if not item or item.get("itemType") != "classic":
             return None
 
