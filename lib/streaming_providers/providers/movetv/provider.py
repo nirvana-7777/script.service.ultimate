@@ -145,6 +145,7 @@ class MoveTVProvider(StreamingProvider):
         # Used by _store_play_auth / _get_play_auth_header so they never depend
         # on self.channels being populated (get_channels may not have been called).
         self._play_auth_cache: Dict[str, tuple] = {}
+        self._manifest_url_cache: Dict[str, str] = {}
 
         # Attempt authentication at startup; non-fatal if it fails
         try:
@@ -347,59 +348,56 @@ class MoveTVProvider(StreamingProvider):
     # ------------------------------------------------------------------
 
     def get_manifest(self, content_id: str, **kwargs) -> Optional[str]:
-        """
-        Fetch the streaming manifest URL for a channel.
-
-        The caller is responsible for injecting the X-Play-Auth header when
-        requesting the returned .mpd / .m3u8 URL from the CDN.  The header
-        value can be retrieved via get_play_auth_header().
-
-        ``content_id`` is the contentId stored on MoveTVChannel.content_id.
-        It is resolved to the liveId via the channel cache before being posted
-        to the source endpoint.
-        """
-        try:
-            # content_id IS the contentId — resolve to liveId via channel cache
+        channel = self._channel_by_id(content_id)
+        if channel is None:
+            logger.info(
+                f"move.tv: Channel not found in cache for content_id={content_id!r}; "
+                "attempting to rebuild channel cache before manifest fetch"
+            )
+            self.get_channels()
             channel = self._channel_by_id(content_id)
-            if channel is None:
-                logger.info(
-                    f"move.tv: Channel not found in cache for content_id={content_id!r}; "
-                    "attempting to rebuild channel cache before manifest fetch"
-                )
-                self.get_channels()
-                channel = self._channel_by_id(content_id)
-            if channel is None:
-                logger.error(
-                    f"move.tv: Channel still not found after cache rebuild for "
-                    f"content_id={content_id!r}; cannot resolve liveId for manifest fetch"
-                )
-                return None
-            live_id = channel.live_id
-
-            source_data = self._fetch_live_source(live_id)
-            if source_data is None:
-                return None
-
-            # ✅ STORE PLAY AUTH FIRST - before checking content_url
-            # This ensures the header is cached even if content_url is missing
-            self._store_play_auth(content_id, source_data)
-
-            content_url: Optional[str] = source_data.get("content_url")
-            if not content_url:
-                logger.warning(
-                    f"move.tv: No content_url in source response for liveId={live_id}"
-                )
-                return None
-
-            logger.info(f"move.tv: Manifest URL for liveId={live_id}: {content_url}")
-            return content_url
-
-        except requests.RequestException as exc:
-            logger.error(f"move.tv: HTTP error fetching manifest for {content_id}: {exc}")
+        if channel is None:
+            logger.error(
+                f"move.tv: Channel still not found after cache rebuild for "
+                f"content_id={content_id!r}; cannot resolve liveId for manifest fetch"
+            )
             return None
-        except Exception as exc:
-            logger.error(f"move.tv: Unexpected error fetching manifest for {content_id}: {exc}")
+
+        live_id = channel.live_id
+
+        # If we have both a valid play-auth token and a cached manifest URL,
+        # skip the source endpoint entirely — the MPD TTL is server-driven at 0
+        # but the token (~24h) and URL are both stable.
+        cached_token = self._play_auth_cache.get(content_id)
+        cached_url = self._manifest_url_cache.get(content_id)
+        if cached_token and cached_url:
+            header_value, expires_at = cached_token
+            buffer = MoveTVChannel._PLAY_AUTH_EARLY_EXPIRY_BUFFER
+            if expires_at and time.time() < (expires_at - buffer):
+                logger.debug(
+                    f"move.tv: Reusing cached manifest URL and X-Play-Auth for "
+                    f"content_id={content_id} (token expires in "
+                    f"{expires_at - time.time():.0f}s)"
+                )
+                return cached_url
+
+        # Cache miss or expired token — hit the source endpoint.
+        source_data = self._fetch_live_source(live_id)
+        if source_data is None:
             return None
+
+        self._store_play_auth(content_id, source_data)
+
+        content_url: Optional[str] = source_data.get("content_url")
+        if not content_url:
+            logger.warning(
+                f"move.tv: No content_url in source response for liveId={live_id}"
+            )
+            return None
+
+        self._manifest_url_cache[content_id] = content_url
+        logger.info(f"move.tv: Manifest URL for liveId={live_id}: {content_url}")
+        return content_url
 
     def _get_play_auth_header(self, content_id: str) -> Optional[str]:
         """
