@@ -460,30 +460,60 @@ class RTLPlusVodManager:
     ) -> Dict[str, Any]:
         """
         Return the programs/sub-folders inside a Bedrock folder.
-        Items that carry a video asset are surfaced as VodItem;
-        everything else becomes a VodCategory for further navigation.
         """
         layout = self._provider.fetch_layout(
             layout_type="folder",
             content_id=folder_id,
         )
-        if not layout:
+
+        if not layout or not isinstance(layout, dict):
+            logger.error(f"Invalid layout for folder {folder_id}")
             return {"entries": [], "next_cursor": None, "total": 0}
 
         entries: List[Union[VodCategory, VodItem]] = []
+
         for block in layout.get("blocks", []):
             if block.get("type") != "bffPaginated":
                 continue
-            for item in block.get("content", {}).get("items", []):
+
+            # Skip blocks without items
+            items = block.get("content", {}).get("items", [])
+            if not items:
+                continue
+
+            for item in items:
+                if not item or item.get("itemType") != "classic":
+                    continue
+
+                item_content = item.get("itemContent")
+                if not item_content:
+                    continue
+
+                # Check if this item has a valid action target
+                action = item_content.get("action")
+                if not action:
+                    # Skip items without actions (like banner images)
+                    continue
+
+                target = unwrap_target(action.get("target", {}))
+                value_layout = target.get("value_layout", {})
+
+                # Skip if no valid layout type
+                if not value_layout.get("type"):
+                    continue
+
+                # Try to extract as VodItem first (if it has video assets)
                 if self._item_has_video_assets(item):
                     vod_item = self._extract_vod_item_from_block_item(item)
                     if vod_item:
                         entries.append(vod_item)
                 else:
+                    # Extract as category (folder or program)
                     cat = self._extract_vod_category_from_block_item(item)
                     if cat:
                         entries.append(cat)
 
+        logger.info(f"Folder {folder_id} returned {len(entries)} entries")
         return {"entries": entries, "next_cursor": None, "total": len(entries)}
 
     # ------------------------------------------------------------------
