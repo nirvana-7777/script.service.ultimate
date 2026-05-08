@@ -10,6 +10,7 @@ from ...base.provider import StreamingProvider
 from ...base.utils import logger
 from .auth import RTLPlusAuthenticator
 from .constants import RTLPlusConfig, RTLPlusDefaults
+from .layout_helpers import unwrap_target
 from .vod_manager import RTLPlusVodManager
 from .channel_manager import RTLPlusChannelManager
 from .event_manager import RTLPlusEventManager
@@ -117,7 +118,7 @@ class RTLPlusProvider(StreamingProvider):
             force_refresh: bool = False,
     ) -> Optional[Dict]:
         """
-        Fetch any layout (live/video/folder/program/block) with caching.
+        Fetch any layout (live/video/folder/program/block/alias) with caching.
         """
         if block_page is None:
             block_page = RTLPlusDefaults.DEFAULT_BLOCK_PAGE
@@ -189,6 +190,63 @@ class RTLPlusProvider(StreamingProvider):
 
         except Exception as e:
             logger.error(f"Failed to fetch {layout_type} layout for {clean_content_id}: {e}")
+            return None
+
+    def fetch_block_page(
+        self,
+        block_id: str,
+        page: int,
+        nb_pages: int = 3,
+        service_id: str = "rtlplus_root",
+    ) -> Optional[Dict]:
+        """
+        Fetch a specific page of a service block from the Bedrock API.
+
+        URL pattern: /service/{service_id}/block/{block_id}?nbPages={nb_pages}&page={page}
+
+        This is intentionally separate from ``fetch_layout`` because the service/block
+        endpoint uses different URL structure and query parameters (``page`` / ``nbPages``
+        instead of ``blockPage`` / ``nbPages``), and its responses are not cached — the
+        same page number may return different content as events are added or removed.
+
+        Args:
+            block_id:   Full block ID as returned by the layout API, e.g.
+                        ``"page_69fcecf6347a02.20778370--6294a9fc-55a7-43cf-aa18-e27f1bd1a2c3"``
+            page:       Page number to fetch.  May be non-sequential (1 → 3 → 6 → …)
+                        as dictated by the API's ``pagination.nextPage`` field.
+            nb_pages:   Number of pages to request per call (default 3, matching API default).
+            service_id: Bedrock service identifier (default ``"rtlplus_root"``).
+
+        Returns:
+            Parsed JSON response dict, or ``None`` on failure.
+        """
+        url = f"{self.rtl_config.bedrock_layout_base}/service/{service_id}/block/{block_id}"
+        params = {"nbPages": nb_pages, "page": page}
+
+        oauth_token = self.get_user_bearer_token() or self.authenticator.get_bearer_token()
+        if not oauth_token:
+            logger.error("No OAuth token available for fetch_block_page")
+            return None
+
+        try:
+            bedrock_token = self.authenticator.get_bedrock_token()
+        except Exception as e:
+            logger.error(f"Failed to get Bedrock token for fetch_block_page: {e}")
+            return None
+
+        if not bedrock_token:
+            logger.error("No Bedrock token available for fetch_block_page")
+            return None
+
+        location = f"{self.rtl_config.base_website}"
+        headers = self.rtl_config.get_layout_headers(oauth_token, bedrock_token, location)
+
+        try:
+            response = self.http_manager.get(url, headers=headers, params=params, operation="api")
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Failed to fetch block page {page} for {block_id}: {e}")
             return None
 
     @staticmethod
@@ -401,7 +459,7 @@ class RTLPlusProvider(StreamingProvider):
         # If content_id starts with program_, we need to find the clip_id from the program
         if content_id.startswith("program_"):
             program_id = content_id[8:]  # Remove "program_" prefix
-            layout = self._fetch_program_layout(program_id)
+            layout = self.fetch_layout(layout_type="program", content_id=program_id)
             if layout:
                 clip_id = self._find_clip_id_in_program_layout(layout)
                 if clip_id:
@@ -425,37 +483,6 @@ class RTLPlusProvider(StreamingProvider):
 
         # Fall back to VOD/event manifest extraction
         return self._get_manifest_vod_or_event(content_id, **kwargs)
-
-    def _fetch_program_layout(self, program_id: str) -> Optional[Dict]:
-        """Fetch a program layout by program ID."""
-        oauth_token = self.get_user_bearer_token()
-        if not oauth_token:
-            logger.error("No user authentication for program layout")
-            return None
-
-        try:
-            bedrock_token = self.authenticator.get_bedrock_token()
-            if not bedrock_token:
-                logger.error("Failed to get Bedrock token")
-                return None
-        except Exception as e:
-            logger.error(f"Failed to get Bedrock token: {e}")
-            return None
-
-        clean_id = program_id.replace("program_", "")
-        url = f"{self.rtl_config.bedrock_layout_base}/program/{clean_id}/layout"
-        location = f"{self.rtl_config.base_website}p_{clean_id}-p_{clean_id}"
-
-        headers = self.rtl_config.get_layout_headers(oauth_token, bedrock_token, location)
-        params = {"blockPage": 1, "nbPages": 2}
-
-        try:
-            response = self.http_manager.get(url, headers=headers, params=params, operation="api")
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            logger.error(f"Failed to fetch program layout for {program_id}: {e}")
-            return None
 
     def _find_clip_id_in_program_layout(self, layout: Dict) -> Optional[str]:
         """Extract the clip_id from a program layout."""
@@ -485,11 +512,7 @@ class RTLPlusProvider(StreamingProvider):
 
                 item_content = item.get("itemContent", {})
                 action = item_content.get("action", {})
-                target = action.get("target", {})
-
-                if target.get("type") == "lock":
-                    target = target.get("value_lock", {}).get("originalTarget", {})
-
+                target = unwrap_target(action.get("target", {}))
                 value_layout = target.get("value_layout", {})
                 if value_layout.get("type") == "video":
                     return value_layout.get("id")
@@ -509,7 +532,7 @@ class RTLPlusProvider(StreamingProvider):
         # If content_id starts with program_, find the clip_id
         if content_id.startswith("program_"):
             program_id = content_id[8:]
-            layout = self._fetch_program_layout(program_id)
+            layout = self.fetch_layout(layout_type="program", content_id=program_id)
             if layout:
                 clip_id = self._find_clip_id_in_program_layout(layout)
                 if clip_id:
@@ -691,26 +714,6 @@ class RTLPlusProvider(StreamingProvider):
         except Exception as e:
             logger.error(f"Failed to get DRM: {e}")
             return []
-
-    def _fetch_manifest_data(self, content_id: str) -> Optional[list]:
-        """Fetch raw manifest data for VOD/events, with cache."""
-        now = time.monotonic()
-        cached = self._manifest_cache.get(content_id)
-        if cached is not None:
-            data, ts = cached
-            if (now - ts) < _MANIFEST_CACHE_TTL:
-                return data
-
-        # TODO: This legacy endpoint may eventually be migrated to Bedrock
-        manifest_url = f"https://stus.player.streamingtech.de/watch-playout-variants/{content_id}?platform=web"
-
-        headers = {"X-Auth-Token": self.authenticator.get_bearer_token()}
-        response = self.http_manager.get(manifest_url, operation="manifest", headers=headers)
-        response.raise_for_status()
-        data = response.json()
-
-        self._manifest_cache[content_id] = (data, now)
-        return data
 
     def get_user_bearer_token(self) -> Optional[str]:
         """Get a user-authenticated bearer token, upgrading if necessary. Returns None if impossible."""

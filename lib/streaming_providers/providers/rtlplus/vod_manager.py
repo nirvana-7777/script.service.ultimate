@@ -20,6 +20,13 @@ from ...base.models.vod import VodCategory, VodItem
 from ...base.models import DRMConfig
 from ...base.utils.logger import logger
 from .constants import RTLPlusDefaults
+from .layout_helpers import (
+    unwrap_target,
+    parse_german_datetime,
+    build_image_url,
+    extract_thumbnail,
+    extract_thumbnail_from_layout,
+)
 
 FOLDER_NAMES = {
     "4": "Filme",
@@ -323,12 +330,7 @@ class RTLPlusVodManager:
 
                 item_content = item.get("itemContent", {})
                 action = item_content.get("action", {})
-                target = action.get("target", {})
-
-                # Handle lock-wrapped targets
-                if target.get("type") == "lock":
-                    target = target.get("value_lock", {}).get("originalTarget", {})
-
+                target = unwrap_target(action.get("target", {}))
                 value_layout = target.get("value_layout", {})
 
                 if value_layout.get("type") == "video" and value_layout.get("id") == clip_id:
@@ -534,7 +536,7 @@ class RTLPlusVodManager:
             if layout_title and layout_title != movie_item.name:
                 movie_item.name = layout_title
             if not movie_item.logo_url:
-                movie_item.logo_url = self._extract_thumbnail_from_layout(layout)
+                movie_item.logo_url = extract_thumbnail_from_layout(layout)
             if not movie_item.description:
                 movie_item.description = (
                         layout.get("entity", {}).get("metadata", {}).get("description")
@@ -791,22 +793,15 @@ class RTLPlusVodManager:
                 # Check for video in action target
                 action = item_content.get("action", {})
                 if isinstance(action, dict):
-                    target = action.get("target", {})
-                    if isinstance(target, dict):
-                        # Handle lock-wrapped targets
-                        if target.get("type") == "lock":
-                            lock_value = target.get("value_lock", {})
-                            if isinstance(lock_value, dict):
-                                target = lock_value.get("originalTarget", {})
-
-                        value_layout = target.get("value_layout", {})
-                        if isinstance(value_layout, dict) and value_layout.get("type") == "video":
-                            vod_item = self._extract_vod_item_from_block_item(item)
-                            if vod_item:
-                                clip_id = value_layout.get("id")
-                                if clip_id:
-                                    vod_item.content_id = clip_id
-                                return vod_item
+                    target = unwrap_target(action.get("target", {}))
+                    value_layout = target.get("value_layout", {})
+                    if isinstance(value_layout, dict) and value_layout.get("type") == "video":
+                        vod_item = self._extract_vod_item_from_block_item(item)
+                        if vod_item:
+                            clip_id = value_layout.get("id")
+                            if clip_id:
+                                vod_item.content_id = clip_id
+                            return vod_item
 
                 # Check direct itemContent type
                 if item_content.get("type") == "video":
@@ -820,7 +815,7 @@ class RTLPlusVodManager:
                             episode_number=-1,
                         )
                         vod_item.description = item_content.get("description")
-                        vod_item.logo_url = self._extract_thumbnail(item_content)
+                        vod_item.logo_url = extract_thumbnail(item_content)
                         return vod_item
 
         return None
@@ -944,7 +939,7 @@ class RTLPlusVodManager:
             episode_number=video_meta.get("episode", -1),
         )
         vod_item.description = metadata.get("description")
-        vod_item.logo_url = self._extract_thumbnail_from_layout(layout)
+        vod_item.logo_url = extract_thumbnail_from_layout(layout)
         vod_item.duration_seconds = video_meta.get("duration")
         vod_item.genre = parent.get("seo", "")
         vod_item.series_title = parent.get("name")
@@ -977,15 +972,10 @@ class RTLPlusVodManager:
             logger.warning(f"_extract_vod_item_from_block_item: item_content is {type(item_content)}")
             return None
 
-        # Try to get video reference from action target first
+        # Unwrap lock-wrapped targets before reading the action target
         action = item_content.get("action", {})
-        target = action.get("target", {})
+        target = unwrap_target(action.get("target", {}))
         value_layout = target.get("value_layout", {})
-
-        # Also check for lock-wrapped targets
-        if target.get("type") == "lock":
-            target = target.get("value_lock", {}).get("originalTarget", {})
-            value_layout = target.get("value_layout", {})
 
         clip_id = None
         program_id = None
@@ -1004,16 +994,15 @@ class RTLPlusVodManager:
             for action_key in ("onClickAction", "primaryAction", "secondaryAction"):
                 alt_action = item_content.get(action_key, {})
                 if isinstance(alt_action, dict):
-                    alt_target = alt_action.get("target", {})
-                    if isinstance(alt_target, dict):
-                        alt_value = alt_target.get("value_layout", {})
-                        if isinstance(alt_value, dict) and alt_value.get("type") == "video":
-                            clip_id = alt_value.get("id")
-                            parent = alt_value.get("parent", {})
-                            program_id = parent.get("id")
-                            program_slug = parent.get("seo")
-                            if clip_id:
-                                break
+                    alt_target = unwrap_target(alt_action.get("target", {}))
+                    alt_value = alt_target.get("value_layout", {})
+                    if isinstance(alt_value, dict) and alt_value.get("type") == "video":
+                        clip_id = alt_value.get("id")
+                        parent = alt_value.get("parent", {})
+                        program_id = parent.get("id")
+                        program_slug = parent.get("seo")
+                        if clip_id:
+                            break
 
         if not clip_id:
             return None
@@ -1064,7 +1053,7 @@ class RTLPlusVodManager:
             episode_number=episode_number if episode_number is not None else -1,
         )
         vod_item.description = item_content.get("description")
-        vod_item.logo_url = self._extract_thumbnail(item_content)
+        vod_item.logo_url = extract_thumbnail(item_content)
         vod_item.duration_seconds = self._extract_duration(item_content)
         vod_item.progress = item_content.get("progress", 0)
 
@@ -1088,12 +1077,7 @@ class RTLPlusVodManager:
             return None
 
         action = item_content.get("action", {})
-        target = action.get("target", {})
-
-        # Handle lock-wrapped targets
-        if target.get("type") == "lock":
-            target = target.get("value_lock", {}).get("originalTarget", {})
-
+        target = unwrap_target(action.get("target", {}))
         value_layout = target.get("value_layout", {})
 
         layout_type = value_layout.get("type")
@@ -1132,7 +1116,7 @@ class RTLPlusVodManager:
             name=name,
             content_id=content_id,
             provider=self._provider.provider_name,
-            logo_url=self._extract_thumbnail(item_content),
+            logo_url=extract_thumbnail(item_content),
             description=item_content.get("description") or item_content.get("highlight"),
         )
 
@@ -1149,45 +1133,21 @@ class RTLPlusVodManager:
     # Thumbnail / duration helpers (pure, no I/O)
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _build_image_url(image_id: str) -> str:
-        """Build a signed Bedrock CDN image URL.
+    # build_image_url and extract_thumbnail are re-exported here as classmethods
+    # for any callers that still reference them via the class (e.g. tests).
+    # New code should import directly from layout_helpers.
 
-        Hash formula: SHA1("/v2/images/{id}/raw?{params}" + IMAGE_SIGNING_KEY)
-        Note: path_and_query starts with /{id}/raw since IMAGE_BASE_URL already
-        contains /v2/images — the full signed path is /v2/images/{id}/raw?{params}.
-        This is a keyed hash (secret-suffix construction), verified against
-        three known-good URLs from network traces.
-        """
-        import hashlib
-        from .constants import RTLPlusDefaults
-        suffix = f"/{image_id}/raw?{RTLPlusDefaults.IMAGE_PARAMS}"
-        signed_path = f"/v2/images{suffix}"
-        image_hash = hashlib.sha1(
-            (signed_path + RTLPlusDefaults.IMAGE_SIGNING_KEY).encode()
-        ).hexdigest()
-        return f"{RTLPlusDefaults.IMAGE_BASE_URL}{suffix}&hash={image_hash}"
+    @classmethod
+    def _build_image_url(cls, image_id: str) -> str:
+        return build_image_url(image_id)
 
     @classmethod
     def _extract_thumbnail(cls, item_content: Dict) -> Optional[str]:
-        image = item_content.get("image", {})
-        if not image:
-            return None
-        for ratio in ("16:9", "3:1", "1:1", "2:3"):
-            image_id = image.get("idsByRatio", {}).get(ratio)
-            if image_id:
-                return cls._build_image_url(image_id)
-        image_id = image.get("id")
-        if image_id:
-            return cls._build_image_url(image_id)
-        return None
+        return extract_thumbnail(item_content)
 
     @classmethod
     def _extract_thumbnail_from_layout(cls, layout: Dict) -> Optional[str]:
-        image_id = layout.get("seo", {}).get("image", {}).get("id")
-        if image_id:
-            return cls._build_image_url(image_id)
-        return None
+        return extract_thumbnail_from_layout(layout)
 
     @staticmethod
     def _extract_duration(item_content: Dict) -> Optional[int]:
@@ -1208,25 +1168,8 @@ class RTLPlusVodManager:
         highlight = item_content.get("highlight", "")
         if not highlight:
             return False
-
-        date_patterns = [
-            r"(\d{2})\.(\d{2})\.(\d{2}),?\s*(\d{2}):(\d{2})",  # DD.MM.YY, HH:MM
-            r"(\d{2})\.(\d{2})\.(\d{2})\s+(\d{2}):(\d{2})",  # DD.MM.YY HH:MM
-        ]
-
-        for pattern in date_patterns:
-            match = re.search(pattern, highlight)
-            if match:
-                day, month, year, hour, minute = map(int, match.groups())
-                if year < 100:
-                    year = 2000 + year
-                try:
-                    event_date = datetime(year, month, day, hour, minute)
-                    if event_date > datetime.now():
-                        return True
-                except ValueError:
-                    continue
-        return False
+        event_date = parse_german_datetime(highlight)
+        return event_date is not None and event_date > datetime.now()
 
     @staticmethod
     def _is_event_item(item_content: Dict) -> bool:
