@@ -1088,7 +1088,10 @@ class RTLPlusVodManager:
         if not content_id:
             return None
 
-        # Store with type prefix for clarity
+        # Store the raw ID for folder name mapping (before adding prefix)
+        raw_id = content_id
+
+        # Add prefix for content_id
         if layout_type == "folder":
             content_id = f"folder_{content_id}"
         elif layout_type == "program":
@@ -1096,15 +1099,23 @@ class RTLPlusVodManager:
 
         seo_slug = value_layout.get("seo") or ""
 
+        # Extract name with priority order
         name = item_content.get("title")
 
         if not name and layout_type == "folder":
-            if content_id in FOLDER_NAMES:
-                name = FOLDER_NAMES[content_id]
+            # FIX: Use raw_id (without "folder_" prefix) to check FOLDER_NAMES
+            if raw_id in FOLDER_NAMES:
+                name = FOLDER_NAMES[raw_id]
             else:
-                seo = value_layout.get("seo", "")
-                name = seo.replace("-", " ").title() if seo else f"Kategorie {content_id}"
+                # Try image caption as fallback (API provides good names here)
+                image = item_content.get("image", {})
+                if image.get("caption"):
+                    name = image.get("caption")
+                else:
+                    # Fallback to SEO slug
+                    name = seo_slug.replace("-", " ").title() if seo_slug else f"Kategorie {raw_id}"
         elif not name:
+            # For programs or when title is missing
             name = item_content.get("extraTitle") or item_content.get("highlight")
             if name and "•" in str(name):
                 name = name.split("•")[0].strip()
