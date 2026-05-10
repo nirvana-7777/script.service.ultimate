@@ -66,12 +66,12 @@ class RTLPlusEventManager:
     # --------------------------------------------------------------------------
 
     def get_events(
-        self,
-        folder_id: str = "6",
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
-        force_refresh: bool = False,
-        max_pages: int = 20,
+            self,
+            folder_id: str = "6",
+            start_time: Optional[datetime] = None,
+            end_time: Optional[datetime] = None,
+            force_refresh: bool = False,
+            max_pages: int = 20,
     ) -> List[Event]:
         """
         Fetch all future/live events.
@@ -79,34 +79,33 @@ class RTLPlusEventManager:
         Primary source is the homepage's "Diese Live-Events erwarten euch" block.
         Falls back to specific folder if homepage fails.
 
-        Args:
-            folder_id: Fallback folder ID (default "6" for Sport)
-            start_time: Filter events that end after this time
-            end_time: Filter events that start before this time
-            force_refresh: Ignore cache and fetch fresh data
-            max_pages: Maximum number of pagination pages to fetch
-
-        Returns:
-            List of Event objects (scheduled or live)
+        Returns empty list if no events are found.
         """
         all_events: List[Event] = []
 
         # PRIMARY: Fetch from homepage (has all events in one block)
-        home_events = self._fetch_events_from_homepage(force_refresh, max_pages)
-        if home_events:
-            all_events.extend(home_events)
-            logger.info(f"Fetched {len(home_events)} events from homepage")
-        else:
-            # FALLBACK: Fetch from specific folder
-            logger.debug(f"Falling back to folder {folder_id} for events")
-            layout = self._provider.fetch_layout(
-                layout_type="folder",
-                content_id=folder_id,
-                force_refresh=force_refresh,
-            )
-            if layout:
-                folder_events = self._extract_events_from_layout(layout)
-                all_events.extend(folder_events)
+        try:
+            home_events = self._fetch_events_from_homepage(force_refresh, max_pages)
+            if home_events:
+                all_events.extend(home_events)
+                logger.info(f"Fetched {len(home_events)} events from homepage")
+        except Exception as e:
+            logger.warning(f"Failed to fetch events from homepage: {e}")
+
+        # If no events from homepage, try fallback
+        if not all_events:
+            try:
+                logger.debug(f"Falling back to folder {folder_id} for events")
+                layout = self._provider.fetch_layout(
+                    layout_type="folder",
+                    content_id=folder_id,
+                    force_refresh=force_refresh,
+                )
+                if layout:
+                    folder_events = self._extract_events_from_layout(layout)
+                    all_events.extend(folder_events)
+            except Exception as e:
+                logger.warning(f"Failed to fetch events from folder {folder_id}: {e}")
 
         # Filter by time range
         filtered_events = self._filter_by_time(all_events, start_time, end_time)
@@ -259,11 +258,17 @@ class RTLPlusEventManager:
             if block.get("type") != "bffPaginated":
                 continue
 
-            block_title = (
-                block.get("analytics", {})
-                .get("tealium", {})
-                .get("block_title", "")
-            )
+            # Get block_title safely - it might be None
+            block_title = None
+            analytics = block.get("analytics", {})
+            if analytics:
+                tealium = analytics.get("tealium", {})
+                if tealium:
+                    block_title = tealium.get("block_title")
+
+            # Skip if block_title is None
+            if block_title is None:
+                continue
 
             # Exact match — return immediately
             if block_title == "Diese Live-Events erwarten euch":
