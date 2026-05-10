@@ -982,27 +982,14 @@ class RTLPlusVodManager:
 
     def _extract_vod_item_from_block_item(self, item: Dict) -> Optional[VodItem]:
         # Early validation
-        if not item:
-            logger.warning("_extract_vod_item_from_block_item: item is None")
-            return None
-
-        if not isinstance(item, dict):
-            logger.warning(f"_extract_vod_item_from_block_item: item is {type(item)}, not dict")
-            return None
-
-        if item.get("itemType") != "classic":
+        if not item or not isinstance(item, dict) or item.get("itemType") != "classic":
             return None
 
         item_content = item.get("itemContent")
-        if not item_content:
-            logger.debug("_extract_vod_item_from_block_item: no itemContent")
+        if not item_content or not isinstance(item_content, dict):
             return None
 
-        if not isinstance(item_content, dict):
-            logger.warning(f"_extract_vod_item_from_block_item: item_content is {type(item_content)}")
-            return None
-
-        # Unwrap lock-wrapped targets before reading the action target
+        # Unwrap lock-wrapped targets
         action = item_content.get("action", {})
         target = unwrap_target(action.get("target", {}))
         value_layout = target.get("value_layout", {})
@@ -1037,55 +1024,124 @@ class RTLPlusVodManager:
         if not clip_id:
             return None
 
-        # Get name with fallback
-        title = item_content.get("title") or ""
-        extra_title = item_content.get("extraTitle") or ""
-
-        if title and extra_title:
-            full_title = f"{title} - {extra_title}"
-        elif title:
-            full_title = title
-        elif extra_title:
-            full_title = extra_title
-        else:
-            highlight = item_content.get("highlight", "")
-            if highlight:
-                full_title = highlight.split("•")[0].strip() if "•" in highlight else highlight
-            else:
-                full_title = f"Unbekanntes Video ({clip_id})"
-
+        # Extract all available metadata
+        series_title = item_content.get("title") or ""
+        episode_title = item_content.get("extraTitle") or ""
         highlight = item_content.get("highlight", "")
+        description = item_content.get("description", "")
+
+        # Parse season and episode numbers from highlight
         season_number: Optional[int] = None
         episode_number: Optional[int] = None
+        air_date_str: Optional[str] = None
 
         if highlight:
+            # Extract season number — prefer full "Staffel N" form; fall back to
+            # word-boundary-anchored "\bSNN\b" to avoid false positives like
+            # "SD-Qualität" or "S-Bahn".
             season_match = re.search(r"Staffel\s*(\d+)", highlight, re.IGNORECASE)
+            if not season_match:
+                season_match = re.search(r"\bS(\d+)\b", highlight, re.IGNORECASE)
             if season_match:
                 season_number = int(season_match.group(1))
-            else:
-                season_match = re.search(r"S(\d+)", highlight, re.IGNORECASE)
-                if season_match:
-                    season_number = int(season_match.group(1))
 
+            # Extract episode number — prefer full "Folge N" form; fall back to
+            # word-boundary-anchored "\bENN\b".
             episode_match = re.search(r"Folge\s*(\d+)", highlight, re.IGNORECASE)
+            if not episode_match:
+                episode_match = re.search(r"\bE(\d+)\b", highlight, re.IGNORECASE)
             if episode_match:
                 episode_number = int(episode_match.group(1))
-            else:
-                episode_match = re.search(r"E(\d+)", highlight, re.IGNORECASE)
-                if episode_match:
-                    episode_number = int(episode_match.group(1))
 
+            # Extract date (for news shows, daily content)
+            date_match = re.search(r"(\d{2})\.(\d{2})\.(\d{2,4})", highlight)
+            if date_match:
+                day, month, year = date_match.groups()
+                if len(year) == 2:
+                    year = f"20{year}"
+                air_date_str = f"{day}.{month}.{year}"
+
+        # Build the display name based on content type
+        display_name = None
+
+        # Case 1: Has explicit episode title (best case for series)
+        if episode_title:
+            if season_number and episode_number:
+                display_name = f"{episode_title} (S{season_number:02d}/E{episode_number:02d})"
+            elif episode_number:
+                display_name = f"{episode_title} (E{episode_number:02d})"
+            else:
+                display_name = episode_title
+
+            # Add air date if present (for news shows)
+            if air_date_str:
+                display_name = f"{display_name} - {air_date_str}"
+
+        # Case 2: No episode title, but parsed episode/season numbers
+        elif highlight and (season_number or episode_number):
+            if season_number and episode_number:
+                display_name = f"Staffel {season_number} • Folge {episode_number}"
+            elif episode_number:
+                display_name = f"Folge {episode_number}"
+            else:
+                parts = highlight.split("•")
+                display_name = " • ".join(parts[1:]).strip() if len(parts) >= 2 else highlight
+
+            if air_date_str and air_date_str not in display_name:
+                display_name = f"{display_name} - {air_date_str}"
+
+        # Case 3: Has date only (daily shows like news, talk shows)
+        elif air_date_str:
+            if series_title:
+                display_name = f"{series_title} - {air_date_str}"
+            elif highlight:
+                series_part = highlight.split("•")[0].strip()
+                display_name = f"{series_part} - {air_date_str}"
+            else:
+                display_name = air_date_str
+
+        # Case 4: Use description (for movies where description is the plot synopsis)
+        elif description and len(description) < 100 and "•" not in description:
+            display_name = description
+
+        # Case 5: Use series title, with movie vs. episode disambiguation
+        elif series_title:
+            # Use already-parsed numbers as the sole indicator — no redundant regex pass
+            if season_number or episode_number:
+                # Episodic content without a clean title: slice the highlight
+                if highlight and "•" in highlight:
+                    parts = highlight.split("•")
+                    display_name = " • ".join(parts[1:]).strip()
+                else:
+                    display_name = highlight or series_title
+            else:
+                # No episode indicators — treat as a movie or standalone clip
+                display_name = series_title
+
+        else:
+            # Ultimate fallback
+            display_name = highlight or f"Unbekanntes Video ({clip_id})"
+
+        # Create the VodItem
         vod_item = VodItem.create_episode(
-            name=full_title,
+            name=display_name,
             content_id=clip_id,
             provider=self._provider.provider_name,
             season_number=season_number if season_number is not None else -1,
             episode_number=episode_number if episode_number is not None else -1,
         )
-        vod_item.description = item_content.get("description")
+
+        # Store additional metadata
+        vod_item.series_title = series_title or None
+        vod_item.episode_title = episode_title or None
+        vod_item.description = description or highlight
         vod_item.logo_url = extract_thumbnail(item_content)
         vod_item.duration_seconds = self._extract_duration(item_content)
         vod_item.progress = item_content.get("progress", 0)
+
+        # Store air date if extracted
+        if air_date_str:
+            vod_item.air_date = air_date_str
 
         # Store program context for manifest fetching
         if program_id or program_slug:
