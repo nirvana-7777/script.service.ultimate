@@ -1026,10 +1026,16 @@ class RTLPlusVodManager:
 
         # Extract all available metadata
         series_title = item_content.get("title") or ""
-        episode_title = item_content.get("extraTitle") or ""
+        extra_title = item_content.get("extraTitle") or ""
         highlight = item_content.get("highlight", "")
         description = item_content.get("description", "")
         extra_details = item_content.get("extraDetails", "")
+
+        # Episode title sourced from image.caption when available, falling back to
+        # extraTitle. image.caption often carries the specific episode name even
+        # when extraTitle is absent.
+        image = item_content.get("image", {}) or {}
+        episode_title = image.get("caption") or extra_title
 
         # Parse season and episode numbers from highlight and extraDetails
         season_number: Optional[int] = None
@@ -1038,10 +1044,9 @@ class RTLPlusVodManager:
         year_str: Optional[str] = None
 
         def parse_season_episode(text: str) -> None:
-            """Extract season/episode numbers from text into outer scope variables.
-            Only writes a variable if it has not already been populated, so
-            higher-priority fields (highlight) are never overwritten by lower-
-            priority ones (extraDetails)."""
+            """Extract season/episode numbers into outer scope variables.
+            Only writes if not already populated, so higher-priority fields
+            (highlight) are never overwritten by lower-priority ones (extraDetails)."""
             nonlocal season_number, episode_number
 
             if not text:
@@ -1090,20 +1095,20 @@ class RTLPlusVodManager:
         # Build the display name based on content type
         display_name = None
 
-        # Case 1: Has explicit episode title (best case for series)
+        # Case 1: Has episode title (from image.caption or extraTitle)
         if episode_title:
             if season_number and episode_number:
                 display_name = f"{episode_title} (S{season_number:02d}/E{episode_number:02d})"
             elif episode_number:
                 display_name = f"{episode_title} (E{episode_number:02d})"
+            elif air_date_str:
+                display_name = f"{episode_title} - {air_date_str}"
             else:
                 display_name = episode_title
                 # Append year only for standalone/movie content — for a named series
                 # every episode would share the same year, adding no disambiguation value
                 if year_str and not series_title:
                     display_name = f"{display_name} ({year_str})"
-                elif air_date_str:
-                    display_name = f"{display_name} - {air_date_str}"
 
         # Case 2: No episode title, but parsed episode/season numbers
         elif highlight and (season_number or episode_number):
