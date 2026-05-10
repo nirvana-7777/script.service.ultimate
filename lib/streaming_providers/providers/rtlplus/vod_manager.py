@@ -1029,37 +1029,63 @@ class RTLPlusVodManager:
         episode_title = item_content.get("extraTitle") or ""
         highlight = item_content.get("highlight", "")
         description = item_content.get("description", "")
+        extra_details = item_content.get("extraDetails", "")
 
-        # Parse season and episode numbers from highlight
+        # Parse season and episode numbers from highlight and extraDetails
         season_number: Optional[int] = None
         episode_number: Optional[int] = None
         air_date_str: Optional[str] = None
+        year_str: Optional[str] = None
 
+        def parse_season_episode(text: str) -> None:
+            """Extract season/episode numbers from text into outer scope variables.
+            Only writes a variable if it has not already been populated, so
+            higher-priority fields (highlight) are never overwritten by lower-
+            priority ones (extraDetails)."""
+            nonlocal season_number, episode_number
+
+            if not text:
+                return
+
+            if season_number is None:
+                season_match = re.search(r"Staffel\s*(\d+)", text, re.IGNORECASE)
+                if not season_match:
+                    # Word-boundary anchor prevents false positives like "SD" or "S-Bahn"
+                    season_match = re.search(r"\bS(\d+)\b", text, re.IGNORECASE)
+                if season_match:
+                    season_number = int(season_match.group(1))
+
+            if episode_number is None:
+                episode_match = re.search(r"Folge\s*(\d+)", text, re.IGNORECASE)
+                if not episode_match:
+                    episode_match = re.search(r"\bE(\d+)\b", text, re.IGNORECASE)
+                if not episode_match:
+                    episode_match = re.search(r"\bTeil\s*(\d+)\b", text, re.IGNORECASE)
+                if episode_match:
+                    episode_number = int(episode_match.group(1))
+
+        # Parse highlight first (highest priority)
         if highlight:
-            # Extract season number — prefer full "Staffel N" form; fall back to
-            # word-boundary-anchored "\bSNN\b" to avoid false positives like
-            # "SD-Qualität" or "S-Bahn".
-            season_match = re.search(r"Staffel\s*(\d+)", highlight, re.IGNORECASE)
-            if not season_match:
-                season_match = re.search(r"\bS(\d+)\b", highlight, re.IGNORECASE)
-            if season_match:
-                season_number = int(season_match.group(1))
+            parse_season_episode(highlight)
 
-            # Extract episode number — prefer full "Folge N" form; fall back to
-            # word-boundary-anchored "\bENN\b".
-            episode_match = re.search(r"Folge\s*(\d+)", highlight, re.IGNORECASE)
-            if not episode_match:
-                episode_match = re.search(r"\bE(\d+)\b", highlight, re.IGNORECASE)
-            if episode_match:
-                episode_number = int(episode_match.group(1))
-
-            # Extract date (for news shows, daily content)
             date_match = re.search(r"(\d{2})\.(\d{2})\.(\d{2,4})", highlight)
             if date_match:
                 day, month, year = date_match.groups()
                 if len(year) == 2:
                     year = f"20{year}"
                 air_date_str = f"{day}.{month}.{year}"
+
+        # Fall back to extraDetails for season/episode if highlight didn't provide them
+        if extra_details and (season_number is None or episode_number is None):
+            parse_season_episode(extra_details)
+
+        # Extract broadcast year from extraDetails (e.g. "1991 • 22 Min.").
+        # Anchored to plausible broadcast years to avoid matching clip IDs or
+        # duration fragments.
+        if extra_details and not year_str:
+            year_match = re.search(r"\b(19|20)\d{2}\b", extra_details)
+            if year_match:
+                year_str = year_match.group(0)
 
         # Build the display name based on content type
         display_name = None
@@ -1072,10 +1098,12 @@ class RTLPlusVodManager:
                 display_name = f"{episode_title} (E{episode_number:02d})"
             else:
                 display_name = episode_title
-
-            # Add air date if present (for news shows)
-            if air_date_str:
-                display_name = f"{display_name} - {air_date_str}"
+                # Append year only for standalone/movie content — for a named series
+                # every episode would share the same year, adding no disambiguation value
+                if year_str and not series_title:
+                    display_name = f"{display_name} ({year_str})"
+                elif air_date_str:
+                    display_name = f"{display_name} - {air_date_str}"
 
         # Case 2: No episode title, but parsed episode/season numbers
         elif highlight and (season_number or episode_number):
@@ -1100,13 +1128,12 @@ class RTLPlusVodManager:
             else:
                 display_name = air_date_str
 
-        # Case 4: Use description (for movies where description is the plot synopsis)
+        # Case 4: Short description (movies where description is the plot synopsis)
         elif description and len(description) < 100 and "•" not in description:
             display_name = description
 
-        # Case 5: Use series title, with movie vs. episode disambiguation
+        # Case 5: Series title with movie vs. episodic disambiguation
         elif series_title:
-            # Use already-parsed numbers as the sole indicator — no redundant regex pass
             if season_number or episode_number:
                 # Episodic content without a clean title: slice the highlight
                 if highlight and "•" in highlight:
@@ -1122,6 +1149,10 @@ class RTLPlusVodManager:
             # Ultimate fallback
             display_name = highlight or f"Unbekanntes Video ({clip_id})"
 
+        # Normalise whitespace and strip stray punctuation introduced by concatenation
+        if display_name:
+            display_name = re.sub(r'\s+', ' ', display_name).strip(' -–—•\t\r\n')
+
         # Create the VodItem
         vod_item = VodItem.create_episode(
             name=display_name,
@@ -1134,14 +1165,16 @@ class RTLPlusVodManager:
         # Store additional metadata
         vod_item.series_title = series_title or None
         vod_item.episode_title = episode_title or None
-        vod_item.description = description or highlight
+        vod_item.description = description or highlight or extra_details
         vod_item.logo_url = extract_thumbnail(item_content)
         vod_item.duration_seconds = self._extract_duration(item_content)
         vod_item.progress = item_content.get("progress", 0)
 
-        # Store air date if extracted
         if air_date_str:
             vod_item.air_date = air_date_str
+
+        if year_str:
+            vod_item.year = int(year_str)
 
         # Store program context for manifest fetching
         if program_id or program_slug:
