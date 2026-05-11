@@ -520,40 +520,29 @@ class RTLPlusVodManager:
     # Program contents (handles movies, numbered seasons, monthly archives)
     # ------------------------------------------------------------------
 
-    def _get_program_contents(
-            self,
-            program_id: str,
-            cursor: Optional[str] = None,
-            page_size: int = 24,
-            slug: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """
-        Get program contents - handles movies, series with season selectors.
-        """
+    def _get_program_contents(self, program_id, cursor=None, page_size=24, slug=None):
         seo = slug or f"p_{program_id}"
         location = f"{self.cfg.base_website}{seo}-p_{program_id}"
-
         layout = self._provider.fetch_layout(
-            layout_type="program",
-            content_id=program_id,
-            location=location,
+            layout_type="program", content_id=program_id, location=location,
         )
-
         if not layout:
             logger.error(f"Failed to fetch layout for program {program_id}")
             return {"entries": [], "next_cursor": None, "total": 0}
 
-        # FIRST: Check for monthly archive selector (series with monthly episodes)
         season_selector, current_episodes = self._extract_season_selector_with_episodes(layout, program_id)
-        if season_selector:
-            logger.debug(f"Found monthly selector with {len(season_selector)} months for program {program_id}")
-            return self._handle_series_response(program_id, season_selector, current_episodes, cursor, page_size)
+        numbered_seasons = self._extract_seasons_from_layout(layout)  # ← always run this
 
-        # SECOND: Check for numbered seasons (traditional series with Staffel 1, 2, etc.)
-        numbered_seasons = self._extract_seasons_from_layout(layout)
-        if numbered_seasons:
-            logger.debug(f"Found {len(numbered_seasons)} numbered seasons for program {program_id}")
-            return self._handle_numbered_seasons_response(numbered_seasons, cursor, page_size)
+        if season_selector or numbered_seasons:
+            # Merge: monthly months first, then numbered seasons (dedup by content_id)
+            seen = {c.content_id for c in season_selector}
+            for s in numbered_seasons:
+                if s.content_id not in seen:
+                    season_selector.append(s)
+                    seen.add(s.content_id)
+            return self._handle_series_response(
+                program_id, season_selector, current_episodes, cursor, page_size
+            )
 
         # THIRD: No seasons found - this is likely a movie or direct video
         movie_item = self._find_direct_video_in_layout(layout, is_series=False)
