@@ -705,17 +705,55 @@ class RTLPlusVodManager:
     def _extract_seasons_from_layout(self, layout: Dict) -> List[VodCategory]:
         """Extract numbered seasons from a program layout."""
         seasons: List[VodCategory] = []
+        seen_content_ids: set = set()
 
         for block in layout.get("blocks", []):
             if block.get("type") != "bffPaginated":
                 continue
 
-            # Check for concurrent blocks (season selector)
-            alternative_content = block.get("alternativeContent")
+            tealium = block.get("analytics", {}).get("tealium", {})
+            template_name = tealium.get("template_name")
 
-            # CRITICAL FIX: Check if alternative_content is a dict
+            # Path 1: Plain CardListM block with a "Staffel N" title.
+            # These are individual season blocks (one block per season) rather
+            # than a selector wrapping concurrent blocks.
+            if template_name == "CardListM":
+                block_title = None
+                content_title = block.get("content", {}).get("title", {})
+                if isinstance(content_title, dict):
+                    block_title = content_title.get("short") or content_title.get("long")
+                if not block_title:
+                    block_title = tealium.get("block_title")
+
+                if block_title and "Staffel" in block_title:
+                    block_id = block.get("id") or block.get("blockId")
+                    if block_id:
+                        candidate_id = f"season_{block_id}"
+                        if candidate_id not in seen_content_ids:
+                            total_items = (
+                                block.get("content", {})
+                                .get("pagination", {})
+                                .get("totalItems", 0)
+                            )
+                            logger.debug(
+                                f"Found plain CardListM season block: {block_title!r} "
+                                f"(id={block_id}, total_items={total_items})"
+                            )
+                            seasons.append(VodCategory(
+                                name=block_title,
+                                content_id=candidate_id,
+                                provider=self._provider.provider_name,
+                                description=None,
+                                child_count=total_items,
+                            ))
+                            seen_content_ids.add(candidate_id)
+                    continue  # Block fully handled; skip selector logic below.
+
+            # Path 2: Block with alternativeContent containing concurrentBlocks
+            # (season selector wrapping multiple season blocks).
+            alternative_content = block.get("alternativeContent")
             if alternative_content and isinstance(alternative_content, dict):
-                # Skip if this is a monthly selector
+                # Skip monthly archive selectors — handled by _extract_season_selector_with_episodes.
                 if alternative_content.get("selectorTemplateId") == "Selector":
                     continue
 
@@ -729,37 +767,52 @@ class RTLPlusVodManager:
                         block_id = cb.get("id")
 
                         if block_id:
-                            seasons.append(VodCategory(
-                                name=season_title,
-                                content_id=f"season_{block_id}",
-                                provider=self._provider.provider_name,
-                                description=None,
-                                child_count=(
-                                    cb.get("content", {})
-                                    .get("pagination", {})
-                                    .get("totalItems", 0)
-                                ),
-                            ))
+                            candidate_id = f"season_{block_id}"
+                            if candidate_id not in seen_content_ids:
+                                seasons.append(VodCategory(
+                                    name=season_title,
+                                    content_id=candidate_id,
+                                    provider=self._provider.provider_name,
+                                    description=None,
+                                    child_count=(
+                                        cb.get("content", {})
+                                        .get("pagination", {})
+                                        .get("totalItems", 0)
+                                    ),
+                                ))
+                                seen_content_ids.add(candidate_id)
 
-            # Check if block itself is a season selector
-            tealium = block.get("analytics", {}).get("tealium", {})
-            if tealium.get("template_name") == "SelectorCardListM":
-                block_id = block.get("id")
+            # Path 3: Block is itself a season selector (SelectorCardListM).
+            # Only reached when alternativeContent is absent or non-dict, so
+            # there is no overlap with Path 2.
+            elif template_name == "SelectorCardListM":
+                block_id = block.get("id") or block.get("blockId")
                 if block_id:
-                    seasons.append(VodCategory(
-                        name=(
-                            block.get("content", {})
-                            .get("title", {})
-                            .get("short", "Alle Staffeln")
-                        ),
-                        content_id=f"season_{block_id}",
-                        provider=self._provider.provider_name,
-                        child_count=(
-                            block.get("content", {})
-                            .get("pagination", {})
-                            .get("totalItems", 0)
-                        ),
-                    ))
+                    candidate_id = f"season_{block_id}"
+                    if candidate_id not in seen_content_ids:
+                        seasons.append(VodCategory(
+                            name=(
+                                block.get("content", {})
+                                .get("title", {})
+                                .get("short", "Alle Staffeln")
+                            ),
+                            content_id=candidate_id,
+                            provider=self._provider.provider_name,
+                            description=None,
+                            child_count=(
+                                block.get("content", {})
+                                .get("pagination", {})
+                                .get("totalItems", 0)
+                            ),
+                        ))
+                        seen_content_ids.add(candidate_id)
+
+        # Sort seasons by number (Staffel 1, 2, 3...); unnamed/unnumbered go last.
+        def get_season_number(cat: VodCategory) -> int:
+            match = re.search(r"Staffel\s*(\d+)", cat.name, re.IGNORECASE)
+            return int(match.group(1)) if match else 999
+
+        seasons.sort(key=get_season_number)
 
         return seasons
 
