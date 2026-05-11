@@ -73,29 +73,28 @@ class RTLPlusChannelManager:
 
         while current_page <= max_pages:
             params = {"day": today, "nbPages": nb_pages, "page": current_page}
-            logger.debug(f"Fetching EPG grid page {current_page}")
 
-            try:
-                response = self.http.get(url, headers=headers, params=params, operation="api")
-                response.raise_for_status()
-                data = response.json()
-            except Exception as e:
-                logger.error(f"Failed to fetch EPG grid page {current_page}: {e}")
-                break
+            response = self.http.get(url, headers=headers, params=params, operation="api")
+            response.raise_for_status()
+            data = response.json()
 
-            items = data.get("content", {}).get("items", [])
+            content = data.get("content", {})
+            items = content.get("items", [])
+
             for item in items:
                 if item.get("itemType") == "epg":
                     channel_info = self._extract_channel_info(item)
                     if channel_info:
                         all_channels.append(channel_info)
 
-            # Follow nextPage — same pattern as fetch_block_page / event_manager
-            next_page = data.get("pagination", {}).get("nextPage")
+            # Pagination is INSIDE content, not at top level
+            pagination = content.get("pagination", {})  # ← the fix
+            next_page = pagination.get("nextPage")
+
             if next_page is not None and next_page > current_page:
                 current_page = next_page
             else:
-                break  # no further pages
+                break
 
         logger.info(f"Found {len(all_channels)} channels from EPG grid across all pages")
         return all_channels
