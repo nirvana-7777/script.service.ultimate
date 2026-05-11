@@ -53,6 +53,7 @@ def create_drmtoday_widevine_config(
     license_url = license_url or DRMTodayConfig.DEFAULT_WIDEVINE_URL
 
     headers = {
+        "content-type": "application/octet-stream",
         "user-agent": user_agent,
         "origin": origin,
         "referer": referer,
