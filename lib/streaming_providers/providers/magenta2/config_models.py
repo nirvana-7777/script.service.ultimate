@@ -14,6 +14,7 @@ class BootstrapConfig:
     sam3_client_id: Optional[str] = None
     taa_url: Optional[str] = None
     device_tokens_url: Optional[str] = None
+    manifest_base_url: Optional[str] = None
     line_auth_url: Optional[str] = None
     remote_login_url: Optional[str] = None
     openid_config_url: Optional[str] = None
@@ -32,6 +33,7 @@ class BootstrapConfig:
         from .constants import SUBSCRIBER_TYPES
 
         base_settings = bootstrap_data.get("baseSettings", {})
+        dcm_settings = bootstrap_data.get("dcm", {})
 
         return cls(
             client_model=base_settings.get("clientModel", f"ftv-{platform}"),
@@ -40,6 +42,7 @@ class BootstrapConfig:
             sam3_client_id=base_settings.get("sam3ClientId"),
             taa_url=base_settings.get("taaUrl"),
             device_tokens_url=base_settings.get("deviceTokensUrl"),
+            manifest_base_url=dcm_settings.get("manifestBaseUrl"),
             line_auth_url=base_settings.get("lineAuthUrl"),
             remote_login_url=base_settings.get("remoteLoginUrl"),
             openid_config_url=base_settings.get("sam3Url"),

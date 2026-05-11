@@ -183,10 +183,15 @@ class DiscoveryService:
         try:
             logger.info("Discovering manifest configuration")
 
-            # Determine manifest URL - prefer device_tokens_url from bootstrap
-            if self._bootstrap_config and self._bootstrap_config.device_tokens_url:
-                manifest_url = self._bootstrap_config.device_tokens_url
-                logger.debug(f"Using bootstrap device_tokens_url for manifest: {manifest_url}")
+            # Priority 1: Use dcm.manifestBaseUrl from bootstrap
+            if self._bootstrap_config and self._bootstrap_config.manifest_base_url:
+                terminal_type = self.terminal_type.lower().replace("_", "-")
+                manifest_url = self._bootstrap_config.manifest_base_url.replace(
+                    "{configGroupId}", terminal_type
+                )
+                logger.debug(f"Using bootstrap manifestBaseUrl: {manifest_url}")
+
+            # Priority 2: Fallback to hardcoded manifest URL
             else:
                 terminal_type = self.terminal_type.lower().replace("_", "-")
                 manifest_url = MAGENTA2_MANIFEST_URL.format(terminal_type=terminal_type)
