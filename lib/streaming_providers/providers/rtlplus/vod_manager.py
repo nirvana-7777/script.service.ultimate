@@ -717,7 +717,9 @@ class RTLPlusVodManager:
                 if block_title and "Staffel" in block_title:
                     block_id = block.get("id") or block.get("blockId")
                     if block_id:
-                        candidate_id = f"season_{block_id}"
+                        clean_id = self._extract_block_id_from_url(block_id)
+                        candidate_id = f"season_{clean_id}"
+
                         if candidate_id not in seen_content_ids:
                             total_items = (
                                 block.get("content", {})
@@ -754,9 +756,10 @@ class RTLPlusVodManager:
 
                         season_title = cb.get("title", f"Staffel {idx + 1}")
                         block_id = cb.get("id")
-
                         if block_id:
-                            candidate_id = f"season_{block_id}"
+                            clean_id = self._extract_block_id_from_url(block_id)
+                            candidate_id = f"season_{clean_id}"
+
                             if candidate_id not in seen_content_ids:
                                 seasons.append(VodCategory(
                                     name=season_title,
@@ -777,7 +780,8 @@ class RTLPlusVodManager:
             elif template_name == "SelectorCardListM":
                 block_id = block.get("id") or block.get("blockId")
                 if block_id:
-                    candidate_id = f"season_{block_id}"
+                    clean_id = self._extract_block_id_from_url(block_id)
+                    candidate_id = f"season_{clean_id}"
                     if candidate_id not in seen_content_ids:
                         seasons.append(VodCategory(
                             name=(
