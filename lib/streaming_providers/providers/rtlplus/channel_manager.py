@@ -13,6 +13,7 @@ Handles all linear TV (live channel) functionality:
 from typing import List, Optional, Dict, Any
 from datetime import date
 
+from .layout_helpers import unwrap_target
 from ...base.models import Channel, DRMConfig
 from ...base.utils.logger import logger
 
@@ -46,14 +47,13 @@ class RTLPlusChannelManager:
     def get_channels(self, nb_pages: int = 3) -> List[Dict[str, Any]]:
         """
         Get list of all linear TV channels from the EPG grid endpoint.
+        Follows server-side pagination via pagination.nextPage.
         """
         try:
             oauth_token = self.auth.get_bearer_token()
             if not oauth_token:
                 logger.error("No OAuth token available")
                 return []
-
-            # Get Bedrock token - no parameters needed
             bedrock_token = self.auth.get_bedrock_token()
             if not bedrock_token:
                 logger.error("Failed to obtain Bedrock token")
@@ -65,74 +65,68 @@ class RTLPlusChannelManager:
         url = self.cfg.get_epg_grid_url()
         location = "https://plus.rtl.de/tv-programm"
         headers = self.cfg.get_bedrock_layout_headers(oauth_token, bedrock_token, location)
-
         today = date.today().isoformat()
-        params = {"day": today, "nbPages": nb_pages}
 
-        try:
-            response = self.http.get(url, headers=headers, params=params, operation="api")
-            response.raise_for_status()
-            data = response.json()
-        except Exception as e:
-            logger.error(f"Failed to fetch EPG grid: {e}")
-            return []
+        all_channels = []
+        current_page = 1
+        max_pages = 10  # safety limit
 
-        channels = []
-        content = data.get("content", {})
-        items = content.get("items", [])
+        while current_page <= max_pages:
+            params = {"day": today, "nbPages": nb_pages, "page": current_page}
+            logger.debug(f"Fetching EPG grid page {current_page}")
 
-        for item in items:
-            if item.get("itemType") == "epg":
-                item_content = item.get("itemContent", {})
+            try:
+                response = self.http.get(url, headers=headers, params=params, operation="api")
+                response.raise_for_status()
+                data = response.json()
+            except Exception as e:
+                logger.error(f"Failed to fetch EPG grid page {current_page}: {e}")
+                break
 
-                # Extract channel info
-                channel_data = item_content.get("channel", {})
-                title = channel_data.get("title")
-                logo_id = channel_data.get("image", {}).get("id")
+            items = data.get("content", {}).get("items", [])
+            for item in items:
+                if item.get("itemType") == "epg":
+                    channel_info = self._extract_channel_info(item)
+                    if channel_info:
+                        all_channels.append(channel_info)
 
-                # Extract action target for IDs
-                action = item_content.get("action", {})
-                target = action.get("target", {})
+            # Follow nextPage — same pattern as fetch_block_page / event_manager
+            next_page = data.get("pagination", {}).get("nextPage")
+            if next_page is not None and next_page > current_page:
+                current_page = next_page
+            else:
+                break  # no further pages
 
-                # Handle "lock" wrapper — API wraps targets in a lock when consent is required
-                if target.get("type") == "lock":
-                    target = target.get("value_lock", {}).get("originalTarget", {})
+        logger.info(f"Found {len(all_channels)} channels from EPG grid across all pages")
+        return all_channels
 
-                value_layout = target.get("value_layout", {})
+    @staticmethod
+    def _extract_channel_info(item: Dict) -> Optional[Dict]:
+        """Extract channel information from an EPG grid item."""
+        item_content = item.get("itemContent", {})
+        channel_data = item_content.get("channel", {})
+        title = channel_data.get("title")
+        logo_id = channel_data.get("image", {}).get("id")
 
-                slug = value_layout.get("id")  # e.g., "rtlde_rtl"
-                seo = value_layout.get("seo")  # e.g., "rtl"
+        # Reuse the shared unwrap_target helper from layout_helpers
+        target = unwrap_target(item_content.get("action", {}).get("target", {}))
+        value_layout = target.get("value_layout", {})
 
-                logger.debug(f"Extracted: title='{title}', slug='{slug}', seo='{seo}', logo_id='{logo_id}'")
+        slug = value_layout.get("id") or item_content.get("id")
+        seo = value_layout.get("seo")
 
-                if slug is None:
-                    # Try alternative path - sometimes the ID might be directly in itemContent
-                    alt_id = item_content.get("id")
-                    if alt_id:
-                        slug = alt_id
-                        logger.debug(f"Using alternative id: {slug}")
+        if not slug:
+            logger.warning(f"Could not extract slug for channel '{title}', skipping")
+            return None
 
-                if not slug:
-                    logger.warning(f"Could not extract slug for channel '{title}', skipping")
-                    continue
-
-                channel = {
-                    "id": channel_data.get("id"),
-                    "title": title,
-                    "seo": seo,
-                    "slug": slug,
-                    "logo_id": logo_id,
-                    "channel_type": "BROADCAST",
-                }
-                channels.append(channel)
-
-        logger.info(f"Found {len(channels)} channels from EPG grid")
-
-        # Log first few channels for debugging
-        for ch in channels[:3]:
-            logger.debug(f"Channel: {ch['title']} -> slug={ch['slug']}, seo={ch['seo']}")
-
-        return channels
+        return {
+            "id": channel_data.get("id"),
+            "title": title,
+            "seo": seo,
+            "slug": slug,
+            "logo_id": logo_id,
+            "channel_type": "BROADCAST",
+        }
 
     def get_channels_as_streaming_channel_list(self, nb_pages: int = 3) -> List[Channel]:
         """
