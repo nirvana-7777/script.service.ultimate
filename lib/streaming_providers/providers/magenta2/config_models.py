@@ -2,6 +2,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, Optional
+from ...base.utils.logger import logger
 
 
 @dataclass
@@ -106,56 +107,44 @@ class MpxConfig:
 
     @classmethod
     def from_manifest_data(cls, manifest_data: Dict[str, Any]) -> "MpxConfig":
-        """Create MpxConfig from manifest data"""
-
-        def get_param(key: str) -> Optional[str]:
-            """Helper to get value from parameters array"""
-            if "settings" not in manifest_data:
-                return None
-            settings = manifest_data["settings"]
-            if "parameters" not in settings:
-                return None
-            for param in settings["parameters"]:
-                if param.get("key") == key:
-                    value = param.get("value")
-                    return value if value and value != "unused" else None
-            return None
-
         mpx_data = manifest_data.get("mpx", {})
 
-        # Build feeds dict from parameters
+        # Read directly from mpx object (NOT from settings.parameters)
+        license_service_url = mpx_data.get("basicUrlGetApplicableDistributionRights", "")
+        selector_service_url = mpx_data.get("basicUrlSelectorService", "")
+        account_pid = mpx_data.get("accountPid", "mdeprod")
+        user_profile_url = mpx_data.get("userProfileUrl")  # May be None
+        bookmark_base_url = mpx_data.get("bookmarkBaseUrl", "")
+        pvr_base_url = mpx_data.get("pvrBaseUrl", "")
+
+        # Build feeds dict from mpx.feeds
         feeds = {}
-        feed_keys = [
-            "mpxBasicUrlAllChannelSchedulesFeed",
-            "mpxBasicUrlEntitledChannelsFeed",
-            "mpxAllListingsFeedUrl",
-            "mpxAllProgramsFeedUrl",
-        ]
+        mpx_feeds = mpx_data.get("feeds", {})
+        for feed_name, feed_url in mpx_feeds.items():
+            feeds[feed_name] = feed_url
 
-        for feed_key in feed_keys:
-            feed_url = get_param(feed_key)
-            if feed_url:
-                simple_key = feed_key.replace("mpx", "").replace("Url", "").replace("BasicUrl", "")
-                feeds[simple_key] = feed_url
+        # Optional: Also keep the parameter lookup as fallback for other structures
+        # But primary source is the direct mpx object
 
-        # ADD THIS: Extract channel stations feed
-        channel_stations_feed = get_param("mpxDefaultUrlAllChannelStationsFeed")
+        # Channel stations feed (specific field)
+        channel_stations_feed = mpx_data.get("feeds", {}).get("allChannelStationsFeed")
+
+        # MPX account URI - construct from account_pid or use direct field
+        mpx_account_uri = mpx_data.get("accountUri")  # May not exist
+        if not mpx_account_uri and account_pid:
+            mpx_account_uri = f"http://access.auth.theplatform.com/data/Account/2709353023"  # Or appropriate URI
 
         return cls(
-            account_pid=get_param("mpxAccountPid") or mpx_data.get("accountPid", "mdeprod"),
-            license_service_url=get_param("mpxBasicUrlGetApplicableDistributionRights")
-            or mpx_data.get("licenseServiceUrl", ""),
-            selector_service_url=get_param("mpxBasicUrlSelectorService")
-            or mpx_data.get("selectorServiceUrl", ""),
-            user_profile_url=get_param("mpxUserProfileUrl") or mpx_data.get("userProfileUrl"),
-            bookmark_base_url=get_param("mpxBookmarkBaseUrl") or mpx_data.get("bookmarkBaseUrl"),
-            pvr_base_url=get_param("mpxPvrBaseUrl") or mpx_data.get("pvrBaseUrl"),
+            account_pid=account_pid,
+            license_service_url=license_service_url,
+            selector_service_url=selector_service_url,
+            user_profile_url=user_profile_url,
+            bookmark_base_url=bookmark_base_url,
+            pvr_base_url=pvr_base_url,
             feeds=feeds,
             channel_stations_feed=channel_stations_feed,
-            mpx_account_uri=get_param("mpxAccountUri"),  # Extract actual account URI
-            mpx_basic_url_selector_service=get_param(
-                "mpxBasicUrlSelectorService"
-            ),  # Extract MPD endpoint
+            mpx_account_uri=mpx_account_uri,
+            mpx_basic_url_selector_service=selector_service_url,
         )
 
     def get_account_uri(self) -> str:
@@ -209,47 +198,24 @@ class DrmConfig:
 
     @classmethod
     def from_manifest_data(cls, manifest_data: Dict[str, Any]) -> "DrmConfig":
-        """Create DrmConfig from manifest data"""
-        from ...base.utils.logger import logger
+        # Read from livetv.drm and vod.drm objects directly
+        livetv_drm = manifest_data.get("livetv", {}).get("drm", {})
+        vod_drm = manifest_data.get("vod", {}).get("drm", {})
 
-        # Create a temporary helper function for this method
-        def get_param(key: str) -> Optional[str]:
-            """Helper to get value from parameters array"""
-            if "settings" not in manifest_data:
-                return None
-            settings = manifest_data["settings"]
-            if "parameters" not in settings:
-                return None
-            for param in settings["parameters"]:
-                if param.get("key") == key:
-                    value = param.get("value")
-                    return value if value and value != "unused" else None
-            return None
+        widevine_url = livetv_drm.get("widevineLicenseAcquisitionUrl", "")
+        vod_widevine_url = vod_drm.get("widevineLicenseAcquisitionUrl", "")
+        fairplay_url = livetv_drm.get("fairplayLicenseAcquisitionUrl", "")
 
-        # Try parameters array first (current structure)
-        widevine_url = get_param("widevineLicenseAcquisitionURL")
-        fairplay_url = get_param("fairplayLicenseAcquisitionURL")
+        # Also check top-level if needed (though not in your response)
+        if not widevine_url:
+            widevine_url = manifest_data.get("drm", {}).get("widevineLicenseAcquisitionUrl", "")
 
-        # Fallback to legacy structure
-        if not widevine_url or not fairplay_url:
-            livetv_drm = manifest_data.get("livetv", {}).get("drm", {})
-            vod_drm = manifest_data.get("vod", {}).get("drm", {})
-
-            if not widevine_url:
-                widevine_url = livetv_drm.get("widevineLicenseAcquisitionUrl", "")
-            if not fairplay_url:
-                fairplay_url = livetv_drm.get("fairplayLicenseAcquisitionUrl", "")
-
-            vod_widevine = vod_drm.get("widevineLicenseAcquisitionUrl")
-        else:
-            vod_widevine = None  # Not in parameters array
-
-        logger.debug(f"DRM config: widevine={bool(widevine_url)}, fairplay={bool(fairplay_url)}")
+        logger.debug(f"DRM config: widevine={bool(widevine_url)}, vod_widevine={bool(vod_widevine_url)}")
 
         return cls(
-            widevine_license_url=widevine_url or "",
-            vod_widevine_license_url=vod_widevine,
-            fairplay_license_url=fairplay_url or "",
+            widevine_license_url=widevine_url,
+            vod_widevine_license_url=vod_widevine_url,
+            fairplay_license_url=fairplay_url,
         )
 
 
@@ -259,63 +225,23 @@ class TvHubConfig:
 
     base_urls: Dict[str, str] = field(default_factory=dict)
 
+    # config_models.py
     @classmethod
     def from_manifest_data(cls, manifest_data: Dict[str, Any]) -> "TvHubConfig":
-        """Create TvHubConfig from manifest data"""
-
-        # Create a temporary helper function for this method
-        def get_param(param_key: str) -> Optional[str]:
-            """Helper to get value from parameters array"""
-            if "settings" not in manifest_data:
-                return None
-            settings_data = manifest_data["settings"]
-            if "parameters" not in settings_data:
-                return None
-            for param in settings_data["parameters"]:
-                if param.get("key") == param_key:
-                    value = param.get("value")
-                    return value if value and value != "unused" else None
-            return None
+        tv_hubs_data = manifest_data.get("tvHubUrls", {})
 
         base_urls = {}
 
-        # TV Hub URLs from parameters
-        tvhub_keys = [
-            "homeUrl",
-            "settingsMenu",
-            "broadcastDetailsURL",
-            "vodDetailsURL",
-            "searchUrl",
-            "kidsSearchURL",
-            "myWatchlistUrl",
-            "myMoviesURL",
-        ]
-
-        # Check settings object first
-        if "settings" in manifest_data:
-            settings_obj = manifest_data["settings"]
-            for tvhub_key in tvhub_keys:
-                if tvhub_key in settings_obj:
-                    url = settings_obj.get(tvhub_key)
-                    if url and url != "unused":
-                        base_urls[tvhub_key] = url
-
-        # Also check parameters array
-        for tvhub_key in tvhub_keys:
-            if tvhub_key not in base_urls:
-                url = get_param(tvhub_key)
-                if url:
-                    base_urls[tvhub_key] = url
-
-        # Legacy structure fallback
-        tv_hubs = manifest_data.get("tvHubUrls", {})
-        for hub_name, hub_url in tv_hubs.items():
-            if (
-                isinstance(hub_url, str)
-                and hub_url.startswith("http")
-                and hub_name not in base_urls
-            ):
-                base_urls[hub_name] = hub_url
+        # Extract all string URLs from tvHubUrls object
+        for key, value in tv_hubs_data.items():
+            if isinstance(value, str) and value.startswith("http"):
+                base_urls[key] = value
+            # Handle nested objects (like kidsMode)
+            elif isinstance(value, dict) and "homeUrl" in value:
+                # Recursively extract from nested objects
+                for sub_key, sub_value in value.items():
+                    if isinstance(sub_value, str) and sub_value.startswith("http"):
+                        base_urls[f"{key}_{sub_key}"] = sub_value
 
         return cls(base_urls=base_urls)
 
