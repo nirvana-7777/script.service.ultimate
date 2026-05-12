@@ -35,6 +35,7 @@ FOLDER_NAMES = {
     "148": "Kids",
     "165": "Anime",
     "6": "Sport",
+    "55": "Themenwelten",
 }
 
 
@@ -428,15 +429,25 @@ class RTLPlusVodManager:
                     if vod_item:
                         program_categories.append(vod_item)
 
-            # Combine: folders first, then programs
-            entries = folder_categories + program_categories
+            # Keep only the hardcoded folders, in the order they are defined in FOLDER_NAMES.
+            folder_by_id = {
+                cat.content_id[len("folder_"):]: cat
+                for cat in folder_categories
+                if cat.content_id.startswith("folder_")
+            }
+            entries = [
+                folder_by_id[folder_id]
+                for folder_id in FOLDER_NAMES
+                if folder_id in folder_by_id
+            ]
 
             if future_events_count > 0:
                 logger.info(f"Filtered out {future_events_count} future events from VOD root")
 
             logger.info(
                 f"Found {len(entries)} entries in root VOD category "
-                f"({len(folder_categories)} folders, {len(program_categories)} programs)"
+                f"(restricted to {len(FOLDER_NAMES)} hardcoded folders, "
+                f"{len(program_categories)} programs discarded)"
             )
 
             return {
@@ -513,7 +524,9 @@ class RTLPlusVodManager:
                     if cat:
                         entries.append(cat)
 
-        logger.info(f"Folder {folder_id} returned {len(entries)} entries")
+        entries.sort(key=lambda e: (e.name or "").lower())
+
+        logger.info(f"Folder {folder_id} returned {len(entries)} entries (alphabetically sorted)")
         return {"entries": entries, "next_cursor": None, "total": len(entries)}
 
     # ------------------------------------------------------------------
