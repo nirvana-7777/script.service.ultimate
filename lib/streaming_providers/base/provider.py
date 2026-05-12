@@ -715,6 +715,30 @@ class StreamingProvider(ABC):
         """
         return []
 
+    def search_vod(
+        self,
+        query: str,
+        cursor: Optional[str] = None,
+        page_size: int = 24,
+        **kwargs,
+    ) -> List:
+        """
+        Search the VOD catalogue for items matching query.
+
+        Args:
+            query:     Free-text search string entered by the user.
+            cursor:    Opaque continuation token from a previous response's
+                       next_cursor field.  None → first page.
+            page_size: Hint for how many entries to return per page.
+                       Providers may ignore or clamp this value.
+
+        Returns:
+            Mixed list of VodCategory and VodItem objects, or a paged dict
+            with the same shape as get_vod_category (entries, next_cursor,
+            total).  Return [] if search is not supported.
+        """
+        return []
+
     # =========================================================================
     # BOOKMARKS
     # =========================================================================

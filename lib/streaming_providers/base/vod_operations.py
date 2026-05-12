@@ -125,6 +125,106 @@ class VodOperations:
         provider = self._get_provider(provider_name)
         return provider.get_drm(content_id=vod_id, **kwargs)
 
+    def search_vod(
+        self,
+        provider_name: str,
+        query: str,
+        cursor: Optional[str] = None,
+        page_size: int = 24,
+        **kwargs,
+    ) -> Dict:
+        """
+        Search the VOD catalogue of a single provider.
+
+        Args:
+            provider_name: Provider to query.
+            query:         Free-text search string entered by the user.
+            cursor:        Opaque continuation token from a previous response's
+                           next_cursor field.  None → first page.
+            page_size:     Hint for how many entries to return per page.
+                           Providers may ignore or clamp this value.
+
+        Returns:
+            {
+                "entries":     List[VodCategory | VodItem],
+                "next_cursor": Optional[str],   # None = no further pages
+                "total":       Optional[int],   # total count if known by provider
+            }
+            Providers that do not implement search return an empty entries list
+            with next_cursor=None.
+
+        Raises:
+            ValueError: Provider not found.
+        """
+        provider = self._get_provider(provider_name)
+        logger.debug(
+            f"VodOperations: Searching VOD in '{provider_name}' "
+            f"(query={query!r}, cursor={cursor!r}, page_size={page_size})"
+        )
+
+        raw = provider.search_vod(
+            query=query,
+            cursor=cursor,
+            page_size=page_size,
+            **kwargs,
+        )
+
+        # Normalise: providers may return a plain list or the paged dict shape.
+        if isinstance(raw, list):
+            result = {"entries": raw, "next_cursor": None, "total": None}
+        else:
+            result = raw
+
+        entries = result.get("entries", [])
+        next_cursor = result.get("next_cursor")
+        logger.info(
+            f"VodOperations: Search '{query}' in '{provider_name}' returned "
+            f"{len(entries)} entries"
+            + (f" — next_cursor present" if next_cursor else "")
+        )
+        return result
+
+    def search_all_vod(
+        self, query: str, **kwargs
+    ) -> Dict[str, List[Union[VodCategory, VodItem]]]:
+        """
+        Search the VOD catalogue across all enabled providers that implement VOD.
+
+        Providers that return implements_vod=False are silently skipped.
+        Only fetches the first page of results per provider — callers that
+        need subsequent pages should use search_vod directly.
+
+        Args:
+            query: Free-text search string entered by the user.
+
+        Returns:
+            Dict mapping provider name → list of matching VodCategory/VodItem
+            objects.  Providers that fail or return no results are included
+            with an empty list so the caller always gets a complete map of
+            enabled VOD providers.
+        """
+        enabled = self.registry.get_enabled_providers()
+        logger.info(f"Searching VOD across {len(enabled)} providers (query={query!r})")
+
+        result = {}
+        total = 0
+
+        for name in enabled:
+            try:
+                provider = self.registry.get_provider(name)
+                if not getattr(provider, "implements_vod", False):
+                    continue
+                node = self.search_vod(name, query=query, **kwargs)
+                entries = node["entries"]
+                result[name] = entries
+                total += len(entries)
+            except Exception as e:
+                logger.error(f"Failed to search VOD in '{name}': {e}")
+                result[name] = []
+
+        logger.info(f"VOD search '{query}' returned {total} total entries")
+        return result
+
     def get_all_vod_roots(self) -> Dict[str, List[Union[VodCategory, VodItem]]]:
         """
         Get root VOD entries from all enabled providers that implement VOD.
