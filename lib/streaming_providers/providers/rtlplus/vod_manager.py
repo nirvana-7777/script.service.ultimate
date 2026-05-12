@@ -435,6 +435,16 @@ class RTLPlusVodManager:
                 for cat in folder_categories
                 if cat.content_id.startswith("folder_")
             }
+            # Inject any FOLDER_NAMES entries missing from the home layout (e.g. Themenwelten,
+            # which lives in a submenu and is not surfaced on the home page).
+            for folder_id, folder_name in FOLDER_NAMES.items():
+                if folder_id not in folder_by_id:
+                    folder_by_id[folder_id] = VodCategory(
+                        name=folder_name,
+                        content_id=f"folder_{folder_id}",
+                        provider=self._provider.provider_name,
+                    )
+                    logger.debug(f"Injected missing root folder: {folder_name} (id={folder_id})")
             entries = [
                 folder_by_id[folder_id]
                 for folder_id in FOLDER_NAMES
@@ -524,8 +534,16 @@ class RTLPlusVodManager:
                     if cat:
                         entries.append(cat)
 
-        entries.sort(key=lambda e: (e.name or "").lower())
+        # Deduplicate by content_id, preserving first occurrence
+        seen_ids: set = set()
+        unique_entries = []
+        for e in entries:
+            if e.content_id not in seen_ids:
+                seen_ids.add(e.content_id)
+                unique_entries.append(e)
+        entries = unique_entries
 
+        entries.sort(key=lambda e: (e.name or "").lower())
         logger.info(f"Folder {folder_id} returned {len(entries)} entries (alphabetically sorted)")
         return {"entries": entries, "next_cursor": None, "total": len(entries)}
 
@@ -742,42 +760,34 @@ class RTLPlusVodManager:
 
         return seasons
 
-    def _handle_series_response(self, program_id: str, season_selector: List[VodCategory],
+    @staticmethod
+    def _handle_series_response(program_id: str, season_selector: List[VodCategory],
                                 current_episodes: List[VodItem], cursor: Optional[str],
                                 page_size: int) -> Dict[str, Any]:
-        """Handle series response with monthly selector."""
-        entries = season_selector
+        """Handle series response with monthly selector.
 
-        # If a cursor is provided, it might be for pagination of current episodes
-        if cursor and cursor.startswith("episodes:"):
-            page = int(cursor.split(":")[1]) if ":" in cursor else 1
-            paginated_episodes, next_cursor = self._paginate_episodes(current_episodes, page, page_size)
-            return {
-                "entries": paginated_episodes,
-                "next_cursor": next_cursor,
-                "total": len(current_episodes),
-            }
+        Layout returned to the caller:
+          1. Current-month episodes inlined as VodItems (no extra navigation step).
+          2. Season VodCategories sorted ascending by season number (Staffel 1, 2, …).
 
-        # First load - show selector and optionally first page of current episodes
-        if current_episodes and len(current_episodes) > 0:
-            current_month_name = self._get_current_month_name()
-            if current_month_name:
-                preview_category = VodCategory(
-                    name=f"Aktuelle Folgen ({current_month_name})",
-                    content_id=f"episodes_current_{program_id}",
-                    provider=self._provider.provider_name,
-                    child_count=len(current_episodes),
-                )
-                entries = [preview_category] + entries
+        The legacy "Aktuelle Folgen" VodCategory / episodes_current_ cursor path is
+        intentionally removed: the episodes are already present at the top level so
+        there is no need for an extra folder or a separate pagination cursor.
+        """
+        # Sort seasons ascending (Staffel 1, Staffel 2, …); unnamed entries go last.
+        def _season_number(cat: VodCategory) -> int:
+            m = re.search(r"Staffel\s*(\d+)", cat.name or "", re.IGNORECASE)
+            return int(m.group(1)) if m else 999
 
-        next_cursor = None
-        if len(current_episodes) > page_size:
-            next_cursor = "episodes:2"
+        sorted_seasons = sorted(season_selector, key=_season_number)
+
+        # Inline current episodes at the top, then season folders below.
+        entries: List = list(current_episodes) + sorted_seasons
 
         return {
             "entries": entries,
-            "next_cursor": next_cursor,
-            "total": len(season_selector) + (1 if current_episodes else 0),
+            "next_cursor": None,
+            "total": len(entries),
         }
 
     @staticmethod
