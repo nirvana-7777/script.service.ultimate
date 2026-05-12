@@ -1204,10 +1204,19 @@ class RTLPlusVodManager:
 
         # Case 1: Has episode title (from image.caption or extraTitle)
         if episode_title:
+            # Season + episode numbers are stored in structured fields; don't repeat
+            # them in the display name.  Only append the air date for disambiguation
+            # when there is no season number (e.g. GZSZ daily episodes: E8521).
             if season_number and episode_number:
-                display_name = f"{episode_title} (S{season_number:02d}/E{episode_number:02d})"
+                # Full S/E info lives in structured fields → clean title only
+                display_name = episode_title
             elif episode_number:
-                display_name = f"{episode_title} (E{episode_number:02d})"
+                # No season, but episode number: add it together with air date
+                # so items stay distinguishable (e.g. "Klarer Cut (E8522 - 30.04.2026)")
+                if air_date_str:
+                    display_name = f"{episode_title} (E{episode_number} - {air_date_str})"
+                else:
+                    display_name = f"{episode_title} (E{episode_number})"
             elif air_date_str:
                 display_name = f"{episode_title} - {air_date_str}"
             else:
