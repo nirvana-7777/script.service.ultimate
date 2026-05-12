@@ -268,6 +268,28 @@ class ProviderManager:
     def get_all_vod_roots(self) -> dict:
         return self.vod_ops.get_all_vod_roots()
 
+    def search_vod(
+            self,
+            provider_name: str,
+            query: str,
+            cursor: Optional[str] = None,
+            page_size: int = 24,
+            **kwargs,
+    ) -> dict:
+        """Search VOD catalogue of a single provider."""
+        return self.vod_ops.search_vod(
+            provider_name,
+            query=query,
+            cursor=cursor,
+            page_size=page_size,
+            **kwargs,
+        )
+
+    # Keep this for searching across all providers
+    def search_all_vod(self, query: str, **kwargs) -> dict:
+        """Search VOD across all providers."""
+        return self.vod_ops.search_all_vod(query, **kwargs)
+
     # ==========================================================================
     # RECORDING OPERATIONS (delegate to RecordingOperations)
     # ==========================================================================
