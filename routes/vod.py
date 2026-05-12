@@ -31,12 +31,48 @@ GET /api/providers/<provider>/vod/<path:path>
         "total":       120           # null when provider does not expose total
     }
 
+Search endpoints
+----------------
+GET /api/providers/<provider>/vod/search
+    Search the VOD catalogue of a single provider.
+
+GET /api/vod/search
+    Search the VOD catalogue across all enabled providers that implement VOD.
+
+    Query parameters:
+        q         Required. Free-text search string.
+        cursor    Opaque continuation token (single-provider search only).
+        size      Number of entries to request per page (default: 24).
+
+    Single-provider response:
+    {
+        "provider":    "discovery_de",
+        "query":       "football",
+        "entries":     [...],
+        "count":       8,
+        "next_cursor": "<opaque>",
+        "total":       42
+    }
+
+    Cross-provider response:
+    {
+        "query":   "football",
+        "results": {
+            "discovery_de": {"entries": [...], "count": 3},
+            "rtlplus":      {"entries": [...], "count": 5}
+        },
+        "total_count": 8
+    }
+
 Stream / manifest / DRM endpoints for VodItems are in streams.py:
     GET /api/providers/<provider>/vod/<vod_id>/manifest
     GET /api/providers/<provider>/vod/<vod_id>/stream/index.mpd
     GET /api/providers/<provider>/vod/<vod_id>/drm
 These are registered in streams.py (same pattern as channels and events)
 and must be set up BEFORE setup_vod_routes() so Bottle matches them first.
+
+NOTE: Search routes are registered before the <content_id:path> wildcard so
+that /vod/search is not swallowed by get_vod_node.
 """
 
 from bottle import request, response
@@ -120,6 +156,75 @@ def setup_vod_routes(app, manager):
             "count": len(serialized),
             "next_cursor": result.get("next_cursor"),
             "total": result.get("total"),
+        }
+
+    # ------------------------------------------------------------------
+    # Search routes — registered BEFORE the <content_id:path> wildcard so
+    # that /vod/search is not captured by get_vod_node.
+    # ------------------------------------------------------------------
+
+    @app.route("/api/providers/<provider>/vod/search", method="GET")
+    def search_vod(provider):
+        """Search the VOD catalogue of a single provider."""
+        query = request.query.get("q", "").strip()
+        if not query:
+            response.status = 400
+            return {"error": "Missing required query parameter 'q'", "provider": provider}
+
+        cursor, page_size = _parse_paging_params()
+        try:
+            result = manager.search_vod(
+                provider_name=provider,
+                query=query,
+                cursor=cursor,
+                page_size=page_size,
+            )
+        except ValueError as e:
+            response.status = 404
+            return {"error": "Provider not found", "message": str(e), "provider": provider}
+        except Exception as e:
+            logger.error(f"Failed to search VOD in provider '{provider}': {e}")
+            response.status = 500
+            return {"error": "Failed to search VOD", "message": str(e), "provider": provider}
+
+        serialized = _serialize(result["entries"], provider)
+        response.status = 200
+        return {
+            "provider": provider,
+            "query": query,
+            "entries": serialized,
+            "count": len(serialized),
+            "next_cursor": result.get("next_cursor"),
+            "total": result.get("total"),
+        }
+
+    @app.route("/api/vod/search", method="GET")
+    def search_all_vod():
+        """Search the VOD catalogue across all enabled providers."""
+        query = request.query.get("q", "").strip()
+        if not query:
+            response.status = 400
+            return {"error": "Missing required query parameter 'q'"}
+
+        try:
+            provider_results = manager.search_all_vod(query=query)
+        except Exception as e:
+            logger.error(f"Failed to search VOD across providers: {e}")
+            response.status = 500
+            return {"error": "Failed to search VOD", "message": str(e)}
+
+        results = {}
+        total_count = 0
+        for provider_name, entries in provider_results.items():
+            serialized = _serialize(entries, provider_name)
+            results[provider_name] = {"entries": serialized, "count": len(serialized)}
+            total_count += len(serialized)
+
+        response.status = 200
+        return {
+            "query": query,
+            "results": results,
+            "total_count": total_count,
         }
 
     @app.route("/api/providers/<provider>/vod/<content_id:path>", method="GET")

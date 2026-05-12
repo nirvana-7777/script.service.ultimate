@@ -1,8 +1,9 @@
 # streaming_providers/providers/rtlplus/provider.py
+
 import time
 from datetime import datetime
-from typing import ClassVar, Dict, List, Optional, Tuple
-from ..lib_drmtoday import  create_drmtoday_configs
+from typing import ClassVar, Dict, List, Optional, Tuple, Any
+from ..lib_drmtoday import create_drmtoday_configs
 
 from ...base.models import DRMConfig, StreamingChannel, Event
 from ...base.models.proxy_models import ProxyConfig
@@ -104,6 +105,11 @@ class RTLPlusProvider(StreamingProvider):
     def supported_auth_types(self) -> List[str]:
         return ["user_credentials"]
 
+    @property
+    def implements_vod(self) -> bool:
+        """RTL+ has a browsable VOD catalogue."""
+        return True
+
     # --------------------------------------------------------------------------
     # Common Layout Methods
     # --------------------------------------------------------------------------
@@ -116,9 +122,10 @@ class RTLPlusProvider(StreamingProvider):
             nb_pages: int = None,
             location: str = None,
             force_refresh: bool = False,
+            **kwargs,
     ) -> Optional[Dict]:
         """
-        Fetch any layout (live/video/folder/program/block/alias) with caching.
+        Fetch any layout (live/video/folder/program/block/alias/search) with caching.
         """
         if block_page is None:
             block_page = RTLPlusDefaults.DEFAULT_BLOCK_PAGE
@@ -142,7 +149,12 @@ class RTLPlusProvider(StreamingProvider):
             )
             return None
 
-        cache_key = f"{layout_type}:{clean_content_id}:{block_page}:{nb_pages}"
+        # Build cache key (include query for search)
+        if layout_type == "search":
+            query = kwargs.get("query", "")
+            cache_key = f"{layout_type}:{query}:{block_page}:{nb_pages}"
+        else:
+            cache_key = f"{layout_type}:{clean_content_id}:{block_page}:{nb_pages}"
         now = time.time()
 
         if not force_refresh and cache_key in self._layout_cache:
@@ -169,14 +181,25 @@ class RTLPlusProvider(StreamingProvider):
         if location is None and layout_type in ("live", "video", "folder", "program", "alias"):
             location = f"{self.rtl_config.base_website}{clean_content_id}"
 
-        # Build request - handle alias layouts specially
+        # Build request - handle special layout types
         if layout_type == "alias":
             url = f"{self.rtl_config.bedrock_layout_base}/alias/{clean_content_id}/layout"
+        elif layout_type == "search":
+            url = f"{self.rtl_config.bedrock_layout_base}/frontspace/search/layout"
+            # Validate query parameter for search
+            query = kwargs.get("query")
+            if not query:
+                logger.error("fetch_layout: 'search' layout requires 'query' parameter")
+                return None
         else:
             url = self.rtl_config.get_layout_url(layout_type, clean_content_id)
 
         headers = self.rtl_config.get_layout_headers(oauth_token, bedrock_token, location)
         params = {"blockPage": block_page, "nbPages": nb_pages}
+
+        # Add query parameter for search
+        if layout_type == "search":
+            params["query"] = kwargs.get("query")
 
         try:
             response = self.http_manager.get(
@@ -193,11 +216,11 @@ class RTLPlusProvider(StreamingProvider):
             return None
 
     def fetch_block_page(
-        self,
-        block_id: str,
-        page: int,
-        nb_pages: int = 3,
-        service_id: str = "rtlplus_root",
+            self,
+            block_id: str,
+            page: int,
+            nb_pages: int = 3,
+            service_id: str = "rtlplus_root",
     ) -> Optional[Dict]:
         """
         Fetch a specific page of a service block from the Bedrock API.
@@ -275,9 +298,9 @@ class RTLPlusProvider(StreamingProvider):
 
     @staticmethod
     def _extract_items_from_block(
-        layout_data: Dict,
-        block_type: str = None,
-        item_type: str = None
+            layout_data: Dict,
+            block_type: str = None,
+            item_type: str = None
     ) -> List[Dict]:
         """
         Extract items from layout blocks with optional filtering.
@@ -319,10 +342,10 @@ class RTLPlusProvider(StreamingProvider):
         return layout_data.get("pagination", {})
 
     def extract_best_manifest_url(
-        self,
-        assets: List[Dict],
-        preferred_quality: str = None,
-        preferred_format: str = None,
+            self,
+            assets: List[Dict],
+            preferred_quality: str = None,
+            preferred_format: str = None,
     ) -> Optional[str]:
         """
         Extract the best manifest URL from assets based on preferences.
@@ -373,8 +396,8 @@ class RTLPlusProvider(StreamingProvider):
         try:
             current_level = self.authenticator.get_current_token_level()
             force_upgrade = (
-                self.authenticator.has_user_credentials()
-                and current_level != TokenAuthLevel.USER_AUTHENTICATED
+                    self.authenticator.has_user_credentials()
+                    and current_level != TokenAuthLevel.USER_AUTHENTICATED
             )
             bearer_token = self.authenticator.get_bearer_token(force_upgrade=force_upgrade)
         except Exception as e:
@@ -404,10 +427,10 @@ class RTLPlusProvider(StreamingProvider):
     # --------------------------------------------------------------------------
 
     def get_events(
-        self,
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
-        **kwargs,
+            self,
+            start_time: Optional[datetime] = None,
+            end_time: Optional[datetime] = None,
+            **kwargs,
     ) -> List[Event]:
         """
         Fetch upcoming / live RTL+ events from the Bedrock layout API.
@@ -426,6 +449,32 @@ class RTLPlusProvider(StreamingProvider):
 
     def get_vod_category(self, content_id: str = "", **kwargs):
         return self._vod_manager.get_vod_category(content_id=content_id, **kwargs)
+
+    def search_vod(
+            self,
+            query: str,
+            cursor: Optional[str] = None,
+            page_size: int = 24,
+            **kwargs,
+    ) -> Dict[str, Any]:
+        """
+        Search the RTL+ VOD catalogue.
+
+        Args:
+            query: Search string
+            cursor: Pagination cursor (opaque token)
+            page_size: Number of results per page
+            **kwargs: Additional arguments
+
+        Returns:
+            Dictionary with 'entries', 'next_cursor', and 'total' fields
+        """
+        return self._vod_manager.search_vod(
+            query=query,
+            cursor=cursor,
+            page_size=page_size,
+            **kwargs
+        )
 
     # --------------------------------------------------------------------------
     # Manifest & DRM (Unified)

@@ -157,6 +157,153 @@ class RTLPlusVodManager:
         logger.warning(f"Unrecognised VOD content_id format: {content_id!r}")
         return {"entries": [], "next_cursor": None, "total": 0}
 
+    def search_vod(
+            self,
+            query: str,
+            cursor: Optional[str] = None,
+            page_size: int = 24,
+            **kwargs,
+    ) -> Dict[str, Any]:
+        """
+        Search the RTL+ catalogue for programs and clips matching *query*.
+
+        Uses the Bedrock ``frontspace/search/layout`` endpoint, which returns
+        the same block/item structure as every other layout response.  Results
+        are split into typed blocks (e.g. "Serien & Shows", "Filme") but we
+        flatten them into a single list because the caller's UI shows one
+        combined result set.
+
+        Pagination:
+            The Bedrock search endpoint accepts ``blockPage`` (1-indexed).
+            We map *cursor* → ``blockPage`` using the same integer-cursor
+            convention used by the rest of the VOD manager.
+
+        Args:
+            query:     Free-text search string.
+            cursor:    Opaque page token (stringified integer, None = page 1).
+            page_size: Ignored — the API controls page size; kept for
+                       interface compatibility.
+
+        Returns:
+            ``{"entries": [...], "next_cursor": str | None, "total": int}``
+        """
+        if not query or not query.strip():
+            return {"entries": [], "next_cursor": None, "total": 0}
+
+        block_page = 1
+        if cursor:
+            try:
+                block_page = int(cursor)
+            except ValueError:
+                block_page = 1
+
+        layout = self._provider.fetch_layout(
+            layout_type="search",
+            content_id="search",  # unused by the search branch but
+            # required by fetch_layout signature
+            block_page=block_page,
+            nb_pages=RTLPlusDefaults.DEFAULT_NB_PAGES,
+            query=query,
+        )
+
+        if not layout:
+            logger.warning(f"RTL+ search returned no layout for query={query!r}")
+            return {"entries": [], "next_cursor": None, "total": 0}
+
+        return self._parse_search_layout(layout, block_page)
+
+        # ------------------------------------------------------------------
+        # Search-specific parsing helpers
+        # ------------------------------------------------------------------
+
+    def _parse_search_layout(
+            self,
+            layout: Dict,
+            current_page: int,
+    ) -> Dict[str, Any]:
+        """
+        Flatten all ``bffPaginated`` blocks from a search layout into a
+        single list of VodCategory / VodItem entries.
+
+        The search response uses the identical block→item structure as folder
+        and program layouts, so we reuse the existing extraction helpers
+        directly.  Items whose action target resolves to a ``program`` layout
+        become VodCategory objects (browsable); items pointing to a ``video``
+        layout become VodItem objects (playable).
+
+        Pagination is block-level: the API returns one or more blocks per
+        page; we advance the page when *any* block reports a next page.
+        """
+        entries: list = []
+        has_next_page = False
+
+        for block in layout.get("blocks", []):
+            if block.get("type") != "bffPaginated":
+                continue
+
+            content = block.get("content") or {}
+            items = content.get("items") or []
+
+            for item in items:
+                if not item or item.get("itemType") != "classic":
+                    continue
+
+                item_content = item.get("itemContent") or {}
+
+                # Skip future scheduled events (same filter as VOD root)
+                if self._is_future_event(item_content):
+                    continue
+
+                entry = self._extract_search_entry(item)
+                if entry is not None:
+                    entries.append(entry)
+
+            # Detect pagination: does this block have a next page?
+            pagination = content.get("pagination") or {}
+            if pagination.get("nextPage"):
+                has_next_page = True
+
+        next_cursor = str(current_page + 1) if has_next_page else None
+
+        logger.debug(
+            f"RTL+ search page {current_page}: "
+            f"{len(entries)} entries, next_cursor={next_cursor!r}"
+        )
+        return {
+            "entries": entries,
+            "next_cursor": next_cursor,
+            "total": len(entries),  # Bedrock search does not expose a grand total
+        }
+
+    def _extract_search_entry(self, item: Dict):
+        """
+        Convert one search result item into a VodCategory or VodItem.
+
+        Decision tree (mirrors the rest of the manager):
+        - target.type == "program"  → VodCategory  (series / show landing page)
+        - target.type == "video"    → VodItem       (directly playable clip)
+        - target.type == "folder"   → VodCategory   (genre folder)
+        - anything else             → None (silently skipped)
+
+        We deliberately reuse ``_extract_vod_category_from_block_item`` and
+        ``_extract_vod_item_from_block_item`` so that any future improvements
+        to those methods automatically benefit search results too.
+        """
+        item_content = item.get("itemContent") or {}
+        action = item_content.get("action") or {}
+        target = unwrap_target(action.get("target") or {})
+        layout_type = target.get("value_layout", {}).get("type")
+
+        if layout_type in ("program", "folder"):
+            return self._extract_vod_category_from_block_item(item)
+
+        if layout_type == "video":
+            return self._extract_vod_item_from_block_item(item)
+
+        # Unrecognised layout type — skip gracefully
+        logger.debug(f"RTL+ search: skipping item with layout_type={layout_type!r}")
+        return None
+
     def _get_program_block_episodes(
         self,
         program_id: str,
