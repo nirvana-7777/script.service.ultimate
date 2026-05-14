@@ -336,8 +336,11 @@ class RTLPlusEventManager:
             if not event_date:
                 continue
 
-            # Only include future events or currently live ones
-            if event_date < current_time:
+            # Determine status early so we can decide whether to keep the event
+            status = self._determine_event_status(event_date, highlight)
+
+            # Exclude events that have already ended (not live and started > 3 h ago)
+            if status == EventStatus.ENDED:
                 continue
 
             # Extract title
@@ -359,7 +362,6 @@ class RTLPlusEventManager:
                 logger.debug(f"Skipping event with no folder_id: {title}")
                 continue
 
-            status = self._determine_event_status(event_date, highlight)
             sport = self._extract_sport_type(highlight)
 
             event = Event(
