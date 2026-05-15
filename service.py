@@ -1720,7 +1720,7 @@ class UltimateService:
         setup_recordings_routes(self.app, self.manager, self)
         setup_timers_routes(self.app, self.manager, self)
         setup_bookmarks_routes(self.app, self.manager, self)
-        setup_favorites_routes(app, manager, service)
+        setup_favorites_routes(self.app, self.manager, self)
 
         # Core UI routes
         @self.app.route("/config")
