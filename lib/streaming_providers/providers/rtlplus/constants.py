@@ -580,3 +580,8 @@ class RTLPlusConfig:
             user_agent=self.user_agent,
             location=location,
         )
+
+    @property
+    def users_base_url(self) -> str:
+        """Base URL for user-related API endpoints (bookmarks, etc.)"""
+        return "https://users.rtlde.bedrock.tech/v4/rtlde/m6group_web"

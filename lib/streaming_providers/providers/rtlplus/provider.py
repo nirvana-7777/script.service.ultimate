@@ -9,12 +9,14 @@ from ...base.models import DRMConfig, StreamingChannel, Event
 from ...base.models.proxy_models import ProxyConfig
 from ...base.provider import StreamingProvider
 from ...base.utils import logger
+from ...base.models.favorite import FavoriteType, Favorite
 from .auth import RTLPlusAuthenticator
 from .constants import RTLPlusConfig, RTLPlusDefaults
 from .layout_helpers import unwrap_target
 from .vod_manager import RTLPlusVodManager
 from .channel_manager import RTLPlusChannelManager
 from .event_manager import RTLPlusEventManager
+from .favorite_manager import RTLPlusFavoriteManager
 
 _MANIFEST_CACHE_TTL = 86400  # 1 day in seconds for VOD/events
 
@@ -77,6 +79,7 @@ class RTLPlusProvider(StreamingProvider):
         self._vod_manager = RTLPlusVodManager(self)
         self.channel_manager = RTLPlusChannelManager(self)
         self.event_manager = RTLPlusEventManager(self)
+        self._favorite_manager = RTLPlusFavoriteManager(self)
 
         # Manifest cache for VOD/events
         self._manifest_cache: Dict[str, tuple] = {}
@@ -109,6 +112,38 @@ class RTLPlusProvider(StreamingProvider):
     def implements_vod(self) -> bool:
         """RTL+ has a browsable VOD catalogue."""
         return True
+
+    @property
+    def implements_favorites(self) -> bool:
+        """RTL+ supports program bookmarks."""
+        return True
+
+    def get_favorites(self, **kwargs) -> List[Favorite]:
+        """Get all bookmarked programs for the authenticated user."""
+        return self._favorite_manager.get_favorites(**kwargs)
+
+    def add_favorite(
+            self,
+            content_id: str,
+            favorite_type: FavoriteType,
+            title: Optional[str] = None,
+            **kwargs,
+    ) -> Optional[Favorite]:
+        """Add a program to user's bookmarks."""
+        return self._favorite_manager.add_favorite(
+            content_id=content_id,
+            favorite_type=favorite_type,
+            title=title,
+            **kwargs,
+        )
+
+    def remove_favorite(self, content_id: str, **kwargs) -> None:
+        """Remove a program from user's bookmarks."""
+        self._favorite_manager.remove_favorite(content_id=content_id, **kwargs)
+
+    def is_favorited(self, content_id: str) -> bool:
+        """Check if a specific program is bookmarked."""
+        return self._favorite_manager.is_favorited(content_id)
 
     # --------------------------------------------------------------------------
     # Common Layout Methods
