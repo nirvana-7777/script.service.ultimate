@@ -1705,6 +1705,7 @@ class UltimateService:
         from routes.recordings import setup_recordings_routes
         from routes.timers import setup_timers_routes
         from routes.bookmarks import setup_bookmarks_routes
+        from routes.favorites import setup_favorites_routes
 
         # Setup routes from separate modules
         setup_provider_routes(self.app, self.manager, self)
@@ -1719,6 +1720,7 @@ class UltimateService:
         setup_recordings_routes(self.app, self.manager, self)
         setup_timers_routes(self.app, self.manager, self)
         setup_bookmarks_routes(self.app, self.manager, self)
+        setup_favorites_routes(app, manager, service)
 
         # Core UI routes
         @self.app.route("/config")

@@ -15,8 +15,10 @@ from .vod_operations import VodOperations
 from .recording_operations import RecordingOperations
 from .timer_operations import TimerOperations
 from .bookmark_operations import BookmarkOperations
+from .favorite_operations import FavoriteOperations
 from .models import StreamingChannel
 from .models.bookmark import Bookmark, ContentType
+from .models.favorite import FavoriteType, Favorite
 from .provider_registry import ProviderRegistry
 from .subscription_operations import SubscriptionOperations
 from .utils.logger import logger
@@ -43,6 +45,7 @@ class ProviderManager:
         self.recording_ops = RecordingOperations(self.registry)
         self.timer_ops = TimerOperations(self.registry)
         self.bookmark_ops = BookmarkOperations(self.registry)
+        self.favorite_ops = FavoriteOperations(self.registry)
 
         # Backward compatibility - expose managers directly
         self.drm_plugin_manager = self.drm_ops.drm_plugin_manager
@@ -648,6 +651,50 @@ class ProviderManager:
             Dictionary with validation results (total, errors, warnings, fixed).
         """
         return self.bookmark_ops.validate_bookmarks(provider_name, auto_fix=auto_fix)
+
+    # ==========================================================================
+    # Favorite OPERATIONS (delegate to FavoriteOperations)
+    # ==========================================================================
+
+    def get_favorites(
+            self,
+            provider_name: str,
+            favorite_type: Optional[FavoriteType] = None,
+    ) -> List[Favorite]:
+        """Get favorites from a specific provider."""
+        return self.favorite_ops.get_favorites(provider_name, favorite_type)
+
+    def add_favorite(
+            self,
+            provider_name: str,
+            content_id: str,
+            favorite_type: FavoriteType,
+            title: Optional[str] = None,
+            **kwargs,
+    ) -> Optional[Favorite]:
+        """Add a favorite."""
+        return self.favorite_ops.add_favorite(
+            provider_name, content_id, favorite_type, title, **kwargs
+        )
+
+    def remove_favorite(
+            self, provider_name: str, content_id: str
+    ) -> bool:
+        """Remove a favorite."""
+        return self.favorite_ops.remove_favorite(provider_name, content_id)
+
+    def get_all_favorites(
+            self,
+            favorite_type: Optional[FavoriteType] = None,
+    ) -> Dict[str, List[Favorite]]:
+        """Get favorites from all enabled providers."""
+        return self.favorite_ops.get_all_favorites(favorite_type)
+
+    def is_favorited(
+            self, provider_name: str, content_id: str
+    ) -> bool:
+        """Check if content is favorited."""
+        return self.favorite_ops.is_favorited(provider_name, content_id)
 
     # ==========================================================================
     # SUBSCRIPTION OPERATIONS (delegate to SubscriptionOperations)
