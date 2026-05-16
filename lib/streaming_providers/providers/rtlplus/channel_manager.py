@@ -13,7 +13,7 @@ Handles all linear TV (live channel) functionality:
 from typing import List, Optional, Dict, Any
 from datetime import date
 
-from .layout_helpers import unwrap_target
+from .layout_helpers import unwrap_target, build_image_url
 from ...base.models import Channel, DRMConfig
 from ...base.utils.logger import logger
 
@@ -155,7 +155,7 @@ class RTLPlusChannelManager:
             )
 
             # Set logo URL
-            streaming_channel.logo_url = self._resolve_image_url(logo_id)
+            streaming_channel.logo_url = build_image_url(logo_id) if logo_id else ""
 
             # Store SEO in manifest_script for fallback lookups
             if seo:
@@ -168,13 +168,6 @@ class RTLPlusChannelManager:
 
         logger.info(f"Returning {len(streaming_channels)} channels with IDs")
         return streaming_channels
-
-    @staticmethod
-    def _resolve_image_url(image_id: str) -> str:
-        """Resolve image ID to actual URL."""
-        if not image_id:
-            return ""
-        return f"https://images.rtl.de/{image_id}?format=webp&width=200"
 
     # --------------------------------------------------------------------------
     # Channel ID Normalization
