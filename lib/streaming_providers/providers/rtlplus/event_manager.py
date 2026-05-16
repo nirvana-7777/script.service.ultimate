@@ -390,48 +390,36 @@ class RTLPlusEventManager:
         return events
 
     def _extract_manifest_from_folder_layout(self, layout: Dict) -> Optional[str]:
-        """
-        Extract manifest URL from a folder layout (live event detail page).
-
-        The folder layout has a Solo block with a "Live ansehen" button.
-        The target points to a live player, which we need to fetch.
-        """
         for block in layout.get("blocks", []):
             if block.get("type") != "bffPaginated":
                 continue
-
             for item in block.get("content", {}).get("items", []):
                 item_content = item.get("itemContent", {})
                 action = item_content.get("action", {})
                 target = unwrap_target(action.get("target", {}))
                 value_layout = target.get("value_layout", {})
 
-                # The target type "live" points to the player
                 if value_layout.get("type") == "live":
-                    live_event_id = value_layout.get("id")
-                    if live_event_id:
-                        return self._get_manifest_from_live_event(live_event_id)
-
+                    live_id = value_layout.get("id")  # "rtlde_nitro"
+                    live_seo = value_layout.get("seo")  # "nitro"  ← use this
+                    if live_id:
+                        return self._get_manifest_from_live_event(live_id, live_seo)
         return None
 
-    def _get_manifest_from_live_event(self, live_event_id: str) -> Optional[str]:
-        """
-        Get manifest from live event player page.
-
-        Args:
-            live_event_id: The live event ID (e.g., "rtlde_event3")
-        """
+    def _get_manifest_from_live_event(
+            self, live_event_id: str, live_seo: Optional[str] = None
+    ) -> Optional[str]:
+        # The API path uses the seo slug, not the full rtlde_xxx ID
+        path_id = live_seo or live_event_id
         live_layout = self._provider.fetch_layout(
             layout_type="live",
-            content_id=live_event_id,
-            location=f"{self._provider.rtl_config.base_website}{live_event_id}",
+            content_id=path_id,
+            location=f"{self._provider.rtl_config.base_website}{path_id}",
         )
-
         if live_layout:
             assets = self._provider.extract_video_assets(live_layout)
             if assets:
                 return self._provider.extract_best_manifest_url(assets)
-
         return None
 
     # --------------------------------------------------------------------------
