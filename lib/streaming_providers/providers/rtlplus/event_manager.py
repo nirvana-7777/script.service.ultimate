@@ -8,7 +8,7 @@ Follows non-sequential pagination (1 → 3 → 6 → ...) as returned by the API
 """
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Optional, Dict, Set
 
 from ...base.models.event import Event, EventStatus
@@ -271,7 +271,7 @@ class RTLPlusEventManager:
                 continue
 
             # Exact match — return immediately
-            if block_title == "Diese Live-Events erwarten euch":
+            if block_title.strip() == "Diese Live-Events erwarten euch":
                 logger.debug(f"Found live events block (exact): '{block_title}'")
                 return block
 
@@ -452,7 +452,7 @@ class RTLPlusEventManager:
             return EventStatus.LIVE
 
         # Event started within the last 3 hours → treat as live
-        if event_date <= now and event_date >= now - timedelta(hours=3):
+        if event_date <= now:
             return EventStatus.LIVE
 
         if event_date > now:
