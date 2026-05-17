@@ -116,38 +116,6 @@ class RTLPlusEventManager:
         logger.info(f"Returning {len(filtered_events)} events after filtering")
         return filtered_events
 
-    def get_manifest_for_event(self, event_id: str) -> Optional[str]:
-        """
-        Get manifest URL for an event.
-
-        Args:
-            event_id: The event folder ID (e.g., "95" for Freiburg vs Braga)
-
-        Returns:
-            Manifest URL if available, None otherwise
-        """
-        layout = self._provider.fetch_layout(layout_type="folder", content_id=event_id)
-        if not layout:
-            logger.debug(f"No folder layout found for event {event_id}")
-            return None
-
-        # First try: Extract manifest from the folder's solo block
-        manifest = self._extract_manifest_from_folder_layout(layout)
-        if manifest:
-            logger.debug(f"Found manifest in folder layout for event {event_id}")
-            return manifest
-
-        # Second try: Extract video assets directly from layout
-        assets = self._provider.extract_video_assets(layout)
-        if assets:
-            manifest_url = self._provider.extract_best_manifest_url(assets)
-            if manifest_url:
-                logger.debug(f"Found manifest from assets for event {event_id}")
-                return manifest_url
-
-        logger.debug(f"No manifest found for event {event_id}")
-        return None
-
     def get_drm_for_event(self, event_id: str) -> List[DRMConfig]:
         """Get DRM configuration for an event (folder)."""
 
@@ -168,16 +136,31 @@ class RTLPlusEventManager:
         live_id, live_seo = self._extract_live_target_from_folder(folder_layout)
         if live_id and live_seo:
             logger.debug(f"Event {event_id} redirects to live channel {live_id} (seo: {live_seo})")
-            live_layout = self._provider.fetch_layout(
-                layout_type="live",
-                content_id=live_seo,  # API uses SEO slug, not full ID
-                location=f"{self._provider.rtl_config.base_website}{live_seo}"
-            )
-            if live_layout:
-                return self._provider.get_drm_for_content(live_layout)
+            # Delegate to channel_manager which knows how to handle live channel DRM
+            return self._provider.channel_manager.get_drm_config_for_channel(live_id)
 
         logger.warning(f"No DRM config found for event {event_id}")
         return []
+
+    def get_manifest_for_event(self, event_id: str) -> Optional[str]:
+        """Get manifest URL for an event, following live redirects."""
+
+        layout = self._provider.fetch_layout(layout_type="folder", content_id=event_id)
+        if not layout:
+            return None
+
+        # Try folder first
+        manifest = self._extract_manifest_from_folder_layout(layout)
+        if manifest:
+            return manifest
+
+        # Follow live redirect if needed - delegate to channel_manager
+        live_id, live_seo = self._extract_live_target_from_folder(layout)
+        if live_id and live_seo:
+            logger.debug(f"Event {event_id} redirects to live channel {live_id} (seo: {live_seo})")
+            return self._provider.channel_manager.get_best_manifest_url(live_id)
+
+        return None
 
     @staticmethod
     def _extract_live_target_from_folder(layout: Dict) -> Tuple[Optional[str], Optional[str]]:
@@ -193,7 +176,7 @@ class RTLPlusEventManager:
 
                 # Look for live redirect
                 if value_layout.get("type") == "live":
-                    return value_layout.get("id"), value_layout.get("seo")
+                    return value_layout.get("id"), value_layout.get("seo")  # e.g., "rtlde_nitro", "nitro"
         return None, None
 
     # --------------------------------------------------------------------------
