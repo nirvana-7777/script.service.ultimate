@@ -116,68 +116,59 @@ class RTLPlusEventManager:
         logger.info(f"Returning {len(filtered_events)} events after filtering")
         return filtered_events
 
-    def get_manifest_for_event(self, event_id: str) -> Optional[str]:
-        """Get manifest URL for an event, following live redirects."""
+    @staticmethod
+    def _fetch_live_target_from_folder(layout: Dict) -> Optional[Tuple[str, str]]:
+        """Extract (live_id, live_seo) from folder's live redirect, if present."""
+        for block in layout.get("blocks", []):
+            if block.get("type") != "bffPaginated":
+                continue
+            for item in block.get("content", {}).get("items", []):
+                if item.get("itemType") != "classic":
+                    continue
+                target = unwrap_target(item.get("itemContent", {}).get("action", {}).get("target", {}))
+                value_layout = target.get("value_layout", {})
+                if value_layout.get("type") == "live":
+                    live_id = value_layout.get("id")  # "rtlde_nitro"
+                    live_seo = value_layout.get("seo")  # "nitro"
+                    if live_id and live_seo:
+                        return live_id, live_seo
+        return None
 
+    def get_manifest_for_event(self, event_id: str) -> Optional[str]:
         layout = self._provider.fetch_layout(layout_type="folder", content_id=event_id)
         if not layout:
             return None
 
-        # Try folder first
-        manifest = self._extract_manifest_from_folder_layout(layout)
+        # Try direct extraction (VOD events with inline assets)
+        manifest = self._provider.extract_best_manifest_url(
+            self._provider.extract_video_assets(layout)
+        )
         if manifest:
             return manifest
 
-        # Follow live redirect if needed - delegate to channel_manager
-        live_id, live_seo = self._extract_live_target_from_folder(layout)
+        # Follow live redirect
+        live_id, live_seo = self._fetch_live_target_from_folder(layout)
         if live_id and live_seo:
-            logger.debug(f"Event {event_id} redirects to live channel {live_id} (seo: {live_seo})")
             return self._provider.channel_manager.get_best_manifest_url(live_id)
 
         return None
 
     def get_drm_for_event(self, event_id: str) -> List[DRMConfig]:
-        """Get DRM configuration for an event (folder), following live redirects."""
-
-        # Step 1: Fetch folder layout
-        folder_layout = self._provider.fetch_layout(
-            layout_type="folder",
-            content_id=event_id
-        )
-        if not folder_layout:
+        layout = self._provider.fetch_layout(layout_type="folder", content_id=event_id)
+        if not layout:
             return []
 
-        # Step 2: Try extracting DRM directly from folder (for VOD/events with inline assets)
-        drm_configs = self._provider.get_drm_for_content(folder_layout)
+        # Try direct extraction first
+        drm_configs = self._provider.get_drm_for_content(layout)
         if drm_configs:
             return drm_configs
 
-        # Step 3: Folder has no DRM → check if it redirects to a live channel
-        live_id, live_seo = self._extract_live_target_from_folder(folder_layout)
+        # Follow live redirect
+        live_id, live_seo = self._fetch_live_target_from_folder(layout)
         if live_id and live_seo:
-            logger.debug(f"Event {event_id} redirects to live channel {live_id} (seo: {live_seo})")
-            # Delegate to channel_manager which knows how to handle live channel DRM
             return self._provider.channel_manager.get_drm_config_for_channel(live_id)
 
-        logger.warning(f"No DRM config found for event {event_id}")
         return []
-
-    @staticmethod
-    def _extract_live_target_from_folder(layout: Dict) -> Tuple[Optional[str], Optional[str]]:
-        """Extract live channel ID and SEO slug from folder layout's action target."""
-        for block in layout.get("blocks", []):
-            if block.get("type") != "bffPaginated":
-                continue
-            for item in block.get("content", {}).get("items", []):
-                item_content = item.get("itemContent", {})
-                action = item_content.get("action", {})
-                target = unwrap_target(action.get("target", {}))
-                value_layout = target.get("value_layout", {})
-
-                # Look for live redirect
-                if value_layout.get("type") == "live":
-                    return value_layout.get("id"), value_layout.get("seo")  # e.g., "rtlde_nitro", "nitro"
-        return None, None
 
     # --------------------------------------------------------------------------
     # Homepage Event Fetching (Primary Source)
