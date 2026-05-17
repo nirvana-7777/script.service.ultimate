@@ -9,7 +9,7 @@ Follows non-sequential pagination (1 → 3 → 6 → ...) as returned by the API
 
 import json
 from datetime import datetime
-from typing import List, Optional, Dict, Set
+from typing import List, Optional, Dict, Set, Tuple
 
 from ...base.models.event import Event, EventStatus
 from ...base.utils.logger import logger
@@ -149,20 +149,52 @@ class RTLPlusEventManager:
         return None
 
     def get_drm_for_event(self, event_id: str) -> List[DRMConfig]:
-        """
-        Get DRM configuration for an event.
+        """Get DRM configuration for an event (folder)."""
 
-        Args:
-            event_id: The event folder ID
-
-        Returns:
-            List of DRMConfig objects
-        """
-        layout = self._provider.fetch_layout(layout_type="folder", content_id=event_id)
-        if not layout:
+        # Step 1: Fetch folder layout
+        folder_layout = self._provider.fetch_layout(
+            layout_type="folder",
+            content_id=event_id
+        )
+        if not folder_layout:
             return []
 
-        return self._provider.get_drm_for_content(layout)
+        # Step 2: Try extracting DRM directly from folder (for VOD/events with inline assets)
+        drm_configs = self._provider.get_drm_for_content(folder_layout)
+        if drm_configs:
+            return drm_configs
+
+        # Step 3: Folder has no DRM → check if it redirects to a live channel
+        live_id, live_seo = self._extract_live_target_from_folder(folder_layout)
+        if live_id and live_seo:
+            logger.debug(f"Event {event_id} redirects to live channel {live_id} (seo: {live_seo})")
+            live_layout = self._provider.fetch_layout(
+                layout_type="live",
+                content_id=live_seo,  # API uses SEO slug, not full ID
+                location=f"{self._provider.rtl_config.base_website}{live_seo}"
+            )
+            if live_layout:
+                return self._provider.get_drm_for_content(live_layout)
+
+        logger.warning(f"No DRM config found for event {event_id}")
+        return []
+
+    @staticmethod
+    def _extract_live_target_from_folder(layout: Dict) -> Tuple[Optional[str], Optional[str]]:
+        """Extract live channel ID and SEO slug from folder layout's action target."""
+        for block in layout.get("blocks", []):
+            if block.get("type") != "bffPaginated":
+                continue
+            for item in block.get("content", {}).get("items", []):
+                item_content = item.get("itemContent", {})
+                action = item_content.get("action", {})
+                target = unwrap_target(action.get("target", {}))
+                value_layout = target.get("value_layout", {})
+
+                # Look for live redirect
+                if value_layout.get("type") == "live":
+                    return value_layout.get("id"), value_layout.get("seo")
+        return None, None
 
     # --------------------------------------------------------------------------
     # Homepage Event Fetching (Primary Source)
