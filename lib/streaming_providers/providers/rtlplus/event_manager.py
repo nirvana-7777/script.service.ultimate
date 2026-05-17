@@ -255,16 +255,9 @@ class RTLPlusEventManager:
             channel_id: str,
             channel_seo: Optional[str] = None,
     ) -> Optional[str]:
-        """
-        Step 2 for manifest: fetch the live layout and return the best URL.
-
-        The Bedrock live endpoint uses the SEO slug (e.g. ``"nitro"``), not the
-        full channel ID (e.g. ``"rtlde_nitro"``).  When only the full ID is
-        available it is normalised via the channel_manager helper.
-        """
         path_id = (
-            channel_seo
-            or self._provider.channel_manager._normalize_channel_identifier(channel_id)
+                channel_seo
+                or self._provider.channel_manager._normalize_channel_identifier(channel_id)
         )
         location = f"{self.cfg.base_website}{path_id}/live"
 
@@ -276,6 +269,25 @@ class RTLPlusEventManager:
         if not live_layout:
             logger.warning(f"_manifest_from_live_layout: no live layout returned for '{path_id}'")
             return None
+
+        # --- TEMPORARY DEBUG ---
+        import json
+        blocks = live_layout.get("blocks", [])
+        logger.debug(f"[event33 debug] block count: {len(blocks)}")
+        for i, block in enumerate(blocks):
+            items = block.get("content", {}).get("items", [])
+            logger.debug(f"[event33 debug] block[{i}] type={block.get('type')} items={len(items)}")
+            for j, item in enumerate(items):
+                ic = item.get("itemContent", {})
+                video = ic.get("video", {})
+                assets = video.get("assets", [])
+                logger.debug(
+                    f"[event33 debug]   item[{j}] itemType={item.get('itemType')} "
+                    f"video_id={video.get('id')} asset_count={len(assets)}"
+                )
+                if assets:
+                    logger.debug(f"[event33 debug]   first asset: {json.dumps(assets[0], indent=2)}")
+        # --- END TEMPORARY DEBUG ---
 
         assets = self._provider.extract_video_assets(live_layout)
         if not assets:
