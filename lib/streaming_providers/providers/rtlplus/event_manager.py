@@ -116,8 +116,28 @@ class RTLPlusEventManager:
         logger.info(f"Returning {len(filtered_events)} events after filtering")
         return filtered_events
 
+    def get_manifest_for_event(self, event_id: str) -> Optional[str]:
+        """Get manifest URL for an event, following live redirects."""
+
+        layout = self._provider.fetch_layout(layout_type="folder", content_id=event_id)
+        if not layout:
+            return None
+
+        # Try folder first
+        manifest = self._extract_manifest_from_folder_layout(layout)
+        if manifest:
+            return manifest
+
+        # Follow live redirect if needed - delegate to channel_manager
+        live_id, live_seo = self._extract_live_target_from_folder(layout)
+        if live_id and live_seo:
+            logger.debug(f"Event {event_id} redirects to live channel {live_id} (seo: {live_seo})")
+            return self._provider.channel_manager.get_best_manifest_url(live_id)
+
+        return None
+
     def get_drm_for_event(self, event_id: str) -> List[DRMConfig]:
-        """Get DRM configuration for an event (folder)."""
+        """Get DRM configuration for an event (folder), following live redirects."""
 
         # Step 1: Fetch folder layout
         folder_layout = self._provider.fetch_layout(
@@ -141,26 +161,6 @@ class RTLPlusEventManager:
 
         logger.warning(f"No DRM config found for event {event_id}")
         return []
-
-    def get_manifest_for_event(self, event_id: str) -> Optional[str]:
-        """Get manifest URL for an event, following live redirects."""
-
-        layout = self._provider.fetch_layout(layout_type="folder", content_id=event_id)
-        if not layout:
-            return None
-
-        # Try folder first
-        manifest = self._extract_manifest_from_folder_layout(layout)
-        if manifest:
-            return manifest
-
-        # Follow live redirect if needed - delegate to channel_manager
-        live_id, live_seo = self._extract_live_target_from_folder(layout)
-        if live_id and live_seo:
-            logger.debug(f"Event {event_id} redirects to live channel {live_id} (seo: {live_seo})")
-            return self._provider.channel_manager.get_best_manifest_url(live_id)
-
-        return None
 
     @staticmethod
     def _extract_live_target_from_folder(layout: Dict) -> Tuple[Optional[str], Optional[str]]:
