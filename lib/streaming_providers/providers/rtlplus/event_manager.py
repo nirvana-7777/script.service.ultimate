@@ -5,6 +5,10 @@ RTL+ Event Manager
 Handles fetching future/live events from Bedrock layout API.
 Uses the homepage's "Diese Live-Events erwarten euch" block as primary source.
 Follows non-sequential pagination (1 → 3 → 6 → ...) as returned by the API.
+
+Two-step manifest/DRM resolution for live events:
+  Step 1: Fetch folder layout  → find the live channel redirect (e.g. "rtlde_nitro" / "nitro")
+  Step 2: Fetch live layout    → extract video assets → pick best manifest / DRM config
 """
 
 import json
@@ -116,65 +120,206 @@ class RTLPlusEventManager:
         logger.info(f"Returning {len(filtered_events)} events after filtering")
         return filtered_events
 
-    @staticmethod
-    def _fetch_live_target_from_folder(layout: Dict) -> Optional[Tuple[str, str]]:
-        """Extract (live_id, live_seo) from folder's live redirect, if present."""
-        for block in layout.get("blocks", []):
-            if block.get("type") != "bffPaginated":
-                continue
-            for item in block.get("content", {}).get("items", []):
-                if item.get("itemType") != "classic":
-                    continue
-                target = unwrap_target(item.get("itemContent", {}).get("action", {}).get("target", {}))
-                value_layout = target.get("value_layout", {})
-                if value_layout.get("type") == "live":
-                    live_id = value_layout.get("id")  # "rtlde_nitro"
-                    live_seo = value_layout.get("seo")  # "nitro"
-                    if live_id and live_seo:
-                        return live_id, live_seo
-        return None
-
     def get_manifest_for_event(self, event_id: str) -> Optional[str]:
-        layout = self._provider.fetch_layout(layout_type="folder", content_id=event_id)
-        if not layout:
+        """
+        Get manifest URL for an event using the two-step flow:
+
+          Step 1: Fetch the folder layout for ``event_id`` and locate the live
+                  channel redirect embedded in the "Jetzt live" block
+                  (value_layout.type == "live").
+          Step 2: Fetch the live layout for that channel and extract the best
+                  manifest URL from its video assets.
+
+        Falls back to direct asset extraction from the folder itself when no
+        live redirect is present (handles VOD-style event folders).
+        """
+        # --- Step 1: folder layout -------------------------------------------
+        folder_layout = self._provider.fetch_layout(
+            layout_type="folder",
+            content_id=event_id,
+        )
+        if not folder_layout:
+            logger.error(f"get_manifest_for_event: could not fetch folder layout for {event_id}")
             return None
 
-        # Try direct extraction (VOD events with inline assets)
-        manifest = self._provider.extract_best_manifest_url(
-            self._provider.extract_video_assets(layout)
-        )
-        if manifest:
-            return manifest
+        live_id, live_seo = self._extract_live_redirect(folder_layout)
 
-        # Follow live redirect
-        live_id, live_seo = self._fetch_live_target_from_folder(layout)
-        if live_id and live_seo:
-            return self._provider.channel_manager.get_best_manifest_url(live_id)
+        if live_id:
+            logger.debug(
+                f"Event {event_id} -> live redirect: id={live_id}, seo={live_seo}"
+            )
+            # --- Step 2: live layout -----------------------------------------
+            manifest = self._manifest_from_live_layout(live_id, live_seo)
+            if manifest:
+                return manifest
+            logger.warning(
+                f"Event {event_id}: live layout for '{live_seo or live_id}' returned no manifest"
+            )
 
+        # Fallback: the folder itself may carry video assets (rare but possible)
+        assets = self._provider.extract_video_assets(folder_layout)
+        if assets:
+            manifest = self._provider.extract_best_manifest_url(assets)
+            if manifest:
+                logger.debug(f"Event {event_id}: manifest resolved from folder assets")
+                return manifest
+
+        logger.error(f"get_manifest_for_event: no manifest found for event {event_id}")
         return None
 
     def get_drm_for_event(self, event_id: str) -> List[DRMConfig]:
-        layout = self._provider.fetch_layout(layout_type="folder", content_id=event_id)
-        if not layout:
+        """
+        Get DRM configuration for an event using the two-step flow:
+
+          Step 1: Fetch the folder layout for ``event_id`` and locate the live
+                  channel redirect embedded in the "Jetzt live" block
+                  (value_layout.type == "live").
+          Step 2: Fetch the live layout for that channel and extract DRM config
+                  from its video assets.
+
+        Falls back to direct DRM extraction from the folder layout when no live
+        redirect is found (handles VOD-style event folders).
+        """
+        # --- Step 1: folder layout -------------------------------------------
+        folder_layout = self._provider.fetch_layout(
+            layout_type="folder",
+            content_id=event_id,
+        )
+        if not folder_layout:
+            logger.error(f"get_drm_for_event: could not fetch folder layout for {event_id}")
             return []
 
-        # Try direct extraction first
-        drm_configs = self._provider.get_drm_for_content(layout)
+        live_id, live_seo = self._extract_live_redirect(folder_layout)
+
+        if live_id:
+            logger.debug(
+                f"Event {event_id} -> live redirect: id={live_id}, seo={live_seo}"
+            )
+            # --- Step 2: live layout -----------------------------------------
+            drm_configs = self._drm_from_live_layout(live_id, live_seo)
+            if drm_configs:
+                return drm_configs
+            logger.warning(
+                f"Event {event_id}: live layout for '{live_seo or live_id}' returned no DRM"
+            )
+
+        # Fallback: try extracting DRM directly from the folder layout
+        drm_configs = self._provider.get_drm_for_content(folder_layout)
         if drm_configs:
+            logger.debug(f"Event {event_id}: DRM resolved from folder assets")
             return drm_configs
 
-        # Follow live redirect
-        live_id, live_seo = self._fetch_live_target_from_folder(layout)
-        if live_id and live_seo:
-            return self._provider.channel_manager.get_drm_config_for_channel(live_id)
-
+        logger.error(f"get_drm_for_event: no DRM config found for event {event_id}")
         return []
+
+    # --------------------------------------------------------------------------
+    # Two-step helpers
+    # --------------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_live_redirect(folder_layout: Dict) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Scan a folder layout and return the first live-channel redirect found.
+
+        Returns ``(channel_id, channel_seo)`` – e.g. ``("rtlde_nitro", "nitro")``.
+        Both values are ``None`` when no live redirect is present.
+
+        The redirect lives in bffPaginated blocks as an item whose action target
+        has ``value_layout.type == "live"``.  Both "classic" items (the "Jetzt
+        live" programme card shown in the folder) and "video" items (the inline
+        player block) are checked so the method works for both folder shapes
+        encountered in the wild.
+        """
+        for block in folder_layout.get("blocks", []):
+            if block.get("type") != "bffPaginated":
+                continue
+
+            for item in block.get("content", {}).get("items", []):
+                item_content = item.get("itemContent", {})
+
+                # Both classic and video items carry the redirect in action.target
+                action = item_content.get("action", {})
+                target = unwrap_target(action.get("target", {}))
+                value_layout = target.get("value_layout", {})
+
+                if value_layout.get("type") == "live":
+                    channel_id = value_layout.get("id")    # e.g. "rtlde_nitro"
+                    channel_seo = value_layout.get("seo")  # e.g. "nitro"
+                    if channel_id:
+                        return channel_id, channel_seo
+
+        return None, None
+
+    def _manifest_from_live_layout(
+            self,
+            channel_id: str,
+            channel_seo: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        Step 2 for manifest: fetch the live layout and return the best URL.
+
+        The Bedrock live endpoint uses the SEO slug (e.g. ``"nitro"``), not the
+        full channel ID (e.g. ``"rtlde_nitro"``).  When only the full ID is
+        available it is normalised via the channel_manager helper.
+        """
+        path_id = (
+            channel_seo
+            or self._provider.channel_manager._normalize_channel_identifier(channel_id)
+        )
+        location = f"{self.cfg.base_website}{path_id}/live"
+
+        live_layout = self._provider.fetch_layout(
+            layout_type="live",
+            content_id=path_id,
+            location=location,
+        )
+        if not live_layout:
+            logger.warning(f"_manifest_from_live_layout: no live layout returned for '{path_id}'")
+            return None
+
+        assets = self._provider.extract_video_assets(live_layout)
+        if not assets:
+            logger.warning(
+                f"_manifest_from_live_layout: no video assets in live layout for '{path_id}'"
+            )
+            return None
+
+        return self._provider.extract_best_manifest_url(assets)
+
+    def _drm_from_live_layout(
+            self,
+            channel_id: str,
+            channel_seo: Optional[str] = None,
+    ) -> List[DRMConfig]:
+        """
+        Step 2 for DRM: fetch the live layout and extract DRM configuration.
+
+        Uses the same SEO-slug normalisation as ``_manifest_from_live_layout``.
+        """
+        path_id = (
+            channel_seo
+            or self._provider.channel_manager._normalize_channel_identifier(channel_id)
+        )
+        location = f"{self.cfg.base_website}{path_id}/live"
+
+        live_layout = self._provider.fetch_layout(
+            layout_type="live",
+            content_id=path_id,
+            location=location,
+        )
+        if not live_layout:
+            logger.warning(f"_drm_from_live_layout: no live layout returned for '{path_id}'")
+            return []
+
+        return self._provider.get_drm_for_content(live_layout)
 
     # --------------------------------------------------------------------------
     # Homepage Event Fetching (Primary Source)
     # --------------------------------------------------------------------------
 
-    def _fetch_events_from_homepage(self, force_refresh: bool = False, max_pages: int = 20) -> List[Event]:
+    def _fetch_events_from_homepage(
+            self, force_refresh: bool = False, max_pages: int = 20
+    ) -> List[Event]:
         """
         Fetch events from the homepage's "Diese Live-Events erwarten euch" block.
 
@@ -220,7 +365,9 @@ class RTLPlusEventManager:
         next_page = pagination.get("nextPage")  # Will be 3, not 2!
         pages_fetched = 1
 
-        logger.debug(f"Live events block: total={pagination.get('totalItems', 0)}, next_page={next_page}")
+        logger.debug(
+            f"Live events block: total={pagination.get('totalItems', 0)}, next_page={next_page}"
+        )
 
         # Follow nextPage links exactly as returned by API.
         # The API skips many page numbers (e.g. 1 → 3 → 6 → 9), so we must
@@ -272,7 +419,6 @@ class RTLPlusEventManager:
                 if tealium:
                     block_title = tealium.get("block_title")
 
-            # Skip if block_title is None
             if block_title is None:
                 continue
 
@@ -321,7 +467,6 @@ class RTLPlusEventManager:
         - action.target.value_layout: contains folder_id for the event
         """
         events: List[Event] = []
-        current_time = datetime.now()
 
         for item in items:
             if item.get("itemType") != "classic":
@@ -394,39 +539,6 @@ class RTLPlusEventManager:
             events.append(event)
 
         return events
-
-    def _extract_manifest_from_folder_layout(self, layout: Dict) -> Optional[str]:
-        for block in layout.get("blocks", []):
-            if block.get("type") != "bffPaginated":
-                continue
-            for item in block.get("content", {}).get("items", []):
-                item_content = item.get("itemContent", {})
-                action = item_content.get("action", {})
-                target = unwrap_target(action.get("target", {}))
-                value_layout = target.get("value_layout", {})
-
-                if value_layout.get("type") == "live":
-                    live_id = value_layout.get("id")  # "rtlde_nitro"
-                    live_seo = value_layout.get("seo")  # "nitro"  ← use this
-                    if live_id:
-                        return self._get_manifest_from_live_event(live_id, live_seo)
-        return None
-
-    def _get_manifest_from_live_event(
-            self, live_event_id: str, live_seo: Optional[str] = None
-    ) -> Optional[str]:
-        # The API path uses the seo slug, not the full rtlde_xxx ID
-        path_id = live_seo or live_event_id
-        live_layout = self._provider.fetch_layout(
-            layout_type="live",
-            content_id=path_id,
-            location=f"{self._provider.rtl_config.base_website}{path_id}",
-        )
-        if live_layout:
-            assets = self._provider.extract_video_assets(live_layout)
-            if assets:
-                return self._provider.extract_best_manifest_url(assets)
-        return None
 
     # --------------------------------------------------------------------------
     # Date / Status / Sport Helpers
