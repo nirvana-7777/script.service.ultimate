@@ -973,6 +973,15 @@ class Magenta2Provider(StreamingProvider):
             # channel-stations feed during __init__.  No network call needed.
             station_metadata = self._station_metadata
 
+            # ── DIAGNOSTIC ───────────────────────────────────────────────────
+            logger.info(f"get_channels: station_metadata has {len(station_metadata)} entries")
+            if station_metadata:
+                sample_key = next(iter(station_metadata))
+                logger.debug(f"get_channels: sample station_metadata key: {sample_key!r}")
+            if tp_channels:
+                logger.debug(f"get_channels: sample tp_ch.station_id: {tp_channels[0].station_id!r}")
+            # ── END DIAGNOSTIC ───────────────────────────────────────────────
+
             # ── Step 4: convert to StreamingChannel ──────────────────────────
             channels: List[StreamingChannel] = []
             for tp_ch in tp_channels:
