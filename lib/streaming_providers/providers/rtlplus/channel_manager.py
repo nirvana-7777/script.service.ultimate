@@ -105,7 +105,9 @@ class RTLPlusChannelManager:
         item_content = item.get("itemContent", {})
         channel_data = item_content.get("channel", {})
         title = channel_data.get("title")
-        logo_id = channel_data.get("image", {}).get("id")
+        image = channel_data.get("image", {})
+        canonical_ratio = image.get("ratio", "1:1")
+        logo_id = image.get("idsByRatio", {}).get(canonical_ratio) or image.get("id")
 
         # Reuse the shared unwrap_target helper from layout_helpers
         target = unwrap_target(item_content.get("action", {}).get("target", {}))

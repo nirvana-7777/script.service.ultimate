@@ -77,6 +77,7 @@ that /vod/search is not swallowed by get_vod_node.
 
 from bottle import request, response
 from streaming_providers.base.utils import logger
+from typing import Optional, Tuple
 
 
 def setup_vod_routes(app, manager):
@@ -114,7 +115,7 @@ def setup_vod_routes(app, manager):
             result.append(d)
         return result
 
-    def _parse_paging_params() -> tuple[str | None, int]:
+    def _parse_paging_params() -> Tuple[Optional[str], int]:
         """
         Extract and validate paging query parameters from the current request.
 
