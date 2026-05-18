@@ -109,11 +109,10 @@ class MpxConfig:
     def from_manifest_data(cls, manifest_data: Dict[str, Any]) -> "MpxConfig":
         mpx_data = manifest_data.get("mpx", {})
 
-        # Read directly from mpx object (NOT from settings.parameters)
         license_service_url = mpx_data.get("basicUrlGetApplicableDistributionRights", "")
         selector_service_url = mpx_data.get("basicUrlSelectorService", "")
         account_pid = mpx_data.get("accountPid", "mdeprod")
-        user_profile_url = mpx_data.get("userProfileUrl")  # May be None
+        user_profile_url = mpx_data.get("userProfileUrl")
         bookmark_base_url = mpx_data.get("bookmarkBaseUrl", "")
         pvr_base_url = mpx_data.get("pvrBaseUrl", "")
 
@@ -123,16 +122,29 @@ class MpxConfig:
         for feed_name, feed_url in mpx_feeds.items():
             feeds[feed_name] = feed_url
 
-        # Optional: Also keep the parameter lookup as fallback for other structures
-        # But primary source is the direct mpx object
+        channel_stations_feed = mpx_feeds.get("allChannelStationsFeed")
 
-        # Channel stations feed (specific field)
-        channel_stations_feed = mpx_data.get("feeds", {}).get("allChannelStationsFeed")
-
-        # MPX account URI - construct from account_pid or use direct field
-        mpx_account_uri = mpx_data.get("accountUri")  # May not exist
-        if not mpx_account_uri and account_pid:
-            mpx_account_uri = f"http://access.auth.theplatform.com/data/Account/2709353023"  # Or appropriate URI
+        # Extract account ID from pvrBaseUrl: ".../npvr-audience/2709353023"
+        # Fall back to programGuidBaseUri if pvrBaseUrl is absent
+        mpx_account_uri = mpx_data.get("accountUri")
+        if not mpx_account_uri:
+            account_id = None
+            if pvr_base_url:
+                # pvrBaseUrl ends with "/<accountId>"
+                account_id = pvr_base_url.rstrip("/").split("/")[-1]
+            if not account_id:
+                prog_uri = mpx_data.get("programGuidBaseUri", "")
+                # programGuidBaseUri contains "/guid/<accountId>/"
+                parts = prog_uri.split("/guid/")
+                if len(parts) == 2:
+                    account_id = parts[1].split("/")[0]
+            if account_id:
+                mpx_account_uri = (
+                    f"http://access.auth.theplatform.com/data/Account/{account_id}"
+                )
+                logger.debug(f"MPX account URI derived from manifest: {mpx_account_uri}")
+            else:
+                logger.warning("Could not derive MPX account URI from manifest")
 
         return cls(
             account_pid=account_pid,
@@ -147,44 +159,33 @@ class MpxConfig:
             mpx_basic_url_selector_service=selector_service_url,
         )
 
-    def get_account_uri(self) -> str:
+    def get_account_uri(self) -> Optional[str]:
         """
-        Get MPX account URI for persona token composition
-        Prefer actual mpxAccountUri, fallback to constructed format
+        Get MPX account URI for persona token composition.
+        Returns None if not available — callers must handle this case.
         """
         if self.mpx_account_uri:
             return self.mpx_account_uri
-        # Fallback to constructed format
-        return "http://access.auth.theplatform.com/data/Account/2709353023"
+        logger.warning(
+            "MPX account URI not available — "
+            "pvrBaseUrl and programGuidBaseUri were both absent or unparseable in manifest"
+        )
+        return None
 
 
 @dataclass
 class ImageConfig:
     """Image scaling configuration from manifest"""
-
     scaling_base_url: Optional[str] = None
     scaling_call_parameter: Optional[str] = None
 
     @classmethod
     def from_manifest_data(cls, manifest_data: Dict[str, Any]) -> "ImageConfig":
-        """Create ImageConfig from manifest data"""
-
-        def get_param(key: str) -> Optional[str]:
-            """Helper to get value from parameters array"""
-            if "settings" not in manifest_data:
-                return None
-            settings = manifest_data["settings"]
-            if "parameters" not in settings:
-                return None
-            for param in settings["parameters"]:
-                if param.get("key") == key:
-                    value = param.get("value")
-                    return value if value and value != "unused" else None
-            return None
-
+        # FIX: Read from ngiss, not settings.parameters
+        ngiss = manifest_data.get("ngiss", {})
         return cls(
-            scaling_base_url=get_param("imageScalingBasicUrl"),
-            scaling_call_parameter=get_param("imageScalingCallParameter"),
+            scaling_base_url=ngiss.get("basicUrl"),
+            scaling_call_parameter=ngiss.get("callParameter"),
         )
 
 
@@ -222,26 +223,28 @@ class DrmConfig:
 @dataclass
 class TvHubConfig:
     """TV Hub URLs configuration from manifest"""
-
     base_urls: Dict[str, str] = field(default_factory=dict)
 
-    # config_models.py
     @classmethod
     def from_manifest_data(cls, manifest_data: Dict[str, Any]) -> "TvHubConfig":
         tv_hubs_data = manifest_data.get("tvHubUrls", {})
-
         base_urls = {}
 
-        # Extract all string URLs from tvHubUrls object
-        for key, value in tv_hubs_data.items():
-            if isinstance(value, str) and value.startswith("http"):
-                base_urls[key] = value
-            # Handle nested objects (like kidsMode)
-            elif isinstance(value, dict) and "homeUrl" in value:
-                # Recursively extract from nested objects
-                for sub_key, sub_value in value.items():
-                    if isinstance(sub_value, str) and sub_value.startswith("http"):
-                        base_urls[f"{key}_{sub_key}"] = sub_value
+        def extract_urls(obj: Dict[str, Any], prefix: str = ""):
+            """Recursively extract all URL strings from nested dict"""
+            for key, value in obj.items():
+                full_key = f"{prefix}{key}" if prefix else key
+
+                if isinstance(value, str) and (value.startswith("http") or value.startswith("https")):
+                    base_urls[full_key] = value
+                elif isinstance(value, dict):
+                    extract_urls(value, f"{full_key}.")
+                # Skip non-string, non-dict values (like integers, booleans)
+
+        extract_urls(tv_hubs_data)
+
+        # Log how many URLs were found
+        logger.debug(f"Extracted {len(base_urls)} TV Hub URLs from manifest")
 
         return cls(base_urls=base_urls)
 
@@ -368,34 +371,28 @@ class ProviderConfig:
         return feed_template.replace("{MpxAccountPid}", self.manifest.mpx.account_pid)
 
     def get_resolved_tvhub_url(self, hub_name: str) -> Optional[str]:
-        template = self.manifest.tv_hubs.base_urls.get(hub_name)
-        if not template or not self.bootstrap.client_model:
+        if not self.manifest or not self.bootstrap.client_model:
             return None
+        template = self.manifest.tv_hubs.base_urls.get(hub_name)
+        if not template:
+            return None
+        client_model: str = self.bootstrap.client_model
         return (
             template
-            .replace("{clientModel}", self.bootstrap.client_model)
-            .replace("{client_model}", self.bootstrap.client_model)
+            .replace("{clientModel}", client_model)
+            .replace("{client_model}", client_model)
         )
 
     def get_tvhubs_base_url(self, client_model: Optional[str] = None) -> Optional[str]:
-        """
-        Return the tvhubs root URL (scheme + host + /v3/{clientModel}) with
-        the client model already substituted.
-
-        Derived from the first available hub URL in the manifest by stripping
-        everything after /v3/{clientModel}/.  Used by VodManager to build
-        StructuredGrid / UnstructuredGrid / VodDetails endpoints without
-        hardcoding the host.
-        """
         if not self.manifest:
             return None
 
         resolved_client_model = client_model or self.bootstrap.client_model
+        if not resolved_client_model:
+            return None  # Can't resolve without a client model
 
         for hub_template in self.manifest.tv_hubs.base_urls.values():
             resolved = hub_template.replace("{clientModel}", resolved_client_model)
-            # All tvhubs URLs follow: https://host/v3/{clientModel}/...
-            # Split off everything after the client-model path segment.
             marker = f"/v3/{resolved_client_model}"
             idx = resolved.find(marker)
             if idx != -1:
@@ -404,10 +401,32 @@ class ProviderConfig:
         return None
 
     def get_mpx_account_uri(self) -> Optional[str]:
-        """NEW: Get MPX account URI for persona token composition"""
+        """
+        Get MPX account URI for persona token composition.
+
+        Resolution order:
+          1. Manifest mpx.accountUri (direct field)
+          2. Derived from manifest mpx.pvrBaseUrl / programGuidBaseUri
+          3. Constructed from bootstrap accountBaseUrl + manifest-derived account ID
+        """
         if not self.manifest or not self.manifest.mpx:
             return None
-        return self.manifest.mpx.get_account_uri()
+
+        uri = self.manifest.mpx.get_account_uri()
+        if uri:
+            return uri
+
+        # Last resort: combine bootstrap accountBaseUrl with manifest account ID
+        account_base = self.bootstrap.account_base_url  # e.g. "http://access.auth.theplatform.com/data/Account"
+        if account_base:
+            pvr_url = self.manifest.mpx.pvr_base_url or ""
+            account_id = pvr_url.rstrip("/").split("/")[-1] if pvr_url else None
+            if account_id and account_id.isdigit():
+                uri = f"{account_base.rstrip('/')}/{account_id}"
+                logger.debug(f"MPX account URI from bootstrap+manifest fallback: {uri}")
+                return uri
+
+        return None
 
     def get_device_token(self) -> Optional[str]:
         """NEW: Get device token from manifest"""

@@ -130,6 +130,9 @@ MAGENTA2_FALLBACK_ENDPOINTS = {
     "ENTITLEMENT": "https://entitlement.p7s1.io/api/user/entitlement-token",
 }
 
+# Emergency last-resort fallback ONLY — should never be reached in production
+# since the account ID is extracted dynamically from the manifest's pvrBaseUrl.
+# If this value is being used, it means both manifest and bootstrap discovery failed.
 MAGENTA2_FALLBACK_ACCOUNT_URI = "http://access.auth.theplatform.com/data/Account/2709353023"
 
 # ============================================================================
