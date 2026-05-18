@@ -69,6 +69,7 @@ class RTLPlusDefaults:
     # Image CDN
     IMAGE_BASE_URL = "https://images-fio.rtlde.bedrock.tech/v2/images"
     IMAGE_PARAMS = "auto=webp&blur=0&fit=scale_crop&height=320&interlace=1&optimize=high&width=213"
+    IMAGE_PARAMS_LOGO = "auto=avif&blur=0&fit=scale_crop&height=1080&interlace=1&optimize=high&width=1080"
     IMAGE_SIGNING_KEY = "x9vGg4RNeNBqV2nBfhqLV6cN4n"
 
     # Anonymous credentials (fallback)

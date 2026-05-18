@@ -128,7 +128,7 @@ def parse_german_datetime(text: str) -> Optional[datetime]:
 # Signed image URL construction
 # ---------------------------------------------------------------------------
 
-def build_image_url(image_id: str) -> str:
+def build_image_url(image_id: str, params: str = None) -> str:
     """
     Build a signed Bedrock CDN image URL for the given image ID.
 
@@ -139,11 +139,14 @@ def build_image_url(image_id: str) -> str:
 
     Args:
         image_id: The raw image ID returned by the Bedrock API.
+        params:   Optional query-string overriding ``RTLPlusDefaults.IMAGE_PARAMS``.
+                  Use ``RTLPlusDefaults.IMAGE_PARAMS_LOGO`` for square channel logos.
 
     Returns:
         A fully-qualified, signed image URL.
     """
-    suffix = f"/{image_id}/raw?{RTLPlusDefaults.IMAGE_PARAMS}"
+    image_params = params if params is not None else RTLPlusDefaults.IMAGE_PARAMS
+    suffix = f"/{image_id}/raw?{image_params}"
     signed_path = f"/v2/images{suffix}"
     image_hash = hashlib.sha1(
         (signed_path + RTLPlusDefaults.IMAGE_SIGNING_KEY).encode()

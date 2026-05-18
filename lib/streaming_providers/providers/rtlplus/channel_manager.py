@@ -16,6 +16,7 @@ from datetime import date
 from .layout_helpers import unwrap_target, build_image_url
 from ...base.models import Channel, DRMConfig
 from ...base.utils.logger import logger
+from .constants import RTLPlusDefaults
 
 
 class RTLPlusChannelManager:
@@ -157,7 +158,7 @@ class RTLPlusChannelManager:
             )
 
             # Set logo URL
-            streaming_channel.logo_url = build_image_url(logo_id) if logo_id else ""
+            streaming_channel.logo_url = build_image_url(logo_id, RTLPlusDefaults.IMAGE_PARAMS_LOGO) if logo_id else ""
 
             # Store SEO in manifest_script for fallback lookups
             if seo:
