@@ -46,7 +46,7 @@
 - M3U playlist generation for PVR IPTV Simple
 - Provider-specific proxy configuration
     </news>
-
+    <source>https://github.com/nirvana-7777/script.service.ultimate</source>
     <assets>
       <icon>icon.png</icon>
       <fanart>fanart.jpg</fanart>

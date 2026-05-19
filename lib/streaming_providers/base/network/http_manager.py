@@ -293,6 +293,22 @@ class HTTPManager:
 
         return result
 
+    def get_cookies(self) -> Dict[str, str]:
+        """Get all cookies from the session"""
+        if self._session:
+            return requests.utils.dict_from_cookiejar(self._session.cookies)
+        return {}
+
+    def set_cookies(self, cookies: Dict[str, str]) -> None:
+        """Set cookies in the session"""
+        if self._session:
+            self._session.cookies.update(cookies)
+
+    def clear_cookies(self) -> None:
+        """Clear all cookies from the session"""
+        if self._session:
+            self._session.cookies.clear()
+
     def close(self) -> None:
         """Close the session"""
         if self._session:
