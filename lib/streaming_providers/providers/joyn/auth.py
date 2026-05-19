@@ -238,17 +238,15 @@ class JoynAuthConfig:
         }
 
     def get_auth_headers(self) -> Dict[str, str]:
-        """Get headers for authentication requests"""
         headers = self.get_base_headers()
-        headers.update(
-            {
-                "joyn-client-version": JOYN_CLIENT_VERSION,
-                "joyn-country": self.country.upper(),
-                "joyn-distribution-tenant": self.distribution_tenant,
-                "joyn-platform": self.platform,
-                "joyn-request-id": str(uuid.uuid4()),
-            }
-        )
+        headers.update({
+            "joyn-client-version": JOYN_CLIENT_VERSION,
+            "joyn-country": self.country.upper(),
+            # FIX: Add country suffix to distribution tenant
+            "joyn-distribution-tenant": f"JOYN_{self.country.upper()}",  # "JOYN_DE"
+            "joyn-platform": self.platform,
+            "joyn-request-id": str(uuid.uuid4()),
+        })
         return headers
 
 
@@ -311,19 +309,16 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
         )
 
     def _get_joyn_auth_headers(self) -> Dict[str, str]:
-        """Get standardized Joyn authentication headers"""
         from .constants import JOYN_AUTH_HEADERS_BASE
-
         headers = JOYN_AUTH_HEADERS_BASE.copy()
         headers["Origin"] = f"https://www.joyn.{self.country.lower()}"
-        headers.update(
-            {
-                "joyn-country": self.country.upper(),
-                "joyn-distribution-tenant": self.distribution_tenant,
-                "joyn-platform": self.platform,
-                "joyn-request-id": str(uuid.uuid4()),
-            }
-        )
+        headers.update({
+            "joyn-country": self.country.upper(),
+            # FIX: Add country suffix here too
+            "joyn-distribution-tenant": f"JOYN_{self.country.upper()}",
+            "joyn-platform": self.platform,
+            "joyn-request-id": str(uuid.uuid4()),
+        })
         return headers
 
     def _extract_client_id_from_endpoints(self) -> str:
