@@ -702,6 +702,12 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             except Exception as e:
                 logger.debug(f"Step 3c non-fatal error (continuing): {e}")
 
+            logger.debug(f"=== Cookie Debug ===")
+            for cookie in session.cookies:
+                logger.debug(
+                    f"Cookie: {cookie.name}={cookie.value} | domain={cookie.domain} | path={cookie.path} | secure={cookie.secure}")
+            logger.debug(f"===================")
+
             # Step 4: POST credentials to login-srv/login
             logger.debug("Step 4: POST credentials to login-srv/login")
             login_payload = {"username": username, "password": password, "requestId": request_id}
