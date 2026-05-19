@@ -120,12 +120,10 @@ class EndpointManager:
             )
 
         if manifest.mpx.channel_stations_feed:
-            self._add_endpoint(
-                "channel_stations",
-                EndpointCategory.CONTENT,
-                manifest.mpx.channel_stations_feed,
-            )
-            logger.info(f"Channel stations feed found: {manifest.mpx.channel_stations_feed}")
+            resolved_feed = self.config.get_resolved_feed_url("allChannelStationsFeed")
+            if resolved_feed:
+                self._add_endpoint("channel_stations", EndpointCategory.CONTENT, resolved_feed)
+                logger.info(f"Channel stations feed found: {resolved_feed}")
 
         # DRM endpoints
         if manifest.drm.widevine_license_url:
