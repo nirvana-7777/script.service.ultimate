@@ -500,13 +500,24 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
         """
         from .constants import JOYN_CIDAAS_ENDPOINTS, JOYN_USER_AGENT
 
-        # Common headers for verification requests
+        # Common headers for verification requests.
+        # auth.7pass.de sits behind Cloudflare's managed challenge.  Without the
+        # headers below the request is fingerprinted as a bot and returns a 403
+        # challenge page instead of the JSON response we expect.
+        # sec-fetch-* and accept-language mirror what a real browser sends;
+        # x-requested-with is required by the cidaas AJAX endpoint.
         verification_headers = {
             "User-Agent": JOYN_USER_AGENT,
-            "Accept": "application/json",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
             "Content-Type": "application/json",
             "Origin": "https://signin.7pass.de",
             "Referer": referer_url,
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            "X-Requested-With": "XMLHttpRequest",
         }
 
         # Step 1: Initiate password verification
@@ -527,6 +538,11 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
         )
 
         logger.debug(f"Initiate response status: {initiate_response.status_code}")
+        if initiate_response.status_code == 403 and "cf-ray" in initiate_response.headers:
+            raise Exception(
+                "Cloudflare challenge blocked verification-initiate request (403). "
+                "The request headers may need updating to better mimic a real browser."
+            )
         initiate_response.raise_for_status()
         initiate_result = initiate_response.json()
 
@@ -688,7 +704,19 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             code_challenge = self.generate_pkce_challenge(code_verifier)
             state = self.generate_oauth_state()
 
+            # The SSO discovery URL may already carry query params (client_id, view_type,
+            # cd1, etc.). Strip them, collect, then merge with our PKCE/OAuth params so we
+            # never produce a malformed double-? URL like "...authz?foo=1?bar=2".
+            parsed_login_url = urlparse(web_login_url)
+            base_login_url = parsed_login_url._replace(query="", fragment="").geturl()
+            existing_params = {
+                k: v[0]
+                for k, v in parse_qs(parsed_login_url.query).items()
+            }
+
+            # Our params take precedence over anything already in the discovery URL.
             params = {
+                **existing_params,
                 "response_type": "code",
                 "client_id": self.oauth_client_id,
                 "redirect_uri": self.oauth_redirect_uri,
@@ -702,7 +730,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 "cd1": str(uuid.uuid4()),
             }
 
-            authorization_url = f"{web_login_url}?{urlencode(params)}"
+            authorization_url = f"{base_login_url}?{urlencode(params)}"
             logger.debug(f"Built authorization URL: {authorization_url}")
 
             session = self._create_oauth_session()
