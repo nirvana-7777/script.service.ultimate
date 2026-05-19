@@ -437,26 +437,33 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
     # MAIN AUTHENTICATION METHOD
     def _perform_authentication(self) -> BaseAuthToken:
         """
-        Perform authentication using appropriate flow based on credential type
+        Perform authentication using appropriate flow based on credential type.
+        Falls back to anonymous auth if user authentication fails.
         """
         from ...base.auth.credentials import ClientCredentials, UserPasswordCredentials
 
         if isinstance(self.credentials, UserPasswordCredentials):
-            # Use OAuth2 authorization code flow with PKCE
-            logger.info(f"Using OAuth2 authorization code flow for {self.provider_name}")
-            token_data = self._perform_oauth_authorization_code_flow(
-                self.credentials.username, self.credentials.password
-            )
-        elif isinstance(self.credentials, ClientCredentials):
-            # Use client credentials flow (anonymous auth)
+            try:
+                logger.info(f"Using OAuth2 authorization code flow for {self.provider_name}")
+                token_data = self._perform_oauth_authorization_code_flow(
+                    self.credentials.username, self.credentials.password
+                )
+                return self._create_token_from_response(token_data)
+
+            except Exception as e:
+                logger.warning(
+                    f"User auth failed for {self.provider_name}, falling back to anonymous: {e}"
+                )
+                # Fall back to client credentials (anonymous auth)
+                self.credentials = self.get_fallback_credentials()
+                # Fall through to client credentials flow below
+
+        if isinstance(self.credentials, ClientCredentials):
             logger.info(f"Using OAuth2 client credentials flow for {self.provider_name}")
             token_data = self._perform_oauth_client_credentials_flow()
-        else:
-            raise Exception(
-                f"Unsupported credential type for {self.provider_name}: {type(self.credentials)}"
-            )
+            return self._create_token_from_response(token_data)
 
-        return self._create_token_from_response(token_data)
+        raise Exception(f"Unsupported credential type: {type(self.credentials)}")
 
     def _perform_oauth_client_credentials_flow(self) -> Dict[str, Any]:
         """
@@ -521,16 +528,11 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
     # Authorization code flow
     def _perform_oauth_authorization_code_flow(
-        self, username: str, password: str
+            self, username: str, password: str
     ) -> Dict[str, Any]:
         """
         Joyn OAuth2 authorization code flow with two-step verification and PKCE.
-        Handles both cases: existing session (direct redirect) and new login (form-based).
-
-        FIX: Authorization code extraction now works by:
-          1. Capturing the Location header returned by _perform_final_login
-          2. Parsing the code directly from that URL via _extract_code_from_url
-        The old _extract_authorization_code stub is replaced by these two methods.
+        Uses http_manager's session exclusively for proper cookie persistence.
         """
         try:
             logger.debug("Starting optimized Joyn OAuth2 authorization code flow")
@@ -544,17 +546,13 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             code_challenge = self.generate_pkce_challenge(code_verifier)
             state = self.generate_oauth_state()
 
-            # The SSO discovery URL may already carry query params (client_id, view_type,
-            # cd1, etc.). Strip them, collect, then merge with our PKCE/OAuth params so we
-            # never produce a malformed double-? URL like "...authz?foo=1?bar=2".
+            # Strip existing query params from discovery URL, then merge with our params
             parsed_login_url = urlparse(web_login_url)
             base_login_url = parsed_login_url._replace(query="", fragment="").geturl()
             existing_params = {
-                k: v[0]
-                for k, v in parse_qs(parsed_login_url.query).items()
+                k: v[0] for k, v in parse_qs(parsed_login_url.query).items()
             }
 
-            # Our params take precedence over anything already in the discovery URL.
             params = {
                 **existing_params,
                 "response_type": "code",
@@ -573,15 +571,30 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             authorization_url = f"{base_login_url}?{urlencode(params)}"
             logger.debug(f"Built authorization URL: {authorization_url}")
 
-            session = self._create_oauth_session()
+            # Use http_manager's session directly - this ensures cookie persistence
+            session = self.http_manager._session
+
+            # Save original headers to restore later
+            original_headers = dict(session.headers)
 
             # Step 2: Get authorization page
             logger.debug("Fetching authorization page")
-            auth_response = session.get(authorization_url, timeout=self._config.timeout)
+
+            # Temporarily strip joyn-* headers for 7pass endpoints to avoid 431 errors
+            self._strip_joyn_headers_for_7pass(session)
+
+            auth_response = session.get(
+                authorization_url,
+                timeout=self._config.timeout,
+                allow_redirects=True
+            )
+
+            # Restore headers after getting auth page
+            session.headers.clear()
+            session.headers.update(original_headers)
 
             logger.debug(f"Authorization page response status: {auth_response.status_code}")
             logger.debug(f"Authorization page response URL: {auth_response.url}")
-
             auth_response.raise_for_status()
 
             # Step 2a: Check if we got redirected directly to callback (existing session)
@@ -611,9 +624,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 logger.debug("Joyn OAuth2 authorization code flow successful (existing session)")
                 return token_data
 
-            # Step 2b: No existing session — use login-srv/login (the approach used
-            # in the working lib_joyn implementation). This avoids cidaas verification-srv
-            # which is protected by Cloudflare's managed challenge.
+            # Step 2b: No existing session — use login-srv/login flow
             logger.info("No existing session - performing login-srv/login flow")
 
             # Extract request_id and cd1 from the signin redirect URL
@@ -624,7 +635,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
             if not request_id:
                 request_id_match = re.search(
-                    r'requestId["\'\']?\s*:\s*["\'\']([^"\']+)', auth_response.text
+                    r'requestId[ "\'\']?\s*:\s*[ "\'\']([^ "\']+)', auth_response.text
                 )
                 if request_id_match:
                     request_id = request_id_match.group(1)
@@ -633,74 +644,91 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
             logger.debug(f"Extracted request_id: {request_id}, cd1: {cd1}")
 
-            # Steps 3-4 use a plain requests.Session with only cookies carried over
-            # from the OAuth session.  The oauth session accumulates joyn-* custom
-            # headers and potentially large cookie jars that cause 431 "Request Header
-            # Fields Too Large" on 7pass endpoints, which then invalidates the
-            # requestId before the login POST arrives (manifests as 408 error 24021).
-            # A minimal browser-like session avoids this entirely.
-            import requests as _requests
-            plain_session = _requests.Session()
-            # Copy cookies from the oauth session so 7pass recognises the flow
-            plain_session.cookies.update(session.cookies)
-            plain_session.headers.update({
-                "User-Agent": JOYN_USER_AGENT,
-                "Accept": "application/json, text/html, */*",
-                "Accept-Language": "de-DE,de;q=0.9",
-                "Accept-Encoding": "gzip, deflate, br",
-                "Expect": "",  # suppress 100-continue
-            })
+            # Helper to make 7pass requests with clean headers while preserving cookies
+            def _make_7pass_request(method: str, url: str, **kwargs):
+                # Save current headers
+                saved_headers = dict(session.headers)
+
+                # Set minimal browser-like headers for 7pass endpoints
+                session.headers.update({
+                    "User-Agent": JOYN_USER_AGENT,
+                    "Accept": "application/json, text/html, */*",
+                    "Accept-Language": "de-DE,de;q=0.9",
+                    "Accept-Encoding": "gzip, deflate, br",
+                    "Expect": "",  # suppress 100-continue
+                    "Content-Type": kwargs.pop("content_type", "application/json"),
+                })
+
+                # Remove any joyn-* headers that might cause 431 errors
+                for key in list(session.headers.keys()):
+                    if key.lower().startswith('joyn-'):
+                        del session.headers[key]
+
+                try:
+                    if method.upper() == "GET":
+                        return session.get(url, timeout=self._config.timeout, **kwargs)
+                    else:
+                        return session.post(url, timeout=self._config.timeout, **kwargs)
+                finally:
+                    # Restore original headers
+                    session.headers.clear()
+                    session.headers.update(saved_headers)
 
             logger.debug("Step 3a: Language / registration setup check")
             try:
-                plain_session.get(
+                _make_7pass_request(
+                    "GET",
                     f"https://auth.7pass.de/registration-setup-srv/public/list"
                     f"?acceptlanguage=undefined&requestId={request_id}",
-                    timeout=self._config.timeout,
+                    content_type="application/json"
                 )
             except Exception as e:
                 logger.debug(f"Step 3a non-fatal error (continuing): {e}")
 
             logger.debug("Step 3b: Check user exists")
             try:
-                import json as _json
-                plain_session.post(
+                _make_7pass_request(
+                    "POST",
                     f"https://auth.7pass.de/users-srv/user/checkexists/{request_id}",
-                    data=_json.dumps({"email": username, "requestId": request_id}),
-                    headers={"Content-Type": "application/json"},
-                    timeout=self._config.timeout,
+                    json={"email": username, "requestId": request_id},
+                    content_type="application/json"
                 )
             except Exception as e:
                 logger.debug(f"Step 3b non-fatal error (continuing): {e}")
 
             logger.debug("Step 3c: Get configured verification methods")
             try:
-                plain_session.post(
+                _make_7pass_request(
+                    "POST",
                     "https://auth.7pass.de/verification-srv/v2/setup/public/configured/list",
-                    data=_json.dumps({"email": username, "request_id": request_id}),
-                    headers={"Content-Type": "application/json"},
-                    timeout=self._config.timeout,
+                    json={"email": username, "request_id": request_id},
+                    content_type="application/json"
                 )
             except Exception as e:
                 logger.debug(f"Step 3c non-fatal error (continuing): {e}")
 
-            # Step 4: POST credentials to login-srv/login.
-            # Returns a redirect whose final URL contains either ?code= directly
-            # (fast path) or ?sub=&track_id= (consent flow, needs one more step).
+            # Step 4: POST credentials to login-srv/login
             logger.debug("Step 4: POST credentials to login-srv/login")
-            login_payload = urlencode({"username": username, "password": password, "requestId": request_id})
-            login_response = plain_session.post(
+            login_payload = {"username": username, "password": password, "requestId": request_id}
+
+            login_response = _make_7pass_request(
+                "POST",
                 "https://auth.7pass.de/login-srv/login",
-                data=login_payload.encode("utf-8"),
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-                timeout=self._config.timeout,
-                allow_redirects=True,
+                data=urlencode(login_payload),
+                content_type="application/x-www-form-urlencoded",
+                allow_redirects=True
             )
             login_response.raise_for_status()
 
             final_url = login_response.url
             id_dict = parse_qs(urlparse(final_url).query)
             logger.debug(f"login-srv/login landed on: {final_url}")
+
+            # Check for error redirect
+            if "error.html" in final_url or "error_code" in final_url:
+                error_match = re.search(r'error_code=(\d+)', final_url)
+                error_code = error_match.group(1) if error_match else "unknown"
+                raise Exception(f"Login failed with error_code={error_code}: {final_url}")
 
             # Step 5: Consent flow if no code yet
             if id_dict.get("code") is None:
@@ -713,24 +741,24 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                     )
 
                 logger.debug(f"Step 5a: Consent scope accept for sub={sub}")
-                plain_session.post(
+                _make_7pass_request(
+                    "POST",
                     "https://auth.7pass.de/consent-management-srv/consent/scope/accept",
-                    data=_json.dumps({
+                    json={
                         "sub": sub,
                         "client_id": self.oauth_client_id,
                         "scopes": [{"offline_access": "denied"}],
-                    }),
-                    headers={"Content-Type": "application/json"},
-                    timeout=self._config.timeout,
+                    },
+                    content_type="application/json"
                 )
 
                 logger.debug(f"Step 5b: precheck/continue for track_id={track_id}")
-                continue_response = plain_session.post(
+                continue_response = _make_7pass_request(
+                    "POST",
                     f"https://auth.7pass.de/login-srv/precheck/continue/{track_id}",
                     data=b"",
-                    headers={"Content-Type": "application/x-www-form-urlencoded"},
-                    timeout=self._config.timeout,
-                    allow_redirects=True,
+                    content_type="application/x-www-form-urlencoded",
+                    allow_redirects=True
                 )
                 continue_response.raise_for_status()
 
@@ -761,7 +789,20 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
         except Exception as e:
             logger.error(f"Joyn OAuth2 authorization code flow failed: {e}")
-            raise Exception(f"OAuth2 authorization code flow failed: {e}")
+            # Re-raise to allow caller to handle fallback to anonymous auth
+            raise
+
+        finally:
+            # Always restore original headers in case of early return
+            if 'original_headers' in locals() and session:
+                session.headers.clear()
+                session.headers.update(original_headers)
+
+    def _strip_joyn_headers_for_7pass(self, session) -> None:
+        """Remove joyn-* headers that can cause 431 errors on 7pass endpoints"""
+        for key in list(session.headers.keys()):
+            if key.lower().startswith('joyn-'):
+                del session.headers[key]
 
     def _build_token_exchange_payload(
         self, authorization_code: str, code_verifier: str, state: Optional[str] = None, **kwargs
@@ -797,7 +838,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
         return True
 
     def _refresh_oauth_token(self) -> Optional[BaseAuthToken]:
-        """Joyn-specific token refresh implementation"""
+        """Joyn-specific token refresh implementation with error handling"""
         if not self._current_token or not self._current_token.refresh_token:
             logger.debug(f"No refresh token available for {self.provider_name}")
             return None
@@ -805,7 +846,6 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
         try:
             logger.debug(f"Refreshing OAuth2 token for {self.provider_name}")
 
-            # Joyn refresh uses the platform device ID, not the OAuth client ID
             payload = {
                 "client_id": DEVICE_IDS.get(self.platform, DEVICE_IDS[DEFAULT_PLATFORM]),
                 "client_name": self.platform,
@@ -828,8 +868,16 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             )
 
             logger.debug(f"Refresh response status: {response.status_code}")
-            if response.status_code >= 400:
-                logger.error(f"Refresh error response: {response.text}")
+
+            # Handle 422 "Anonymous refresh token" error - force re-auth
+            if response.status_code == 422:
+                try:
+                    error_body = response.json()
+                    if error_body.get("data") == "Anonymous refresh token":
+                        logger.debug("Refresh failed - token type mismatch, forcing re-auth")
+                        return None  # Return None to trigger full re-authentication
+                except Exception:
+                    pass  # Continue to raise below
 
             response.raise_for_status()
 
@@ -840,7 +888,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
         except Exception as e:
             logger.warning(f"OAuth2 token refresh failed for {self.provider_name}: {e}")
-            return None
+            return None  # Return None to trigger full re-authentication
 
     # Backward compatibility methods
     def is_authenticated(self) -> bool:
