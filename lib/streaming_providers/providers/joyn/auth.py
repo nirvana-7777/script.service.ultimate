@@ -633,21 +633,27 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
             logger.debug(f"Extracted request_id: {request_id}, cd1: {cd1}")
 
-            # Step 3: Pre-flight calls that 7pass expects before the login POST.
-            # Mirrors lib_joyn: lang-check → user-exists → method-list.
-            # Session cookie jar carries state across all requests.
-            #
-            # "Expect: 100-continue" suppressed on all POSTs: some 7pass endpoints
-            # return 417 Expectation Failed when this header is present (sent
-            # automatically by requests/urllib3 for bodies > 1 KB, and sometimes
-            # unconditionally depending on the HTTP manager implementation).
-            # Pre-flight failures are non-fatal — we log and continue since the
-            # login POST itself is what actually matters.
-            no_expect_header = {"Expect": ""}
+            # Steps 3-4 use a plain requests.Session with only cookies carried over
+            # from the OAuth session.  The oauth session accumulates joyn-* custom
+            # headers and potentially large cookie jars that cause 431 "Request Header
+            # Fields Too Large" on 7pass endpoints, which then invalidates the
+            # requestId before the login POST arrives (manifests as 408 error 24021).
+            # A minimal browser-like session avoids this entirely.
+            import requests as _requests
+            plain_session = _requests.Session()
+            # Copy cookies from the oauth session so 7pass recognises the flow
+            plain_session.cookies.update(session.cookies)
+            plain_session.headers.update({
+                "User-Agent": JOYN_USER_AGENT,
+                "Accept": "application/json, text/html, */*",
+                "Accept-Language": "de-DE,de;q=0.9",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Expect": "",  # suppress 100-continue
+            })
 
             logger.debug("Step 3a: Language / registration setup check")
             try:
-                session.get(
+                plain_session.get(
                     f"https://auth.7pass.de/registration-setup-srv/public/list"
                     f"?acceptlanguage=undefined&requestId={request_id}",
                     timeout=self._config.timeout,
@@ -657,10 +663,11 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
             logger.debug("Step 3b: Check user exists")
             try:
-                session.post(
+                import json as _json
+                plain_session.post(
                     f"https://auth.7pass.de/users-srv/user/checkexists/{request_id}",
-                    json_data={"email": username, "requestId": request_id},
-                    headers=no_expect_header,
+                    data=_json.dumps({"email": username, "requestId": request_id}),
+                    headers={"Content-Type": "application/json"},
                     timeout=self._config.timeout,
                 )
             except Exception as e:
@@ -668,10 +675,10 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
             logger.debug("Step 3c: Get configured verification methods")
             try:
-                session.post(
+                plain_session.post(
                     "https://auth.7pass.de/verification-srv/v2/setup/public/configured/list",
-                    json_data={"email": username, "request_id": request_id},
-                    headers=no_expect_header,
+                    data=_json.dumps({"email": username, "request_id": request_id}),
+                    headers={"Content-Type": "application/json"},
                     timeout=self._config.timeout,
                 )
             except Exception as e:
@@ -682,10 +689,10 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             # (fast path) or ?sub=&track_id= (consent flow, needs one more step).
             logger.debug("Step 4: POST credentials to login-srv/login")
             login_payload = urlencode({"username": username, "password": password, "requestId": request_id})
-            login_response = session.post(
+            login_response = plain_session.post(
                 "https://auth.7pass.de/login-srv/login",
                 data=login_payload.encode("utf-8"),
-                headers={**no_expect_header, "Content-Type": "application/x-www-form-urlencoded"},
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
                 timeout=self._config.timeout,
                 allow_redirects=True,
             )
@@ -706,21 +713,22 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                     )
 
                 logger.debug(f"Step 5a: Consent scope accept for sub={sub}")
-                session.post(
+                plain_session.post(
                     "https://auth.7pass.de/consent-management-srv/consent/scope/accept",
-                    json_data={
+                    data=_json.dumps({
                         "sub": sub,
                         "client_id": self.oauth_client_id,
                         "scopes": [{"offline_access": "denied"}],
-                    },
+                    }),
+                    headers={"Content-Type": "application/json"},
                     timeout=self._config.timeout,
                 )
 
                 logger.debug(f"Step 5b: precheck/continue for track_id={track_id}")
-                continue_response = session.post(
+                continue_response = plain_session.post(
                     f"https://auth.7pass.de/login-srv/precheck/continue/{track_id}",
                     data=b"",
-                    headers={**no_expect_header, "Content-Type": "application/x-www-form-urlencoded"},
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
                     timeout=self._config.timeout,
                     allow_redirects=True,
                 )
