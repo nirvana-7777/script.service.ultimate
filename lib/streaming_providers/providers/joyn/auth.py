@@ -491,166 +491,6 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             )
             raise Exception(f"OAuth2 client credentials flow failed: {e}")
 
-    def _perform_two_step_verification(
-        self, session, username: str, password: str, request_id: str, referer_url: str
-    ) -> tuple[str, str]:
-        """
-        Perform the two-step verification process using constants.
-        Returns: (final_sub, final_status_id)
-        """
-        from .constants import JOYN_CIDAAS_ENDPOINTS, JOYN_USER_AGENT
-
-        # Common headers for verification requests.
-        # auth.7pass.de sits behind Cloudflare's managed challenge.  Without the
-        # headers below the request is fingerprinted as a bot and returns a 403
-        # challenge page instead of the JSON response we expect.
-        # sec-fetch-* and accept-language mirror what a real browser sends;
-        # x-requested-with is required by the cidaas AJAX endpoint.
-        verification_headers = {
-            "User-Agent": JOYN_USER_AGENT,
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Content-Type": "application/json",
-            "Origin": "https://signin.7pass.de",
-            "Referer": referer_url,
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
-            "X-Requested-With": "XMLHttpRequest",
-        }
-
-        # Step 1: Initiate password verification
-        initiate_data = {
-            "request_id": request_id,
-            "email": username,
-            "medium_id": "PASSWORD",
-            "usage_type": "PASSWORDLESS_AUTHENTICATION",
-            "type": "PASSWORD",
-        }
-
-        logger.debug("Step 1: Initiating password verification")
-        initiate_response = session.post(
-            JOYN_CIDAAS_ENDPOINTS["VERIFICATION_INITIATE"],
-            json_data=initiate_data,
-            headers=verification_headers,
-            timeout=self._config.timeout,
-        )
-
-        logger.debug(f"Initiate response status: {initiate_response.status_code}")
-        if initiate_response.status_code == 403 and "cf-ray" in initiate_response.headers:
-            raise Exception(
-                "Cloudflare challenge blocked verification-initiate request (403). "
-                "The request headers may need updating to better mimic a real browser."
-            )
-        initiate_response.raise_for_status()
-        initiate_result = initiate_response.json()
-
-        if not initiate_result.get("success"):
-            raise Exception(f"Password verification initiation failed: {initiate_result}")
-
-        exchange_data = initiate_result["data"]
-        exchange_id = exchange_data["exchange_id"]["exchange_id"]
-        sub = exchange_data["sub"]
-        status_id = exchange_data["status_id"]
-
-        logger.debug(f"Got exchange_id: {exchange_id}, sub: {sub}, status_id: {status_id}")
-
-        # Step 2: Authenticate with password
-        authenticate_data = {
-            "exchange_id": exchange_id,
-            "pass_code": password,
-            "sub": sub,
-            "type": "PASSWORD",
-            "password": password,
-        }
-
-        logger.debug("Step 2: Authenticating with password")
-        authenticate_response = session.post(
-            JOYN_CIDAAS_ENDPOINTS["VERIFICATION_AUTHENTICATE"],
-            json_data=authenticate_data,
-            headers=verification_headers,
-            timeout=self._config.timeout,
-        )
-
-        logger.debug(f"Authenticate response status: {authenticate_response.status_code}")
-        authenticate_response.raise_for_status()
-        authenticate_result = authenticate_response.json()
-
-        if not authenticate_result.get("success"):
-            raise Exception(f"Password authentication failed: {authenticate_result}")
-
-        auth_exchange_data = authenticate_result["data"]
-        final_sub = auth_exchange_data["sub"]
-        final_status_id = auth_exchange_data["status_id"]
-
-        logger.debug(f"Got final sub: {final_sub}, final_status_id: {final_status_id}")
-        return final_sub, final_status_id
-
-    def _perform_final_login(
-        self, session, final_sub: str, final_status_id: str, request_id: str
-    ) -> Optional[str]:
-        """
-        Perform the final login with verification results.
-
-        Returns the redirect Location URL containing the authorization code,
-        or None if no redirect was returned.
-
-        FIX: Previously returned bool and discarded the redirect URL, which
-        made authorization code extraction impossible. Now returns the Location
-        header so the caller can extract the code directly.
-        """
-        from .constants import JOYN_CIDAAS_ENDPOINTS, JOYN_USER_AGENT
-
-        login_data = {
-            "sub": final_sub,
-            "status_id": final_status_id,
-            "verificationType": "PASSWORD",
-            "requestId": request_id,
-            "remember_me": "true",
-        }
-
-        login_headers = {
-            "User-Agent": JOYN_USER_AGENT,
-            "Accept": "application/json",
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Origin": "https://signin.7pass.de",
-        }
-
-        logger.debug("Step 3: Final login with verification results")
-        login_response = session.post(
-            JOYN_CIDAAS_ENDPOINTS["LOGIN_VERIFICATION"],
-            data=urlencode(login_data).encode(),
-            headers=login_headers,
-            timeout=self._config.timeout,
-            allow_redirects=False,
-        )
-
-        logger.debug(f"Login response status: {login_response.status_code}")
-        login_response.raise_for_status()
-
-        if login_response.status_code in (302, 303):
-            location = login_response.headers.get("Location")
-            if location:
-                logger.debug(f"Final login redirected to: {location}")
-                return location
-            logger.warning("Final login returned redirect status but no Location header")
-            return None
-
-        # 200 response — some flows return the callback URL in the body
-        if login_response.status_code == 200:
-            try:
-                body = login_response.json()
-                callback_url = body.get("redirect_uri") or body.get("location") or body.get("url")
-                if callback_url:
-                    logger.debug(f"Final login returned callback URL in body: {callback_url}")
-                    return callback_url
-            except (ValueError, KeyError, AttributeError):
-                pass
-            logger.warning("Final login returned 200 but no redirect URL could be extracted")
-
-        return None
-
     @staticmethod
     def _extract_code_from_url(url: str) -> Optional[str]:
         """
@@ -771,59 +611,121 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 logger.debug("Joyn OAuth2 authorization code flow successful (existing session)")
                 return token_data
 
-            # Step 2b: No existing session — perform form-based login
-            logger.info("No existing session - performing form-based login")
+            # Step 2b: No existing session — use login-srv/login (the approach used
+            # in the working lib_joyn implementation). This avoids cidaas verification-srv
+            # which is protected by Cloudflare's managed challenge.
+            logger.info("No existing session - performing login-srv/login flow")
 
-            # Extract request_id from the response URL
+            # Extract request_id and cd1 from the signin redirect URL
             parsed_url = urlparse(auth_response.url)
             query_params = parse_qs(parsed_url.query)
             request_id = query_params.get("requestId", [None])[0]
+            cd1 = query_params.get("cd1", [None])[0]
 
             if not request_id:
-                # Fallback: extract from response body
                 request_id_match = re.search(
-                    r'requestId["\']?\s*:\s*["\']([^"\']+)', auth_response.text
+                    r'requestId["\'\']?\s*:\s*["\'\']([^"\']+)', auth_response.text
                 )
                 if request_id_match:
                     request_id = request_id_match.group(1)
                 else:
                     raise Exception("Could not extract request_id from authorization page")
 
-            logger.debug(f"Extracted request_id: {request_id}")
+            logger.debug(f"Extracted request_id: {request_id}, cd1: {cd1}")
 
-            # Step 3: Two-step verification
-            final_sub, final_status_id = self._perform_two_step_verification(
-                session, username, password, request_id, auth_response.url
+            # Step 3: Pre-flight calls that 7pass expects before the login POST.
+            # Mirrors lib_joyn: lang-check → user-exists → method-list.
+            # Session cookie jar carries state across all requests.
+            logger.debug("Step 3a: Language / registration setup check")
+            session.get(
+                f"https://auth.7pass.de/registration-setup-srv/public/list"
+                f"?acceptlanguage=undefined&requestId={request_id}",
+                timeout=self._config.timeout,
             )
 
-            # Step 4: Final login — returns the redirect Location URL
-            redirect_url = self._perform_final_login(
-                session, final_sub, final_status_id, request_id
+            logger.debug("Step 3b: Check user exists")
+            session.post(
+                f"https://auth.7pass.de/users-srv/user/checkexists/{request_id}",
+                json_data={"email": username, "requestId": request_id},
+                timeout=self._config.timeout,
             )
 
-            if not redirect_url:
-                raise Exception(
-                    "Final login did not return a redirect URL. "
-                    "Cannot extract authorization code."
+            logger.debug("Step 3c: Get configured verification methods")
+            session.post(
+                "https://auth.7pass.de/verification-srv/v2/setup/public/configured/list",
+                json_data={"email": username, "request_id": request_id},
+                timeout=self._config.timeout,
+            )
+
+            # Step 4: POST credentials to login-srv/login.
+            # Returns a redirect whose final URL contains either ?code= directly
+            # (fast path) or ?sub=&track_id= (consent flow, needs one more step).
+            logger.debug("Step 4: POST credentials to login-srv/login")
+            login_response = session.post(
+                "https://auth.7pass.de/login-srv/login",
+                form_data={"username": username, "password": password, "requestId": request_id},
+                timeout=self._config.timeout,
+                allow_redirects=True,
+            )
+            login_response.raise_for_status()
+
+            final_url = login_response.url
+            id_dict = parse_qs(urlparse(final_url).query)
+            logger.debug(f"login-srv/login landed on: {final_url}")
+
+            # Step 5: Consent flow if no code yet
+            if id_dict.get("code") is None:
+                sub = id_dict.get("sub", [None])[0]
+                track_id = id_dict.get("track_id", [None])[0]
+
+                if not sub or not track_id:
+                    raise Exception(
+                        f"login-srv/login returned neither code nor sub/track_id. URL: {final_url}"
+                    )
+
+                logger.debug(f"Step 5a: Consent scope accept for sub={sub}")
+                session.post(
+                    "https://auth.7pass.de/consent-management-srv/consent/scope/accept",
+                    json_data={
+                        "sub": sub,
+                        "client_id": self.oauth_client_id,
+                        "scopes": [{"offline_access": "denied"}],
+                    },
+                    timeout=self._config.timeout,
                 )
 
-            # Step 5: Extract authorization code from the redirect URL
-            auth_code = self._extract_code_from_url(redirect_url)
+                logger.debug(f"Step 5b: precheck/continue for track_id={track_id}")
+                continue_response = session.post(
+                    f"https://auth.7pass.de/login-srv/precheck/continue/{track_id}",
+                    form_data="",
+                    timeout=self._config.timeout,
+                    allow_redirects=True,
+                )
+                continue_response.raise_for_status()
 
+                final_url = continue_response.url
+                id_dict = parse_qs(urlparse(final_url).query)
+                logger.debug(f"precheck/continue landed on: {final_url}")
+
+            auth_code = id_dict.get("code", [None])[0]
             if not auth_code:
                 raise Exception(
-                    f"Could not extract authorization code from redirect URL: {redirect_url}"
+                    f"Could not extract authorization code after login flow. Final URL: {final_url}"
                 )
 
-            logger.debug(f"Extracted authorization code from redirect")
+            # Pick up cd1 from the final redirect URL if not captured earlier
+            if not cd1:
+                cd1 = id_dict.get("cd1", [str(uuid.uuid4())])[0]
 
-            # Step 6: Exchange authorization code for tokens
-            logger.debug("Exchanging authorization code for tokens")
+            logger.debug("Step 6: Exchanging authorization code for tokens")
             token_data = self._exchange_authorization_code_for_token(
-                authorization_code=auth_code, code_verifier=code_verifier, state=state
+                authorization_code=auth_code,
+                code_verifier=code_verifier,
+                state=state,
+                cd1=cd1,
             )
 
-            logger.debug("Joyn OAuth2 authorization code flow successful (form login)")
+            logger.debug("Joyn OAuth2 authorization code flow successful (login-srv flow)")
             return token_data
 
         except Exception as e:
@@ -833,12 +735,18 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
     def _build_token_exchange_payload(
         self, authorization_code: str, code_verifier: str, state: Optional[str] = None, **kwargs
     ) -> Dict[str, Any]:
-        """Joyn-specific token exchange payload"""
+        """Joyn-specific token exchange payload.
+
+        cd1 is the tracking UUID that 7pass threads through the whole login flow.
+        When available (login-srv path) we pass it as tracking_id; otherwise we
+        generate a fresh UUID as a fallback.
+        """
+        tracking_id = kwargs.get("cd1") or str(uuid.uuid4())
         return {
             "code": authorization_code,
             "client_id": self.oauth_client_id,
             "redirect_uri": self.oauth_redirect_uri,
-            "tracking_id": str(uuid.uuid4()),
+            "tracking_id": tracking_id,
             "tracking_name": self.platform,
             "code_verifier": code_verifier,
             # No grant_type for Joyn
