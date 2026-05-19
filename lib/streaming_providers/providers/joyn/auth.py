@@ -636,26 +636,46 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             # Step 3: Pre-flight calls that 7pass expects before the login POST.
             # Mirrors lib_joyn: lang-check → user-exists → method-list.
             # Session cookie jar carries state across all requests.
+            #
+            # "Expect: 100-continue" suppressed on all POSTs: some 7pass endpoints
+            # return 417 Expectation Failed when this header is present (sent
+            # automatically by requests/urllib3 for bodies > 1 KB, and sometimes
+            # unconditionally depending on the HTTP manager implementation).
+            # Pre-flight failures are non-fatal — we log and continue since the
+            # login POST itself is what actually matters.
+            no_expect_header = {"Expect": ""}
+
             logger.debug("Step 3a: Language / registration setup check")
-            session.get(
-                f"https://auth.7pass.de/registration-setup-srv/public/list"
-                f"?acceptlanguage=undefined&requestId={request_id}",
-                timeout=self._config.timeout,
-            )
+            try:
+                session.get(
+                    f"https://auth.7pass.de/registration-setup-srv/public/list"
+                    f"?acceptlanguage=undefined&requestId={request_id}",
+                    timeout=self._config.timeout,
+                )
+            except Exception as e:
+                logger.debug(f"Step 3a non-fatal error (continuing): {e}")
 
             logger.debug("Step 3b: Check user exists")
-            session.post(
-                f"https://auth.7pass.de/users-srv/user/checkexists/{request_id}",
-                json_data={"email": username, "requestId": request_id},
-                timeout=self._config.timeout,
-            )
+            try:
+                session.post(
+                    f"https://auth.7pass.de/users-srv/user/checkexists/{request_id}",
+                    json_data={"email": username, "requestId": request_id},
+                    headers=no_expect_header,
+                    timeout=self._config.timeout,
+                )
+            except Exception as e:
+                logger.debug(f"Step 3b non-fatal error (continuing): {e}")
 
             logger.debug("Step 3c: Get configured verification methods")
-            session.post(
-                "https://auth.7pass.de/verification-srv/v2/setup/public/configured/list",
-                json_data={"email": username, "request_id": request_id},
-                timeout=self._config.timeout,
-            )
+            try:
+                session.post(
+                    "https://auth.7pass.de/verification-srv/v2/setup/public/configured/list",
+                    json_data={"email": username, "request_id": request_id},
+                    headers=no_expect_header,
+                    timeout=self._config.timeout,
+                )
+            except Exception as e:
+                logger.debug(f"Step 3c non-fatal error (continuing): {e}")
 
             # Step 4: POST credentials to login-srv/login.
             # Returns a redirect whose final URL contains either ?code= directly
@@ -664,6 +684,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             login_response = session.post(
                 "https://auth.7pass.de/login-srv/login",
                 form_data={"username": username, "password": password, "requestId": request_id},
+                headers=no_expect_header,
                 timeout=self._config.timeout,
                 allow_redirects=True,
             )
