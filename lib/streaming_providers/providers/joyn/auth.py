@@ -681,10 +681,11 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             # Returns a redirect whose final URL contains either ?code= directly
             # (fast path) or ?sub=&track_id= (consent flow, needs one more step).
             logger.debug("Step 4: POST credentials to login-srv/login")
+            login_payload = urlencode({"username": username, "password": password, "requestId": request_id})
             login_response = session.post(
                 "https://auth.7pass.de/login-srv/login",
-                form_data={"username": username, "password": password, "requestId": request_id},
-                headers=no_expect_header,
+                data=login_payload.encode("utf-8"),
+                headers={**no_expect_header, "Content-Type": "application/x-www-form-urlencoded"},
                 timeout=self._config.timeout,
                 allow_redirects=True,
             )
@@ -718,7 +719,8 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 logger.debug(f"Step 5b: precheck/continue for track_id={track_id}")
                 continue_response = session.post(
                     f"https://auth.7pass.de/login-srv/precheck/continue/{track_id}",
-                    form_data="",
+                    data=b"",
+                    headers={**no_expect_header, "Content-Type": "application/x-www-form-urlencoded"},
                     timeout=self._config.timeout,
                     allow_redirects=True,
                 )
