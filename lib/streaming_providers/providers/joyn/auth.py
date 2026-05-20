@@ -665,28 +665,46 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
             # Helper to make 7pass requests with clean headers while preserving cookies
             def _make_7pass_request(method: str, url: str, **kwargs):
-                # Extract cookies from session but DO NOT mutate session.headers
+                # Extract content_type and pop from kwargs
+                content_type = kwargs.pop("content_type", "application/json")
+
+                # Build base headers for 7pass endpoints
                 request_headers = {
                     "User-Agent": JOYN_USER_AGENT,
                     "Accept": "application/json, text/html, */*",
                     "Accept-Language": "de-DE,de;q=0.9",
                     "Accept-Encoding": "gzip, deflate, br",
-                    "Content-Type": kwargs.pop("content_type", "application/json"),
+                    "Content-Type": content_type,
+                    "Expect": "",  # ← CRITICAL: Suppress 100-Continue
                 }
 
-                # Remove joyn-* headers from base session headers to avoid 431 errors
+                # Add Referer if we have a known referer (authorization page)
+                if "login-srv/login" in url and hasattr(self, '_auth_page_url'):
+                    request_headers["Referer"] = self._auth_page_url
+
+                # Remove joyn-* headers from session to avoid 431 errors
                 clean_session_headers = {
                     k: v for k, v in session.headers.items()
                     if not k.lower().startswith('joyn-')
                 }
 
-                # Merge headers safely
+                # Merge headers: request headers take precedence
                 merged_headers = {**clean_session_headers, **request_headers}
 
-                if method.upper() == "GET":
-                    return session.get(url, timeout=self._config.timeout, headers=merged_headers, **kwargs)
-                else:
-                    return session.post(url, timeout=self._config.timeout, headers=merged_headers, **kwargs)
+                # If form-encoded and data is a dict, let requests handle encoding
+                if content_type == "application/x-www-form-urlencoded" and isinstance(kwargs.get('data'), dict):
+                    # Don't pre-encode; requests will handle it correctly
+                    pass
+
+                try:
+                    if method.upper() == "GET":
+                        return session.get(url, timeout=self._config.timeout, headers=merged_headers, **kwargs)
+                    else:
+                        return session.post(url, timeout=self._config.timeout, headers=merged_headers, **kwargs)
+                finally:
+                    # Store the auth page URL for Referer on subsequent requests
+                    if "authz-srv/authz" in url:
+                        self._auth_page_url = url
 
             logger.debug("Step 3a: Language / registration setup check")
             try:
@@ -728,7 +746,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             login_response = _make_7pass_request(
                 "POST",
                 "https://auth.7pass.de/login-srv/login",
-                data=urlencode(login_payload),
+                data=login_payload,  # ← Pass dict, let requests encode
                 content_type="application/x-www-form-urlencoded",
                 allow_redirects=True
             )
