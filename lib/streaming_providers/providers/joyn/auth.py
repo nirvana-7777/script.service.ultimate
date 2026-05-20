@@ -665,46 +665,40 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
             # Helper to make 7pass requests with clean headers while preserving cookies
             def _make_7pass_request(method: str, url: str, **kwargs):
-                # Extract content_type and pop from kwargs
-                content_type = kwargs.pop("content_type", "application/json")
-
-                # Build base headers for 7pass endpoints
+                # Minimal headers matching working urllib implementation
                 request_headers = {
                     "User-Agent": JOYN_USER_AGENT,
-                    "Accept": "application/json, text/html, */*",
-                    "Accept-Language": "de-DE,de;q=0.9",
-                    "Accept-Encoding": "gzip, deflate, br",
-                    "Content-Type": content_type,
-                    "Expect": "",  # ← CRITICAL: Suppress 100-Continue
+                    "Accept": "*/*",  # ← Match working implementation
+                    "Accept-Encoding": "gzip, deflate",  # ← No 'br'
+                    # NO Accept-Language, NO Expect header
                 }
 
-                # Add Referer if we have a known referer (authorization page)
-                if "login-srv/login" in url and hasattr(self, '_auth_page_url'):
-                    request_headers["Referer"] = self._auth_page_url
+                # Set Content-Type only if explicitly provided
+                content_type = kwargs.pop("content_type", None)
+                if content_type:
+                    request_headers["Content-Type"] = content_type
 
-                # Remove joyn-* headers from session to avoid 431 errors
+                # Remove joyn-* headers to avoid 431 errors
                 clean_session_headers = {
                     k: v for k, v in session.headers.items()
                     if not k.lower().startswith('joyn-')
                 }
 
-                # Merge headers: request headers take precedence
+                # Merge: request headers take precedence
                 merged_headers = {**clean_session_headers, **request_headers}
 
-                # If form-encoded and data is a dict, let requests handle encoding
-                if content_type == "application/x-www-form-urlencoded" and isinstance(kwargs.get('data'), dict):
-                    # Don't pre-encode; requests will handle it correctly
-                    pass
+                # Ensure cookies are sent (critical!)
+                if "cookies" not in kwargs:
+                    kwargs["cookies"] = session.cookies
 
                 try:
                     if method.upper() == "GET":
                         return session.get(url, timeout=self._config.timeout, headers=merged_headers, **kwargs)
                     else:
                         return session.post(url, timeout=self._config.timeout, headers=merged_headers, **kwargs)
-                finally:
-                    # Store the auth page URL for Referer on subsequent requests
-                    if "authz-srv/authz" in url:
-                        self._auth_page_url = url
+                except Exception as e:
+                    logger.debug(f"_make_7pass_request error: {e}")
+                    raise
 
             logger.debug("Step 3a: Language / registration setup check")
             try:
@@ -742,6 +736,13 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             # Step 4: POST credentials to login-srv/login
             logger.debug(f"Step 4: POST credentials (username: {username} requestid: {request_id}) to login-srv/login")
             login_payload = {"username": username, "password": password, "requestId": request_id}
+
+            logger.debug(f"Login POST URL: https://auth.7pass.de/login-srv/login")
+            logger.debug(f"Login POST payload type: {type(login_payload)}")
+            logger.debug(
+                f"Login POST payload keys: {list(login_payload.keys()) if isinstance(login_payload, dict) else 'N/A'}")
+            logger.debug(f"Session cookies count: {len(session.cookies)}")
+            logger.debug(f"Session cookies: {[(c.name, c.domain) for c in session.cookies]}")
 
             login_response = _make_7pass_request(
                 "POST",
