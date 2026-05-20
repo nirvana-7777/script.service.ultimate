@@ -275,20 +275,12 @@ class SettingsManager:
 
         # If no file credentials and Kodi is available, try syncing from Kodi
         if not credentials and self.kodi_bridge and self.kodi_bridge.is_kodi_environment():
-            logger.debug(
-                f"SettingsManager: No file credentials for {provider_name}{country_str}, trying Kodi sync"
-            )
-            if self._sync_credentials_from_kodi(provider_name, country):
-                credentials = self.credential_manager.load_credentials(provider_name, country)
-                logger.debug(f"SettingsManager: After Kodi sync, credentials: {type(credentials)}")
-                if credentials:
-                    logger.debug(
-                        f"SettingsManager: Synced credentials type: {credentials.credential_type}"
-                    )
+            try:  # ← wrap kodi_bridge call
+                if self._sync_credentials_from_kodi(provider_name, country):
+                    credentials = self.credential_manager.load_credentials(provider_name, country)
+            except Exception as e:
+                logger.warning(f"SettingsManager: Kodi sync failed for {provider_name}{country_str}: {e}")
 
-        logger.debug(
-            f"SettingsManager: Final credentials for {provider_name}{country_str}: {credentials is not None}"
-        )
         return credentials
 
     def save_provider_credentials(
