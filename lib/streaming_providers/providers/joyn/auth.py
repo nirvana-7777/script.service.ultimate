@@ -562,18 +562,18 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             web_login_url = self._config.get_authorize_endpoint()
             logger.debug(f"Using authorize endpoint: {web_login_url}")
 
-            # Build authorization URL with PKCE
-            code_verifier = self.generate_pkce_verifier()
-            code_challenge = self.generate_pkce_challenge(code_verifier)
+            self.http_manager.clear_cookies()
+
             state = self.generate_oauth_state()
 
-            # Strip existing query params from discovery URL, then merge with our params
+            # Parse discovery URL but preserve existing params (especially cd1)
             parsed_login_url = urlparse(web_login_url)
             base_login_url = parsed_login_url._replace(query="", fragment="").geturl()
             existing_params = {
                 k: v[0] for k, v in parse_qs(parsed_login_url.query).items()
             }
 
+            # 2. Build URL without PKCE (working implementation does not use it)
             params = {
                 **existing_params,
                 "response_type": "code",
@@ -581,12 +581,10 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 "redirect_uri": self.oauth_redirect_uri,
                 "scope": self.oauth_scope,
                 "state": state,
-                "code_challenge": code_challenge,
-                "code_challenge_method": "S256",
                 "response_mode": "query",
                 "view_type": "login",
                 "prompt": "consent",
-                "cd1": str(uuid.uuid4()),
+                # cd1 is preserved from existing_params if present
             }
 
             authorization_url = f"{base_login_url}?{urlencode(params)}"
@@ -638,7 +636,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
                 token_data = self._exchange_authorization_code_for_token(
                     authorization_code=auth_code,
-                    code_verifier=code_verifier,
+                    code_verifier="",  # PKCE disabled for this flow
                     state=state,
                 )
 
@@ -667,33 +665,28 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
             # Helper to make 7pass requests with clean headers while preserving cookies
             def _make_7pass_request(method: str, url: str, **kwargs):
-                # Save current headers
-                saved_headers = dict(session.headers)
-
-                # Set minimal browser-like headers for 7pass endpoints
-                session.headers.update({
+                # Extract cookies from session but DO NOT mutate session.headers
+                request_headers = {
                     "User-Agent": JOYN_USER_AGENT,
                     "Accept": "application/json, text/html, */*",
                     "Accept-Language": "de-DE,de;q=0.9",
                     "Accept-Encoding": "gzip, deflate, br",
-                    "Expect": "",  # suppress 100-continue
                     "Content-Type": kwargs.pop("content_type", "application/json"),
-                })
+                }
 
-                # Remove any joyn-* headers that might cause 431 errors
-                for key in list(session.headers.keys()):
-                    if key.lower().startswith('joyn-'):
-                        del session.headers[key]
+                # Remove joyn-* headers from base session headers to avoid 431 errors
+                clean_session_headers = {
+                    k: v for k, v in session.headers.items()
+                    if not k.lower().startswith('joyn-')
+                }
 
-                try:
-                    if method.upper() == "GET":
-                        return session.get(url, timeout=self._config.timeout, **kwargs)
-                    else:
-                        return session.post(url, timeout=self._config.timeout, **kwargs)
-                finally:
-                    # Restore original headers
-                    session.headers.clear()
-                    session.headers.update(saved_headers)
+                # Merge headers safely
+                merged_headers = {**clean_session_headers, **request_headers}
+
+                if method.upper() == "GET":
+                    return session.get(url, timeout=self._config.timeout, headers=merged_headers, **kwargs)
+                else:
+                    return session.post(url, timeout=self._config.timeout, headers=merged_headers, **kwargs)
 
             logger.debug("Step 3a: Language / registration setup check")
             try:
@@ -795,12 +788,14 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
             # Pick up cd1 from the final redirect URL if not captured earlier
             if not cd1:
-                cd1 = id_dict.get("cd1", [str(uuid.uuid4())])[0]
+                cd1 = id_dict.get("cd1", [None])[0]
+                if not cd1:
+                    raise Exception("cd1 tracking ID missing from login flow response")
 
             logger.debug("Step 6: Exchanging authorization code for tokens")
             token_data = self._exchange_authorization_code_for_token(
                 authorization_code=auth_code,
-                code_verifier=code_verifier,
+                code_verifier="",  # PKCE disabled for this flow
                 state=state,
                 cd1=cd1,
             )
@@ -810,14 +805,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
         except Exception as e:
             logger.error(f"Joyn OAuth2 authorization code flow failed: {e}")
-            # Re-raise to allow caller to handle fallback to anonymous auth
             raise
-
-        finally:
-            # Always restore original headers in case of early return
-            if 'original_headers' in locals() and session:
-                session.headers.clear()
-                session.headers.update(original_headers)
 
     @staticmethod
     def _strip_joyn_headers_for_7pass(session) -> None:
@@ -842,7 +830,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             "redirect_uri": self.oauth_redirect_uri,
             "tracking_id": tracking_id,
             "tracking_name": self.platform,
-            "code_verifier": code_verifier,
+            "code_verifier": "",  # Joyn/7pass expects empty string
             # No grant_type for Joyn
         }
 
