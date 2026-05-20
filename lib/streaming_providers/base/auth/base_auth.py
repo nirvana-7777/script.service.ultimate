@@ -286,17 +286,9 @@ class BaseAuthenticator(ABC):
         try:
             # Check if it's a SettingsManager instance (or compatible)
             if hasattr(self.settings_manager, "get_provider_credentials"):
-                # Try country-aware call first
-                try:
-                    return self.settings_manager.get_provider_credentials(
-                        self.provider_name, self.country
-                    )
-                except TypeError:
-                    # Fallback for managers that don't support country parameter
-                    logger.debug(
-                        f"Settings manager doesn't support country parameter, using without"
-                    )
-                    return self.settings_manager.get_provider_credentials(self.provider_name)
+                return self.settings_manager.get_provider_credentials(
+                    self.provider_name, self.country
+                )
             else:
                 logger.warning(
                     f"Settings manager has no credential loading method for {self.provider_name}"
@@ -346,13 +338,7 @@ class BaseAuthenticator(ABC):
             country_str = f" (country: {self.country})" if self.country else ""
             logger.debug(f"Loading session for {self.provider_name}{country_str}")
 
-            # Try country-aware call first
-            try:
-                token_data = self.settings_manager.load_token_data(self.provider_name, self.country)
-            except TypeError:
-                # Fallback for managers that don't support country parameter
-                logger.debug(f"Settings manager doesn't support country parameter, using without")
-                token_data = self.settings_manager.load_token_data(self.provider_name)
+            token_data = self.settings_manager.load_token_data(self.provider_name, self.country)
 
             if token_data:
                 self._current_token = self._create_token_from_response(token_data)
@@ -373,19 +359,9 @@ class BaseAuthenticator(ABC):
             try:
                 country_str = f" (country: {self.country})" if self.country else ""
 
-                # Try country-aware call first
-                try:
-                    success = self.settings_manager.save_token_data(
-                        self.provider_name, self._current_token.to_dict(), self.country
-                    )
-                except TypeError:
-                    # Fallback for managers that don't support country parameter
-                    logger.debug(
-                        f"Settings manager doesn't support country parameter, using without"
-                    )
-                    success = self.settings_manager.save_token_data(
-                        self.provider_name, self._current_token.to_dict()
-                    )
+                success = self.settings_manager.save_token_data(
+                    self.provider_name, self._current_token.to_dict(), self.country
+                )
 
                 if success:
                     logger.debug(f"Saved session for {self.provider_name}{country_str}")
@@ -488,17 +464,9 @@ class BaseAuthenticator(ABC):
     def save_credentials(self, credentials, sync_to_kodi: bool = False) -> bool:
         """Save credentials to persistent storage"""
         try:
-            # Try country-aware call first
-            try:
-                success = self.settings_manager.save_provider_credentials(
-                    self.provider_name, credentials, self.country
-                )
-            except TypeError:
-                # Fallback for managers that don't support country parameter
-                logger.debug(f"Settings manager doesn't support country parameter, using without")
-                success = self.settings_manager.save_provider_credentials(
-                    self.provider_name, credentials
-                )
+            success = self.settings_manager.save_provider_credentials(
+                self.provider_name, credentials, self.country
+            )
 
             if success:
                 self.credentials = credentials
@@ -549,13 +517,9 @@ class BaseAuthenticator(ABC):
 
         # Add settings manager info if available
         try:
-            # Try country-aware call first
-            try:
-                manager_info = self.settings_manager.get_credential_info(
-                    self.provider_name, self.country
-                )
-            except TypeError:
-                manager_info = self.settings_manager.get_credential_info(self.provider_name)
+            manager_info = self.settings_manager.get_credential_info(
+                self.provider_name, self.country
+            )
             base_info.update(manager_info)
         except Exception as e:
             logger.debug(f"Could not get extended credential info for {self.provider_name}: {e}")
@@ -575,15 +539,9 @@ class BaseAuthenticator(ABC):
             # Try to clear through settings manager
             success = True
             if hasattr(self.settings_manager, "credential_manager"):
-                # Try country-aware call first
-                try:
-                    success = self.settings_manager.credential_manager.delete_credentials(
-                        self.provider_name, self.country
-                    )
-                except TypeError:
-                    success = self.settings_manager.credential_manager.delete_credentials(
-                        self.provider_name
-                    )
+                success = self.settings_manager.credential_manager.delete_credentials(
+                    self.provider_name, self.country
+                )
             else:
                 logger.debug(
                     f"No credential deletion capability in settings manager for {self.provider_name}"
@@ -602,13 +560,9 @@ class BaseAuthenticator(ABC):
     def has_stored_credentials(self) -> bool:
         """Check if stored credentials exist"""
         try:
-            # Try country-aware call first
-            try:
-                credentials = self.settings_manager.get_provider_credentials(
-                    self.provider_name, self.country
-                )
-            except TypeError:
-                credentials = self.settings_manager.get_provider_credentials(self.provider_name)
+            credentials = self.settings_manager.get_provider_credentials(
+                self.provider_name, self.country
+            )
             return credentials is not None and credentials.validate()
         except Exception as e:
             logger.debug(f"Error checking stored credentials for {self.provider_name}: {e}")
@@ -646,25 +600,13 @@ class BaseAuthenticator(ABC):
         logger.debug(f"Invalidating token for {self.provider_name}{country_str}")
         self._current_token = None
 
-        try:
-            # Try country-aware call first
-            try:
-                self.settings_manager.clear_token(self.provider_name, self.country)
-            except TypeError:
-                self.settings_manager.clear_token(self.provider_name)
-        except Exception as e:
-            logger.debug(
-                f"Could not clear token from settings manager for {self.provider_name}: {e}"
-            )
+        self.settings_manager.clear_token(self.provider_name, self.country)
 
     def get_device_id(self) -> str:
         """Get persistent device ID for this provider"""
         try:
             # Try country-aware call first
-            try:
-                return self.settings_manager.get_device_id(self.provider_name, self.country)
-            except TypeError:
-                return self.settings_manager.get_device_id(self.provider_name)
+            return self.settings_manager.get_device_id(self.provider_name, self.country)
         except Exception as e:
             logger.error(f"Error getting device ID for {self.provider_name}: {e}")
             import uuid
@@ -742,12 +684,9 @@ class BaseAuthenticator(ABC):
         from ...base.auth.credentials import UserPasswordCredentials
 
         # Check stored credentials first
-        try:
-            stored_creds = self.settings_manager.get_provider_credentials(
-                self.provider_name, self.country
-            )
-        except TypeError:
-            stored_creds = self.settings_manager.get_provider_credentials(self.provider_name)
+        stored_creds = self.settings_manager.get_provider_credentials(
+            self.provider_name, self.country
+        )
 
         has_user_creds = (
             isinstance(stored_creds, UserPasswordCredentials) and stored_creds.validate()
