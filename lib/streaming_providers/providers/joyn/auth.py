@@ -296,6 +296,15 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
         # Extract and cache client_id during initialization
         self._client_id = self._extract_client_id_from_endpoints()
 
+        # Register BEFORE super().__init__ so the Kodi sync in SettingsManager
+        # knows joyn is country-aware and syncs with the country parameter
+        if settings_manager is not None:
+            settings_manager.register_provider(
+                "joyn",
+                supports_countries=True,
+                available_countries=["de", "at", "ch"],
+            )
+
         # NOW call parent __init__ - config, http_manager AND country are ready
         super().__init__(
             provider_name="joyn",
@@ -307,6 +316,23 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             http_manager=self._http_manager,
             proxy_config=proxy_config,
         )
+
+        # Guaranteed non-None credentials after init
+        if self.credentials is None:
+            logger.info(f"No credentials resolved for joyn/{self.country}, using anonymous fallback")
+            self.credentials = self.get_fallback_credentials()
+
+        # Safe credential log
+        from ...base.auth.credentials import UserPasswordCredentials
+        if isinstance(self.credentials, UserPasswordCredentials):
+            logger.info(
+                f"JoynAuthenticator [{self.country}]: user credentials loaded, "
+                f"username='{self.credentials.username}', password=[REDACTED]"
+            )
+        else:
+            logger.info(
+                f"JoynAuthenticator [{self.country}]: using {type(self.credentials).__name__}"
+            )
 
     def _get_joyn_auth_headers(self) -> Dict[str, str]:
         from .constants import JOYN_AUTH_HEADERS_BASE
@@ -630,7 +656,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
             if not request_id:
                 request_id_match = re.search(
-                    r'requestId[ "\'\']?\s*:\s*[ "\'\']([^ "\']+)', auth_response.text
+                    r'requestId[ "\']?\s*:\s*[ "\']([^ "\']+)', auth_response.text
                 )
                 if request_id_match:
                     request_id = request_id_match.group(1)
@@ -793,7 +819,8 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 session.headers.clear()
                 session.headers.update(original_headers)
 
-    def _strip_joyn_headers_for_7pass(self, session) -> None:
+    @staticmethod
+    def _strip_joyn_headers_for_7pass(session) -> None:
         """Remove joyn-* headers that can cause 431 errors on 7pass endpoints"""
         for key in list(session.headers.keys()):
             if key.lower().startswith('joyn-'):
