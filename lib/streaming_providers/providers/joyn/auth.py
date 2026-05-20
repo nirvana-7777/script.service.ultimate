@@ -729,7 +729,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 logger.debug(f"Step 3c non-fatal error (continuing): {e}")
 
             # Step 4: POST credentials to login-srv/login
-            logger.debug("Step 4: POST credentials to login-srv/login")
+            logger.debug(f"Step 4: POST credentials (username: {username}) to login-srv/login")
             login_payload = {"username": username, "password": password, "requestId": request_id}
 
             login_response = _make_7pass_request(
