@@ -665,37 +665,43 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
             # Helper to make 7pass requests with clean headers while preserving cookies
             def _make_7pass_request(method: str, url: str, **kwargs):
-                # Minimal headers matching working urllib implementation
+                """
+                Send a request via the existing session (for cookie persistence) but with
+                a fully-controlled, minimal header set — no joyn-* headers that cause 413/431.
+                Uses PreparedRequest + session.send() so session.headers are NOT merged in.
+                """
+                from requests import Request as RawRequest
+
+                # Minimal headers that match the working urllib implementation
                 request_headers = {
                     "User-Agent": JOYN_USER_AGENT,
-                    "Accept": "*/*",  # ← Match working implementation
-                    "Accept-Encoding": "gzip, deflate",  # ← No 'br'
-                    # NO Accept-Language, NO Expect header
+                    "Accept": "*/*",
+                    "Accept-Encoding": "gzip, deflate",
                 }
 
-                # Set Content-Type only if explicitly provided
+                # Honour explicit content_type kwarg
                 content_type = kwargs.pop("content_type", None)
                 if content_type:
                     request_headers["Content-Type"] = content_type
 
-                # Remove joyn-* headers to avoid 431 errors
-                clean_session_headers = {
-                    k: v for k, v in session.headers.items()
-                    if not k.lower().startswith('joyn-')
-                }
+                # Build a plain Request object (no session header merging yet)
+                req = RawRequest(
+                    method=method.upper(),
+                    url=url,
+                    headers=request_headers,
+                    cookies=session.cookies,  # carry session cookies
+                    **kwargs
+                )
 
-                # Merge: request headers take precedence
-                merged_headers = {**clean_session_headers, **request_headers}
-
-                # Ensure cookies are sent (critical!)
-                if "cookies" not in kwargs:
-                    kwargs["cookies"] = session.cookies
+                # Prepare it *without* the session so session.headers are not merged in
+                prepared = req.prepare()
 
                 try:
-                    if method.upper() == "GET":
-                        return session.get(url, timeout=self._config.timeout, headers=merged_headers, **kwargs)
-                    else:
-                        return session.post(url, timeout=self._config.timeout, headers=merged_headers, **kwargs)
+                    allow_redirects = kwargs.pop("allow_redirects", True)
+                    req = RawRequest(method=method.upper(), url=url, headers=request_headers,
+                                     cookies=session.cookies, **kwargs)
+                    prepared = req.prepare()
+                    return session.send(prepared, timeout=self._config.timeout, allow_redirects=allow_redirects)
                 except Exception as e:
                     logger.debug(f"_make_7pass_request error: {e}")
                     raise
