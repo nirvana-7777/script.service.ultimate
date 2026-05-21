@@ -231,6 +231,16 @@ class RequestConfig:
     user_agent: str = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
     )
+    # Optional header overrides — when set, HTTPManager will add them to the
+    # session in browser-natural order. Left as None by default so the class
+    # imposes no opinion on callers that don't need them.
+    accept: Optional[str] = None
+    accept_language: Optional[str] = None
+    accept_encoding: Optional[str] = None
+
+    # When True, HTTPManager injects an Origin header derived from the
+    # request URL. Opt-in only — some APIs reject unexpected Origin headers.
+    inject_origin: bool = False
 
     # Provider-specific settings
     provider: str = ""

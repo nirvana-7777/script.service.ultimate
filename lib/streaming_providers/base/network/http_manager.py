@@ -2,6 +2,7 @@
 import json
 import logging
 import time
+import urllib.parse
 from typing import Any, Dict, Optional
 
 import requests
@@ -24,8 +25,10 @@ class HTTPManager:
     - Proxy configuration per operation type
     - Retry logic
     - Error handling
-    - Request/response logging
+    - Request/response logging with redirect chain visibility
+    - Automatic Referer and Origin injection
     - Provider-specific configurations
+    - Cookie jar access for external persistence (e.g. Kodi VFS)
     """
 
     def __init__(self, config: Optional[RequestConfig] = None):
@@ -37,10 +40,11 @@ class HTTPManager:
         """
         self.config = config or RequestConfig()
         self._session = None
+        self._last_url: Optional[str] = None  # Tracks last response URL for Referer injection
         self._setup_session()
 
     def _setup_session(self) -> None:
-        """Setup requests session with retry strategy"""
+        """Setup requests session with retry strategy and browser-ordered headers"""
         self._session = requests.Session()
 
         # Setup retry strategy
@@ -55,15 +59,48 @@ class HTTPManager:
         self._session.mount("http://", adapter)
         self._session.mount("https://", adapter)
 
+        # Set headers in browser-natural insertion order.
+        # requests preserves this order in PreparedRequest, which matters
+        # for providers doing soft header-order fingerprinting.
+        # No defaults are imposed here — User-Agent, Accept-Language, and
+        # other opinionated values belong in the provider-specific factory
+        # or in RequestConfig, not in the base session setup.
+        self._session.headers.clear()
+        base_headers: Dict[str, str] = {}
+        if self.config.user_agent:
+            base_headers["User-Agent"] = self.config.user_agent
+        if self.config.accept:
+            base_headers["Accept"] = self.config.accept
+        if self.config.accept_language:
+            base_headers["Accept-Language"] = self.config.accept_language
+        if self.config.accept_encoding:
+            base_headers["Accept-Encoding"] = self.config.accept_encoding
+        base_headers["Connection"] = "keep-alive"
+        self._session.headers.update(base_headers)
+
     def update_config(self, config: RequestConfig) -> None:
         """
-        Update request configuration
+        Update request configuration and rebuild session.
+
+        Existing cookies are preserved across the rebuild so that an in-flight
+        auth session survives a mid-session config change (e.g. proxy swap).
 
         Args:
             config: New request configuration
         """
+        # Snapshot cookies before tearing down the old session
+        old_cookies = self._session.cookies if self._session else None
+
         self.config = config
+        self._last_url = None
         self._setup_session()
+
+        # Restore cookies into the new session.
+        # requests_cookies.update() accepts a RequestsCookieJar directly;
+        # we pass the jar (not a plain dict) so domain/path/expiry metadata
+        # is preserved rather than flattened.
+        if old_cookies is not None:
+            self._session.cookies.update(old_cookies)  # type: ignore[arg-type]
 
     def update_proxy(self, proxy_config: Optional[ProxyConfig]) -> None:
         """
@@ -73,6 +110,20 @@ class HTTPManager:
             proxy_config: New proxy configuration (None to disable proxy)
         """
         self.config.proxy_config = proxy_config
+
+    def reset_referer(self) -> None:
+        """
+        Reset the tracked referer URL.
+
+        Call this between logically separate request flows (e.g. after login
+        completes and before starting a manifest fetch) so that Referer headers
+        don't bleed across unrelated flows.
+        """
+        self._last_url = None
+
+    # ------------------------------------------------------------------
+    # Public request methods
+    # ------------------------------------------------------------------
 
     def get(self, url: str, operation: str = "api", **kwargs) -> requests.Response:
         """
@@ -127,27 +178,60 @@ class HTTPManager:
         """Perform DELETE request with proxy support"""
         return self._make_request("DELETE", url, operation, **kwargs)
 
+    # ------------------------------------------------------------------
+    # Core request logic
+    # ------------------------------------------------------------------
+
     def _make_request(self, method: str, url: str, operation: str, **kwargs) -> requests.Response:
         """
-        Make HTTP request with full configuration support
+        Make HTTP request with full configuration support.
+
+        Injects Referer from the previous response URL and Origin derived from
+        the target URL, unless the caller has already set those headers explicitly.
+        Logs the redirect chain when providers set cookies mid-redirect.
         """
         # Get base request configuration
         request_kwargs = self.config.get_request_kwargs(operation)
 
-        # Merge with any additional kwargs (allows overrides)
+        # Merge with any additional kwargs (caller overrides win)
         request_kwargs.update(kwargs)
+
+        # Inject Referer from last response URL if not already set by caller
+        headers = request_kwargs.setdefault("headers", {})
+        if "Referer" not in headers and self._last_url:
+            headers["Referer"] = self._last_url
+
+        # Inject Origin derived from target URL only when explicitly requested.
+        # Origin injection is opt-in because some non-browser APIs reject
+        # requests that carry an unexpected Origin header.
+        if self.config.inject_origin and "Origin" not in headers:
+            parsed = urllib.parse.urlparse(url)
+            if parsed.scheme and parsed.netloc:
+                headers["Origin"] = f"{parsed.scheme}://{parsed.netloc}"
 
         # Log request details (excluding sensitive data)
         self._log_request(method, url, operation, request_kwargs)
 
         try:
-            # Make the request
             response = self._session.request(method, url, **request_kwargs)
 
-            # Log response
+            # Log redirect chain — cookies set on intermediate responses are
+            # otherwise invisible, making auth flow debugging very painful
+            if response.history:
+                for r in response.history:
+                    cookie_keys = list(r.cookies.keys())
+                    logger.debug(
+                        f"{self.config.provider}: Redirect {r.status_code} {r.url}"
+                        + (f" -> cookies set: {cookie_keys}" if cookie_keys else "")
+                    )
+
+            # Log final response
             self._log_response(response)
 
-            # Check for HTTP errors (will raise for 4xx/5xx)
+            # Track final URL (after redirects) for next request's Referer
+            self._last_url = response.url
+
+            # Raise for 4xx/5xx
             response.raise_for_status()
 
             return response
@@ -172,10 +256,9 @@ class HTTPManager:
             raise
 
         except requests.exceptions.HTTPError as e:
-            # Additional context for HTTP errors
             status = e.response.status_code if e.response else "unknown"
             logger.error(
-                f"{self.config.provider}: HTTP unknown error for {operation} request to {url}: {e}"
+                f"{self.config.provider}: HTTP {status} error for {operation} request to {url}: {e}"
             )
             if e.response is not None and 400 <= e.response.status_code < 500:
                 try:
@@ -193,60 +276,71 @@ class HTTPManager:
             )
             raise
 
+    # ------------------------------------------------------------------
+    # Logging helpers
+    # ------------------------------------------------------------------
+
     def _log_request(self, method: str, url: str, operation: str, kwargs: Dict[str, Any]) -> None:
-        """Log request details with comprehensive proxy information"""
+        """Log request details with comprehensive proxy and referer information"""
 
         # Build proxy information string
         proxy_info = ""
         if self.config.proxy_config:
             if self.config.proxy_config.scope.should_use_proxy_for(operation):
-                # Proxy is configured and will be used
                 proxy_host = f"{self.config.proxy_config.host}:{self.config.proxy_config.port}"
                 proxy_type = self.config.proxy_config.proxy_type.value
                 has_auth = "authenticated" if self.config.proxy_config.auth else "no-auth"
                 proxy_info = f" [proxy: {proxy_type}://{proxy_host} ({has_auth})]"
             else:
-                # Proxy is configured but not used for this operation
                 proxy_info = f" [proxy: disabled for operation '{operation}']"
         else:
-            # No proxy configured
             proxy_info = " [proxy: none]"
 
-        # Get timeout info
-        timeout = kwargs.get("timeout", self.config.timeout)
+        # Referer info for traceability
+        referer = kwargs.get("headers", {}).get("Referer")
+        referer_info = f" [referer: {referer}]" if referer else ""
 
-        # Truncate URL for readability if very long
+        timeout = kwargs.get("timeout", self.config.timeout)
         display_url = url if len(url) <= 100 else f"{url[:80]}...{url[-17:]}"
 
         logger.debug(
             f"{self.config.provider}: {method} {operation} -> {display_url}"
-            f"{proxy_info} [timeout: {timeout}s]"
+            f"{proxy_info}{referer_info} [timeout: {timeout}s]"
         )
 
     def _log_response(self, response: requests.Response) -> None:
-        """Log response details with timing information"""
+        """
+        Log response details with timing information.
 
-        # Get response time if available
+        Uses Content-Length header instead of buffering response.content,
+        so this is safe to call before consuming streaming responses.
+        """
         elapsed = ""
         if hasattr(response, "elapsed"):
-            elapsed_ms = int(response.elapsed.total_seconds() * 1000)
-            elapsed = f" [{elapsed_ms}ms]"
+            elapsed = f" [{int(response.elapsed.total_seconds() * 1000)}ms]"
 
-        # Content type for context
+        content_length = response.headers.get("Content-Length")
+        if content_length is not None:
+            size = int(content_length)
+            if size > 1024 * 1024:
+                size_display = f"{size / (1024 * 1024):.2f} MB"
+            elif size > 1024:
+                size_display = f"{size / 1024:.2f} KB"
+            else:
+                size_display = f"{size} bytes"
+        else:
+            size_display = "unknown size"
+
         content_type = response.headers.get("Content-Type", "unknown")
-
-        # Size info
-        size = len(response.content)
-        size_display = f"{size} bytes"
-        if size > 1024 * 1024:  # > 1MB
-            size_display = f"{size / (1024 * 1024):.2f} MB"
-        elif size > 1024:  # > 1KB
-            size_display = f"{size / 1024:.2f} KB"
 
         logger.debug(
             f"{self.config.provider}: Response {response.status_code} "
             f"({size_display}, {content_type}){elapsed}"
         )
+
+    # ------------------------------------------------------------------
+    # Connection test
+    # ------------------------------------------------------------------
 
     def test_connection(
         self, test_url: str = "https://httpbin.org/ip", operation: str = "api"
@@ -281,7 +375,6 @@ class HTTPManager:
                 and self.config.proxy_config.scope.should_use_proxy_for(operation)
             )
 
-            # Try to parse IP info if using httpbin
             try:
                 result["ip_info"] = response.json()
             except (json.JSONDecodeError, AttributeError):
@@ -293,14 +386,65 @@ class HTTPManager:
 
         return result
 
+    # ------------------------------------------------------------------
+    # Cookie management
+    #
+    # HTTPManager intentionally has no file I/O here. Persistence is the
+    # caller's responsibility so this class stays platform-agnostic
+    # (plain filesystem, Kodi VFS, or anything else).
+    #
+    # Kodi callers should use get_cookie_jar() / set_cookie_jar() together
+    # with xbmcvfs for serialisation — see addon layer documentation.
+    # ------------------------------------------------------------------
+
+    def get_cookie_jar(self):
+        """
+        Return the raw requests CookieJar for external serialisation.
+
+        Typical Kodi usage:
+            jar = manager.get_cookie_jar()
+            with xbmcvfs.File(cookie_path, 'wb') as f:
+                f.write(pickle.dumps(jar))
+        """
+        return self._session.cookies if self._session else None
+
+    def set_cookie_jar(self, jar) -> None:
+        """
+        Replace the session cookie jar with a previously serialised one.
+
+        Typical Kodi usage:
+            with xbmcvfs.File(cookie_path, 'rb') as f:
+                manager.set_cookie_jar(pickle.loads(f.read()))
+        """
+        if self._session:
+            self._session.cookies = jar
+
     def get_cookies(self) -> Dict[str, str]:
-        """Get all cookies from the session"""
+        """Return all current cookies as a plain dict"""
         if self._session:
             return requests.utils.dict_from_cookiejar(self._session.cookies)
         return {}
 
+    def get_cookies_for_domain(self, domain: str) -> Dict[str, str]:
+        """
+        Return cookies scoped to a specific domain.
+
+        Useful for inspecting auth state per provider without exposing
+        cookies from other domains in the same session.
+
+        Args:
+            domain: Domain string to match (partial match, e.g. 'joyn.de')
+        """
+        if not self._session:
+            return {}
+        return {
+            c.name: c.value
+            for c in self._session.cookies
+            if domain in c.domain
+        }
+
     def set_cookies(self, cookies: Dict[str, str]) -> None:
-        """Set cookies in the session"""
+        """Merge a dict of cookies into the session"""
         if self._session:
             self._session.cookies.update(cookies)
 
@@ -309,17 +453,26 @@ class HTTPManager:
         if self._session:
             self._session.cookies.clear()
 
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
     def close(self) -> None:
-        """Close the session"""
+        """
+        Close the session and reset internal state.
+
+        After close(), any further request calls will raise AttributeError
+        rather than silently operating on a closed session.
+        """
         if self._session:
             self._session.close()
+            self._session = None
+        self._last_url = None
 
     def __enter__(self):
-        """Context manager entry"""
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit"""
         self.close()
 
 
@@ -343,29 +496,27 @@ class HTTPManagerFactory:
         Returns:
             Configured HTTPManager instance
         """
-        # Provider-specific defaults
+        # Provider-specific defaults cover only neutral network behaviour
+        # (timeouts, retry counts). User-Agent, Accept-Language, and any
+        # other opinionated or locale-specific headers must be passed in
+        # via config_kwargs by the caller — this layer has no opinion on them.
         provider_defaults = {
             "joyn": {
-                "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
                 "timeout": 30,
                 "max_retries": 3,
             },
             "zdf": {
-                "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "timeout": 25,
                 "max_retries": 2,
             },
             # Add more providers as needed
         }
 
-        # Get provider-specific defaults
         defaults = provider_defaults.get(provider_name, {})
         defaults.update(config_kwargs)
         defaults["provider"] = provider_name
 
-        # Create request config
         config = RequestConfig(proxy_config=proxy_config, **defaults)
-
         return HTTPManager(config)
 
     @staticmethod
