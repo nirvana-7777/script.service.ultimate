@@ -664,49 +664,16 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             logger.debug(f"Extracted request_id: {request_id}, cd1: {cd1}")
 
             # Helper to make 7pass requests with clean headers while preserving cookies
-            def _make_7pass_request(method: str, url: str, **kwargs):
-                """
-                Send a request via the existing session (for cookie persistence) but with
-                a fully-controlled, minimal header set — no joyn-* headers that cause 413/431.
-                Uses PreparedRequest + session.send() so session.headers are NOT merged in.
-                """
-                from requests import Request as RawRequest
-
-                # Minimal headers that match the working urllib implementation
-                request_headers = {
-                    "User-Agent": JOYN_USER_AGENT,
-                    "Accept": "*/*",
-                    "Accept-Encoding": "gzip, deflate",
-                }
-
-                # Pop session.send()-level kwargs BEFORE passing **kwargs to RawRequest.
-                # RawRequest.__init__() does not accept allow_redirects — that is a
-                # session.send() / session.request() concern only. Passing it to
-                # RawRequest() directly causes: "unexpected keyword argument 'allow_redirects'"
-                allow_redirects = kwargs.pop("allow_redirects", True)
-
-                # Honour explicit content_type kwarg
-                content_type = kwargs.pop("content_type", None)
-                if content_type:
-                    request_headers["Content-Type"] = content_type
-
-                # Build a plain Request object (no session header merging yet)
-                req = RawRequest(
-                    method=method.upper(),
-                    url=url,
-                    headers=request_headers,
-                    cookies=session.cookies,  # carry session cookies
-                    **kwargs
-                )
-
-                # Prepare it *without* the session so session.headers are not merged in
-                prepared = req.prepare()
-
+            def _make_7pass_request(method, url, **kwargs):
+                """Send via session.request() with joyn-* headers removed for 7pass endpoints."""
+                # Temporarily patch headers
+                saved = {k: v for k, v in session.headers.items() if k.lower().startswith('joyn-')}
+                for k in saved:
+                    del session.headers[k]
                 try:
-                    return session.send(prepared, timeout=self._config.timeout, allow_redirects=allow_redirects)
-                except Exception as e:
-                    logger.debug(f"_make_7pass_request error: {e}")
-                    raise
+                    return session.request(method, url, timeout=self._config.timeout, **kwargs)
+                finally:
+                    session.headers.update(saved)
 
             logger.debug("Step 3a: Language / registration setup check")
             try:
@@ -755,9 +722,9 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             login_response = _make_7pass_request(
                 "POST",
                 "https://auth.7pass.de/login-srv/login",
-                data=login_payload,  # ← Pass dict, let requests encode
-                content_type="application/x-www-form-urlencoded",
-                allow_redirects=True
+                data=urlencode({"username": username, "password": password, "requestId": request_id}),
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                allow_redirects=True,
             )
             login_response.raise_for_status()
 
