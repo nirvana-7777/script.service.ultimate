@@ -225,6 +225,46 @@ class VFS:
             logger.error(f"Error writing file {filepath}: {e}")
             return False
 
+    def write_binary(self, filepath: str, data: bytes) -> bool:
+        """
+        Write binary content to file
+
+        Args:
+            filepath: File path to write
+            data: Raw bytes to write
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            if not os.path.isabs(filepath):
+                filepath = self.join_path(filepath)
+
+            if is_kodi_environment():
+                import xbmcvfs
+
+                dir_path = "/".join(filepath.split("/")[:-1])
+                if dir_path and not xbmcvfs.exists(dir_path):
+                    xbmcvfs.mkdirs(dir_path)
+
+                with xbmcvfs.File(filepath, "w") as f:
+                    bytes_written = f.write(bytearray(data))
+                    logger.debug(
+                        f"Kodi binary file write: {bytes_written} bytes to {filepath}"
+                    )
+                    return bytes_written > 0
+            else:
+                import pathlib
+
+                path = pathlib.Path(filepath)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with open(path, "wb") as f:
+                    f.write(data)
+                return True
+        except Exception as e:
+            logger.error(f"Error writing binary file {filepath}: {e}")
+            return False
+
     def delete(self, filepath: str) -> bool:
         """
         Delete file
@@ -508,6 +548,16 @@ def write_text(
 ) -> bool:
     """Write text file"""
     return get_vfs(config_dir, addon_subdir).write_text(filepath, content, encoding)
+
+
+def write_binary(
+    filepath: str,
+    data: bytes,
+    config_dir: Optional[str] = None,
+    addon_subdir: str = "",
+) -> bool:
+    """Write binary file"""
+    return get_vfs(config_dir, addon_subdir).write_binary(filepath, data)
 
 
 def read_json(

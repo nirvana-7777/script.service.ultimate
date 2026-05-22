@@ -679,6 +679,12 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                     "Accept-Encoding": "gzip, deflate",
                 }
 
+                # Pop session.send()-level kwargs BEFORE passing **kwargs to RawRequest.
+                # RawRequest.__init__() does not accept allow_redirects — that is a
+                # session.send() / session.request() concern only. Passing it to
+                # RawRequest() directly causes: "unexpected keyword argument 'allow_redirects'"
+                allow_redirects = kwargs.pop("allow_redirects", True)
+
                 # Honour explicit content_type kwarg
                 content_type = kwargs.pop("content_type", None)
                 if content_type:
@@ -697,10 +703,6 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 prepared = req.prepare()
 
                 try:
-                    allow_redirects = kwargs.pop("allow_redirects", True)
-                    req = RawRequest(method=method.upper(), url=url, headers=request_headers,
-                                     cookies=session.cookies, **kwargs)
-                    prepared = req.prepare()
                     return session.send(prepared, timeout=self._config.timeout, allow_redirects=allow_redirects)
                 except Exception as e:
                     logger.debug(f"_make_7pass_request error: {e}")
