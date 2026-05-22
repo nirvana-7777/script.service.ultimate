@@ -563,6 +563,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             logger.debug(f"Using authorize endpoint: {web_login_url}")
 
             self.http_manager.clear_cookies()
+            self.http_manager.reset_referer()
 
             state = self.generate_oauth_state()
 
@@ -664,16 +665,35 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             logger.debug(f"Extracted request_id: {request_id}, cd1: {cd1}")
 
             # Helper to make 7pass requests with clean headers while preserving cookies
-            def _make_7pass_request(method, url, **kwargs):
-                """Send via session.request() with joyn-* headers removed for 7pass endpoints."""
-                # Temporarily patch headers
-                saved = {k: v for k, v in session.headers.items() if k.lower().startswith('joyn-')}
-                for k in saved:
-                    del session.headers[k]
-                try:
-                    return session.request(method, url, timeout=self._config.timeout, **kwargs)
-                finally:
-                    session.headers.update(saved)
+            def _make_7pass_request(method: str, url: str, **kwargs):
+                from requests import Request as RawRequest
+
+                request_headers = {
+                    "User-Agent": JOYN_USER_AGENT,
+                    "Accept": "*/*",
+                    "Accept-Encoding": "gzip, deflate",
+                }
+
+                allow_redirects = kwargs.pop("allow_redirects", True)
+                content_type = kwargs.pop("content_type", None)
+                if content_type:
+                    request_headers["Content-Type"] = content_type
+
+                req = RawRequest(
+                    method=method.upper(),
+                    url=url,
+                    headers=request_headers,
+                    cookies=session.cookies,
+                    **kwargs
+                )
+
+                prepared = req.prepare()
+                # ↓ Explicitly ensure Referer and Origin are absent — the long signin.7pass.de
+                #   redirect URL in Referer is what causes the 431 on auth.7pass.de endpoints
+                prepared.headers.pop("Referer", None)
+                prepared.headers.pop("Origin", None)
+
+                return session.send(prepared, timeout=self._config.timeout, allow_redirects=allow_redirects)
 
             logger.debug("Step 3a: Language / registration setup check")
             try:
