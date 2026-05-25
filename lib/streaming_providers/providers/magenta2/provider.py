@@ -1033,7 +1033,9 @@ class Magenta2Provider(StreamingProvider):
             )
             # Persist the full channel list so subsequent get_channels() calls
             # return immediately from cache without any network requests.
-            self._cached_channels: List[StreamingChannel] = channels
+            # Sort by channel number; channels without a number go to the end
+            channels.sort(key=lambda ch: (ch.channel_number is None, ch.channel_number or 0))
+            self._cached_channels = channels
             return channels
 
         except Exception as e:
