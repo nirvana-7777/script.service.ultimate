@@ -953,10 +953,20 @@ class Magenta2Provider(StreamingProvider):
                 extra_headers=auth_headers,
             )
 
-            # Log subscription packages by resolving distribution IDs to names
+            # Log subscription packages by resolving distribution IDs to names.
+            # Rights arrive as full URIs like
+            # "http://data.entitlement.theplatform.eu/.../DistributionRight/376449962"
+            # so we extract just the trailing integer segment before the lookup.
+            def _dist_uri_to_int(uri) -> int | None:
+                try:
+                    return int(str(uri).rstrip("/").rsplit("/", 1)[-1])
+                except (ValueError, AttributeError):
+                    return None
+
             package_names = [
-                DISTRIBUTION_PACKAGE_NAMES.get(int(dist_id), f"Unknown package ({dist_id})")
+                DISTRIBUTION_PACKAGE_NAMES.get(numeric_id, f"Unknown package ({dist_id})")
                 for dist_id in distribution_rights
+                if (numeric_id := _dist_uri_to_int(dist_id)) is not None
             ]
             logger.info(f"Active subscription packages ({len(package_names)}): {', '.join(package_names)}")
 
