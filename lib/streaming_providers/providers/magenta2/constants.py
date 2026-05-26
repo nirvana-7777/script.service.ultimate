@@ -410,4 +410,5 @@ DISTRIBUTION_PACKAGE_NAMES: dict = {
     268234476: "RTL Premium",
     338937809: "Sky Sport News",
     452131099: "Fußball TV UHD",
+    376449959: "Empty",
 }
