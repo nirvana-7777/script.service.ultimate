@@ -26,6 +26,7 @@ from .constants import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_PLATFORM,
     DEFAULT_REQUEST_TIMEOUT,
+    DISTRIBUTION_PACKAGE_NAMES,
     DRM_SYSTEM_WIDEVINE,
     ERROR_CODES,
     MAGENTA2_CLIENT_IDS,
@@ -951,6 +952,13 @@ class Magenta2Provider(StreamingProvider):
                 timeout=DEFAULT_REQUEST_TIMEOUT,
                 extra_headers=auth_headers,
             )
+
+            # Log subscription packages by resolving distribution IDs to names
+            package_names = [
+                DISTRIBUTION_PACKAGE_NAMES.get(int(dist_id), f"Unknown package ({dist_id})")
+                for dist_id in distribution_rights
+            ]
+            logger.info(f"Active subscription packages ({len(package_names)}): {', '.join(package_names)}")
 
             # ── Step 2: fetch entitled-channels feed ─────────────────────────
             feed_url = (

@@ -385,3 +385,25 @@ PVR_TIMER_TYPE_EPG_ONE_SHOT = 1
 # Used as the byRecordingStatus filter in TimersManager.get_timers().
 # Kept as a list (like the STATUSES_ACTIVE/ALL siblings) for easy pipe-joining.
 PVR_RECORDING_STATUSES_TIMERS = ["SCHEDULED"]
+
+# ============================================================================
+# Distribution Package Names
+# ============================================================================
+
+# Maps distribution IDs (returned by getApplicableDistributionRights) to
+# human-readable package names.  Used only for logging — the raw IDs are still
+# passed to the entitled-channels feed as before.
+DISTRIBUTION_PACKAGE_NAMES: dict = {
+    366135709: "All",
+    268235282: "Magenta TV Basic",
+    376449962: "FAST Channels",
+    424231094: "Sky Sport",
+    424239773: "Sky Sport Bundesliga",
+    268235273: "MagentaSport / myTeamTV",
+    268236341: "Turkish Basic",
+    268234936: "Turkish Premium",
+    268235877: "Italian",
+    268234482: "Polish",
+    268234476: "RTL Premium",
+    338937809: "Sky Sport News",
+}
