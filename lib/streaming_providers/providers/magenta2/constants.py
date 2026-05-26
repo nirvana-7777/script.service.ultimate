@@ -396,7 +396,10 @@ PVR_RECORDING_STATUSES_TIMERS = ["SCHEDULED"]
 DISTRIBUTION_PACKAGE_NAMES: dict = {
     366135709: "All",
     268235282: "Magenta TV Basic",
+    268235291: "HD & UHD Package",
     376449962: "FAST Channels",
+    347334781: "MagentaSport & UHD Package",
+    326643267: "Sky Sport + Bundesliga",
     424231094: "Sky Sport",
     424239773: "Sky Sport Bundesliga",
     268235273: "MagentaSport / myTeamTV",
@@ -406,4 +409,5 @@ DISTRIBUTION_PACKAGE_NAMES: dict = {
     268234482: "Polish",
     268234476: "RTL Premium",
     338937809: "Sky Sport News",
+    452131099: "Fußball TV UHD",
 }

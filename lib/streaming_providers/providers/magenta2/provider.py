@@ -968,7 +968,9 @@ class Magenta2Provider(StreamingProvider):
                 for dist_id in distribution_rights
                 if (numeric_id := _dist_uri_to_int(dist_id)) is not None
             ]
-            logger.info(f"Active subscription packages ({len(package_names)}): {', '.join(package_names)}")
+            logger.info(f"Active subscription packages ({len(package_names)}):")
+            for pkg in package_names:
+                logger.info(f"  · {pkg}")
 
             # ── Step 2: fetch entitled-channels feed ─────────────────────────
             feed_url = (
