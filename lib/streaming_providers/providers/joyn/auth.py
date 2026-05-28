@@ -17,6 +17,8 @@ from ...base.utils.logger import logger
 from .constants import (
     COUNTRY_TENANT_MAPPING,
     DEFAULT_COUNTRY,
+    DEFAULT_REQUEST_TIMEOUT,
+    DEFAULT_MAX_RETRIES,
     DEFAULT_PLATFORM,
     DEVICE_IDS,
     JOYN_7PASS_BASE_URL,
@@ -121,7 +123,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
         self.platform = platform
         self.distribution_tenant = COUNTRY_TENANT_MAPPING[country]
 
-        # Initialize base class FIRST
+        # Initialize base class first
         super().__init__(
             provider_name="joyn",
             settings_manager=settings_manager,
@@ -133,22 +135,34 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             proxy_config=proxy_config,
         )
 
-        # Initialize _config manually if the base class didn't
-        if not hasattr(self, '_config') or self._config is None:
-            # Create a simple config object with the needed attributes
-            from types import SimpleNamespace
-            self._config = SimpleNamespace(
-                provider_name="joyn",
-                settings_manager=settings_manager,
-                config_dir=config_dir,
-                timeout=30,
-                max_retries=3,
-            )
-            # Also set config if that's what the base class expects
-            if not hasattr(self, 'config') or self.config is None:
-                self.config = self._config
+        # Now set up the config object that the base class expects
+        # Create a config object with the required methods
+        class JoynConfig:
+            def __init__(self, country, platform):
+                self.country = country
+                self.platform = platform
+                self.timeout = DEFAULT_REQUEST_TIMEOUT
+                self.max_retries = DEFAULT_MAX_RETRIES
+                self.user_agent = JOYN_USER_AGENT
+                self.base_website = JOYN_DOMAINS.get(country, JOYN_DOMAINS["de"])
 
-        # Now it's safe to enable OIDC discovery
+            def get_base_headers(self):
+                """Return base headers for HTTP requests"""
+                return {
+                    "User-Agent": self.user_agent,
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "Origin": self.base_website,
+                    "joyn-client-version": JOYN_CLIENT_VERSION,
+                    "joyn-country": self.country.upper(),
+                    "joyn-distribution-tenant": COUNTRY_TENANT_MAPPING.get(self.country, "JOYN"),
+                    "joyn-platform": self.platform,
+                }
+
+        # Create and assign the config
+        self._config = JoynConfig(country, platform)
+
+        # Now enable OIDC discovery - this will use the config's get_base_headers() method
         self.enable_oidc_discovery(JOYN_7PASS_BASE_URL)
 
         # Joyn's 7pass flow doesn't use PKCE
