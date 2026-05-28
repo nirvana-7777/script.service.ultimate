@@ -1,5 +1,7 @@
 # streaming_providers/providers/joyn/auth.py
 # -*- coding: utf-8 -*-
+import base64
+import json
 import re
 import time
 import uuid
@@ -16,124 +18,36 @@ from .constants import (
     COUNTRY_TENANT_MAPPING,
     DEFAULT_COUNTRY,
     DEFAULT_PLATFORM,
-    DEFAULT_REQUEST_TIMEOUT,
     DEVICE_IDS,
+    JOYN_7PASS_BASE_URL,
+    JOYN_7PASS_ENDPOINTS,
     JOYN_AUTH_ENDPOINTS,
+    JOYN_AUTH_HEADERS_BASE,
     JOYN_CLIENT_VERSION,
     JOYN_DOMAINS,
     JOYN_OAUTH_SCOPE,
-    JOYN_SSO_DISCOVERY_URL,
     JOYN_USER_AGENT,
     SUPPORTED_COUNTRIES,
 )
 
 
-class JoynSSODiscovery:
-    """Service to discover SSO endpoints dynamically"""
-
-    def __init__(
-        self,
-        http_manager,
-        country: str = DEFAULT_COUNTRY,
-        platform: str = DEFAULT_PLATFORM,
-    ):
-        self.http_manager = http_manager
-        self.country = country
-        self.platform = platform
-        self._endpoints_cache = None
-        self._cache_timestamp = None
-        self._cache_ttl = 3600  # 1 hour cache
-
-    @staticmethod
-    def get_fallback_endpoints() -> Dict[str, str]:
-        """Fallback endpoints if discovery fails"""
-        return {
-            "device-login": "https://sso.joyn.de/ci",
-            "device-register": "https://sso.joyn.de/cr",
-            "web-login": "https://auth.7pass.de/authz-srv/authz",
-            "redeem-token": "https://auth.joyn.de/auth/7pass/token",
-        }
-
-    def get_endpoints(self, force_refresh: bool = False) -> Dict[str, str]:
-        """Get SSO endpoints, with caching"""
-        if (
-            self._endpoints_cache
-            and not force_refresh
-            and time.time() - self._cache_timestamp < self._cache_ttl
-        ):
-            return self._endpoints_cache
-
-        try:
-            params = {
-                "client_id": DEVICE_IDS[self.platform],
-                "client_name": self.platform,
-            }
-
-            response = self.http_manager.get(
-                JOYN_SSO_DISCOVERY_URL, operation="sso_discovery", params=params
-            )
-            response.raise_for_status()
-
-            self._endpoints_cache = response.json()
-            self._cache_timestamp = time.time()
-            logger.debug(
-                f"SSO discovery successful, endpoints: {list(self._endpoints_cache.keys())}"
-            )
-            return self._endpoints_cache
-
-        except Exception as e:
-            # Fallback to hardcoded endpoints if discovery fails
-            logger.warning(f"SSO discovery failed, using fallback: {e}")
-            return self.get_fallback_endpoints()
-
-    def get_auth_endpoint(self, auth_type: str = None) -> str:
-        """Get specific auth endpoint by type"""
-        # If no auth_type specified, use platform-specific login endpoint
-        if auth_type is None:
-            auth_type = f"{self.platform}-login"
-
-        endpoints = self.get_endpoints()
-        endpoint = endpoints.get(auth_type)
-        if not endpoint:
-            logger.warning(f"Auth endpoint '{auth_type}' not found, using fallback")
-            fallback = self.get_fallback_endpoints()
-            # Try platform-specific first, then generic web-login
-            endpoint = (
-                fallback.get(auth_type)
-                or fallback.get(f"{self.platform}-login")
-                or fallback.get("web-login", "")
-            )
-        return endpoint
-
-
 @dataclass
 class JoynCredentials(ClientCredentials):
-    """
-    Joyn-specific credentials for client credentials flow (anonymous auth)
-    """
-
+    """Joyn-specific credentials for client credentials flow (anonymous auth)"""
     client_name: str = DEFAULT_PLATFORM
     country: str = DEFAULT_COUNTRY
     distribution_tenant: Optional[str] = field(default=None)
 
     def __post_init__(self):
-        # Set client_id from constant if not provided
         if not self.client_id:
             self.client_id = DEVICE_IDS.get(self.client_name, DEVICE_IDS[DEFAULT_PLATFORM])
-
         if not self.distribution_tenant and self.country in COUNTRY_TENANT_MAPPING:
             self.distribution_tenant = COUNTRY_TENANT_MAPPING[self.country]
 
     def validate(self) -> bool:
-        """Validate Joyn credentials"""
-        if not self.client_id or not self.client_name:
-            return False
-        if self.country not in SUPPORTED_COUNTRIES:
-            return False
-        return True
+        return bool(self.client_id and self.client_name and self.country in SUPPORTED_COUNTRIES)
 
     def to_auth_payload(self) -> Dict[str, Any]:
-        """Convert to authentication payload for Joyn's anonymous auth endpoint"""
         return {
             "client_id": self.client_id,
             "client_name": self.client_name,
@@ -147,14 +61,10 @@ class JoynCredentials(ClientCredentials):
 
 @dataclass
 class JoynAuthToken(BaseAuthToken):
-    """
-    Joyn-specific authentication token
-    """
-
+    """Joyn-specific authentication token"""
     refresh_token: Optional[str] = field(default="")
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert token to dictionary"""
         return {
             "access_token": self.access_token,
             "refresh_token": self.refresh_token or "",
@@ -164,148 +74,54 @@ class JoynAuthToken(BaseAuthToken):
         }
 
     def get_jwt_claims(self) -> Optional[Dict[str, Any]]:
-        """Extract JWT claims from access token for debugging and classification"""
-        import base64
-        import json
-
+        """Extract JWT claims from access token for classification"""
         try:
             if not self.access_token:
                 return None
-
             parts = self.access_token.split(".")
             if len(parts) != 3:
                 return None
-
             payload_b64 = parts[1]
             padding = len(payload_b64) % 4
             if padding:
                 payload_b64 += "=" * (4 - padding)
-
             payload_json = base64.b64decode(payload_b64).decode("utf-8")
             return json.loads(payload_json)
-
         except Exception as e:
             logger.debug(f"Failed to extract JWT claims: {e}")
             return None
 
 
-class JoynAuthConfig:
-    """Configuration object for Joyn authentication with dynamic endpoints"""
-
-    def __init__(
-        self,
-        country: str,
-        distribution_tenant: str,
-        http_manager,
-        platform: str = DEFAULT_PLATFORM,
-    ):
-        self.country = country
-        self.distribution_tenant = distribution_tenant
-        self.platform = platform
-        self.user_agent = JOYN_USER_AGENT
-        self.timeout = DEFAULT_REQUEST_TIMEOUT
-        self.http_manager = http_manager
-
-        # Only create SSO discovery if we have http_manager
-        if http_manager is not None:
-            self.sso_discovery = JoynSSODiscovery(http_manager, country, platform)
-        else:
-            self.sso_discovery = None
-
-    def get_token_redeem_endpoint(self) -> str:
-        """Get token redemption endpoint for user login flows"""
-        if self.sso_discovery:
-            return self.sso_discovery.get_auth_endpoint("redeem-token")
-        # Fallback if SSO discovery not available
-        return JoynSSODiscovery.get_fallback_endpoints()["redeem-token"]
-
-    def get_authorize_endpoint(self) -> str:
-        """Get authorization endpoint for OAuth2 flow"""
-        if self.sso_discovery:
-            # Try platform-specific login endpoint first
-            return self.sso_discovery.get_auth_endpoint(f"{self.platform}-login")
-        # Fallback if SSO discovery not available - try platform-specific, then web-login
-        fallback = JoynSSODiscovery.get_fallback_endpoints()
-        return fallback.get(f"{self.platform}-login") or fallback.get("web-login", "")
-
-    def get_base_headers(self) -> Dict[str, str]:
-        """Get base headers for all requests"""
-        return {
-            "User-Agent": self.user_agent,
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "Origin": JOYN_DOMAINS.get(self.country, JOYN_DOMAINS["de"]),
-        }
-
-    def get_auth_headers(self) -> Dict[str, str]:
-        headers = self.get_base_headers()
-        headers.update({
-            "joyn-client-version": JOYN_CLIENT_VERSION,
-            "joyn-country": self.country.upper(),
-            # FIX: Add country suffix to distribution tenant
-            "joyn-distribution-tenant": f"JOYN_{self.country.upper()}",  # "JOYN_DE"
-            "joyn-platform": self.platform,
-            "joyn-request-id": str(uuid.uuid4()),
-        })
-        return headers
-
-
 class JoynAuthenticator(BaseOAuth2Authenticator):
     """
-    Joyn authenticator using OAuth2 client credentials flow with dynamic endpoints
+    Joyn authenticator using OIDC discovery + custom 7pass login flow.
+
+    Production-hardened: respects base class abstractions, proper exception chains,
+    consistent endpoint handling, and clean session management.
     """
 
     def __init__(
-        self,
-        country: str = DEFAULT_COUNTRY,
-        platform: str = DEFAULT_PLATFORM,
-        settings_manager=None,
-        credentials=None,
-        config_dir: Optional[str] = None,
-        http_manager=None,
-        proxy_config: Optional[ProxyConfig] = None,
+            self,
+            country: str = DEFAULT_COUNTRY,
+            platform: str = DEFAULT_PLATFORM,
+            settings_manager=None,
+            credentials=None,
+            config_dir: Optional[str] = None,
+            http_manager=None,
+            proxy_config: Optional[ProxyConfig] = None,
     ):
-        """
-        Initialize authenticator for specific country
-        """
+        # Validate inputs
         if country not in SUPPORTED_COUNTRIES:
-            raise ValueError(
-                f"Unsupported country: {country}. Must be one of: {SUPPORTED_COUNTRIES}"
-            )
-
-        # Validate that http_manager is provided
+            raise ValueError(f"Unsupported country: {country}. Must be one of: {SUPPORTED_COUNTRIES}")
         if http_manager is None:
-            raise ValueError(
-                "http_manager is required for JoynAuthenticator. "
-                "It should be created in JoynProvider and passed to the authenticator."
-            )
+            raise ValueError("http_manager is required for JoynAuthenticator")
 
-        # Set country-specific attributes FIRST
+        # Store Joyn-specific attributes
         self.country = country
         self.platform = platform
         self.distribution_tenant = COUNTRY_TENANT_MAPPING[country]
 
-        # Store http_manager reference (provided by JoynProvider)
-        self._http_manager = http_manager
-
-        # Setup Joyn-specific config BEFORE super().__init__
-        self._config = JoynAuthConfig(
-            self.country, self.distribution_tenant, self._http_manager, self.platform
-        )
-
-        # Extract and cache client_id during initialization
-        self._client_id = self._extract_client_id_from_endpoints()
-
-        # Register BEFORE super().__init__ so the Kodi sync in SettingsManager
-        # knows joyn is country-aware and syncs with the country parameter
-        if settings_manager is not None:
-            settings_manager.register_provider(
-                "joyn",
-                supports_countries=True,
-                available_countries=["de", "at", "ch"],
-            )
-
-        # NOW call parent __init__ - config, http_manager AND country are ready
+        # Initialize base class FIRST to ensure proper config/http_manager setup
         super().__init__(
             provider_name="joyn",
             settings_manager=settings_manager,
@@ -313,119 +129,147 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             country=country,
             config_dir=config_dir,
             enable_kodi_integration=True,
-            http_manager=self._http_manager,
+            http_manager=http_manager,
             proxy_config=proxy_config,
         )
 
-        # Guaranteed non-None credentials after init
+        # Enable OIDC discovery using 7pass base URL
+        self.enable_oidc_discovery(JOYN_7PASS_BASE_URL)
+
+        # Joyn's 7pass flow doesn't use PKCE
+        self._use_pkce = False
+
+        # Register with settings manager
+        if settings_manager is not None:
+            settings_manager.register_provider(
+                "joyn",
+                supports_countries=True,
+                available_countries=SUPPORTED_COUNTRIES,
+            )
+
+        # Extract client ID (7pass OIDC doesn't expose app client_id; fallback to platform IDs)
+        self._client_id = self._extract_or_fallback_client_id()
+
+        # Set up fallback credentials if needed
         if self.credentials is None:
-            logger.info(f"No credentials resolved for joyn/{self.country}, using anonymous fallback")
+            logger.info(f"No credentials for joyn/{self.country}, using anonymous fallback")
             self.credentials = self.get_fallback_credentials()
 
-        # Safe credential log
+        # Log credential type
         from ...base.auth.credentials import UserPasswordCredentials
         if isinstance(self.credentials, UserPasswordCredentials):
             logger.info(
-                f"JoynAuthenticator [{self.country}]: user credentials loaded, "
-                f"username='{self.credentials.username}', password=[REDACTED]"
-            )
+                f"JoynAuthenticator [{self.country}]: user credentials loaded for '{self.credentials.username}'")
         else:
-            logger.info(
-                f"JoynAuthenticator [{self.country}]: using {type(self.credentials).__name__}"
-            )
+            logger.info(f"JoynAuthenticator [{self.country}]: using {type(self.credentials).__name__}")
+
+    # ========================================================================
+    # Required Abstract Properties
+    # ========================================================================
+
+    @property
+    def oauth_client_id(self) -> str:
+        return self._client_id
+
+    @property
+    def oauth_scope(self) -> str:
+        return JOYN_OAUTH_SCOPE
+
+    @property
+    def oauth_redirect_uri(self) -> str:
+        from .constants import get_oauth_redirect_uri
+        return get_oauth_redirect_uri(self.country)
+
+    # ========================================================================
+    # Token Configuration
+    # ========================================================================
+
+    def _should_use_json_for_token_exchange(self, **kwargs) -> bool:
+        """Joyn uses JSON instead of form-encoded"""
+        return True
+
+    def _build_token_exchange_payload(
+            self, authorization_code: str, code_verifier: str, state: Optional[str] = None, **kwargs
+    ) -> Dict[str, Any]:
+        """Joyn-specific token exchange payload with tracking_id"""
+        tracking_id = kwargs.get("cd1") or str(uuid.uuid4())
+        return {
+            "code": authorization_code,
+            "client_id": self.oauth_client_id,
+            "redirect_uri": self.oauth_redirect_uri,
+            "tracking_id": tracking_id,
+            "tracking_name": self.platform,
+            "code_verifier": "",  # PKCE explicitly disabled for Joyn
+        }
+
+    def _get_token_exchange_headers(self, **kwargs) -> Dict[str, str]:
+        """Joyn-specific headers for token exchange"""
+        return self._get_joyn_auth_headers()
+
+    # ========================================================================
+    # Joyn-Specific Headers
+    # ========================================================================
 
     def _get_joyn_auth_headers(self) -> Dict[str, str]:
-        from .constants import JOYN_AUTH_HEADERS_BASE
+        """Generate Joyn-specific authentication headers"""
         headers = JOYN_AUTH_HEADERS_BASE.copy()
-        headers["Origin"] = f"https://www.joyn.{self.country.lower()}"
         headers.update({
+            "Origin": JOYN_DOMAINS.get(self.country, JOYN_DOMAINS["de"]),
             "joyn-country": self.country.upper(),
-            # FIX: Add country suffix here too
             "joyn-distribution-tenant": f"JOYN_{self.country.upper()}",
             "joyn-platform": self.platform,
             "joyn-request-id": str(uuid.uuid4()),
         })
         return headers
 
-    def _extract_client_id_from_endpoints(self) -> str:
-        """Extract client_id from SSO endpoints during initialization"""
-        try:
-            # Get endpoints from SSO discovery
-            if self._config.sso_discovery is None:
-                raise ValueError("SSO discovery not available — http_manager was not set")
-            endpoints = self._config.sso_discovery.get_endpoints()
-
-            # Get the platform-specific login endpoint
-            platform_key = f"{self.platform}-login"
-            login_url = endpoints.get(platform_key)
-
-            if not login_url:
-                logger.warning(
-                    f"No {platform_key} endpoint found, trying generic web-login as fallback"
-                )
-                login_url = endpoints.get("web-login")
-
-            if not login_url:
-                raise Exception(
-                    f"No login endpoint found for platform '{self.platform}' or generic 'web-login' in SSO discovery"
-                )
-
-            # Extract client_id from the URL parameters
-            parsed_url = urlparse(login_url)
-            query_params = parse_qs(parsed_url.query)
-
-            client_id = query_params.get("client_id", [None])[0]
-
-            if not client_id:
-                raise Exception("No client_id found in login endpoint")
-
-            logger.debug(f"Extracted and cached client_id for {self.platform}: {client_id}")
-            return client_id
-
-        except Exception as e:
-            logger.error(
-                f"Error extracting client_id from endpoints: {e}, using fallback: {DEVICE_IDS.get(self.platform, DEVICE_IDS[DEFAULT_PLATFORM])}"
-            )
-            return DEVICE_IDS.get(self.platform, DEVICE_IDS[DEFAULT_PLATFORM])
-
-    @property
-    def oauth_client_id(self) -> str:
-        """Get OAuth2 client ID - uses cached value from initialization"""
-        return self._client_id
-
-    @property
-    def oauth_scope(self) -> str:
-        """OAuth2 scopes for authorization code flow"""
-        return JOYN_OAUTH_SCOPE
-
-    @property
-    def oauth_redirect_uri(self) -> str:
-        """OAuth2 redirect URI - country-specific"""
-        from .constants import get_oauth_redirect_uri
-
-        return get_oauth_redirect_uri(self.country)
-
-    @property
-    def auth_endpoint(self) -> str:
-        """Authentication endpoint URL - dynamic based on flow"""
-        from ...base.auth.credentials import UserPasswordCredentials
-
-        if isinstance(self.credentials, UserPasswordCredentials):
-            # For authorization code flow - use token endpoint from SSO discovery
-            return self._config.get_token_redeem_endpoint()
-        else:
-            # For client credentials flow - use anonymous endpoint
-            return JOYN_AUTH_ENDPOINTS["ANONYMOUS"]
-
     def _get_auth_headers(self) -> Dict[str, str]:
-        """Get headers for authentication request"""
-        return self._config.get_auth_headers()
+        """Base authentication headers"""
+        return {
+            "User-Agent": JOYN_USER_AGENT,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Origin": JOYN_DOMAINS.get(self.country, JOYN_DOMAINS["de"]),
+            "joyn-client-version": JOYN_CLIENT_VERSION,
+            "joyn-country": self.country.upper(),
+            "joyn-distribution-tenant": f"JOYN_{self.country.upper()}",
+            "joyn-platform": self.platform,
+            "joyn-request-id": str(uuid.uuid4()),
+        }
+
+    # ========================================================================
+    # Client ID Extraction
+    # ========================================================================
+
+    def _extract_or_fallback_client_id(self) -> str:
+        """
+        Extract client ID. Note: 7pass OIDC discovery returns IdP metadata,
+        not app-specific client_id. Safe fallback to platform device IDs.
+        """
+        client_id = DEVICE_IDS.get(self.platform, DEVICE_IDS[DEFAULT_PLATFORM])
+        logger.debug(f"Using platform client_id: {client_id}")
+        return client_id
+
+    # ========================================================================
+    # Credentials
+    # ========================================================================
+
+    def get_fallback_credentials(self) -> JoynCredentials:
+        """Get fallback credentials when no user credentials are available"""
+        return JoynCredentials(
+            client_id=self._client_id,
+            client_secret="",
+            country=self.country,
+        )
 
     def _build_auth_payload(self) -> Dict[str, Any]:
-        """Build authentication payload - only used for client credentials flow"""
+        """Build authentication payload for client credentials flow"""
         if not self.credentials:
             raise Exception("No credentials available")
         return self.credentials.to_auth_payload()
+
+    # ========================================================================
+    # Token Creation & Classification
+    # ========================================================================
 
     def _create_token_from_response(self, response_data: Dict[str, Any]) -> BaseAuthToken:
         """Create token object from API response"""
@@ -436,145 +280,135 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             expires_in=response_data.get("expires_in", 86400),
             issued_at=response_data.get("issued_at", time.time()),
         )
-
-        # ALWAYS classify immediately when creating from response
         token.auth_level = self._classify_token(token)
         logger.debug(f"Token created and classified as: {token.auth_level.value}")
-
         return token
 
-    def get_fallback_credentials(self) -> JoynCredentials:
-        """Get fallback credentials when no user credentials are available"""
-        return JoynCredentials(
-            client_id=self._client_id,
-            client_secret="",  # Joyn doesn't use client_secret
-            country=self.country,
-        )
-
-    def get_token_redeem_url(self) -> str:
-        """Get token redemption URL for OAuth flows"""
-        return self._config.get_token_redeem_endpoint()
-
-    # MAIN AUTHENTICATION METHOD
-    def _perform_authentication(self) -> BaseAuthToken:
-        """
-        Perform authentication using appropriate flow based on credential type.
-        Falls back to anonymous auth if user authentication fails.
-        """
-        from ...base.auth.credentials import ClientCredentials, UserPasswordCredentials
-
-        if isinstance(self.credentials, UserPasswordCredentials):
-            try:
-                logger.info(f"Using OAuth2 authorization code flow for {self.provider_name}")
-                token_data = self._perform_oauth_authorization_code_flow(
-                    self.credentials.username, self.credentials.password
-                )
-                return self._create_token_from_response(token_data)
-
-            except Exception as e:
-                logger.warning(
-                    f"User auth failed for {self.provider_name}, falling back to anonymous: {e}"
-                )
-                # Fall back to client credentials (anonymous auth)
-                self.credentials = self.get_fallback_credentials()
-                # Fall through to client credentials flow below
-
-        if isinstance(self.credentials, ClientCredentials):
-            logger.info(f"Using OAuth2 client credentials flow for {self.provider_name}")
-            token_data = self._perform_oauth_client_credentials_flow()
-            return self._create_token_from_response(token_data)
-
-        raise Exception(f"Unsupported credential type: {type(self.credentials)}")
-
-    def _perform_oauth_client_credentials_flow(self) -> Dict[str, Any]:
-        """
-        Client credentials flow — Joyn uses JSON instead of form data.
-        """
+    def _classify_token(self, token: BaseAuthToken) -> TokenAuthLevel:
+        """Classify Joyn token based on JWT claims"""
         try:
-            logger.debug(f"Starting Joyn-specific OAuth2 client credentials flow")
+            if not token or not token.access_token:
+                return TokenAuthLevel.UNKNOWN
 
-            headers = self._get_auth_headers()
-            payload = self._build_auth_payload()
+            if not isinstance(token, JoynAuthToken):
+                logger.warning("Token is not a JoynAuthToken")
+                return TokenAuthLevel.UNKNOWN
 
-            logger.debug(str(headers))
-            logger.debug(str(payload))
+            claims = token.get_jwt_claims()
+            if claims is None:
+                logger.warning("Invalid JWT format")
+                return TokenAuthLevel.UNKNOWN
+
+            jidc = claims.get("jIdC", "")
+            if jidc.startswith("JNAA-"):
+                return TokenAuthLevel.CLIENT_CREDENTIALS
+            elif jidc.startswith("JNDE-"):
+                return TokenAuthLevel.USER_AUTHENTICATED
+
+            if "social_id" in claims:
+                return TokenAuthLevel.USER_AUTHENTICATED
+
+            client_id = claims.get("cId", "")
+            known_client_ids = {DEVICE_IDS.get("web"), DEVICE_IDS.get("android"), DEVICE_IDS.get("ios")}
+            if client_id in known_client_ids:
+                return TokenAuthLevel.CLIENT_CREDENTIALS
+
+            subject = claims.get("sub", "")
+            if subject and len(subject) == 36:
+                return TokenAuthLevel.CLIENT_CREDENTIALS
+
+            return TokenAuthLevel.UNKNOWN
+        except Exception as e:
+            logger.error(f"Error classifying token: {e}")
+            return TokenAuthLevel.UNKNOWN
+
+    # ========================================================================
+    # Token Refresh
+    # ========================================================================
+
+    def _refresh_oauth_token(self) -> Optional[BaseAuthToken]:
+        """
+        Joyn-specific token refresh with custom endpoint and grant_type.
+
+        Note: Joyn uses a non-standard refresh flow (grant_type: "Bearer")
+        on a dedicated endpoint not exposed in OIDC discovery.
+        """
+        if not self._current_token or not self._current_token.refresh_token:
+            logger.debug(f"No refresh token available for {self.provider_name}")
+            return None
+
+        try:
+            logger.debug(f"Refreshing token for {self.provider_name}")
+
+            payload = {
+                "client_id": DEVICE_IDS.get(self.platform, DEVICE_IDS[DEFAULT_PLATFORM]),
+                "client_name": self.platform,
+                "grant_type": "Bearer",  # Joyn non-standard grant type
+                "refresh_token": self._current_token.refresh_token,
+            }
+
+            headers = self._get_joyn_auth_headers()
+            refresh_endpoint = JOYN_AUTH_ENDPOINTS["REFRESH"]
 
             response = self.http_manager.post(
-                self.auth_endpoint,
+                refresh_endpoint,
                 operation="auth",
                 headers=headers,
                 json_data=payload,
+                timeout=getattr(self.config, "timeout", 30),
             )
 
-            self._check_oauth_error_response(response)
+            # Handle 422 "Anonymous refresh token" error
+            if response.status_code == 422:
+                try:
+                    error_body = response.json()
+                    if error_body.get("data") == "Anonymous refresh token":
+                        logger.debug("Refresh failed - token type mismatch, forcing re-auth")
+                        return None
+                except Exception:
+                    pass
+
             response.raise_for_status()
-
-            token_data = response.json()
-            logger.debug(f"OAuth2 client credentials flow successful for {self.provider_name}")
-            return token_data
-
+            new_token_data = response.json()
+            refreshed_token = self._create_token_from_response(new_token_data)
+            logger.info(f"Token refresh successful for {self.provider_name}")
+            return refreshed_token
         except Exception as e:
-            logger.error(
-                f"OAuth2 client credentials flow on endpoint {self.auth_endpoint} failed for {self.provider_name}: {e}"
-            )
-            raise Exception(f"OAuth2 client credentials flow failed: {e}")
-
-    @staticmethod
-    def _extract_code_from_url(url: str) -> Optional[str]:
-        """
-        Extract the authorization code from a URL's query string or fragment.
-        Returns the code string, or None if not found.
-        """
-        if not url:
+            logger.warning(f"Token refresh failed for {self.provider_name}: {e}")
             return None
 
-        parsed = urlparse(url)
+    # ========================================================================
+    # The Complex 7pass Login Flow
+    # ========================================================================
 
-        # Check query string first (response_mode=query)
-        query_params = parse_qs(parsed.query)
-        code = query_params.get("code", [None])[0]
-        if code:
-            logger.debug(f"Found authorization code in query string")
-            return code
-
-        # Check fragment (response_mode=fragment, SPA flows)
-        if parsed.fragment:
-            fragment_params = parse_qs(parsed.fragment)
-            code = fragment_params.get("code", [None])[0]
-            if code:
-                logger.debug(f"Found authorization code in URL fragment")
-                return code
-
-        return None
-
-    # Authorization code flow
-    def _perform_oauth_authorization_code_flow(
-            self, username: str, password: str
-    ) -> Dict[str, Any]:
+    def _perform_oauth_authorization_code_flow(self, username: str, password: str) -> Dict[str, Any]:
         """
-        Joyn OAuth2 authorization code flow with two-step verification and PKCE.
-        Uses http_manager's session exclusively for proper cookie persistence.
+        Joyn's complex 7pass OAuth2 flow with multi-step verification.
+
+        Uses constants for all endpoints for better maintainability.
         """
         try:
-            logger.debug("Starting optimized Joyn OAuth2 authorization code flow")
+            logger.debug("Starting Joyn OAuth2 authorization code flow")
 
-            # Step 1: Get authorization endpoint and build URL
-            web_login_url = self._config.get_authorize_endpoint()
+            # Use OIDC-discovered authorize endpoint
+            web_login_url = self.oauth_authorize_endpoint
             logger.debug(f"Using authorize endpoint: {web_login_url}")
 
-            self.http_manager.clear_cookies()
-            self.http_manager.reset_referer()
+            # Create fresh session for clean cookie/referer state
+            session = self._create_oauth_session()
+            original_headers = dict(session.headers)
 
+            # Generate OAuth state and store for later validation
             state = self.generate_oauth_state()
 
-            # Parse discovery URL but preserve existing params (especially cd1)
+            # Parse URL and preserve existing params (especially cd1)
             parsed_login_url = urlparse(web_login_url)
             base_login_url = parsed_login_url._replace(query="", fragment="").geturl()
             existing_params = {
                 k: v[0] for k, v in parse_qs(parsed_login_url.query).items()
             }
 
-            # 2. Build URL without PKCE (working implementation does not use it)
+            # Build authorization URL (PKCE disabled for Joyn)
             params = {
                 **existing_params,
                 "response_type": "code",
@@ -585,42 +419,49 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 "response_mode": "query",
                 "view_type": "login",
                 "prompt": "consent",
-                # cd1 is preserved from existing_params if present
             }
 
             authorization_url = f"{base_login_url}?{urlencode(params)}"
-            logger.debug(f"Built authorization URL: {authorization_url}")
+            logger.debug("Built authorization URL")
 
-            # Use http_manager's session directly - this ensures cookie persistence
-            session = self.http_manager._session
+            # Helper for 7pass requests using managed session
+            def _make_7pass_request(method: str, url: str, **kwargs):
+                request_headers = kwargs.pop("headers", {}).copy()
+                # Strip joyn-* headers and standard origin/referer for 7pass endpoints
+                clean_headers = {k: v for k, v in request_headers.items() if not k.lower().startswith('joyn-')}
+                clean_headers.update({
+                    "User-Agent": JOYN_USER_AGENT,
+                    "Accept": "*/*",
+                    "Accept-Encoding": "gzip, deflate",
+                })
+                clean_headers.pop("Referer", None)
+                clean_headers.pop("Origin", None)
 
-            # Save original headers to restore later
-            original_headers = dict(session.headers)
+                # Handle content-type if provided
+                content_type = kwargs.pop("content_type", None)
+                if content_type:
+                    clean_headers["Content-Type"] = content_type
 
-            # Step 2: Get authorization page
-            logger.debug("Fetching authorization page")
+                allow_redirects = kwargs.pop("allow_redirects", True)
 
-            # Temporarily strip joyn-* headers for 7pass endpoints to avoid 431 errors
-            self._strip_joyn_headers_for_7pass(session)
+                if method.upper() == "GET":
+                    return session.get(url, headers=clean_headers, timeout=30, allow_redirects=allow_redirects,
+                                       **kwargs)
+                else:
+                    return session.post(url, headers=clean_headers, timeout=30, allow_redirects=allow_redirects,
+                                        **kwargs)
 
-            auth_response = session.get(
-                authorization_url,
-                timeout=self._config.timeout,
-                allow_redirects=True
-            )
+            # Get authorization page
+            auth_response = _make_7pass_request("GET", authorization_url, allow_redirects=True)
 
-            # Restore headers after getting auth page
+            # Restore Joyn headers for subsequent calls
             session.headers.clear()
             session.headers.update(original_headers)
-
-            logger.debug(f"Authorization page response status: {auth_response.status_code}")
-            logger.debug(f"Authorization page response URL: {auth_response.url}")
             auth_response.raise_for_status()
 
-            # Step 2a: Check if we got redirected directly to callback (existing session)
+            # Check for existing session (direct callback)
             if self.oauth_redirect_uri in auth_response.url:
                 logger.info("User already authenticated - extracting code from redirect")
-
                 parsed_url = urlparse(auth_response.url)
                 query_params = parse_qs(parsed_url.query)
 
@@ -633,18 +474,16 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 if not self.validate_oauth_state(received_state, state):
                     raise Exception("State validation failed on direct redirect")
 
-                logger.debug(f"Extracted authorization code from direct redirect")
+                logger.debug("Extracted authorization code from direct redirect")
 
-                token_data = self._exchange_authorization_code_for_token(
+                # Exchange code for token using base class method
+                return self._exchange_authorization_code_for_token(
                     authorization_code=auth_code,
-                    code_verifier="",  # PKCE disabled for this flow
+                    code_verifier="",  # PKCE disabled for Joyn
                     state=state,
                 )
 
-                logger.debug("Joyn OAuth2 authorization code flow successful (existing session)")
-                return token_data
-
-            # Step 2b: No existing session — use login-srv/login flow
+            # No existing session - perform login flow
             logger.info("No existing session - performing login-srv/login flow")
 
             # Extract request_id and cd1 from the signin redirect URL
@@ -664,84 +503,32 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
             logger.debug(f"Extracted request_id: {request_id}, cd1: {cd1}")
 
-            # Helper to make 7pass requests with clean headers while preserving cookies
-            def _make_7pass_request(method: str, url: str, **kwargs):
-                from requests import Request as RawRequest
+            # Pre-login checks (non-fatal - continue even if they fail)
+            pre_login_checks = [
+                ("GET",
+                 f"{JOYN_7PASS_ENDPOINTS['REGISTRATION_SETUP']}?acceptlanguage=undefined&requestId={request_id}",
+                 None),
+                ("POST", f"{JOYN_7PASS_ENDPOINTS['USER_CHECK_EXISTS']}/{request_id}",
+                 {"email": username, "requestId": request_id}),
+                ("POST", JOYN_7PASS_ENDPOINTS['VERIFICATION_CONFIGURED'],
+                 {"email": username, "request_id": request_id}),
+            ]
 
-                request_headers = {
-                    "User-Agent": JOYN_USER_AGENT,
-                    "Accept": "*/*",
-                    "Accept-Encoding": "gzip, deflate",
-                }
+            for method, endpoint, data in pre_login_checks:
+                try:
+                    if method == "GET":
+                        _make_7pass_request("GET", endpoint, content_type="application/json")
+                    else:
+                        _make_7pass_request("POST", endpoint, json=data, content_type="application/json")
+                except Exception as e:
+                    logger.debug(f"Pre-login check non-fatal error (continuing): {e}")
 
-                allow_redirects = kwargs.pop("allow_redirects", True)
-                content_type = kwargs.pop("content_type", None)
-                if content_type:
-                    request_headers["Content-Type"] = content_type
-
-                req = RawRequest(
-                    method=method.upper(),
-                    url=url,
-                    headers=request_headers,
-                    cookies=session.cookies,
-                    **kwargs
-                )
-
-                prepared = req.prepare()
-                # ↓ Explicitly ensure Referer and Origin are absent — the long signin.7pass.de
-                #   redirect URL in Referer is what causes the 431 on auth.7pass.de endpoints
-                prepared.headers.pop("Referer", None)
-                prepared.headers.pop("Origin", None)
-
-                return session.send(prepared, timeout=self._config.timeout, allow_redirects=allow_redirects)
-
-            logger.debug("Step 3a: Language / registration setup check")
-            try:
-                _make_7pass_request(
-                    "GET",
-                    f"https://auth.7pass.de/registration-setup-srv/public/list"
-                    f"?acceptlanguage=undefined&requestId={request_id}",
-                    content_type="application/json"
-                )
-            except Exception as e:
-                logger.debug(f"Step 3a non-fatal error (continuing): {e}")
-
-            logger.debug("Step 3b: Check user exists")
-            try:
-                _make_7pass_request(
-                    "POST",
-                    f"https://auth.7pass.de/users-srv/user/checkexists/{request_id}",
-                    json={"email": username, "requestId": request_id},
-                    content_type="application/json"
-                )
-            except Exception as e:
-                logger.debug(f"Step 3b non-fatal error (continuing): {e}")
-
-            logger.debug("Step 3c: Get configured verification methods")
-            try:
-                _make_7pass_request(
-                    "POST",
-                    "https://auth.7pass.de/verification-srv/v2/setup/public/configured/list",
-                    json={"email": username, "request_id": request_id},
-                    content_type="application/json"
-                )
-            except Exception as e:
-                logger.debug(f"Step 3c non-fatal error (continuing): {e}")
-
-            # Step 4: POST credentials to login-srv/login
-            logger.debug(f"Step 4: POST credentials (username: {username} requestid: {request_id}) to login-srv/login")
-            login_payload = {"username": username, "password": password, "requestId": request_id}
-
-            logger.debug(f"Login POST URL: https://auth.7pass.de/login-srv/login")
-            logger.debug(f"Login POST payload type: {type(login_payload)}")
-            logger.debug(
-                f"Login POST payload keys: {list(login_payload.keys()) if isinstance(login_payload, dict) else 'N/A'}")
-            logger.debug(f"Session cookies count: {len(session.cookies)}")
-            logger.debug(f"Session cookies: {[(c.name, c.domain) for c in session.cookies]}")
+            # Submit credentials to login-srv/login
+            logger.debug(f"POST credentials to login-srv/login for user: {username}")
 
             login_response = _make_7pass_request(
                 "POST",
-                "https://auth.7pass.de/login-srv/login",
+                JOYN_7PASS_ENDPOINTS["LOGIN"],
                 data=urlencode({"username": username, "password": password, "requestId": request_id}),
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
                 allow_redirects=True,
@@ -758,7 +545,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 error_code = error_match.group(1) if error_match else "unknown"
                 raise Exception(f"Login failed with error_code={error_code}: {final_url}")
 
-            # Step 5: Consent flow if no code yet
+            # Handle consent flow if no code yet
             if id_dict.get("code") is None:
                 sub = id_dict.get("sub", [None])[0]
                 track_id = id_dict.get("track_id", [None])[0]
@@ -768,10 +555,10 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                         f"login-srv/login returned neither code nor sub/track_id. URL: {final_url}"
                     )
 
-                logger.debug(f"Step 5a: Consent scope accept for sub={sub}")
+                logger.debug(f"Accepting consent scopes for sub={sub}")
                 _make_7pass_request(
                     "POST",
-                    "https://auth.7pass.de/consent-management-srv/consent/scope/accept",
+                    JOYN_7PASS_ENDPOINTS["CONSENT_ACCEPT"],
                     json={
                         "sub": sub,
                         "client_id": self.oauth_client_id,
@@ -780,10 +567,10 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                     content_type="application/json"
                 )
 
-                logger.debug(f"Step 5b: precheck/continue for track_id={track_id}")
+                logger.debug(f"Continuing flow with track_id={track_id}")
                 continue_response = _make_7pass_request(
                     "POST",
-                    f"https://auth.7pass.de/login-srv/precheck/continue/{track_id}",
+                    f"{JOYN_7PASS_ENDPOINTS['PRECHECK_CONTINUE']}/{track_id}",
                     data=b"",
                     content_type="application/x-www-form-urlencoded",
                     allow_redirects=True
@@ -794,6 +581,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 id_dict = parse_qs(urlparse(final_url).query)
                 logger.debug(f"precheck/continue landed on: {final_url}")
 
+            # Extract authorization code
             auth_code = id_dict.get("code", [None])[0]
             if not auth_code:
                 raise Exception(
@@ -806,10 +594,12 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 if not cd1:
                     raise Exception("cd1 tracking ID missing from login flow response")
 
-            logger.debug("Step 6: Exchanging authorization code for tokens")
+            logger.debug("Exchanging authorization code for tokens")
+
+            # Exchange code for token using base class method
             token_data = self._exchange_authorization_code_for_token(
                 authorization_code=auth_code,
-                code_verifier="",  # PKCE disabled for this flow
+                code_verifier="",  # PKCE disabled for Joyn
                 state=state,
                 cd1=cd1,
             )
@@ -818,199 +608,36 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             return token_data
 
         except Exception as e:
-            logger.error(f"Joyn OAuth2 authorization code flow failed: {e}")
-            raise
+            # Preserve original exception chain for debugging
+            logger.error(f"Joyn OAuth2 authorization flow failed: {e}")
+            raise Exception(f"Joyn OAuth2 authorization flow failed: {e}") from e
 
-    @staticmethod
-    def _strip_joyn_headers_for_7pass(session) -> None:
-        """Remove joyn-* headers that can cause 431 errors on 7pass endpoints"""
-        for key in list(session.headers.keys()):
-            if key.lower().startswith('joyn-'):
-                del session.headers[key]
+    # ========================================================================
+    # Public Methods
+    # ========================================================================
 
-    def _build_token_exchange_payload(
-        self, authorization_code: str, code_verifier: str, state: Optional[str] = None, **kwargs
-    ) -> Dict[str, Any]:
-        """Joyn-specific token exchange payload.
+    def get_bearer_token(self, force_refresh: bool = False, force_upgrade: bool = False) -> str:
+        """Get bearer token with automatic upgrade support"""
+        return super().get_bearer_token(force_refresh=force_refresh, force_upgrade=force_upgrade)
 
-        cd1 is the tracking UUID that 7pass threads through the whole login flow.
-        When available (login-srv path) we pass it as tracking_id; otherwise we
-        generate a fresh UUID as a fallback.
-        """
-        tracking_id = kwargs.get("cd1") or str(uuid.uuid4())
-        return {
-            "code": authorization_code,
-            "client_id": self.oauth_client_id,
-            "redirect_uri": self.oauth_redirect_uri,
-            "tracking_id": tracking_id,
-            "tracking_name": self.platform,
-            "code_verifier": "",  # Joyn/7pass expects empty string
-            # No grant_type for Joyn
-        }
-
-    def _get_token_exchange_endpoint(self, **kwargs) -> str:
-        """Joyn-specific token exchange endpoint"""
-        token_endpoint = self._config.get_token_redeem_endpoint()
-        logger.debug(f"Using dynamic token endpoint: {token_endpoint}")
-        return token_endpoint
-
-    def _get_token_exchange_headers(self, **kwargs) -> Dict[str, str]:
-        return self._get_joyn_auth_headers()
-
-    def _should_use_json_for_token_exchange(self, **kwargs) -> bool:
-        """Joyn uses JSON instead of form-encoded"""
-        return True
-
-    def _refresh_oauth_token(self) -> Optional[BaseAuthToken]:
-        """Joyn-specific token refresh implementation with error handling"""
-        if not self._current_token or not self._current_token.refresh_token:
-            logger.debug(f"No refresh token available for {self.provider_name}")
-            return None
-
-        try:
-            logger.debug(f"Refreshing OAuth2 token for {self.provider_name}")
-
-            payload = {
-                "client_id": DEVICE_IDS.get(self.platform, DEVICE_IDS[DEFAULT_PLATFORM]),
-                "client_name": self.platform,
-                "grant_type": "Bearer",  # Joyn uses 'Bearer' instead of 'refresh_token'
-                "refresh_token": self._current_token.refresh_token,
-            }
-
-            headers = self._get_joyn_auth_headers()
-            refresh_endpoint = JOYN_AUTH_ENDPOINTS["REFRESH"]
-
-            logger.debug(f"Refresh payload: {payload}")
-            logger.debug(f"Refresh headers: {headers}")
-
-            response = self.http_manager.post(
-                refresh_endpoint,
-                operation="auth",
-                headers=headers,
-                json_data=payload,
-                timeout=self._config.timeout,
-            )
-
-            logger.debug(f"Refresh response status: {response.status_code}")
-
-            # Handle 422 "Anonymous refresh token" error - force re-auth
-            if response.status_code == 422:
-                try:
-                    error_body = response.json()
-                    if error_body.get("data") == "Anonymous refresh token":
-                        logger.debug("Refresh failed - token type mismatch, forcing re-auth")
-                        return None  # Return None to trigger full re-authentication
-                except Exception:
-                    pass  # Continue to raise below
-
-            response.raise_for_status()
-
-            new_token_data = response.json()
-            refreshed_token = self._create_token_from_response(new_token_data)
-            logger.info(f"OAuth2 token refresh successful for {self.provider_name}")
-            return refreshed_token
-
-        except Exception as e:
-            logger.warning(f"OAuth2 token refresh failed for {self.provider_name}: {e}")
-            return None  # Return None to trigger full re-authentication
-
-    # Backward compatibility methods
     def is_authenticated(self) -> bool:
         """Check if currently authenticated with valid token"""
         return self._current_token is not None and not self._current_token.is_expired
 
     def invalidate_token(self) -> None:
-        """Invalidate current token (forces re-authentication on next request)"""
+        """Invalidate current token"""
         self._current_token = None
         try:
             self.settings_manager.clear_token(self.provider_name)
         except (AttributeError, KeyError, IOError, OSError):
             pass
 
-    def _classify_token(self, token: BaseAuthToken) -> TokenAuthLevel:
-        """
-        Classify Joyn token based on JWT claims and token structure.
-
-        FIX: Delegates JWT decoding to token.get_jwt_claims() instead of
-        duplicating the base64 decode logic that already lives there.
-        """
-        try:
-            if not token or not token.access_token:
-                return TokenAuthLevel.UNKNOWN
-
-            if not isinstance(token, JoynAuthToken):
-                logger.warning("Token is not a JoynAuthToken — cannot extract JWT claims")
-                return TokenAuthLevel.UNKNOWN
-
-            claims = token.get_jwt_claims()
-            if claims is None:
-                logger.warning("Invalid JWT format or decode failure — cannot classify token")
-                return TokenAuthLevel.UNKNOWN
-
-            logger.debug(
-                f"JWT claims for classification: "
-                f"{ {k: v for k, v in claims.items() if k not in ['access_token', 'refresh_token']} }"
-            )
-
-            # 1. Check jIdC prefix — most reliable indicator
-            jidc = claims.get("jIdC", "")
-            if jidc.startswith("JNAA-"):
-                logger.debug("Token classified as CLIENT_CREDENTIALS (JNAA prefix)")
-                return TokenAuthLevel.CLIENT_CREDENTIALS
-            elif jidc.startswith("JNDE-"):
-                logger.debug("Token classified as USER_AUTHENTICATED (JNDE prefix)")
-                return TokenAuthLevel.USER_AUTHENTICATED
-
-            # 2. social_id presence — clear indicator of user authentication
-            if "social_id" in claims:
-                logger.debug("Token classified as USER_AUTHENTICATED (social_id present)")
-                return TokenAuthLevel.USER_AUTHENTICATED
-
-            # 3. Check client ID (cId) against known client IDs
-            client_id = claims.get("cId", "")
-            known_client_ids = {
-                DEVICE_IDS["web"],
-                DEVICE_IDS["android"],
-                DEVICE_IDS["ios"],
-            }
-            if client_id in known_client_ids:
-                logger.debug("Token classified as CLIENT_CREDENTIALS (known client ID)")
-                return TokenAuthLevel.CLIENT_CREDENTIALS
-
-            # 4. UUID-format subject — typical of anonymous/client-credentials tokens
-            subject = claims.get("sub", "")
-            if subject and len(subject) == 36:
-                logger.debug("Token classified as CLIENT_CREDENTIALS (UUID subject pattern)")
-                return TokenAuthLevel.CLIENT_CREDENTIALS
-
-            # 5. Fallback: scope analysis
-            scope = claims.get("scope", "")
-            if scope:
-                scopes = scope.split()
-                if "offline_access" in scopes and "profile" in scopes:
-                    logger.debug("Token classified as USER_AUTHENTICATED (user scopes present)")
-                    return TokenAuthLevel.USER_AUTHENTICATED
-                elif "openid" in scopes and len(scopes) <= 2:
-                    logger.debug("Token classified as CLIENT_CREDENTIALS (minimal scopes)")
-                    return TokenAuthLevel.CLIENT_CREDENTIALS
-
-            logger.warning("Could not definitively classify token, using UNKNOWN")
-            return TokenAuthLevel.UNKNOWN
-
-        except Exception as e:
-            logger.error(f"Error classifying token: {e}")
-            return TokenAuthLevel.UNKNOWN
-
     def debug_token_classification(self) -> Dict[str, Any]:
         """Debug method to analyze current token classification"""
         if not self._current_token:
             return {"error": "No current token"}
 
-        claims = (
-            self._current_token.get_jwt_claims()
-            if hasattr(self._current_token, "get_jwt_claims")
-            else {}
-        )
+        claims = self._current_token.get_jwt_claims() if hasattr(self._current_token, "get_jwt_claims") else {}
 
         return {
             "token_type": type(self._current_token).__name__,
@@ -1018,17 +645,11 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             "is_expired": self._current_token.is_expired,
             "has_refresh": bool(self._current_token.refresh_token),
             "jwt_claims_available": bool(claims),
-            "key_claims": (
-                {
-                    "jIdC": claims.get("jIdC", "MISSING"),
-                    "cId": claims.get("cId", "MISSING"),
-                    "social_id": "PRESENT" if "social_id" in claims else "MISSING",
-                    "sub": (
-                        claims.get("sub", "MISSING")[:8] + "..." if claims.get("sub") else "MISSING"
-                    ),
-                    "scope": claims.get("scope", "MISSING"),
-                }
-                if claims
-                else {}
-            ),
+            "key_claims": {
+                "jIdC": claims.get("jIdC", "MISSING"),
+                "cId": claims.get("cId", "MISSING"),
+                "social_id": "PRESENT" if "social_id" in claims else "MISSING",
+                "sub": claims.get("sub", "MISSING")[:8] + "..." if claims.get("sub") else "MISSING",
+                "scope": claims.get("scope", "MISSING"),
+            } if claims else {},
         }

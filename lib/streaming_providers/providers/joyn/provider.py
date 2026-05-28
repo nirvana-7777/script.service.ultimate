@@ -3,7 +3,6 @@
 import hashlib
 import json
 import time
-import datetime
 import urllib.parse
 from base64 import b64decode
 from datetime import datetime, timedelta
@@ -583,7 +582,7 @@ class JoynProvider(StreamingProvider):
         Get manifest URL for a specific channel by ID
 
         Args:
-            channel_id: ID of the channel to get manifest for
+            content_id: ID of the channel to get manifest for
             content_type: Content type ('LIVE' or 'VOD')
             video_config: Optional video configuration dictionary
             **kwargs: Additional parameters
@@ -615,7 +614,7 @@ class JoynProvider(StreamingProvider):
         Get all DRM configurations for a channel by ID
 
         Args:
-            channel_id: ID of the channel to get DRM configs
+            content_id: ID of the channel to get DRM configs
             content_type: Content type ('LIVE' or 'VOD')
             video_config: Optional video configuration dictionary
             **kwargs: Additional parameters
