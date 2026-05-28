@@ -121,7 +121,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
         self.platform = platform
         self.distribution_tenant = COUNTRY_TENANT_MAPPING[country]
 
-        # Initialize base class FIRST to ensure proper config/http_manager setup
+        # Initialize base class FIRST
         super().__init__(
             provider_name="joyn",
             settings_manager=settings_manager,
@@ -133,7 +133,22 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             proxy_config=proxy_config,
         )
 
-        # Enable OIDC discovery using 7pass base URL
+        # Initialize _config manually if the base class didn't
+        if not hasattr(self, '_config') or self._config is None:
+            # Create a simple config object with the needed attributes
+            from types import SimpleNamespace
+            self._config = SimpleNamespace(
+                provider_name="joyn",
+                settings_manager=settings_manager,
+                config_dir=config_dir,
+                timeout=30,
+                max_retries=3,
+            )
+            # Also set config if that's what the base class expects
+            if not hasattr(self, 'config') or self.config is None:
+                self.config = self._config
+
+        # Now it's safe to enable OIDC discovery
         self.enable_oidc_discovery(JOYN_7PASS_BASE_URL)
 
         # Joyn's 7pass flow doesn't use PKCE
