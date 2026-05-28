@@ -894,6 +894,14 @@ class M3UProvider(StreamingProvider):
                 if key not in channel_data:
                     channel_data[key] = value
 
+            # ============================================================================
+            # PREP FOR MODEL INSTANTIATION
+            # ============================================================================
+            # 'channel_id' is a @property alias in the model.
+            # The actual dataclass field is 'content_id'. Rename before __init__.
+            if "channel_id" in channel_data:
+                channel_data["content_id"] = channel_data.pop("channel_id")
+
             # Create StreamingChannel
             channel = StreamingChannel(**channel_data)
 

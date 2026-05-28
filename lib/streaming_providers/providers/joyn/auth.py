@@ -480,7 +480,8 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                     return session.post(url, headers=clean_headers, timeout=30, allow_redirects=allow_redirects,
                                         **kwargs)
 
-            # Get authorization page
+            # Get authorization page - FOLLOW THE REDIRECT
+            # allow_redirects=True is crucial here
             auth_response = _make_7pass_request("GET", authorization_url, allow_redirects=True)
 
             # Restore Joyn headers for subsequent calls
@@ -488,10 +489,14 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             session.headers.update(original_headers)
             auth_response.raise_for_status()
 
-            # Check for existing session (direct callback)
-            if self.oauth_redirect_uri in auth_response.url:
+            # The final URL after all redirects is the important one
+            final_url = auth_response.url
+            logger.debug(f"Final URL after redirects: {final_url}")
+
+            # Check for existing session (direct callback to joyn.de/oauth)
+            if self.oauth_redirect_uri in final_url:
                 logger.info("User already authenticated - extracting code from redirect")
-                parsed_url = urlparse(auth_response.url)
+                parsed_url = urlparse(final_url)
                 query_params = parse_qs(parsed_url.query)
 
                 auth_code = query_params.get("code", [None])[0]
@@ -512,23 +517,51 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                     state=state,
                 )
 
-            # No existing session - perform login flow
+            # No existing session - we should be on signin.7pass.de
+            if "signin.7pass.de" not in final_url:
+                logger.warning(f"Unexpected final URL, expected signin.7pass.de: {final_url}")
+
             logger.info("No existing session - performing login-srv/login flow")
 
-            # Extract request_id and cd1 from the signin redirect URL
-            parsed_url = urlparse(auth_response.url)
-            query_params = parse_qs(parsed_url.query)
+            # --- EXTRACT requestId and cd1 from the FINAL URL's query parameters ---
+            parsed_final_url = urlparse(final_url)
+            query_params = parse_qs(parsed_final_url.query)
+
             request_id = query_params.get("requestId", [None])[0]
             cd1 = query_params.get("cd1", [None])[0]
 
+            # If not found in URL, try to find in the page HTML (fallback)
             if not request_id:
-                request_id_match = re.search(
-                    r'requestId[ "\']?\s*:\s*[ "\']([^ "\']+)', auth_response.text
-                )
-                if request_id_match:
-                    request_id = request_id_match.group(1)
-                else:
-                    raise Exception("Could not extract request_id from authorization page")
+                logger.warning("requestId not found in URL, searching in page HTML")
+                patterns = [
+                    r'requestId[ "\']?\s*[=:]\s*[ "\']([^ "\']+)',
+                    r'"requestId":"([^"]+)"',
+                    r'requestId=([^&\s]+)',
+                    r'name="requestId"\s+value="([^"]+)"',
+                ]
+                for pattern in patterns:
+                    request_id_match = re.search(pattern, auth_response.text)
+                    if request_id_match:
+                        request_id = request_id_match.group(1)
+                        logger.debug(f"Found request_id using HTML pattern: {request_id}")
+                        break
+
+            if not request_id:
+                # Log a snippet of the final URL and response text for debugging
+                logger.error(f"Could not extract request_id. Final URL: {final_url}")
+                logger.error(f"Response text snippet: {auth_response.text[:500]}")
+                raise Exception("Could not extract request_id from authorization page")
+
+            # cd1 is critical for the token exchange later, ensure we have it
+            if not cd1:
+                cd1 = query_params.get("cd1", [None])[0]
+                if not cd1:
+                    # Try to get cd1 from state or generate one
+                    state_params = parse_qs(parsed_final_url.query.get("state", ""))
+                    cd1 = state_params.get("cd1", [None])[0]
+                    if not cd1:
+                        cd1 = str(uuid.uuid4())
+                        logger.warning(f"cd1 not found, generated new one: {cd1}")
 
             logger.debug(f"Extracted request_id: {request_id}, cd1: {cd1}")
 
@@ -621,7 +654,8 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             if not cd1:
                 cd1 = id_dict.get("cd1", [None])[0]
                 if not cd1:
-                    raise Exception("cd1 tracking ID missing from login flow response")
+                    logger.warning("cd1 tracking ID missing from login flow response, using generated one")
+                    cd1 = str(uuid.uuid4())
 
             logger.debug("Exchanging authorization code for tokens")
 
