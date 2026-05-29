@@ -40,9 +40,9 @@ class RTLPlusDefaults:
     BEDROCK_CLIENT_ID = "bedrock-m6group_web"
 
     # API endpoints
-    AUTH_BASE_URL = "https://auth.rtl.de/auth/realms/rtlplus/protocol/openid-connect"
+    AUTH_REALM_BASE = "https://auth.rtl.de/auth/realms/rtlplus"
+    AUTH_BASE_URL = f"{AUTH_REALM_BASE}/protocol/openid-connect"
     AUTH_ENDPOINT = f"{AUTH_BASE_URL}/token"
-    AUTH_AUTHORIZE_ENDPOINT = f"{AUTH_BASE_URL}/auth"
     GRAPHQL_ENDPOINT = "https://cdn.gateway.now-plus-prod.aws-cbc.cloud/graphql"
     BASE_WEBSITE = "https://plus.rtl.de/"
     CONFIG_ENDPOINT = "https://plus.rtl.de/assets/config/config.json"

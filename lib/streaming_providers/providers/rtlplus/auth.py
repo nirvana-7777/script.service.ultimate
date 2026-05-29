@@ -51,6 +51,11 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
             http_manager=http_manager,
         )
 
+        self.enable_oidc_discovery(
+            discovery_url=RTLPlusDefaults.AUTH_REALM_BASE,
+            cache_ttl=86400  # Cache for 24 hours
+        )
+
         if self.credentials is None:
             self.credentials = self._get_default_credentials()
 

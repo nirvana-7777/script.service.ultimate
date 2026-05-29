@@ -11,11 +11,13 @@ import uuid
 from abc import abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, quote_plus, urlencode, urlparse
 
 from ..models.proxy_models import ProxyConfig
 from ..utils.logger import logger
 from .base_auth import BaseAuthenticator, BaseAuthToken, TokenAuthLevel
+from .remote_login_extension import OAuth2RemoteLoginMixin
+from .remote_login_manager import RemoteLoginManager
 
 
 @dataclass
@@ -120,7 +122,9 @@ class SessionAwareHTTPManager:
                 self.cookies[cookie.name] = cookie.value
 
 
-class BaseOAuth2Authenticator(BaseAuthenticator):
+# OAuth2RemoteLoginMixin comes first so its methods take precedence over any
+# same-named stubs that might exist in BaseAuthenticator.
+class BaseOAuth2Authenticator(OAuth2RemoteLoginMixin, BaseAuthenticator):
     """
     Base class for OAuth2/OIDC authentication with dynamic endpoint discovery.
 
@@ -167,6 +171,9 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
         # Telemetry
         self._oidc_discovery_failures: int = 0
         self._oidc_discovery_successes: int = 0
+
+        # Remote login manager (device/QR code flows)
+        self._remote_login_manager = RemoteLoginManager(self)
 
     @property
     def http_manager(self):
@@ -300,7 +307,6 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
                         logger.warning(f"{status_msg} - rate limited, Retry-After: {retry_after}")
                     elif response.status_code >= 500:
                         logger.warning(f"{status_msg} - transient server error, will retry")
-                    # Increment failure counter and return cached if available
                     self._oidc_discovery_failures += 1
                     if self._oidc_config:
                         logger.debug(f"Using cached OIDC config for {self.provider_name}")
@@ -517,7 +523,7 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
         return session
 
     # ========================================================================
-    # Client Credentials Flow - Fix: Use oauth_token_endpoint
+    # Client Credentials Flow
     # ========================================================================
 
     def _perform_oauth_client_credentials_flow(self) -> Dict[str, Any]:
@@ -531,7 +537,6 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
             headers = self._get_auth_headers()
             data = self._build_auth_payload()
 
-            # Use oauth_token_endpoint instead of auth_endpoint
             response = self.http_manager.post(
                 self.oauth_token_endpoint, operation="auth", headers=headers, data=data
             )
@@ -551,7 +556,14 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
     # ========================================================================
 
     def _build_authorization_url(self, extra_params: Dict[str, Any] = None) -> tuple[str, str, str]:
-        """Build authorization URL with optional PKCE"""
+        """
+        Build authorization URL with optional PKCE.
+
+        Note: extra_params are appended directly to the query string and sent
+        to the authorization server. Only pass parameters that the target
+        provider explicitly supports (e.g. login_hint, prompt, acr_values).
+        Do NOT pass internal implementation keys here.
+        """
         state = self.generate_oauth_state()
         params = {
             "response_type": "code",
@@ -594,7 +606,6 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
             headers = self._get_token_exchange_headers(**kwargs)
             endpoint = kwargs.get('token_endpoint') or self._get_token_exchange_endpoint(**kwargs)
 
-            # Fix: Explicit None check for boolean use_json parameter
             use_json = kwargs.get('use_json')
             if use_json is None:
                 use_json = self._should_use_json_for_token_exchange(**kwargs)
@@ -656,7 +667,7 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
         return self.oauth_token_endpoint
 
     # ========================================================================
-    # Generic Form-Based Login Flow - Fix: Preserve exception chain
+    # Generic Form-Based Login Flow
     # ========================================================================
 
     def _perform_generic_form_login(
@@ -719,7 +730,6 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
             raise Exception(f"Authentication response validation failed: {error_msg}")
 
         # Step 7: Exchange code for token
-        # Fix: Let OAuth2Error propagate; wrap other exceptions with cause chain
         try:
             return self._exchange_authorization_code_for_token(
                 authorization_code=authorization_code,
@@ -732,7 +742,7 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
             raise Exception(f"OAuth2 form-based login failed: {e}") from e
 
     # ========================================================================
-    # Token Refresh - Fix: Consistent payload encoding + correct endpoint
+    # Token Refresh
     # ========================================================================
 
     def _build_refresh_payload(self) -> Dict[str, Any]:
@@ -763,7 +773,6 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
             data = self._build_refresh_payload()
             headers = self._get_auth_headers()
 
-            # Apply consistent Content-Type logic
             if self._should_use_json_for_token_exchange():
                 headers["Content-Type"] = "application/json"
                 request_kwargs = {"json_data": data}
@@ -771,7 +780,6 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
                 headers["Content-Type"] = "application/x-www-form-urlencoded"
                 request_kwargs = {"data": urlencode(data).encode()}
 
-            # Use oauth_token_endpoint to respect OIDC discovery
             response = self.http_manager.post(
                 self.oauth_token_endpoint, operation="auth", headers=headers, **request_kwargs
             )
@@ -789,7 +797,7 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
             return None
 
     # ========================================================================
-    # Error Response Handling - Fix: Clean error handling
+    # Error Response Handling
     # ========================================================================
 
     @staticmethod
@@ -809,7 +817,7 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
                 )
 
     # ========================================================================
-    # JS Extraction Helpers - Fix: Selective exception handling
+    # JS Extraction Helpers
     # ========================================================================
 
     def _extract_from_js(
@@ -844,16 +852,13 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
             if parse_function:
                 return parse_function(extracted)
             return extracted
-        # Re-raise network/transport errors; only suppress parsing errors
         except (ConnectionError, TimeoutError, OSError) as e:
             logger.error(f"Network error extracting {extract_type} from JS for {self.provider_name}: {e}")
             raise
         except (AttributeError, ValueError, re.error) as e:
-            # Parsing/regex errors are recoverable - log and return None
             logger.warning(f"Parse error extracting {extract_type} from JS for {self.provider_name}: {e}")
             return None
         except Exception as e:
-            # Log unexpected errors but re-raise to avoid silent failures
             logger.error(f"Unexpected error extracting {extract_type} from JS for {self.provider_name}: {e}")
             raise
 
@@ -915,7 +920,6 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
             current_token.auth_level = self._classify_token(current_token)
             logger.debug(f"Token classified as: {current_token.auth_level.value}")
 
-        # Cache upgrade check result to avoid duplicate calls
         should_upgrade = force_upgrade or self._should_upgrade_to_user_token(current_token)
 
         if should_upgrade and not force_refresh:
@@ -1008,15 +1012,13 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
         return self._refresh_oauth_token()
 
     # ========================================================================
-    # Status and Diagnostics - Fix: Defensive endpoint access
+    # Status and Diagnostics
     # ========================================================================
 
     def get_authentication_status(self) -> Dict[str, Any]:
         """Get comprehensive OAuth2 authentication status information"""
         status = super().get_authentication_status()
 
-        # Wrap endpoint property access defensively to avoid triggering
-        # OIDC discovery during diagnostic calls, which could hang or throw
         oauth_authorize_ep = "<unavailable>"
         oauth_token_ep = "<unavailable>"
         try:
@@ -1041,6 +1043,7 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
             "credential_type": type(self.credentials).__name__,
             "has_refresh_token": bool(self._current_token and self._current_token.refresh_token),
             "oidc_discovery_enabled": self._enable_oidc_discovery,
+            "remote_login_active_sessions": self._remote_login_manager.get_active_session_count(),
         }
 
         if self._enable_oidc_discovery:
@@ -1098,6 +1101,157 @@ class BaseOAuth2Authenticator(BaseAuthenticator):
             return True, None, authorization_code
         except Exception as e:
             return False, f"Error processing authentication response: {e}", None
+
+    # ========================================================================
+    # Remote Login Flow Methods
+    # ========================================================================
+
+    def _perform_remote_login_flow(self) -> Dict[str, Any]:
+        """
+        Perform complete remote login flow with QR code + polling.
+
+        Called when normal form login is unavailable (e.g. WAF blocks it).
+        Subclasses may call this directly or override _perform_oauth_authorization_code_flow
+        to fall through to it automatically.
+
+        Only passes standard OAuth2 parameters to the authorization URL.
+        Provider-specific extras (e.g. login_hint, prompt) should be added
+        by overriding this method or by passing them via extra_params in a
+        subclass-level _build_authorization_url call.
+        """
+        # Build auth URL with PKCE using no extra_params; see docstring above
+        auth_url, state, code_verifier = self._build_authorization_url()
+
+        # Append login_hint as a properly URL-encoded query parameter if available.
+        # This is done post-build to avoid coupling _build_authorization_url to
+        # credential-specific logic.
+        username = getattr(self.credentials, "username", None)
+        if username:
+            auth_url += f"&login_hint={quote_plus(username)}"
+
+        # Create session via manager
+        session = self._remote_login_manager.create_session(
+            auth_url=auth_url,
+            state=state,
+            code_verifier=code_verifier,
+            expires_in=300,  # 5 minutes
+        )
+
+        try:
+            # Create polling callback that delegates token exchange to authenticator
+            poll_callback = self._remote_login_manager.create_polling_callback(
+                session_id=session.session_id,
+                token_exchange_func=self._exchange_authorization_code_for_token,
+            )
+
+            logger.info(
+                f"Starting remote login for {self.provider_name} with code {session.login_code}"
+            )
+
+            token_data = self.show_remote_login_and_wait_for_auth(
+                login_code=session.login_code,
+                qr_target_url=session.auth_url,
+                expires_in=session.expires_in,
+                interval=2,
+                auth_callback=poll_callback,
+            )
+
+            logger.info(f"Remote login successful for {self.provider_name}")
+            return token_data
+
+        except Exception:
+            # Enrich the exception with session-level error details if available
+            completed_session = self._remote_login_manager.get_session(session.session_id)
+            if completed_session and completed_session.error:
+                raise RuntimeError(
+                    f"Remote login failed for {self.provider_name}: {completed_session.error}"
+                )
+            raise
+
+    def complete_remote_login(self, callback_url: str, session_id: Optional[str] = None) -> bool:
+        """
+        Complete a remote login session using a full OAuth2 callback URL.
+
+        Called by external components (file watcher, HTTP server, or user
+        input handler) when the callback URL becomes available.
+
+        Args:
+            callback_url: The full callback URL containing ?code=xxx&state=yyy
+            session_id:   Optional specific session ID to target
+
+        Returns:
+            True if a pending session was successfully updated, False otherwise
+        """
+        return self._remote_login_manager.complete_from_callback_url(callback_url, session_id)
+
+    def complete_remote_login_with_code(
+        self, auth_code: str, session_id: Optional[str] = None
+    ) -> bool:
+        """
+        Complete a remote login session with a raw authorization code.
+
+        Use this when the user manually types or pastes the code.
+
+        Args:
+            auth_code:  The raw authorization code from the provider
+            session_id: Optional specific session ID to target
+
+        Returns:
+            True if a pending session was successfully updated, False otherwise
+        """
+        return self._remote_login_manager.complete_with_authorization_code(
+            auth_code=auth_code,
+            session_id=session_id,
+        )
+
+    def cancel_remote_login(self, session_id: Optional[str] = None) -> bool:
+        """
+        Cancel a pending remote login session.
+
+        Args:
+            session_id: Specific session ID to cancel, or None to cancel all
+
+        Returns:
+            True if at least one session was cancelled, False otherwise
+        """
+        return self._remote_login_manager.cancel_session(session_id) > 0
+
+    def start_remote_login_callback_server(
+        self, port: int = 8080, host: str = "127.0.0.1"
+    ) -> bool:
+        """
+        Start an optional HTTP callback server for phone-to-device communication.
+
+        When running, phones can send the authorization code back to the device
+        automatically by calling:
+            http://{host}:{port}/callback?code=xxx&token=yyy
+
+        Retrieve the required token value via get_callback_server_token().
+
+        Args:
+            port: Port to listen on (default 8080)
+            host: Bind address. Use "127.0.0.1" (default) to restrict to
+                  localhost, or "0.0.0.0" to accept connections from the
+                  local network (e.g. from a phone on the same Wi-Fi).
+
+        Returns:
+            True if the server started successfully, False otherwise
+        """
+        return self._remote_login_manager.start_callback_server(port=port, host=host)
+
+    def stop_remote_login_callback_server(self) -> None:
+        """Gracefully stop the HTTP callback server if running."""
+        self._remote_login_manager.stop_callback_server()
+
+    def get_callback_server_token(self) -> Optional[str]:
+        """
+        Return the callback server's shared secret token.
+
+        Embed this in QR URLs so that only the device that started the server
+        can accept completions:
+            http://192.168.1.x:8080/callback?code=xxx&token=<this_value>
+        """
+        return self._remote_login_manager.get_callback_server_token()
 
     # ========================================================================
     # Abstract Method
