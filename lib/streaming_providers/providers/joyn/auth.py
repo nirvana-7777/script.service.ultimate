@@ -593,8 +593,16 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
     def authenticate_with_fallback(self, username: str, password: str) -> Dict[str, Any]:
         try:
             return self._perform_oauth_authorization_code_flow(username, password)
+        except WafBlockedException as e:
+            logger.warning(f"{self.provider_name}: WAF block detected ({e}), trying remote login")
+            try:
+                return self._perform_remote_login_flow()
+            except Exception as remote_err:
+                logger.warning(
+                    f"{self.provider_name}: Remote login failed ({remote_err}), falling back to client credentials")
+                return self._perform_oauth_client_credentials_flow()
         except Exception as e:
-            logger.warning(f"User authentication failed: {e}, falling back to client credentials")
+            logger.warning(f"{self.provider_name}: Login failed ({e}), falling back to client credentials")
             return self._perform_oauth_client_credentials_flow()
 
     def _perform_oauth_client_credentials_flow(self) -> Dict[str, Any]:
