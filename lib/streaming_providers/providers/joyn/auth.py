@@ -367,7 +367,8 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             cmp_uc_id = self._cmp_uc_id or str(uuid.uuid4())
             cmp_uc_instance = self._cmp_uc_instance or 'WEB'
 
-            # CRITICAL: Build URL with OUR client_id, NOT the one from discovery
+            # Build URL with OUR client_id, NOT the one from discovery
+            # cd9 and cd10 are required by the server
             auth_params = {
                 "response_type": "code",
                 "scope": self.oauth_scope,
@@ -380,8 +381,8 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 "cmpUcInstance": cmp_uc_instance,
                 "redirect_uri": self.oauth_redirect_uri,
                 "state": state,
-                "cd9": "",  # NEW - required by server
-                "cd10": JOYN_DOMAINS.get(self.country, JOYN_DOMAINS["de"]),  # NEW - required by server
+                "cd9": "",
+                "cd10": JOYN_DOMAINS.get(self.country, JOYN_DOMAINS["de"]),
                 "code_challenge": code_challenge,
                 "code_challenge_method": "S256",
             }
@@ -414,15 +415,20 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                     return session.post(url, headers=clean_headers, timeout=timeout,
                                         allow_redirects=allow_redirects, **kwargs)
 
+            def _check_cf(response):
+                """Raise WafBlockedException if response is a Cloudflare challenge page."""
+                if "Just a moment" in response.text or "challenge-platform" in response.text:
+                    raise WafBlockedException("Cloudflare managed challenge detected")
+
             response = _request("GET", auth_url, allow_redirects=True)
 
             if response.status_code in (403, 429) or "captcha" in response.text.lower():
                 raise WafBlockedException("Joyn login blocked by WAF/CAPTCHA")
-            if "Just a moment" in response.text or "challenge-platform" in response.text:
-                raise WafBlockedException("Cloudflare managed challenge on auth.7pass.de")
-
+            _check_cf(response)
             response.raise_for_status()
+
             final_url = response.url
+            signin_url = final_url  # signin.7pass.de page — used as Referer for subsequent POSTs
 
             if "error.html" in final_url or "error_code" in final_url:
                 error_match = re.search(r'error_code=(\d+)', final_url)
@@ -458,45 +464,50 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
             logger.debug(f"Extracted request_id: {request_id}")
 
-            # Public endpoint
+            # Public endpoint — non-fatal
             try:
                 _request("GET", f"https://auth.7pass.de/public-srv/public/{request_id}")
             except Exception as e:
                 logger.debug(f"Public endpoint failed (non-fatal): {e}")
 
-            # Check if user exists
+            # User exists check — non-fatal, requestId in path only
             try:
                 _request(
                     "POST",
                     f"https://auth.7pass.de/users-srv/user/checkexists/{request_id}",
-                    json={"email": username},  # requestId is in the URL path, not the body
-                    content_type="application/json"
+                    json={"email": username},
+                    content_type="application/json",
                 )
             except Exception as e:
                 logger.debug(f"User check failed (non-fatal): {e}")
 
-            # Submit login — use signin.7pass.de as Referer (CF treats it more leniently)
-            signin_url = response.url
+            # Step 1: Initiate PASSWORD verification
+            # Wrapped in try/except so HTTPError from raise_for_status inside the
+            # HTTP manager doesn't bypass our Cloudflare detection.
+            try:
+                initiate_response = _request(
+                    "POST",
+                    "https://auth.7pass.de/verification-srv/v2/authenticate/initiate/PASSWORD",
+                    json={
+                        "request_id": request_id,
+                        "email": username,
+                        "medium_id": "PASSWORD",
+                        "usage_type": "PASSWORDLESS_AUTHENTICATION",
+                        "type": "PASSWORD",
+                    },
+                    content_type="application/json",
+                    headers={
+                        "Referer": signin_url,
+                        "Origin": "https://signin.7pass.de",
+                    },
+                )
+            except Exception as e:
+                raw = getattr(getattr(e, "response", None), "text", str(e))
+                if "Just a moment" in raw or "challenge-platform" in raw:
+                    raise WafBlockedException("Cloudflare challenge on initiate POST")
+                raise
 
-            # Step 1: initiate PASSWORD verification — gets us status_id and sub
-            initiate_response = _request(
-                "POST",
-                f"https://auth.7pass.de/verification-srv/v2/authenticate/initiate/PASSWORD",
-                json={
-                    "request_id": request_id,
-                    "email": username,
-                    "medium_id": "PASSWORD",
-                    "usage_type": "PASSWORDLESS_AUTHENTICATION",
-                    "type": "PASSWORD",
-                },
-                content_type="application/json",
-                headers={
-                    "Referer": signin_url,
-                    "Origin": "https://signin.7pass.de",
-                },
-            )
-            if "Just a moment" in initiate_response.text or "challenge-platform" in initiate_response.text:
-                raise WafBlockedException("Cloudflare challenge on initiate POST")
+            _check_cf(initiate_response)
             initiate_response.raise_for_status()
             initiate_data = initiate_response.json()
 
@@ -506,30 +517,37 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             if not exchange_id or not status_id:
                 raise Exception(f"Missing exchange_id/status_id from initiate: {initiate_data}")
 
-            # Step 2: submit the actual password with the fields the server requires
-            login_response = _request(
-                "POST",
-                "https://auth.7pass.de/login-srv/verification/login",
-                data=urlencode({
-                    "sub": sub,
-                    "status_id": status_id,
-                    "verificationType": "PASSWORD",
-                    "requestId": request_id,
-                    "remember_me": "true",
-                    "exchange_id": exchange_id,
-                    "pass_code": password,
-                    "password": password,
-                }).encode(),
-                content_type="application/x-www-form-urlencoded",
-                headers={
-                    "Referer": signin_url,
-                    "Origin": "https://signin.7pass.de",
-                },
-                allow_redirects=True,
-            )
-            if "Just a moment" in login_response.text or "challenge-platform" in login_response.text:
-                raise WafBlockedException("Cloudflare challenge on login POST")
+            logger.debug(f"Initiate successful: exchange_id={exchange_id}, sub={sub}")
 
+            # Step 2: Submit password
+            try:
+                login_response = _request(
+                    "POST",
+                    "https://auth.7pass.de/login-srv/verification/login",
+                    data=urlencode({
+                        "sub": sub,
+                        "status_id": status_id,
+                        "verificationType": "PASSWORD",
+                        "requestId": request_id,
+                        "remember_me": "true",
+                        "exchange_id": exchange_id,
+                        "pass_code": password,
+                        "password": password,
+                    }).encode(),
+                    content_type="application/x-www-form-urlencoded",
+                    headers={
+                        "Referer": signin_url,
+                        "Origin": "https://signin.7pass.de",
+                    },
+                    allow_redirects=True,
+                )
+            except Exception as e:
+                raw = getattr(getattr(e, "response", None), "text", str(e))
+                if "Just a moment" in raw or "challenge-platform" in raw:
+                    raise WafBlockedException("Cloudflare challenge on login POST")
+                raise
+
+            _check_cf(login_response)
             login_response.raise_for_status()
             final_url = login_response.url
 
@@ -541,7 +559,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             parsed = urlparse(final_url)
             params = parse_qs(parsed.query)
 
-            # Handle consent
+            # Handle consent if needed
             if params.get("code") is None:
                 sub = params.get("sub", [None])[0]
                 track_id = params.get("track_id", [None])[0]
@@ -556,7 +574,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                             "client_id": self.oauth_client_id,
                             "scopes": [{"offline_access": "denied"}],
                         },
-                        content_type="application/json"
+                        content_type="application/json",
                     )
 
                     continue_response = _request(
@@ -573,7 +591,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
             auth_code = params.get("code", [None])[0]
             if not auth_code:
-                raise Exception(f"No authorization code in response")
+                raise Exception("No authorization code in response")
 
             logger.debug("Authorization code obtained")
 
