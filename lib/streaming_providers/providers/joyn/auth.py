@@ -373,13 +373,15 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 "scope": self.oauth_scope,
                 "view_type": "login",
                 "cd1": cd1,
-                "client_id": self.oauth_client_id,  # OUR correct web client ID
+                "client_id": self.oauth_client_id,
                 "prompt": "consent",
                 "response_mode": "query",
                 "cmpUcId": cmp_uc_id,
                 "cmpUcInstance": cmp_uc_instance,
                 "redirect_uri": self.oauth_redirect_uri,
                 "state": state,
+                "cd9": "",  # NEW - required by server
+                "cd10": JOYN_DOMAINS.get(self.country, JOYN_DOMAINS["de"]),  # NEW - required by server
                 "code_challenge": code_challenge,
                 "code_challenge_method": "S256",
             }
@@ -471,16 +473,38 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             except Exception as e:
                 logger.debug(f"User check failed (non-fatal): {e}")
 
-            # Submit login
+            # Step 1: Initiate verification — tells the server we're doing password auth
+            initiate_response = _request(
+                "POST",
+                f"https://auth.7pass.de/verification-srv/v2/authenticate/initiate/PASSWORD",
+                json={
+                    "request_id": request_id,
+                    "email": username,
+                    "medium_id": "PASSWORD",
+                    "usage_type": "PASSWORDLESS_AUTHENTICATION",
+                    "type": "PASSWORD",
+                },
+                content_type="application/json",
+            )
+            initiate_response.raise_for_status()
+            initiate_data = initiate_response.json()
+            exchange_id = initiate_data.get("exchange_id")
+            sub = initiate_data.get("sub", "")
+            if not exchange_id:
+                raise Exception("Could not extract exchange_id from initiate response")
+
+            # Step 2: Submit the actual password
             login_response = _request(
                 "POST",
                 "https://auth.7pass.de/login-srv/verification/login",
-                data=urlencode({
-                    "username": username,
+                json={
+                    "exchange_id": exchange_id,
+                    "pass_code": password,
+                    "sub": sub,
+                    "type": "PASSWORD",
                     "password": password,
-                    "requestId": request_id
-                }),
-                content_type="application/x-www-form-urlencoded",
+                },
+                content_type="application/json",
                 allow_redirects=True,
             )
             login_response.raise_for_status()

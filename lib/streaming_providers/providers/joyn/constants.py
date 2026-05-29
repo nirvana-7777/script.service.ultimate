@@ -19,14 +19,15 @@ JOYN_7PASS_BASE_URL = "https://auth.7pass.de"
 
 # 7pass OIDC endpoints (discovered via OIDC discovery)
 JOYN_7PASS_ENDPOINTS = {
-    "AUTHORIZE": f"{JOYN_7PASS_BASE_URL}/authorize",
+    "AUTHORIZE": f"{JOYN_7PASS_BASE_URL}/authz-srv/authz",           # correct path
     "TOKEN": f"{JOYN_7PASS_BASE_URL}/token",
-    "LOGIN": f"{JOYN_7PASS_BASE_URL}/login-srv/login",
-    "CONSENT_ACCEPT": f"{JOYN_7PASS_BASE_URL}/consent-management-srv/consent/scope/accept",
-    "PRECHECK_CONTINUE": f"{JOYN_7PASS_BASE_URL}/login-srv/precheck/continue",
+    "LOGIN": f"{JOYN_7PASS_BASE_URL}/login-srv/verification/login",  # correct login path
+    "CONSENT_ACCEPT": f"{JOYN_7PASS_BASE_URL}/login-srv/consent/accept",  # correct consent path
+    "PRECHECK_CONTINUE": f"{JOYN_7PASS_BASE_URL}/precheck/continue", # correct precheck path
     "USER_CHECK_EXISTS": f"{JOYN_7PASS_BASE_URL}/users-srv/user/checkexists",
     "REGISTRATION_SETUP": f"{JOYN_7PASS_BASE_URL}/registration-setup-srv/public/list",
     "VERIFICATION_CONFIGURED": f"{JOYN_7PASS_BASE_URL}/verification-srv/v2/setup/public/configured/list",
+    "VERIFICATION_INITIATE": f"{JOYN_7PASS_BASE_URL}/verification-srv/v2/authenticate/initiate/PASSWORD",  # NEW
 }
 
 # Joyn auth endpoints (non-OIDC)
@@ -39,7 +40,7 @@ JOYN_OAUTH_SCOPE = "openid email profile offline_access"
 
 # Device IDs for different platforms (fallback for client identification)
 DEVICE_IDS = {
-    "web": "709115c2-f87e-4bad-9b94-28ac08d72cd9",
+    "web": "655e06a5-829b-40c7-8084-077b87d26f8c",
     "android": "05f5f3df-1130-4707-a761-c04d0c50b7f2",
     "ios": "21218403-52ec-4a65-abf4-f36a0eadd631",
 }
