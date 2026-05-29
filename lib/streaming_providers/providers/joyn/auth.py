@@ -129,15 +129,9 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
         # Cache for persistent flow parameters
         self._cmp_uc_id = None
         self._cmp_uc_instance = None
-        self._auth_base_path = None  # Store just the base path without query params
+        self._auth_base_path = None
 
-        # Load or generate persistent device ID (cd1)
-        self._device_id = self._load_or_generate_device_id()
-
-        # PKCE is required for Joyn
-        self._use_pkce = True
-
-        # Initialize base class first
+        # Initialize base class first (this sets up settings_manager)
         super().__init__(
             provider_name="joyn",
             settings_manager=settings_manager,
@@ -148,6 +142,12 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             http_manager=http_manager,
             proxy_config=proxy_config,
         )
+
+        # NOW load or generate persistent device ID (after base class init)
+        self._device_id = self._load_or_generate_device_id()
+
+        # PKCE is required for Joyn
+        self._use_pkce = True
 
         # Create config object
         class JoynConfig:
@@ -205,15 +205,27 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
     def _load_or_generate_device_id(self) -> str:
         """Load existing device ID from settings or generate new one"""
-        if self.settings_manager:
-            device_id = self.settings_manager.get_setting("joyn_device_id")
-            if device_id:
-                logger.debug(f"Loaded existing device_id: {device_id}")
-                return device_id
+        # Check if settings_manager exists and has the method
+        if self.settings_manager is not None and hasattr(self.settings_manager, 'get_setting'):
+            try:
+                device_id = self.settings_manager.get_setting("joyn_device_id")
+                if device_id:
+                    logger.debug(f"Loaded existing device_id: {device_id}")
+                    return device_id
+            except Exception as e:
+                logger.debug(f"Could not load device_id from settings: {e}")
 
+        # Generate new device ID
         new_device_id = str(uuid.uuid4())
-        if self.settings_manager:
-            self.settings_manager.set_setting("joyn_device_id", new_device_id)
+
+        # Try to save it if settings_manager is available
+        if self.settings_manager is not None and hasattr(self.settings_manager, 'set_setting'):
+            try:
+                self.settings_manager.set_setting("joyn_device_id", new_device_id)
+                logger.debug(f"Saved new device_id: {new_device_id}")
+            except Exception as e:
+                logger.debug(f"Could not save device_id to settings: {e}")
+
         logger.debug(f"Generated new device_id: {new_device_id}")
         return new_device_id
 
