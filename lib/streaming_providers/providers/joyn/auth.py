@@ -469,22 +469,56 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 _request(
                     "POST",
                     f"https://auth.7pass.de/users-srv/user/checkexists/{request_id}",
-                    json={"email": username, "requestId": request_id},
+                    json={"email": username},  # requestId is in the URL path, not the body
                     content_type="application/json"
                 )
             except Exception as e:
                 logger.debug(f"User check failed (non-fatal): {e}")
 
             # Submit login — use signin.7pass.de as Referer (CF treats it more leniently)
-            signin_url = response.url  # the signin.7pass.de page we already landed on
+            signin_url = response.url
+
+            # Step 1: initiate PASSWORD verification — gets us status_id and sub
+            initiate_response = _request(
+                "POST",
+                f"https://auth.7pass.de/verification-srv/v2/authenticate/initiate/PASSWORD",
+                json={
+                    "request_id": request_id,
+                    "email": username,
+                    "medium_id": "PASSWORD",
+                    "usage_type": "PASSWORDLESS_AUTHENTICATION",
+                    "type": "PASSWORD",
+                },
+                content_type="application/json",
+                headers={
+                    "Referer": signin_url,
+                    "Origin": "https://signin.7pass.de",
+                },
+            )
+            if "Just a moment" in initiate_response.text or "challenge-platform" in initiate_response.text:
+                raise WafBlockedException("Cloudflare challenge on initiate POST")
+            initiate_response.raise_for_status()
+            initiate_data = initiate_response.json()
+
+            exchange_id = initiate_data.get("exchange_id")
+            status_id = initiate_data.get("status_id")
+            sub = initiate_data.get("sub", "")
+            if not exchange_id or not status_id:
+                raise Exception(f"Missing exchange_id/status_id from initiate: {initiate_data}")
+
+            # Step 2: submit the actual password with the fields the server requires
             login_response = _request(
                 "POST",
                 "https://auth.7pass.de/login-srv/verification/login",
                 data=urlencode({
-                    "username": username,
-                    "password": password,
+                    "sub": sub,
+                    "status_id": status_id,
+                    "verificationType": "PASSWORD",
                     "requestId": request_id,
-                    "rememberMe": "true",
+                    "remember_me": "true",
+                    "exchange_id": exchange_id,
+                    "pass_code": password,
+                    "password": password,
                 }).encode(),
                 content_type="application/x-www-form-urlencoded",
                 headers={
@@ -493,9 +527,8 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 },
                 allow_redirects=True,
             )
-            # Catch Cloudflare challenge on the login POST itself
             if "Just a moment" in login_response.text or "challenge-platform" in login_response.text:
-                raise WafBlockedException("Cloudflare challenge on login POST — cannot proceed headlessly")
+                raise WafBlockedException("Cloudflare challenge on login POST")
 
             login_response.raise_for_status()
             final_url = login_response.url
