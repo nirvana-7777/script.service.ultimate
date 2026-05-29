@@ -83,6 +83,10 @@ class OAuth2Error(Exception):
         super().__init__(message)
 
 
+class WafBlockedException(Exception):
+    """Raised when normal login is blocked by a WAF/bot-detection."""
+    pass
+
 class SessionAwareHTTPManager:
     """Wraps http_manager to provide session-like cookie handling while maintaining proxy support"""
 
@@ -690,7 +694,10 @@ class BaseOAuth2Authenticator(OAuth2RemoteLoginMixin, BaseAuthenticator):
         # Step 2: Extract login form action URL
         form_matches = re.findall(form_selector_pattern, auth_response.text)
         if not form_matches:
-            raise Exception(f"Could not find login form using pattern: {form_selector_pattern}")
+            raise WafBlockedException(
+                f"Login form not found — possible WAF/CAPTCHA challenge "
+                f"(pattern: {form_selector_pattern})"
+            )
         login_url = html.unescape(form_matches[0])
 
         # Step 3: Build login data
@@ -709,18 +716,21 @@ class BaseOAuth2Authenticator(OAuth2RemoteLoginMixin, BaseAuthenticator):
         )
 
         # Step 5: Handle redirect
-        if login_response.status_code in [302, 303]:
+        if login_response.status_code in (403, 429):
+            raise WafBlockedException(
+                f"Login POST blocked with HTTP {login_response.status_code}"
+            )
+        elif login_response.status_code in (302, 303):
             redirect_url = login_response.headers.get("Location")
             if not redirect_url:
                 raise Exception("No redirect URL found after login")
+        elif "code=" in login_response.url:
+            redirect_url = login_response.url
         else:
-            if "code=" in login_response.url:
-                redirect_url = login_response.url
-            else:
-                raise Exception(
-                    f"Login did not produce expected redirect. Status: {login_response.status_code}. "
-                    f"Check provider login flow implementation or credentials."
-                )
+            raise Exception(
+                f"Login did not produce expected redirect. Status: {login_response.status_code}. "
+                f"Check provider login flow implementation or credentials."
+            )
 
         # Step 6: Validate and extract authorization code
         is_valid, error_msg, authorization_code = self.validate_authentication_response(
@@ -969,7 +979,7 @@ class BaseOAuth2Authenticator(OAuth2RemoteLoginMixin, BaseAuthenticator):
         try:
             if isinstance(self.credentials, UserPasswordCredentials):
                 logger.info(f"Attempting OAuth2 user authentication for {self.provider_name}")
-                token_data = self._perform_oauth_authorization_code_flow(
+                token_data = self.authenticate_with_fallback(
                     self.credentials.username, self.credentials.password
                 )
             elif isinstance(self.credentials, ClientCredentials):
@@ -1259,7 +1269,23 @@ class BaseOAuth2Authenticator(OAuth2RemoteLoginMixin, BaseAuthenticator):
 
     @abstractmethod
     def _perform_oauth_authorization_code_flow(
-            self, username: str, password: str
+        self, username: str, password: str
     ) -> Dict[str, Any]:
-        """Perform OAuth2 authorization code flow with PKCE for user login"""
+        """Perform normal form-based login. Raise WafBlockedException if WAF detected."""
         pass
+
+    def authenticate_with_fallback(
+        self, username: str, password: str
+    ) -> Dict[str, Any]:
+        """
+        Try normal login; transparently fall back to remote login on WAF block.
+        Subclasses should not need to override this.
+        """
+        try:
+            return self._perform_oauth_authorization_code_flow(username, password)
+        except WafBlockedException as e:
+            logger.warning(
+                f"{self.provider_name}: WAF block detected ({e}), "
+                "falling back to remote login flow"
+            )
+            return self._perform_remote_login_flow()
