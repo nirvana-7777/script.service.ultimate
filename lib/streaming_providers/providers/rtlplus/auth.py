@@ -30,13 +30,6 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
         if device_id:
             config_dict["device_id"] = device_id
 
-        self._config = RTLPlusConfig(config_dict)
-        self._client_id = None
-        self._bedrock_token: Optional[str] = None
-        self._bedrock_token_expiry: float = 0
-        self._cached_user_id: Optional[str] = None
-        self._selected_profile_id: Optional[str] = None
-
         if proxy_config is None:
             from ...base.network import ProxyConfigManager
 
@@ -50,6 +43,14 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
             proxy_config=proxy_config,
             http_manager=http_manager,
         )
+
+        # ✅ AFTER super().__init__ so the base class can't overwrite it
+        self._config = RTLPlusConfig(config_dict)
+        self._client_id = None
+        self._bedrock_token: Optional[str] = None
+        self._bedrock_token_expiry: float = 0
+        self._cached_user_id: Optional[str] = None
+        self._selected_profile_id: Optional[str] = None
 
         self.enable_oidc_discovery(
             discovery_url=RTLPlusDefaults.AUTH_REALM_BASE,
@@ -262,9 +263,11 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
 
     def _get_server_timestamp(self) -> int:
         """Get current server timestamp from RTL+ time endpoint."""
+        if self._config is None:
+            raise RuntimeError("RTLPlusAuthenticator._config is None — object was not properly initialised")
         try:
             response = self.http_manager.get(
-                "https://time.rtlde.bedrock.tech/",
+                self._config.time_endpoint,
                 operation="api",
                 headers={"User-Agent": self.config.user_agent}
             )
@@ -297,6 +300,8 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
 
     def get_bedrock_token(self, force_refresh: bool = False) -> str:
         """Get or refresh Bedrock token, including profile ID if available."""
+        if self._config is None:
+            raise RuntimeError("RTLPlusAuthenticator._config is None — object was not properly initialised")
         if not force_refresh and self._bedrock_token and self._bedrock_token_expiry > time.time() + 300:
             logger.debug(f"Using cached bedrock token (expires at {self._bedrock_token_expiry})")
             return self._bedrock_token
