@@ -418,6 +418,8 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
             if response.status_code in (403, 429) or "captcha" in response.text.lower():
                 raise WafBlockedException("Joyn login blocked by WAF/CAPTCHA")
+            if "Just a moment" in response.text or "challenge-platform" in response.text:
+                raise WafBlockedException("Cloudflare managed challenge on auth.7pass.de")
 
             response.raise_for_status()
             final_url = response.url
@@ -473,40 +475,28 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             except Exception as e:
                 logger.debug(f"User check failed (non-fatal): {e}")
 
-            # Step 1: Initiate verification — tells the server we're doing password auth
-            initiate_response = _request(
-                "POST",
-                f"https://auth.7pass.de/verification-srv/v2/authenticate/initiate/PASSWORD",
-                json={
-                    "request_id": request_id,
-                    "email": username,
-                    "medium_id": "PASSWORD",
-                    "usage_type": "PASSWORDLESS_AUTHENTICATION",
-                    "type": "PASSWORD",
-                },
-                content_type="application/json",
-            )
-            initiate_response.raise_for_status()
-            initiate_data = initiate_response.json()
-            exchange_id = initiate_data.get("exchange_id")
-            sub = initiate_data.get("sub", "")
-            if not exchange_id:
-                raise Exception("Could not extract exchange_id from initiate response")
-
-            # Step 2: Submit the actual password
+            # Submit login — use signin.7pass.de as Referer (CF treats it more leniently)
+            signin_url = response.url  # the signin.7pass.de page we already landed on
             login_response = _request(
                 "POST",
                 "https://auth.7pass.de/login-srv/verification/login",
-                json={
-                    "exchange_id": exchange_id,
-                    "pass_code": password,
-                    "sub": sub,
-                    "type": "PASSWORD",
+                data=urlencode({
+                    "username": username,
                     "password": password,
+                    "requestId": request_id,
+                    "rememberMe": "true",
+                }).encode(),
+                content_type="application/x-www-form-urlencoded",
+                headers={
+                    "Referer": signin_url,
+                    "Origin": "https://signin.7pass.de",
                 },
-                content_type="application/json",
                 allow_redirects=True,
             )
+            # Catch Cloudflare challenge on the login POST itself
+            if "Just a moment" in login_response.text or "challenge-platform" in login_response.text:
+                raise WafBlockedException("Cloudflare challenge on login POST — cannot proceed headlessly")
+
             login_response.raise_for_status()
             final_url = login_response.url
 
