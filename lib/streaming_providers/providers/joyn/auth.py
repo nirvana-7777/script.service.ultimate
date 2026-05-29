@@ -7,7 +7,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from ...base.auth.base_auth import BaseAuthToken, TokenAuthLevel
 from ...base.auth.base_oauth2_auth import BaseOAuth2Authenticator, OAuth2Error, WafBlockedException
@@ -129,7 +129,10 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
         # Cache for persistent flow parameters
         self._cmp_uc_id = None
         self._cmp_uc_instance = None
-        self._sso_cd1 = None
+        self._auth_base_path = None  # Store just the base path without query params
+
+        # Load or generate persistent device ID (cd1)
+        self._device_id = self._load_or_generate_device_id()
 
         # PKCE is required for Joyn
         self._use_pkce = True
@@ -181,8 +184,9 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 available_countries=SUPPORTED_COUNTRIES,
             )
 
-        # Extract client ID
+        # Extract client ID - web client ID
         self._client_id = DEVICE_IDS.get(self.platform, DEVICE_IDS[DEFAULT_PLATFORM])
+        logger.info(f"Using Joyn client_id: {self._client_id}")
 
         # Set up fallback credentials if needed
         if self.credentials is None:
@@ -194,6 +198,24 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 f"JoynAuthenticator [{self.country}]: user credentials loaded for '{self.credentials.username}'")
         else:
             logger.info(f"JoynAuthenticator [{self.country}]: using {type(self.credentials).__name__}")
+
+    # ========================================================================
+    # Device ID Management
+    # ========================================================================
+
+    def _load_or_generate_device_id(self) -> str:
+        """Load existing device ID from settings or generate new one"""
+        if self.settings_manager:
+            device_id = self.settings_manager.get_setting("joyn_device_id")
+            if device_id:
+                logger.debug(f"Loaded existing device_id: {device_id}")
+                return device_id
+
+        new_device_id = str(uuid.uuid4())
+        if self.settings_manager:
+            self.settings_manager.set_setting("joyn_device_id", new_device_id)
+        logger.debug(f"Generated new device_id: {new_device_id}")
+        return new_device_id
 
     # ========================================================================
     # Required Abstract Properties
@@ -219,20 +241,14 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
     def _discover_sso_endpoints(self) -> Dict[str, str]:
         """
         Discover Joyn's SSO endpoints via /sso/endpoints call.
-
-        Based on log entry:
-        GET https://auth.joyn.de/sso/endpoints?client_id={cd1}&client_name={platform}
-        Response contains: web-login, redeem-token, etc.
+        Also extracts the base path for authorization endpoint.
         """
         if self._sso_endpoints_cache and self._sso_endpoints_timestamp:
             if (time.time() - self._sso_endpoints_timestamp) < self._sso_cache_ttl:
                 return self._sso_endpoints_cache
 
         try:
-            # Generate a CD1 (tracking ID) for the endpoints call
-            self._sso_cd1 = str(uuid.uuid4())
-
-            url = f"https://auth.joyn.de/sso/endpoints?client_id={self._sso_cd1}&client_name={self.platform}"
+            url = f"https://auth.joyn.de/sso/endpoints?client_id={self._device_id}&client_name={self.platform}"
             headers = self._get_joyn_auth_headers()
 
             response = self.http_manager.get(
@@ -245,39 +261,51 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
             endpoints = response.json()
 
-            # Extract the endpoints we need from the response
+            # Extract the endpoints
+            auth_endpoint_full = endpoints.get("web-login", "")
+            token_endpoint = endpoints.get("redeem-token", "https://auth.joyn.de/auth/7pass/token")
+
+            # IMPORTANT: Extract ONLY the base path from the auth endpoint
+            # Strip all query parameters to avoid parameter duplication
+            parsed_auth = urlparse(auth_endpoint_full)
+            self._auth_base_path = urlunparse((
+                parsed_auth.scheme,
+                parsed_auth.netloc,
+                parsed_auth.path,
+                "",  # params
+                "",  # query
+                ""  # fragment
+            ))
+
+            # Extract cmpUcId and cmpUcInstance from the full URL if present
+            params = parse_qs(parsed_auth.query)
+            self._cmp_uc_id = params.get("cmpUcId", [None])[0]
+            self._cmp_uc_instance = params.get("cmpUcInstance", [None])[0]
+
             self._sso_endpoints_cache = {
-                "authorization_endpoint": endpoints.get("web-login", ""),
-                "token_endpoint": endpoints.get("redeem-token", ""),
+                "authorization_base_path": self._auth_base_path,
+                "token_endpoint": token_endpoint,
             }
 
-            # Parse and cache cmpUcId and cmpUcInstance for reuse throughout the flow
-            if self._sso_endpoints_cache["authorization_endpoint"]:
-                parsed = urlparse(self._sso_endpoints_cache["authorization_endpoint"])
-                params = parse_qs(parsed.query)
-                self._cmp_uc_id = params.get("cmpUcId", [None])[0]
-                self._cmp_uc_instance = params.get("cmpUcInstance", [None])[0]
-
             self._sso_endpoints_timestamp = time.time()
-            logger.debug(f"Discovered Joyn SSO endpoints: {list(self._sso_endpoints_cache.keys())}")
+            logger.debug(f"Discovered Joyn SSO endpoints - auth base: {self._auth_base_path}")
 
             return self._sso_endpoints_cache
 
         except Exception as e:
             logger.warning(f"Failed to discover SSO endpoints: {e}")
             # Fallback to hardcoded endpoints from logs
+            self._auth_base_path = "https://auth.7pass.de/authz-srv/authz"
             return {
-                "authorization_endpoint": "https://auth.7pass.de/authz-srv/authz",
+                "authorization_base_path": self._auth_base_path,
                 "token_endpoint": "https://auth.joyn.de/auth/7pass/token",
             }
 
     @property
     def oauth_authorize_endpoint(self) -> str:
-        """Get clean authorization endpoint (base URL without query params)"""
-        endpoints = self._discover_sso_endpoints()
-        auth_endpoint = endpoints.get("authorization_endpoint", "https://auth.7pass.de/authz-srv/authz")
-        # Return only the base URL, strip any existing query parameters
-        return urlparse(auth_endpoint)._replace(query="", fragment="").geturl()
+        """Get clean authorization base path (no query parameters)"""
+        self._discover_sso_endpoints()  # Ensure endpoints are discovered
+        return self._auth_base_path or "https://auth.7pass.de/authz-srv/authz"
 
     @property
     def oauth_token_endpoint(self) -> str:
@@ -329,7 +357,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
         # Add Joyn-specific tracking parameters
         cd1 = kwargs.get('cd1')
         if cd1 is None:
-            cd1 = self._sso_cd1
+            cd1 = self._device_id
 
         if cd1:
             payload["tracking_id"] = cd1
@@ -352,20 +380,13 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
         return headers
 
     # ========================================================================
-    # Token Exchange (uses base class flexibility with Joyn customizations)
+    # Token Exchange
     # ========================================================================
 
     def _exchange_authorization_code_for_token(
             self, authorization_code: str, code_verifier: str, state: str = None, **kwargs
     ) -> Dict[str, Any]:
-        """
-        Exchange authorization code for tokens.
-
-        Uses base class implementation which respects our overridden hooks for:
-        - JSON payload format
-        - Custom tracking parameters
-        - SSO-discovered endpoint
-        """
+        """Exchange authorization code for tokens using base class hooks."""
         try:
             logger.debug(f"Exchanging authorization code for token")
             return super()._exchange_authorization_code_for_token(
@@ -381,16 +402,13 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             raise Exception(f"Token exchange failed: {e}") from e
 
     # ========================================================================
-    # Token Refresh (with proactive anonymous token validation)
+    # Token Refresh
     # ========================================================================
 
     def _refresh_oauth_token(self) -> Optional[BaseAuthToken]:
-        """
-        Refresh access token with Joyn-specific error handling.
-        Proactively checks JWT claims to avoid unnecessary refresh attempts for anonymous tokens.
-        """
+        """Refresh access token with proactive anonymous token detection."""
         if not self._current_token or not self._current_token.refresh_token:
-            logger.debug(f"No refresh token available for {self.provider_name}")
+            logger.debug(f"No refresh token available")
             return None
 
         try:
@@ -401,13 +419,11 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                     logger.debug("Anonymous token (JNAA-) cannot be refreshed")
                     return None
 
-            # Use base class refresh with Joyn-specific error handling
             return super()._refresh_oauth_token()
 
         except OAuth2Error as e:
-            # Handle Joyn-specific anonymous token refresh errors
             if "Anonymous refresh token" in str(e) or "422" in str(e):
-                logger.debug("Token cannot be refreshed (anonymous), will re-authenticate on next request")
+                logger.debug("Token cannot be refreshed (anonymous)")
                 return None
             logger.warning(f"Token refresh failed: {e}")
             return None
@@ -416,36 +432,36 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             return None
 
     # ========================================================================
-    # Complete Login Flow (exactly matching logs + WAF fallback support)
+    # Complete Login Flow
     # ========================================================================
 
     def _perform_oauth_authorization_code_flow(self, username: str, password: str) -> Dict[str, Any]:
         """
         Complete Joyn login flow exactly as shown in production logs.
-        Raises WafBlockedException if CAPTCHA/WAF is detected to trigger remote login fallback.
         """
         try:
             logger.debug("Starting Joyn login flow")
 
-            # Step 0: Discover SSO endpoints (to get cmpUcId, cmpUcInstance, and cd1)
-            endpoints = self._discover_sso_endpoints()
+            # Step 0: Discover SSO endpoints and get clean base path
+            self._discover_sso_endpoints()
+
+            # Ensure we have the required parameters
+            if not self._auth_base_path:
+                raise Exception("Failed to get authorization endpoint base path")
 
             # Step 1: Generate PKCE codes
             state = self.generate_oauth_state()
             code_verifier = self.generate_pkce_verifier()
             code_challenge = self.generate_pkce_challenge(code_verifier)
 
-            # Use cached SSO tracking ID if available, otherwise generate new
-            cd1 = self._sso_cd1 or str(uuid.uuid4())
+            # Use persistent device ID as cd1
+            cd1 = self._device_id
 
             # Get cmpUcId and cmpUcInstance from discovered endpoint
             cmp_uc_id = self._cmp_uc_id or str(uuid.uuid4())
             cmp_uc_instance = self._cmp_uc_instance or 'WEB'
 
-            # Step 2: Build authorization URL - use clean base URL from property
-            auth_base_url = self.oauth_authorize_endpoint  # This now returns clean URL without query params
-
-            # Build query parameters
+            # Step 2: Build authorization URL from scratch with ONLY our parameters
             auth_params = {
                 "response_type": "code",
                 "scope": self.oauth_scope,
@@ -462,8 +478,8 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 "code_challenge_method": "S256",
             }
 
-            auth_url = f"{auth_base_url}?{urlencode(auth_params)}"
-            logger.debug(f"Authorization URL built")
+            auth_url = f"{self._auth_base_path}?{urlencode(auth_params)}"
+            logger.debug(f"Authorization URL built (length: {len(auth_url)})")
 
             # Create session for cookie management
             session = self._create_oauth_session()
@@ -503,6 +519,16 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             response.raise_for_status()
             final_url = response.url
 
+            logger.debug(f"Final URL after redirect: {final_url[:200]}...")
+
+            # Check for error response
+            if "error.html" in final_url or "error_code" in final_url:
+                error_match = re.search(r'error_code=(\d+)', final_url)
+                error_code = error_match.group(1) if error_match else "unknown"
+                error_desc = re.search(r'error_description=([^&]+)', final_url)
+                error_desc = error_desc.group(1) if error_desc else "unknown"
+                raise Exception(f"Authorization failed: error_code={error_code}, description={error_desc}")
+
             # Check if already authenticated (direct callback)
             if self.oauth_redirect_uri in final_url:
                 parsed = urlparse(final_url)
@@ -517,22 +543,19 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                         cd1=cd1,
                     )
 
-            # Step 4: Extract requestId - IMPORTANT: This must come from the redirect response
-            # The redirect should go to signin.7pass.de which contains requestId
+            # Step 4: Extract requestId - should be on signin.7pass.de
             parsed_url = urlparse(final_url)
             query_params = parse_qs(parsed_url.query)
             request_id = query_params.get("requestId", [None])[0]
 
             if not request_id:
-                # Try to find in response body as fallback
+                # Try HTML extraction as fallback
                 match = re.search(r'requestId["\']?\s*[=:]\s*["\']([^"\']+)', response.text)
                 if match:
                     request_id = match.group(1)
 
             if not request_id:
-                # Log the response URL and a snippet for debugging
                 logger.error(f"Failed to extract request_id. Final URL: {final_url}")
-                logger.error(f"Response text snippet: {response.text[:500]}")
                 raise Exception("Could not extract request_id from response")
 
             logger.debug(f"Extracted request_id: {request_id}")
@@ -634,10 +657,9 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             return token_data
 
         except WafBlockedException:
-            raise  # Re-raise for base class fallback handling
+            raise
         except Exception as e:
             logger.error(f"Joyn login flow failed: {e}")
-            # Don't raise here - let base class handle fallback to client credentials
             raise
 
     # ========================================================================
@@ -659,29 +681,48 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             return self._perform_oauth_client_credentials_flow()
 
     # ========================================================================
-    # Client Credentials Flow (Anonymous)
+    # Client Credentials Flow (Anonymous) - CORRECTED ENDPOINT
     # ========================================================================
 
     def _perform_oauth_client_credentials_flow(self) -> Dict[str, Any]:
-        """Client credentials flow for anonymous access"""
+        """Client credentials flow for anonymous access using /auth/anonymous endpoint"""
         try:
             logger.info(f"Starting client credentials flow for anonymous access")
 
-            headers = self._get_auth_headers()
-            data = self._build_auth_payload()
+            # Build payload matching browser log
+            payload = {
+                "client_id": self.oauth_client_id,
+                "client_name": self.platform,
+                "anon_device_id": self._device_id
+            }
 
-            # Use SSO-discovered endpoint via property
-            token_url = self.oauth_token_endpoint
+            # Use the correct anonymous endpoint (NOT /auth/7pass/token)
+            anonymous_token_url = "https://auth.joyn.de/auth/anonymous"
 
-            logger.debug(f"Client credentials request to {token_url}")
+            headers = {
+                "Content-Type": "application/json",
+                "User-Agent": JOYN_USER_AGENT,
+                "Accept": "application/json",
+                "Origin": JOYN_DOMAINS.get(self.country, JOYN_DOMAINS["de"]),
+            }
+
+            logger.debug(f"Anonymous token request to {anonymous_token_url} with client_id: {payload['client_id']}")
+
             response = self.http_manager.post(
-                token_url, operation="auth", headers=headers, json_data=data
+                anonymous_token_url,
+                operation="auth",
+                headers=headers,
+                json_data=payload,
+                timeout=getattr(self.config, "timeout", 30)
             )
+
             self._check_oauth_error_response(response)
             response.raise_for_status()
             token_data = response.json()
+
             logger.info(f"Client credentials flow successful - anonymous access granted")
             return token_data
+
         except Exception as e:
             logger.error(f"Client credentials flow failed: {e}")
             raise
