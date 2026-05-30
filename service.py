@@ -961,7 +961,7 @@ class UltimateService:
                     # Build ffmpeg pipe command
                     # Map all video (will be just one due to highest_quality_only), all audio, and optional subtitles
                     ffmpeg_cmd = (
-                        f'ffmpeg -loglevel error '
+                        f'ffmpeg -loglevel fatal '
                         f'-fflags +genpts+igndts+discardcorrupt '
                         f'-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 '
                         f'-thread_queue_size 1024 '
