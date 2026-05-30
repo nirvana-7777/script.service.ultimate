@@ -964,12 +964,13 @@ class UltimateService:
                         f'ffmpeg -loglevel fatal '
                         f'-fflags +genpts+igndts+discardcorrupt '
                         f'-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 '
-                        f'-thread_queue_size 1024 '
-                        f'-re '  # Forces real-time streaming to prevent buffer underruns
+                        f'-thread_queue_size 2048 '  # Kept large to handle demuxing all 4 audio tracks smoothly
+                        f'-re '
                         f'-i "{stream_url}" '
-                        f'-map 0:v:0 -map 0:a:0? '
+                        f'-map 0:v:0 '  # Maps the 1080p video stream
+                        f'-map 0:a? '  # Maps ALL available audio tracks (German/English AAC + AC-3)
                         f'-c copy '
-                        f'-max_muxing_queue_size 4096 '
+                        f'-max_muxing_queue_size 8192 '  # Kept high to safely interleave the multi-audio timescales
                         f'-f mpegts '
                         f'-muxdelay 0 -muxpreload 0 '
                         f'-mpegts_flags resend_headers '
