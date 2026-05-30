@@ -28,6 +28,7 @@ JOYN_7PASS_ENDPOINTS = {
     "REGISTRATION_SETUP": f"{JOYN_7PASS_BASE_URL}/registration-setup-srv/public/list",
     "VERIFICATION_CONFIGURED": f"{JOYN_7PASS_BASE_URL}/verification-srv/v2/setup/public/configured/list",
     "VERIFICATION_INITIATE": f"{JOYN_7PASS_BASE_URL}/verification-srv/v2/authenticate/initiate/PASSWORD",  # NEW
+    "DEVICE_INFO": f"{JOYN_7PASS_BASE_URL}/device-srv/deviceinfo",  # Required before PASSWORD initiation
 }
 
 # Joyn auth endpoints (non-OIDC)

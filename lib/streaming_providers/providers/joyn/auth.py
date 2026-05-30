@@ -481,7 +481,28 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             except Exception as e:
                 logger.debug(f"User check failed (non-fatal): {e}")
 
-            # Step 1: Initiate PASSWORD verification
+            # Step 1a: Register device fingerprint — required before PASSWORD initiation
+            try:
+                import hashlib
+                _fingerprint_input = f"{request_id}{self._device_id}{JOYN_USER_AGENT}"
+                _fingerprint = hashlib.sha256(_fingerprint_input.encode()).hexdigest()
+                _request(
+                    "POST",
+                    "https://auth.7pass.de/device-srv/deviceinfo",
+                    json={
+                        "fingerprint": _fingerprint,
+                        "userAgent": "",
+                    },
+                    content_type="application/json",
+                    headers={
+                        "Referer": signin_url,
+                        "Origin": "https://signin.7pass.de",
+                    },
+                )
+            except Exception as e:
+                logger.debug(f"Device info registration failed (non-fatal): {e}")
+
+            # Step 1b: Initiate PASSWORD verification
             # Wrapped in try/except so HTTPError from raise_for_status inside the
             # HTTP manager doesn't bypass our Cloudflare detection.
             try:
