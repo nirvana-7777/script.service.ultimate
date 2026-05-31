@@ -1,167 +1,236 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes"?>
 <settings>
+    <!-- =============================================== -->
+    <!-- GENERAL SETTINGS                               -->
+    <!-- =============================================== -->
     <category label="General">
-        <setting id="server_port" type="number" label="30010" default="7777" />
-        <setting id="epg_xml_url" type="text" label="EPG XML URL" default="https://example.com/epg.xml.gz">
-            <level>1</level>
-            <help>URL to download XMLTV EPG data. Can be .xml or .xml.gz format. Leave empty to use default.</help>
+        <setting id="server_port" type="number" label="Server Port" default="7777">
+            <level>0</level>
+            <help>Port number for the Ultimate Backend service</help>
         </setting>
 
-        <!-- EPG Cache Management (optional buttons) -->
+        <setting id="epg_xml_url" type="text" label="EPG XML URL" default="https://example.com/epg.xml.gz">
+            <level>0</level>
+            <help>URL to download XMLTV EPG data. Can be .xml or .xml.gz format.</help>
+        </setting>
+
+        <setting id="default_country" type="labelenum" label="Default Country" values="DE|AT|CH|EU|HR|PL|ME|HU|BA|GLOBAL" default="DE">
+            <level>0</level>
+            <help>Default country code for providers that support multiple countries</help>
+        </setting>
+
+        <setting id="default_provider_enabled" type="enum" label="Default for New Providers" values="Disabled|Enabled" default="Disabled">
+            <level>1</level>
+            <help>Default enabled state for providers not explicitly configured. Disabled is recommended to avoid unexpected channels.</help>
+        </setting>
+
         <setting id="epg_clear_cache" type="action" label="Clear EPG Cache">
             <level>2</level>
             <help>Force clear EPG cache and re-download on next request</help>
-            <data>RunScript(special://home/addons/YOUR_ADDON_ID/clear_epg_cache.py)</data>
         </setting>
-        <setting id="default_country" type="labelenum" label="30011" values="DE|AT|CH|EU" default="DE" />
     </category>
-    
-    <category label="Joyn (DE)">
-        <setting id="enable_joyn_de" type="bool" label="Enable Joyn (DE)" default="false" />
-        <setting id="joyn_de_country" type="text" label="Country Code" default="de" visible="false" />
-        <setting id="joyn_de_username" type="text" label="Username" default="" enable="eq(-2,true)" />
-        <setting id="joyn_de_password" type="text" label="Password" option="hidden" default="" enable="eq(-3,true)" />
 
-        <!-- Optional: Proxy settings for DE -->
-        <setting id="joyn_de_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-4,true)" />
+    <!-- =============================================== -->
+    <!-- DISCOVERY+                                      -->
+    <!-- =============================================== -->
+    <category id="discovery" label="Discovery+ Germany">
+        <setting id="enable_discovery_de" type="bool" label="Enable Discovery+ Germany" default="false" />
+        <setting id="discovery_de_country" type="text" label="Country Code" default="de" visible="false" />
+        <setting id="discovery_de_username" type="text" label="Username" default="" enable="eq(-2,true)" />
+        <setting id="discovery_de_password" type="text" label="Password" option="hidden" default="" enable="eq(-3,true)" />
+        <setting id="discovery_de_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-4,true)" />
+        <setting id="discovery_de_proxy_host" type="text" label="Proxy Host" default="" visible="eq(-1,true)" />
+        <setting id="discovery_de_proxy_port" type="number" label="Proxy Port" default="8080" visible="eq(-2,true)" />
+    </category>
+
+    <!-- =============================================== -->
+    <!-- JOYN (Multi-Country)                           -->
+    <!-- =============================================== -->
+    <category id="joyn_de" label="Joyn Germany">
+        <setting id="enable_joyn_de" type="bool" label="Enable Joyn Germany" default="false" />
+        <setting id="joyn_de_country" type="text" label="Country Code" default="de" visible="false" />
+        <setting id="joyn_de_client_id" type="text" label="Client ID" default="" enable="eq(-2,true)" />
+        <setting id="joyn_de_client_secret" type="text" label="Client Secret" option="hidden" default="" enable="eq(-3,true)" />
+        <setting id="joyn_de_username" type="text" label="Username" default="" enable="eq(-4,true)" />
+        <setting id="joyn_de_password" type="text" label="Password" option="hidden" default="" enable="eq(-5,true)" />
+        <setting id="joyn_de_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-6,true)" />
         <setting id="joyn_de_proxy_host" type="text" label="Proxy Host" default="" visible="eq(-1,true)" />
         <setting id="joyn_de_proxy_port" type="number" label="Proxy Port" default="8080" visible="eq(-2,true)" />
     </category>
 
-    <!-- Joyn Austria -->
-    <category label="Joyn (AT)">
-        <setting id="enable_joyn_at" type="bool" label="Enable Joyn (AT)" default="false" />
+    <category id="joyn_at" label="Joyn Austria">
+        <setting id="enable_joyn_at" type="bool" label="Enable Joyn Austria" default="false" />
         <setting id="joyn_at_country" type="text" label="Country Code" default="at" visible="false" />
-        <setting id="joyn_at_username" type="text" label="Username" default="" enable="eq(-2,true)" />
-        <setting id="joyn_at_password" type="text" label="Password" option="hidden" default="" enable="eq(-3,true)" />
-
-        <!-- Optional: Proxy settings for AT -->
-        <setting id="joyn_at_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-4,true)" />
+        <setting id="joyn_at_client_id" type="text" label="Client ID" default="" enable="eq(-2,true)" />
+        <setting id="joyn_at_client_secret" type="text" label="Client Secret" option="hidden" default="" enable="eq(-3,true)" />
+        <setting id="joyn_at_username" type="text" label="Username" default="" enable="eq(-4,true)" />
+        <setting id="joyn_at_password" type="text" label="Password" option="hidden" default="" enable="eq(-5,true)" />
+        <setting id="joyn_at_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-6,true)" />
         <setting id="joyn_at_proxy_host" type="text" label="Proxy Host" default="" visible="eq(-1,true)" />
         <setting id="joyn_at_proxy_port" type="number" label="Proxy Port" default="8080" visible="eq(-2,true)" />
     </category>
 
-    <!-- Joyn Switzerland -->
-    <category label="Joyn (CH)">
-        <setting id="enable_joyn_ch" type="bool" label="Enable Joyn (CH)" default="false" />
+    <category id="joyn_ch" label="Joyn Switzerland">
+        <setting id="enable_joyn_ch" type="bool" label="Enable Joyn Switzerland" default="false" />
         <setting id="joyn_ch_country" type="text" label="Country Code" default="ch" visible="false" />
-        <setting id="joyn_ch_username" type="text" label="Username" default="" enable="eq(-2,true)" />
-        <setting id="joyn_ch_password" type="text" label="Password" option="hidden" default="" enable="eq(-3,true)" />
-
-        <!-- Optional: Proxy settings for CH -->
-        <setting id="joyn_ch_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-4,true)" />
+        <setting id="joyn_ch_client_id" type="text" label="Client ID" default="" enable="eq(-2,true)" />
+        <setting id="joyn_ch_client_secret" type="text" label="Client Secret" option="hidden" default="" enable="eq(-3,true)" />
+        <setting id="joyn_ch_username" type="text" label="Username" default="" enable="eq(-4,true)" />
+        <setting id="joyn_ch_password" type="text" label="Password" option="hidden" default="" enable="eq(-5,true)" />
+        <setting id="joyn_ch_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-6,true)" />
         <setting id="joyn_ch_proxy_host" type="text" label="Proxy Host" default="" visible="eq(-1,true)" />
         <setting id="joyn_ch_proxy_port" type="number" label="Proxy Port" default="8080" visible="eq(-2,true)" />
     </category>
 
-    <!-- RTL+ Provider Settings -->
-    <category id="rtlplus" label="30100">
-        <setting id="enable_rtlplus" type="bool" label="Enable RTL+" default="false" />
-        <setting id="rtlplus_username" type="text" label="30101" default="">
-            <level>0</level>
-            <constraints>
-                <allowempty>false</allowempty>
-            </constraints>
-        </setting>
-
-        <setting id="rtlplus_password" type="text" label="30102" default="" option="hidden">
-            <level>0</level>
-            <constraints>
-                <allowempty>false</allowempty>
-            </constraints>
-        </setting>
-
-        <setting id="rtlplus_proxy_enabled" type="bool" label="30110" default="false" />
-        <setting id="rtlplus_proxy_host" type="text" label="30111" visible="eq(-1,true)" />
-        <setting id="rtlplus_proxy_port" type="number" label="30112" visible="eq(-2,true)" />
+    <!-- =============================================== -->
+    <!-- RTL+                                            -->
+    <!-- =============================================== -->
+    <category id="rtlplus" label="RTL+ Germany">
+        <setting id="enable_rtlplus" type="bool" label="Enable RTL+ Germany" default="false" />
+        <setting id="rtlplus_country" type="text" label="Country Code" default="de" visible="false" />
+        <setting id="rtlplus_username" type="text" label="Username" default="" enable="eq(-2,true)" />
+        <setting id="rtlplus_password" type="text" label="Password" option="hidden" default="" enable="eq(-3,true)" />
+        <setting id="rtlplus_client_id" type="text" label="Client ID" default="" enable="eq(-4,true)" />
+        <setting id="rtlplus_client_secret" type="text" label="Client Secret" option="hidden" default="" enable="eq(-5,true)" />
+        <setting id="rtlplus_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-6,true)" />
+        <setting id="rtlplus_proxy_host" type="text" label="Proxy Host" default="" visible="eq(-1,true)" />
+        <setting id="rtlplus_proxy_port" type="number" label="Proxy Port" default="8080" visible="eq(-2,true)" />
     </category>
 
-    <category id="magenta2" label="Magenta TV 2.0 (DE)">
-        <setting id="enable_magenta2" type="bool" label="Enable Magenta TV 2.0 (DE)" default="false" />
-        <setting id="magenta2_client_id" default="true" visible="false" />
-        <setting id="magenta2_client_secret" default="true" visible="false" />
+    <!-- =============================================== -->
+    <!-- MAGENTA TV 2.0 (Germany)                       -->
+    <!-- =============================================== -->
+    <category id="magenta2" label="Magenta TV 2.0 Germany">
+        <setting id="enable_magenta2" type="bool" label="Enable Magenta TV 2.0 Germany" default="false" />
+        <setting id="magenta2_country" type="text" label="Country Code" default="de" visible="false" />
         <setting id="magenta2_proxy_enabled" type="bool" label="Enable Proxy" default="false" />
         <setting id="magenta2_proxy_host" type="text" label="Proxy Host" visible="eq(-1,true)" />
         <setting id="magenta2_proxy_port" type="number" label="Proxy Port" visible="eq(-2,true)" />
     </category>
 
-
-        <!-- Magenta TV Austria -->
-    <category label="Magenta TV (AT)">
-        <setting id="enable_magentaeu_at" type="bool" label="Enable Magenta TV (AT)" default="false" />
+    <!-- =============================================== -->
+    <!-- MAGENTA EU (Multi-Country)                     -->
+    <!-- =============================================== -->
+    <category id="magentaeu_at" label="Magenta TV Austria">
+        <setting id="enable_magentaeu_at" type="bool" label="Enable Magenta TV Austria" default="false" />
         <setting id="magentaeu_at_country" type="text" label="Country Code" default="at" visible="false" />
         <setting id="magentaeu_at_username" type="text" label="Username" default="" enable="eq(-2,true)" />
         <setting id="magentaeu_at_password" type="text" label="Password" option="hidden" default="" enable="eq(-3,true)" />
-
-        <!-- Optional: Proxy settings for AT -->
         <setting id="magentaeu_at_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-4,true)" />
         <setting id="magentaeu_at_proxy_host" type="text" label="Proxy Host" default="" visible="eq(-1,true)" />
         <setting id="magentaeu_at_proxy_port" type="number" label="Proxy Port" default="8080" visible="eq(-2,true)" />
     </category>
 
-    <!-- Magenta TV Croatia -->
-    <category label="Max TV (HR)">
-        <setting id="enable_magentaeu_hr" type="bool" label="Enable Max TV (HR)" default="false" />
+    <category id="magentaeu_hr" label="Max TV Croatia">
+        <setting id="enable_magentaeu_hr" type="bool" label="Enable Max TV Croatia" default="false" />
         <setting id="magentaeu_hr_country" type="text" label="Country Code" default="hr" visible="false" />
         <setting id="magentaeu_hr_username" type="text" label="Username" default="" enable="eq(-2,true)" />
         <setting id="magentaeu_hr_password" type="text" label="Password" option="hidden" default="" enable="eq(-3,true)" />
-
-        <!-- Optional: Proxy settings for HR -->
         <setting id="magentaeu_hr_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-4,true)" />
         <setting id="magentaeu_hr_proxy_host" type="text" label="Proxy Host" default="" visible="eq(-1,true)" />
         <setting id="magentaeu_hr_proxy_port" type="number" label="Proxy Port" default="8080" visible="eq(-2,true)" />
     </category>
 
-    <!-- Magenta TV Poland -->
-    <category label="Magenta TV (PL)">
-        <setting id="enable_magentaeu_pl" type="bool" label="Enable Magenta TV (PL)" default="false" />
+    <category id="magentaeu_pl" label="Magenta TV Poland">
+        <setting id="enable_magentaeu_pl" type="bool" label="Enable Magenta TV Poland" default="false" />
         <setting id="magentaeu_pl_country" type="text" label="Country Code" default="pl" visible="false" />
         <setting id="magentaeu_pl_username" type="text" label="Username" default="" enable="eq(-2,true)" />
         <setting id="magentaeu_pl_password" type="text" label="Password" option="hidden" default="" enable="eq(-3,true)" />
-
-        <!-- Optional: Proxy settings for PL -->
         <setting id="magentaeu_pl_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-4,true)" />
         <setting id="magentaeu_pl_proxy_host" type="text" label="Proxy Host" default="" visible="eq(-1,true)" />
         <setting id="magentaeu_pl_proxy_port" type="number" label="Proxy Port" default="8080" visible="eq(-2,true)" />
     </category>
 
-    <!-- Magenta TV Montenegro -->
-    <category label="Magenta TV (ME)">
-        <setting id="enable_magentaeu_me" type="bool" label="Enable Magenta TV (ME)" default="false" />
+    <category id="magentaeu_me" label="Magenta TV Montenegro">
+        <setting id="enable_magentaeu_me" type="bool" label="Enable Magenta TV Montenegro" default="false" />
         <setting id="magentaeu_me_country" type="text" label="Country Code" default="me" visible="false" />
         <setting id="magentaeu_me_username" type="text" label="Username" default="" enable="eq(-2,true)" />
         <setting id="magentaeu_me_password" type="text" label="Password" option="hidden" default="" enable="eq(-3,true)" />
-
-        <!-- Optional: Proxy settings for ME -->
         <setting id="magentaeu_me_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-4,true)" />
         <setting id="magentaeu_me_proxy_host" type="text" label="Proxy Host" default="" visible="eq(-1,true)" />
         <setting id="magentaeu_me_proxy_port" type="number" label="Proxy Port" default="8080" visible="eq(-2,true)" />
     </category>
 
-    <!-- Magenta TV Hungary -->
-    <category label="Magenta TV (HU)">
-        <setting id="enable_magentaeu_hu" type="bool" label="Enable Magenta TV (HU)" default="false" />
+    <category id="magentaeu_hu" label="Magenta TV Hungary">
+        <setting id="enable_magentaeu_hu" type="bool" label="Enable Magenta TV Hungary" default="false" />
         <setting id="magentaeu_hu_country" type="text" label="Country Code" default="hu" visible="false" />
         <setting id="magentaeu_hu_username" type="text" label="Username" default="" enable="eq(-2,true)" />
         <setting id="magentaeu_hu_password" type="text" label="Password" option="hidden" default="" enable="eq(-3,true)" />
-
-        <!-- Optional: Proxy settings for HU -->
         <setting id="magentaeu_hu_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-4,true)" />
         <setting id="magentaeu_hu_proxy_host" type="text" label="Proxy Host" default="" visible="eq(-1,true)" />
         <setting id="magentaeu_hu_proxy_port" type="number" label="Proxy Port" default="8080" visible="eq(-2,true)" />
     </category>
 
-        <!-- HRTi Provider Settings -->
-    <category label="HRTi (HR)">
-        <setting id="enable_hrti" type="bool" label="Enable HRTi" default="false" />
+    <!-- =============================================== -->
+    <!-- HRTI                                            -->
+    <!-- =============================================== -->
+    <category id="hrti" label="HRTi Croatia">
+        <setting id="enable_hrti" type="bool" label="Enable HRTi Croatia" default="false" />
         <setting id="hrti_country" type="text" label="Country Code" default="hr" visible="false" />
-        <setting id="hrti_username" type="text" label="Username" default="" enable="eq(-2,true)" />
-        <setting id="hrti_password" type="text" label="Password" option="hidden" default="" enable="eq(-3,true)" />
-        <setting id="hrti_ipaddress" type="ipaddress" label="IP Address" default="" enable="eq(-4,true)" />
-
-        <!-- Optional: Proxy settings for HRTi -->
-        <setting id="hrti_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-5,true)" />
+        <setting id="hrti_client_id" type="text" label="Client ID" default="" enable="eq(-2,true)" />
+        <setting id="hrti_client_secret" type="text" label="Client Secret" option="hidden" default="" enable="eq(-3,true)" />
+        <setting id="hrti_username" type="text" label="Username" default="" enable="eq(-4,true)" />
+        <setting id="hrti_password" type="text" label="Password" option="hidden" default="" enable="eq(-5,true)" />
+        <setting id="hrti_ipaddress" type="ipaddress" label="IP Address" default="" enable="eq(-6,true)" />
+        <setting id="hrti_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-7,true)" />
         <setting id="hrti_proxy_host" type="text" label="Proxy Host" default="" visible="eq(-1,true)" />
         <setting id="hrti_proxy_port" type="number" label="Proxy Port" default="8080" visible="eq(-2,true)" />
+    </category>
+
+    <!-- =============================================== -->
+    <!-- MOVE.TV                                         -->
+    <!-- =============================================== -->
+    <category id="movetv" label="move.tv Germany">
+        <setting id="enable_movetv" type="bool" label="Enable move.tv Germany" default="false" />
+        <setting id="movetv_country" type="text" label="Country Code" default="de" visible="false" />
+        <setting id="movetv_username" type="text" label="Username" default="" enable="eq(-2,true)" />
+        <setting id="movetv_password" type="text" label="Password" option="hidden" default="" enable="eq(-3,true)" />
+        <setting id="movetv_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-4,true)" />
+        <setting id="movetv_proxy_host" type="text" label="Proxy Host" default="" visible="eq(-1,true)" />
+        <setting id="movetv_proxy_port" type="number" label="Proxy Port" default="8080" visible="eq(-2,true)" />
+    </category>
+
+    <!-- =============================================== -->
+    <!-- BH TELECOM                                      -->
+    <!-- =============================================== -->
+    <category id="bhtelecom" label="BH Telecom Bosnia">
+        <setting id="enable_bhtelecom" type="bool" label="Enable BH Telecom Bosnia" default="false" />
+        <setting id="bhtelecom_country" type="text" label="Country Code" default="ba" visible="false" />
+        <setting id="bhtelecom_proxy_enabled" type="bool" label="Enable Proxy" default="false" />
+        <setting id="bhtelecom_proxy_host" type="text" label="Proxy Host" visible="eq(-1,true)" />
+        <setting id="bhtelecom_proxy_port" type="number" label="Proxy Port" visible="eq(-2,true)" />
+    </category>
+
+    <!-- =============================================== -->
+    <!-- LIV GOLF                                        -->
+    <!-- =============================================== -->
+    <category id="livgolf" label="LIV Golf">
+        <setting id="enable_livgolf" type="bool" label="Enable LIV Golf" default="false" />
+        <setting id="livgolf_country" type="text" label="Country Code" default="global" visible="false" />
+        <setting id="livgolf_proxy_enabled" type="bool" label="Enable Proxy" default="false" />
+        <setting id="livgolf_proxy_host" type="text" label="Proxy Host" visible="eq(-1,true)" />
+        <setting id="livgolf_proxy_port" type="number" label="Proxy Port" visible="eq(-2,true)" />
+    </category>
+
+    <!-- =============================================== -->
+    <!-- M3U PROVIDER (Generic - enables/disables ALL M3U groups) -->
+    <!-- =============================================== -->
+    <category id="m3u" label="M3U Playlists">
+        <setting id="enable_m3u" type="bool" label="Enable M3U Providers" default="false" />
+        <setting id="m3u_proxy_enabled" type="bool" label="Enable Proxy for M3U" default="false" />
+        <setting id="m3u_proxy_host" type="text" label="Proxy Host" visible="eq(-1,true)" />
+        <setting id="m3u_proxy_port" type="number" label="Proxy Port" visible="eq(-2,true)" />
+        <help>Master enable/disable for ALL M3U playlist groups. Individual groups cannot be controlled separately.</help>
+    </category>
+
+    <!-- =============================================== -->
+    <!-- SCRIPTS PROVIDER (Generic enable/disable)      -->
+    <!-- =============================================== -->
+    <category id="scripts" label="Scripts Provider">
+        <setting id="enable_scripts" type="bool" label="Enable Scripts Provider" default="false" />
+        <setting id="scripts_proxy_enabled" type="bool" label="Enable Proxy" default="false" />
+        <setting id="scripts_proxy_host" type="text" label="Proxy Host" visible="eq(-1,true)" />
+        <setting id="scripts_proxy_port" type="number" label="Proxy Port" visible="eq(-2,true)" />
+        <help>Enable/disable custom script-based provider</help>
     </category>
 </settings>

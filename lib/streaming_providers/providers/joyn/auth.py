@@ -400,6 +400,24 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 }
                 clean_headers.setdefault("User-Agent", JOYN_USER_AGENT)
                 clean_headers.setdefault("Accept", "*/*")
+                # Browser-realistic headers to prevent Cloudflare managed challenges.
+                # CF uses sec-fetch-* and ch-ua hints to distinguish real browsers from bots.
+                clean_headers.setdefault("Accept-Language", "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7")
+                clean_headers.setdefault("Accept-Encoding", "gzip, deflate, br")
+                clean_headers.setdefault("Cache-Control", "no-cache")
+                clean_headers.setdefault("Pragma", "no-cache")
+                clean_headers.setdefault("sec-ch-ua", '"Not A(Brand";v="99", "Google Chrome";v="121", "Chromium";v="121"')
+                clean_headers.setdefault("sec-ch-ua-mobile", "?0")
+                clean_headers.setdefault("sec-ch-ua-platform", '"Windows"')
+                if method.upper() == "POST":
+                    clean_headers.setdefault("Sec-Fetch-Site", "same-site")
+                    clean_headers.setdefault("Sec-Fetch-Mode", "cors")
+                    clean_headers.setdefault("Sec-Fetch-Dest", "empty")
+                else:
+                    clean_headers.setdefault("Sec-Fetch-Site", "none")
+                    clean_headers.setdefault("Sec-Fetch-Mode", "navigate")
+                    clean_headers.setdefault("Sec-Fetch-Dest", "document")
+                    clean_headers.setdefault("Sec-Fetch-User", "?1")
 
                 content_type = kwargs.pop("content_type", None)
                 if content_type:
