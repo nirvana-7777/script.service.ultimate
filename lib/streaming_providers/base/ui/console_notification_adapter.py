@@ -25,12 +25,26 @@ class ConsoleNotificationAdapter(NotificationInterface):
     - CI/CD pipelines
     """
 
-    def __init__(self):
-        """Initialize console notification adapter"""
+    def __init__(self, provider_name: str = "Service",
+                 success_message: Optional[str] = None,
+                 failure_template: Optional[str] = None):
+        """
+        Initialize console notification adapter
+
+        Args:
+            provider_name: Name of the provider (e.g., "MagentaTV")
+            success_message: Custom success message (optional)
+            failure_template: Template for failure messages (optional)
+        """
         super().__init__()
         self._start_time = None
         self._expires_in = 0
         self._last_update = 0
+
+        # Provider-specific configuration
+        self.provider_name = provider_name
+        self.success_message = success_message or f"{provider_name} login successful!"
+        self.failure_template = failure_template or f"{provider_name} login failed: {{}}"
 
     @property
     def supports_qr_display(self) -> bool:
@@ -48,7 +62,7 @@ class ConsoleNotificationAdapter(NotificationInterface):
         return False
 
     def show_remote_login(
-        self, login_code: str, qr_target_url: str, expires_in: int, interval: int = 10
+            self, login_code: str, qr_target_url: str, expires_in: int, interval: int = 10
     ) -> NotificationResult:
         """
         Show remote login information in console
@@ -69,12 +83,12 @@ class ConsoleNotificationAdapter(NotificationInterface):
 
         # Print header
         print("\n" + "=" * 70)
-        print("  REMOTE LOGIN REQUIRED")
+        print(f"  {self.provider_name} - REMOTE LOGIN REQUIRED")
         print("=" * 70)
         print()
 
         # Print instructions
-        print("Please authenticate using your mobile device:")
+        print(f"Please authenticate using your mobile device for {self.provider_name}:")
         print()
         print(f"  Option 1: Scan QR Code")
         print(f"  Visit this URL on your mobile device:")
@@ -88,7 +102,7 @@ class ConsoleNotificationAdapter(NotificationInterface):
         print("=" * 70)
         print()
 
-        logger.info(f"Remote login started: code={login_code}, expires_in={expires_in}s")
+        logger.info(f"Remote login started for {self.provider_name}: code={login_code}, expires_in={expires_in}s")
         logger.info(f"QR target URL: {qr_target_url}")
 
         return NotificationResult.CONTINUE
@@ -110,7 +124,7 @@ class ConsoleNotificationAdapter(NotificationInterface):
 
         # Print milestone updates (every 30 seconds, or at key intervals)
         if remaining_seconds <= 0:
-            print(f"⏰ Remote login expired")
+            print(f"⏰ {self.provider_name} remote login expired")
             return True
 
         # Print at: 240s, 180s, 120s, 60s, 30s, 10s
@@ -125,7 +139,7 @@ class ConsoleNotificationAdapter(NotificationInterface):
             else:
                 time_str = f"{seconds}s"
 
-            print(f"⏳ Waiting for authentication... {time_str} remaining")
+            print(f"⏳ {self.provider_name}: Waiting for authentication... {time_str} remaining")
 
         return True
 
@@ -146,11 +160,12 @@ class ConsoleNotificationAdapter(NotificationInterface):
         print("=" * 70)
 
         if success:
-            print("✓ Remote login successful!")
+            print(f"✓ {self.success_message}")
         elif message:
-            print(f"✗ Remote login failed: {message}")
+            failure_msg = self.failure_template.format(message)
+            print(f"✗ {failure_msg}")
         else:
-            print("✗ Remote login failed")
+            print(f"✗ {self.failure_template.format('unknown error')}")
 
         print("=" * 70)
         print()

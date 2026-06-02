@@ -64,13 +64,15 @@ class PollingThread(threading.Thread):
 
 
 class QRCodeDialog:
-    def __init__(self, xbmcgui, xbmc, qr_image_path, login_code, expires_in, polling_thread=None):
+    def __init__(self, xbmcgui, xbmc, qr_image_path, login_code, expires_in,
+                 polling_thread=None, provider_name: str = "Service"):
         self.xbmcgui = xbmcgui
         self.xbmc = xbmc
         self.qr_image_path = qr_image_path
         self.login_code = login_code
         self.expires_in = expires_in
         self.polling_thread = polling_thread
+        self.provider_name = provider_name
 
         self.dialog = None
         self.user_closed = False
@@ -103,7 +105,7 @@ class QRCodeDialog:
             title_y = dialog_y + 30
             title = self.xbmcgui.ControlLabel(
                 x=dialog_x + 50, y=title_y, width=dialog_width - 100, height=50,
-                label="[B]MagentaTV Remote Login[/B]", font="font30",
+                label=f"[B]{self.provider_name} Remote Login[/B]", font="font30",
                 textColor="0xFFFFFFFF", alignment=0x00000002,
             )
             self.dialog.addControl(title)
@@ -121,7 +123,7 @@ class QRCodeDialog:
             instructions_y = qr_y + qr_size + 40
             inst1 = self.xbmcgui.ControlLabel(
                 x=dialog_x + 50, y=instructions_y, width=dialog_width - 100, height=30,
-                label="[B]Scan QR code with your MagentaTV app[/B]", font="font13",
+                label="[B]Scan QR code with your app[/B]", font="font13",
                 textColor="0xFFFFFFFF", alignment=0x00000002,
             )
             self.dialog.addControl(inst1)
@@ -161,7 +163,7 @@ class QRCodeDialog:
             if self.polling_thread:
                 self._start_monitor()
 
-            logger.info("Showing QR code dialog")
+            logger.info(f"Showing QR code dialog for {self.provider_name}")
             self.dialog.doModal()
 
             # FIX #2: only mark as user_closed if auth didn't trigger the close
@@ -263,7 +265,8 @@ class QRCodeDialog:
 
 
 class KodiNotificationAdapter(NotificationInterface):
-    def __init__(self, http_manager=None):
+    def __init__(self, http_manager=None, provider_name: str = "Service",
+                 success_message: str = None, failure_template: str = None):
         super().__init__()
         try:
             import xbmc
@@ -284,6 +287,11 @@ class KodiNotificationAdapter(NotificationInterface):
         self._polling_thread = None
 
         self._vfs = get_vfs(addon_subdir="temp")
+
+        # Provider-specific configuration
+        self.provider_name = provider_name
+        self.success_message = success_message or f"{provider_name} login successful!"
+        self.failure_template = failure_template or f"{provider_name} login failed: {{}}"
 
     @property
     def supports_qr_display(self) -> bool:
@@ -322,6 +330,7 @@ class KodiNotificationAdapter(NotificationInterface):
                 self.xbmcgui, self.xbmc,
                 qr_image_path, login_code, expires_in,
                 self._polling_thread,
+                provider_name=self.provider_name,
             )
             self._qr_dialog.show()
 
@@ -369,6 +378,7 @@ class KodiNotificationAdapter(NotificationInterface):
                 self.xbmcgui, self.xbmc,
                 qr_image_path, login_code, expires_in,
                 None,
+                provider_name=self.provider_name,
             )
             self._qr_dialog.show()
 
@@ -405,12 +415,13 @@ class KodiNotificationAdapter(NotificationInterface):
 
             if success:
                 self.xbmcgui.Dialog().notification(
-                    "MagentaTV", "Remote login successful!",
+                    self.provider_name, self.success_message,
                     self.xbmcgui.NOTIFICATION_INFO, 3000,
                 )
             elif message and not self._is_cancelled:
+                failure_msg = self.failure_template.format(message)
                 self.xbmcgui.Dialog().notification(
-                    "MagentaTV", f"Remote login failed: {message}",
+                    self.provider_name, failure_msg,
                     self.xbmcgui.NOTIFICATION_ERROR, 5000,
                 )
 
@@ -448,7 +459,9 @@ class KodiNotificationAdapter(NotificationInterface):
             elapsed = time.time() - start_time
             logger.info(f"Generated QR code in {elapsed:.2f}s: {len(png_data)} bytes")
 
-            filename = f"magentatv_qr_{int(time.time())}.png"
+            filename = f"qr_{self.provider_name.lower()}_{int(time.time())}.png"
+            # Sanitize filename - remove any problematic characters
+            filename = "".join(c for c in filename if c.isalnum() or c in '._-')
             filepath = self._vfs.join_path(filename)
 
             # FIX #1: write raw bytes via write_binary, not text
