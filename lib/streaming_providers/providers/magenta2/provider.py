@@ -669,13 +669,24 @@ class Magenta2Provider(StreamingProvider):
             channel_id, start_time, end_time, **kwargs
         )
 
-    def get_vod_category(self, content_id: str = "", **kwargs: Any) -> Any:
+    def get_vod_category(
+        self,
+        content_id: str = "",
+        cursor: Optional[str] = None,
+        page_size: int = 24,
+        **kwargs: Any,
+    ) -> Any:
         """Return children of a VOD node (empty string → root)."""
         if not self._vod_manager:
             raise RuntimeError(
                 "VodManager not available — configuration discovery may have failed"
             )
-        return self._vod_manager.get_children(content_id=content_id, **kwargs)
+        return self._vod_manager.get_children(
+            content_id=content_id,
+            cursor=cursor,
+            page_size=page_size,
+            **kwargs,
+        )
 
     def get_recordings(self, include_deleted: bool = False, **kwargs: Any) -> Any:
         """Return a list of Recording objects from the nPVR backend."""

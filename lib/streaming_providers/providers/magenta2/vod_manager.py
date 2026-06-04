@@ -258,8 +258,7 @@ class VodManager:
         # ── Season ──────────────────────────────────────────────────────
         if content_id.startswith("season:"):
             gn_id = content_id[len("season:"):]
-            episodes = self._fetch_season_episodes(gn_id, params)
-            return {"entries": episodes, "next_cursor": None, "total": None}
+            return self._fetch_season_episodes(gn_id, params, offset=offset, page_size=page_size)
 
         # ── Episode / Movie ─────────────────────────────────────────────
         if content_id.startswith("episode:"):
@@ -287,8 +286,7 @@ class VodManager:
         if node_id.startswith("VodDetails/"):
             node_id = node_id.split("/")[-1]
         if node_id.startswith(VOD_PREFIX_SEASON):
-            episodes = self._fetch_season_episodes(node_id, params)
-            return {"entries": episodes, "next_cursor": None, "total": None}
+            return self._fetch_season_episodes(node_id, params, offset=offset, page_size=page_size)
         if node_id.startswith(VOD_PREFIX_SERIES):
             seasons = self._fetch_series_seasons(node_id, params)
             return {"entries": seasons, "next_cursor": None, "total": None}
@@ -1073,50 +1071,66 @@ class VodManager:
     # Private helpers – VodDetails (season → episodes)
     # =========================================================================
 
-    def _fetch_season_episodes(self, season_id: str, params: Dict) -> List[VodItem]:
+    def _fetch_season_episodes(
+        self,
+        season_id: str,
+        params: Dict,
+        offset: int = 0,
+        page_size: int = VOD_DEFAULT_PAGE_SIZE,
+    ) -> Dict:
         """
-        Fetch episodes for a season.
+        Fetch episodes for a season with pagination support.
 
         Flow:
           1. Fetch the season VodDetails page.
           2. Follow productInformationLink → pick a primary button with a
              subAssetLane (prefer videoload).
-          3. Fetch that subAssetLane → items where vodType == "Episode".
+          3. Fetch that subAssetLane with $offset/$size → items where
+             vodType == "Episode".
 
         Fallback:
           If productInformationLink is absent or yields nothing, fall back to
-          Episode-typed lanes embedded in the VodDetails response.
+          Episode-typed lanes embedded in the VodDetails response (no pagination).
+
+        Returns:
+            {
+                "entries":     List[VodItem],
+                "next_cursor": Optional[str],   # None when no further pages
+                "total":       Optional[int],   # total count if known by API
+            }
         """
         episode_params = dict(params)
         episode_params["autofocus"] = "videoload"
 
         data = self._get_vod_details(season_id, episode_params)
         if not data:
-            return []
+            return {"entries": [], "next_cursor": None, "total": None}
 
         content = data.get("content", {})
         season_number: Optional[int] = self._extract_season_number(season_id)
 
         # ------------------------------------------------------------------
-        # Primary path: productInformationLink → subAssetLane
+        # Primary path: productInformationLink → subAssetLane with pagination
         # ------------------------------------------------------------------
         product_url: Optional[str] = (
             content.get("productInformationLink") or {}
         ).get("href")
 
         if product_url:
-            episodes = self._fetch_episodes_via_product_info(
-                product_url, season_number, params
+            episodes, next_offset, total = self._fetch_episodes_via_product_info(
+                product_url, season_number, params, offset=offset, page_size=page_size
             )
             if episodes:
                 logger.debug(
                     f"{self._provider}: Season {season_id} → "
-                    f"{len(episodes)} episodes (via subAssetLane)"
+                    f"{len(episodes)} episodes (via subAssetLane, offset={offset})"
                 )
-                return episodes
+                next_cursor = str(next_offset) if next_offset is not None else None
+                return {"entries": episodes, "next_cursor": next_cursor, "total": total}
 
         # ------------------------------------------------------------------
-        # Fallback: Episode lanes embedded in the VodDetails response
+        # Fallback: Episode lanes embedded in the VodDetails response.
+        # These are not paginated by the API — return all episodes found.
         # ------------------------------------------------------------------
         episodes = []
         for lane in content.get("lanes", []):
@@ -1137,26 +1151,39 @@ class VodManager:
             f"{self._provider}: Season {season_id} → "
             f"{len(episodes)} episodes (via VodDetails lanes)"
         )
-        return episodes
+        return {"entries": episodes, "next_cursor": None, "total": None}
 
     def _fetch_episodes_via_product_info(
         self,
         product_url: str,
         season_number: Optional[int],
         params: Dict,
-    ) -> List[VodItem]:
+        offset: int = 0,
+        page_size: int = VOD_DEFAULT_PAGE_SIZE,
+    ) -> tuple:
         """
-        Resolve the episode list from the productInformation subAssetLane.
+        Resolve the episode list from the productInformation subAssetLane,
+        with pagination support.
 
         Partner preference: videoload first, then any other with a
         laneContentLink href.
+
+        Returns:
+            (episodes_list, next_offset, total_count)
+            next_offset is None when there are no further pages.
+
+        Note: productInformation is fetched once per call to resolve the lane
+        href. Callers that page through a season will re-fetch it on each page.
+        This is acceptable given the low request frequency; a lane-href cache
+        keyed on product_url could be added here if it proves noisy.
         """
         prod_data = self._get(product_url, params)
         if not prod_data:
-            return []
+            return [], None, None
 
         primary_buttons = (prod_data.get("buttons") or {}).get("primary", [])
 
+        # Build an ordered candidate list: videoload first, then others.
         candidates = []
         for btn in primary_buttons:
             lane_list = btn.get("subAssetLane") or []
@@ -1170,9 +1197,14 @@ class VodManager:
                     candidates.append(href)
 
         for lane_href in candidates:
-            lane_data = self._get(lane_href, params)
+            paged_params = dict(params)
+            paged_params["$size"] = str(page_size)
+            paged_params["$offset"] = str(offset)
+
+            lane_data = self._get(lane_href, paged_params)
             if not lane_data:
                 continue
+
             episodes = []
             for ep in (lane_data.get("content") or {}).get("items", []):
                 if ep.get("vodType") != "Episode":
@@ -1180,10 +1212,22 @@ class VodManager:
                 node = self._map_episode_item(ep, season_number)
                 if node is not None:
                     episodes.append(node)
-            if episodes:
-                return episodes
 
-        return []
+            if episodes:
+                page_info = (lane_data.get("content") or {}).get("page") or {}
+                total: Optional[int] = page_info.get("total")
+                next_offset_val = offset + len(episodes)
+                if total is not None:
+                    next_offset: Optional[int] = (
+                        next_offset_val if next_offset_val < total else None
+                    )
+                else:
+                    # No total from API: assume more pages when a full page
+                    # was returned; stop when a partial page is returned.
+                    next_offset = next_offset_val if len(episodes) >= page_size else None
+                return episodes, next_offset, total
+
+        return [], None, None
 
     def _map_episode_item(
         self,
