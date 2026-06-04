@@ -477,7 +477,7 @@ class RTLPlusVodManager:
                     continue
 
                 item_content = item.get("itemContent", {})
-                action = item_content.get("action", {})
+                action = item_content.get("action") or {}
                 target = unwrap_target(action.get("target", {}))
                 value_layout = target.get("value_layout", {})
 
@@ -658,7 +658,7 @@ class RTLPlusVodManager:
                     continue
 
                 # Check if this item has a valid action target
-                action = item_content.get("action")
+                action = item_content.get("action") or {}
                 if not action:
                     # Skip items without actions (like banner images)
                     continue
@@ -1075,7 +1075,7 @@ class RTLPlusVodManager:
                     continue
 
                 # Check for video in action target
-                action = item_content.get("action", {})
+                action = item_content.get("action") or {}
                 if isinstance(action, dict):
                     target = unwrap_target(action.get("target", {}))
                     value_layout = target.get("value_layout", {})
@@ -1244,7 +1244,7 @@ class RTLPlusVodManager:
             return None
 
         # Unwrap lock-wrapped targets
-        action = item_content.get("action", {})
+        action = item_content.get("action") or {}
         target = unwrap_target(action.get("target", {}))
         value_layout = target.get("value_layout", {})
 
@@ -1463,7 +1463,7 @@ class RTLPlusVodManager:
         if not item_content or not isinstance(item_content, dict):
             return None
 
-        action = item_content.get("action")
+        action = item_content.get("action") or {}
 
         # FIX: Check if action is None or not a dict before using .get()
         if not action or not isinstance(action, dict):
@@ -1583,7 +1583,7 @@ class RTLPlusVodManager:
 
         has_datetime = bool(re.search(r"\d{2}\.\d{2}\.\d{2}", highlight))
 
-        action = item_content.get("action", {})
+        action = item_content.get("action") or {}
         target = action.get("target", {})
         value_layout = target.get("value_layout", {})
 
