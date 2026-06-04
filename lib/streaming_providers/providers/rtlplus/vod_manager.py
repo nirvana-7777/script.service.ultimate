@@ -1460,10 +1460,15 @@ class RTLPlusVodManager:
             return None
 
         item_content = item.get("itemContent")
-        if not item_content:
+        if not item_content or not isinstance(item_content, dict):
             return None
 
-        action = item_content.get("action", {})
+        action = item_content.get("action")
+
+        # FIX: Check if action is None or not a dict before using .get()
+        if not action or not isinstance(action, dict):
+            return None
+
         target = unwrap_target(action.get("target", {}))
         value_layout = target.get("value_layout", {})
 
