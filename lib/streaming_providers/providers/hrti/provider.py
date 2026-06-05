@@ -287,8 +287,13 @@ class HRTiProvider(StreamingProvider):
             f"{'Client ...' if 'authorization' in headers else 'NO AUTHORIZATION'}"
         )
 
+        channels_endpoint = self.hrti_config.api_endpoints.get("channels", "")
+        if not channels_endpoint:
+            logger.error("No channels endpoint configured")
+            return []
+
         response = self.http_manager.post(
-            self.hrti_config.api_endpoints["channels"],
+            channels_endpoint,
             operation="api",
             headers=headers,
             data=json.dumps({}),
@@ -539,8 +544,13 @@ class HRTiProvider(StreamingProvider):
                 "EndTime": f"/Date({end_time})/",
             }
 
+            programme_endpoint = self.hrti_config.api_endpoints.get("programme", "")
+            if not programme_endpoint:
+                logger.error("No programme endpoint configured")
+                return []
+
             response = self.http_manager.post(
-                self.hrti_config.api_endpoints["programme"],
+                programme_endpoint,
                 operation="api",
                 headers=headers,
                 data=json.dumps(payload),
