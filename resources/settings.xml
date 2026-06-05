@@ -202,17 +202,6 @@
     </category>
 
     <!-- =============================================== -->
-    <!-- LIV GOLF                                        -->
-    <!-- =============================================== -->
-    <category id="livgolf" label="LIV Golf">
-        <setting id="enable_livgolf" type="bool" label="Enable LIV Golf" default="false" />
-        <setting id="livgolf_country" type="text" label="Country Code" default="global" visible="false" />
-        <setting id="livgolf_proxy_enabled" type="bool" label="Enable Proxy" default="false" />
-        <setting id="livgolf_proxy_host" type="text" label="Proxy Host" visible="eq(-1,true)" />
-        <setting id="livgolf_proxy_port" type="number" label="Proxy Port" visible="eq(-2,true)" />
-    </category>
-
-    <!-- =============================================== -->
     <!-- M3U PROVIDER (Generic - enables/disables ALL M3U groups) -->
     <!-- =============================================== -->
     <category id="m3u" label="M3U Playlists">
