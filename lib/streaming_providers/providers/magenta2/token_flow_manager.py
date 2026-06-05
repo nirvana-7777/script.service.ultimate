@@ -631,25 +631,18 @@ class TokenFlowManager:
     def _get_yo_digital_via_remote_login(self) -> TokenFlowResult:
         """Try remote_login to get tvhubs + refresh_token, then chain to yo_digital"""
         try:
-            # Check if remote_login is available
-            if not hasattr(self.sam3_client, "can_use_remote_login"):
-                return TokenFlowResult(
-                    success=False,
-                    error="remote_login not available",
-                    flow_path="yo_digital_via_remote_login",
-                )
-
-            if not self.sam3_client.can_use_remote_login():
+            if self._remote_login_callback:
+                logger.info("Attempting remote_login flow via callback")
+                remote_token_data = self._remote_login_callback()
+            elif self.sam3_client.can_use_remote_login():
+                logger.info("Attempting remote_login flow via sam3_client (no callback)")
+                remote_token_data = self.sam3_client.remote_login(scope="tvhubs offline_access")
+            else:
                 return TokenFlowResult(
                     success=False,
                     error="remote_login not configured",
                     flow_path="yo_digital_via_remote_login",
                 )
-
-            logger.info("Attempting remote_login flow")
-
-            # Perform remote login
-            remote_token_data = self.sam3_client.remote_login(scope="tvhubs offline_access")
 
             if not remote_token_data:
                 return TokenFlowResult(

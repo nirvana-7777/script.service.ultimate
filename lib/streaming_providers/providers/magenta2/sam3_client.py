@@ -51,6 +51,7 @@ class Sam3Client:
         line_auth_endpoint: str = None,
         backchannel_start_url: str = None,
         qr_code_url_template: str = None,
+        provider_name: str = "MagentaTV",
     ):
         """
         Initialize SAM3 client with all required endpoints
@@ -84,6 +85,8 @@ class Sam3Client:
 
         # Remote login handler (lazy initialized)
         self._remote_login_handler: Optional["RemoteLoginHandler"] = None
+
+        self.provider_name = provider_name
 
         logger.debug(
             f"SAM3 client initialized - "
@@ -459,10 +462,11 @@ class Sam3Client:
         # Create handler with CURRENT client ID
         self._remote_login_handler = RemoteLoginHandler(
             http_manager=self.http_manager,
-            sam3_client_id=self.sam3_client_id,  # Use current value
+            sam3_client_id=self.sam3_client_id,
             backchannel_start_url=self.backchannel_start_url,
             token_endpoint=self._get_token_endpoint(),
             qr_code_url_template=self.qr_code_url_template,
+            provider_name=self.provider_name,  # ← add this
         )
 
         logger.info(

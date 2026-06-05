@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 from ...base.auth.base_auth import BaseAuthenticator, BaseAuthToken, TokenAuthLevel
+from ...base.auth.base_oauth2_auth import OIDCConfiguration
 from ...base.auth.credentials import ClientCredentials
 from ...base.utils.logger import logger
 from .constants import (
@@ -656,8 +657,13 @@ class Magenta2Authenticator(BaseAuthenticator):
 
                 if self._openid_config:
                     issuer_url = self._openid_config.get("issuer")
-                    oauth_endpoint = self._openid_config.get("token_endpoint")
                     backchannel_start_url = self._openid_config.get("backchannel_auth_start")
+                    # Use base class property — resolves from OIDC cache seeded by
+                    # set_openid_config(), avoiding a redundant raw dict lookup.
+                    try:
+                        oauth_endpoint = self.oauth_token_endpoint
+                    except (NotImplementedError, AttributeError):
+                        oauth_endpoint = self._openid_config.get("token_endpoint")
 
                 self._sam3_client = Sam3Client(
                     http_manager=self._http_manager,
@@ -669,6 +675,7 @@ class Magenta2Authenticator(BaseAuthenticator):
                     line_auth_endpoint=line_auth_endpoint,
                     backchannel_start_url=backchannel_start_url,
                     qr_code_url_template=qr_code_url_template,
+                    provider_name="MagentaTV",
                 )
 
                 logger.info(
@@ -827,14 +834,39 @@ class Magenta2Authenticator(BaseAuthenticator):
 
     def set_openid_config(self, openid_config: Dict[str, Any]) -> None:
         """
-        Set OpenID configuration for SAM3 client
+        Set OpenID configuration for SAM3 client and seed the base class OIDC cache.
+
+        The discovery document is already in hand at this point (fetched by
+        DiscoveryService), so we populate the base class cache directly rather
+        than triggering a redundant HTTP round-trip via enable_oidc_discovery().
+        This makes oauth_token_endpoint and related base class properties work
+        without any further network activity.
 
         Args:
-            openid_config: OpenID configuration dictionary
+            openid_config: OpenID configuration dictionary (well-known document)
         """
         self._openid_config = openid_config
         if self._sam3_client:
             self._sam3_client.update_endpoints(openid_config)
+
+        # Seed the base class OIDC cache directly from the fetched document.
+        try:
+            oidc_cfg = OIDCConfiguration.from_discovery_response(openid_config)
+            if oidc_cfg.is_complete():
+                self._oidc_config = oidc_cfg
+                self._oidc_discovery_timestamp = time.time()
+                self._enable_oidc_discovery = True
+                issuer = openid_config.get("issuer", "").rstrip("/")
+                self._oidc_discovery_url = f"{issuer}/.well-known/openid-configuration"
+                logger.debug(
+                    f"Base class OIDC cache seeded "
+                    f"(token_endpoint={oidc_cfg.token_endpoint})"
+                )
+            else:
+                logger.warning("OpenID config incomplete — base class OIDC cache not seeded")
+        except Exception as e:
+            logger.warning(f"Could not seed base class OIDC cache: {e}")
+
         logger.debug("OpenID configuration updated")
 
     def set_remote_login_urls(
