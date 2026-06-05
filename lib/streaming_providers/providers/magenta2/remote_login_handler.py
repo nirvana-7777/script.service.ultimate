@@ -76,7 +76,12 @@ class RemoteLoginHandler:
         if notifier:
             self._notifier = notifier
         else:
-            self._notifier = NotificationFactory.create(http_manager=http_manager)
+            self._notifier = NotificationFactory.create(
+                http_manager=http_manager,
+                provider_name="MagentaTV",
+                success_message="MagentaTV login successful",
+                failure_template="MagentaTV login failed: {reason}",
+            )
 
         self._current_session: Optional[RemoteLoginSession] = None
 
