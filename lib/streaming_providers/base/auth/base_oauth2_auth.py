@@ -1164,6 +1164,7 @@ class BaseOAuth2Authenticator(OAuth2RemoteLoginMixin, BaseAuthenticator):
                 expires_in=session.expires_in,
                 interval=2,
                 auth_callback=poll_callback,
+                provider_name=self.provider_name,  # ← new
             )
 
             logger.info(f"Remote login successful for {self.provider_name}")
