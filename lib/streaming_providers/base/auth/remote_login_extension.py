@@ -87,12 +87,15 @@ class OAuth2RemoteLoginMixin:
     """
 
     def show_remote_login_and_wait_for_auth(
-        self,
-        login_code: str,
-        qr_target_url: str,
-        expires_in: int,
-        interval: int = 5,
-        auth_callback: Optional[Callable[[], Optional[Dict[str, Any]]]] = None,
+            self,
+            login_code: str,
+            qr_target_url: str,
+            expires_in: int,
+            interval: int = 5,
+            auth_callback: Optional[Callable[[], Optional[Dict[str, Any]]]] = None,
+            provider_name: str = "Service",  # ← new
+            success_message: Optional[str] = None,  # ← new
+            failure_template: Optional[str] = None,  # ← new
     ) -> Dict[str, Any]:
         """
         Show remote login UI and block until authentication completes,
@@ -131,7 +134,11 @@ class OAuth2RemoteLoginMixin:
         )
 
         # --- Get environment-appropriate UI adapter ---
-        adapter = NotificationFactory.create()
+        adapter = NotificationFactory.create(
+            provider_name=provider_name,
+            success_message=success_message,
+            failure_template=failure_template,
+        )
 
         worker: Optional[_RemoteLoginPollingWorker] = None
 
