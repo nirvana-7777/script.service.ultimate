@@ -252,8 +252,7 @@ class VodManager:
         # ── Series ──────────────────────────────────────────────────────
         if content_id.startswith("series:"):
             gn_id = content_id[len("series:"):]
-            seasons = self._fetch_series_seasons(gn_id, params)
-            return {"entries": seasons, "next_cursor": None, "total": None}
+            return self._fetch_series_seasons(gn_id, params, offset=offset, page_size=page_size)
 
         # ── Season ──────────────────────────────────────────────────────
         if content_id.startswith("season:"):
@@ -288,8 +287,7 @@ class VodManager:
         if node_id.startswith(VOD_PREFIX_SEASON):
             return self._fetch_season_episodes(node_id, params, offset=offset, page_size=page_size)
         if node_id.startswith(VOD_PREFIX_SERIES):
-            seasons = self._fetch_series_seasons(node_id, params)
-            return {"entries": seasons, "next_cursor": None, "total": None}
+            return self._fetch_series_seasons(node_id, params, offset=offset, page_size=page_size)
         if node_id.startswith(VOD_PREFIX_EPISODE):
             items = self._fetch_single_episode(node_id, params)
             return {"entries": items, "next_cursor": None, "total": None}
@@ -915,50 +913,65 @@ class VodManager:
     # Private helpers – VodDetails (series → seasons)
     # =========================================================================
 
-    def _fetch_series_seasons(self, content_id: str, params: Dict) -> List[VodCategory]:
+    def _fetch_series_seasons(
+        self,
+        content_id: str,
+        params: Dict,
+        offset: int = 0,
+        page_size: int = VOD_DEFAULT_PAGE_SIZE,
+    ) -> Dict:
         """
-        Fetch seasons for a series.
+        Fetch seasons for a series with pagination support.
 
         Flow:
           1. Fetch VodDetails for the series.
           2. Follow productInformationLink to get the partner/button list.
           3. Pick the best primary button that has a subAssetLane (prefer
              'videoload', otherwise first with a laneContentLink href).
-          4. Fetch that subAssetLane laneContentLink → items where
-             vodType == "Season" become VodCategory entries.
+          4. Fetch that subAssetLane laneContentLink with $offset/$size →
+             items where vodType == "Season" become VodCategory entries.
 
-        Fallback (old behaviour):
+        Fallback:
           If productInformationLink is absent or yields nothing, fall back to
-          Season-typed lanes in the VodDetails response itself.
+          Season-typed lanes embedded in the VodDetails response (no pagination).
+
+        Returns:
+            {
+                "entries":     List[VodCategory],
+                "next_cursor": Optional[str],   # None when no further pages
+                "total":       Optional[int],   # total count if known by API
+            }
         """
         data = self._get_vod_details(content_id, params)
         if not data:
-            return []
+            return {"entries": [], "next_cursor": None, "total": None}
 
         content = data.get("content", {})
         info = content.get("contentInformation", {})
         series_title: str = info.get("seriesTitle") or info.get("title") or ""
 
         # ------------------------------------------------------------------
-        # Primary path: productInformationLink → subAssetLane
+        # Primary path: productInformationLink → subAssetLane with pagination
         # ------------------------------------------------------------------
         product_url: Optional[str] = (
             content.get("productInformationLink") or {}
         ).get("href")
 
         if product_url:
-            seasons = self._fetch_seasons_via_product_info(
-                product_url, series_title, params
+            seasons, next_offset, total = self._fetch_seasons_via_product_info(
+                product_url, series_title, params, offset=offset, page_size=page_size
             )
             if seasons:
                 logger.debug(
                     f"{self._provider}: Series {content_id} → "
-                    f"{len(seasons)} seasons (via subAssetLane)"
+                    f"{len(seasons)} seasons (via subAssetLane, offset={offset})"
                 )
-                return seasons
+                next_cursor = str(next_offset) if next_offset is not None else None
+                return {"entries": seasons, "next_cursor": next_cursor, "total": total}
 
         # ------------------------------------------------------------------
-        # Fallback: Season lanes embedded in the VodDetails response
+        # Fallback: Season lanes embedded in the VodDetails response.
+        # These are not paginated by the API — return all seasons found.
         # ------------------------------------------------------------------
         series_num = content_id.replace(VOD_PREFIX_SERIES, "")
         seasons = []
@@ -985,26 +998,37 @@ class VodManager:
             f"{self._provider}: Series {content_id} → "
             f"{len(seasons)} seasons (via VodDetails lanes)"
         )
-        return seasons
+        return {"entries": seasons, "next_cursor": None, "total": None}
 
     def _fetch_seasons_via_product_info(
         self,
         product_url: str,
         series_title: str,
         params: Dict,
-    ) -> List[VodCategory]:
+        offset: int = 0,
+        page_size: int = VOD_DEFAULT_PAGE_SIZE,
+    ) -> tuple:
         """
         Fetch the productInformation endpoint and resolve seasons from the
-        first usable subAssetLane.
+        first usable subAssetLane, with pagination support.
 
         Partner preference order:
           1. 'videoload'  (native Magenta VOD, always present)
           2. First primary button that has a subAssetLane with a
              laneContentLink href (regardless of instantUsable).
+
+        Returns:
+            (seasons_list, next_offset, total_count)
+            next_offset is None when there are no further pages.
+
+        Note: productInformation is fetched once per call to resolve the lane
+        href. Callers that page through a series will re-fetch it on each page.
+        This is acceptable given the low request frequency; a lane-href cache
+        keyed on product_url could be added here if it proves noisy.
         """
         prod_data = self._get(product_url, params)
         if not prod_data:
-            return []
+            return [], None, None
 
         primary_buttons = (prod_data.get("buttons") or {}).get("primary", [])
 
@@ -1022,7 +1046,10 @@ class VodManager:
                     candidates.append(href)
 
         for lane_href in candidates:
-            lane_data = self._get(lane_href, params)
+            paged_params = dict(params)
+            paged_params["$size"] = str(page_size)
+            paged_params["$offset"] = str(offset)
+            lane_data = self._get(lane_href, paged_params)
             if not lane_data:
                 continue
             seasons = []
@@ -1063,9 +1090,20 @@ class VodManager:
                     )
                 )
             if seasons:
-                return seasons
+                page_info = (lane_data.get("content") or {}).get("page") or {}
+                total: Optional[int] = page_info.get("total")
+                next_offset_val = offset + len(seasons)
+                if total is not None:
+                    next_offset: Optional[int] = (
+                        next_offset_val if next_offset_val < total else None
+                    )
+                else:
+                    # No total from API: assume more pages when a full page
+                    # was returned; stop when a partial page is returned.
+                    next_offset = next_offset_val if len(seasons) >= page_size else None
+                return seasons, next_offset, total
 
-        return []
+        return [], None, None
 
     # =========================================================================
     # Private helpers – VodDetails (season → episodes)
