@@ -49,12 +49,24 @@ def setup_stream_routes(app, manager, service):
     # INTERNAL HELPERS
     # =========================================================================
 
-    def _get_drm_configs(content_type: str, provider: str, content_id: str, **kwargs):
+    def _get_drm_configs(
+        content_type: str,
+        provider: str,
+        content_id: str,
+        drm_variant: str = "auto",
+        **kwargs,
+    ):
         """
         Dispatch DRM config retrieval to the correct manager method based on
         content type.  Returns a list of DRMConfig objects (may be empty).
         Raises ValueError for unknown provider; re-raises other exceptions.
+
+        Args:
+            drm_variant: 'auto' (provider default) or 'software' (prefer ClearKey).
+                         Passed through to the provider via **kwargs so individual
+                         providers can select an appropriate DRM scheme.
         """
+        kwargs.setdefault("drm_variant", drm_variant)
         if content_type == CONTENT_TYPE_CHANNEL:
             return manager.get_channel_drm_configs(
                 provider_name=provider, channel_id=content_id, **kwargs
@@ -74,11 +86,23 @@ def setup_stream_routes(app, manager, service):
         else:
             raise ValueError(f"Unknown content_type '{content_type}'")
 
-    def _get_manifest_url(content_type: str, provider: str, content_id: str, **kwargs) -> str:
+    def _get_manifest_url(
+        content_type: str,
+        provider: str,
+        content_id: str,
+        drm_variant: str = "auto",
+        **kwargs,
+    ) -> str:
         """
         Dispatch manifest URL retrieval to the correct manager method.
         Returns the raw upstream manifest URL (before any proxy rewriting).
+
+        Args:
+            drm_variant: 'auto' or 'software'.  Passed through so providers that
+                         expose separate ClearKey manifest URLs can return the
+                         correct one.
         """
+        kwargs.setdefault("drm_variant", drm_variant)
         if content_type == CONTENT_TYPE_CHANNEL:
             return manager.get_channel_manifest(
                 provider_name=provider, channel_id=content_id, **kwargs
@@ -108,11 +132,17 @@ def setup_stream_routes(app, manager, service):
         start_time: int = None,
         end_time: int = None,
         epg_id: str = None,
+        drm_variant: str = "auto",
     ):
         """
         Fetch DRM configs, serialise to JSON and attach as a base64-encoded
         response header (x-kodi-drm-configs).  Non-fatal: logs a warning and
         returns None on any error.
+
+        Args:
+            drm_variant: 'auto' or 'software'.  Forwarded to the DRM config
+                         fetch so the provider can return ClearKey configs when
+                         the software-DRM variant is requested.
         """
         try:
             if is_catchup and content_type == CONTENT_TYPE_CHANNEL:
@@ -123,10 +153,12 @@ def setup_stream_routes(app, manager, service):
                     end_time=end_time,
                     epg_id=epg_id,
                     country=country,
+                    drm_variant=drm_variant,
                 )
             else:
                 drm_configs = _get_drm_configs(
-                    content_type, provider, content_id, country=country
+                    content_type, provider, content_id,
+                    country=country, drm_variant=drm_variant,
                 )
 
             merged = {}
@@ -144,7 +176,7 @@ def setup_stream_routes(app, manager, service):
         except Exception as e:
             logger.warning(
                 f"Could not build x-kodi-drm-configs header for "
-                f"{content_type} {provider}/{content_id}: {e}"
+                f"{content_type} {provider}/{content_id} (variant={drm_variant}): {e}"
             )
             return None
 
@@ -258,10 +290,16 @@ def setup_stream_routes(app, manager, service):
             start_time_int: int = None,
             end_time_int: int = None,
             epg_id: str = None,
+            drm_variant: str = "auto",
     ):
         """
         Core stream resolution: attach DRM header, then either redirect to the
         upstream manifest or return a proxy-rewritten manifest body.
+
+        Args:
+            drm_variant: 'auto' (provider decides) or 'software' (prefer ClearKey /
+                         software-decodable DRM).  Threaded through to all helpers so
+                         providers can return the correct manifest URL and DRM configs.
         """
         # --- DRM header (best-effort, never fatal) ---
         _build_drm_header(
@@ -271,6 +309,7 @@ def setup_stream_routes(app, manager, service):
             start_time=start_time_int,
             end_time=end_time_int,
             epg_id=epg_id,
+            drm_variant=drm_variant,
         )
         # --- Stream headers (best-effort, never fatal) ---
         _build_stream_headers(
@@ -296,6 +335,7 @@ def setup_stream_routes(app, manager, service):
                     end_time=end_time_int,
                     epg_id=epg_id,
                     country=country,
+                    drm_variant=drm_variant,
                 )
                 if not manifest_url:
                     response.status = 404
@@ -312,7 +352,8 @@ def setup_stream_routes(app, manager, service):
             # with stripped ContentProtection that the player cannot handle.
             try:
                 drm_configs = _get_drm_configs(
-                    content_type, provider, content_id, country=country
+                    content_type, provider, content_id,
+                    country=country, drm_variant=drm_variant,
                 )
                 drm_dict = {}
                 for config in drm_configs:
@@ -332,10 +373,21 @@ def setup_stream_routes(app, manager, service):
                 .get("keyids", {})
             )
 
+            # When the caller explicitly requested software DRM and we found no
+            # ClearKey keys, surface a clear error rather than silently serving a
+            # Widevine stream the client cannot decrypt.
+            if drm_variant == "software" and not keyids:
+                logger.warning(
+                    f"Software DRM requested but no ClearKey keys found for "
+                    f"{provider}/{content_id}"
+                )
+                response.status = 400
+                return {"error": "Software DRM not available for this content"}
+
             if keyids:
                 logger.debug(
                     f"ClearKey DRM detected for {provider}/{content_id} "
-                    f"— using receiver-side ClearKey rewrite"
+                    f"(variant={drm_variant}) — using receiver-side ClearKey rewrite"
                 )
                 return service.get_decrypted_manifest(
                     provider, content_id, keyids,
@@ -360,7 +412,8 @@ def setup_stream_routes(app, manager, service):
                 )
                 try:
                     manifest_url = _get_manifest_url(
-                        content_type, provider, content_id, country=country
+                        content_type, provider, content_id,
+                        country=country, drm_variant=drm_variant,
                     )
                     if not manifest_url:
                         response.status = 404
@@ -392,7 +445,8 @@ def setup_stream_routes(app, manager, service):
                     return {"error": f"Failed to fetch manifest: {str(e)}"}
             else:
                 manifest_url = _get_manifest_url(
-                    content_type, provider, content_id, country=country
+                    content_type, provider, content_id,
+                    country=country, drm_variant=drm_variant,
                 )
                 if not manifest_url:
                     response.status = 404
@@ -520,15 +574,23 @@ def setup_stream_routes(app, manager, service):
         """
         Returns JSON with a manifest_url pointing to the stream endpoint.
         Attaches x-kodi-drm-configs header.
+
+        Response includes both stream_url (auto DRM) and sw_drm_stream_url
+        (software / ClearKey DRM) so callers can pick the appropriate variant
+        without a second round-trip.
         """
         try:
             country = request.query.get("country")
             base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
+            qs = f"?country={country}" if country else ""
             stream_url = (
-                f"{base_url}/api/providers/{provider}/channels/{channel_id}/stream/index.mpd"
+                f"{base_url}/api/providers/{provider}/channels/{channel_id}"
+                f"/stream/index.mpd{qs}"
             )
-            if country:
-                stream_url += f"?country={country}"
+            sw_drm_stream_url = (
+                f"{base_url}/api/providers/{provider}/channels/{channel_id}"
+                f"/stream/sw-drm/index.mpd{qs}"
+            )
 
             _build_drm_header(CONTENT_TYPE_CHANNEL, provider, channel_id, country=country)
             _build_stream_headers(CONTENT_TYPE_CHANNEL, provider, channel_id, country=country)
@@ -537,6 +599,7 @@ def setup_stream_routes(app, manager, service):
                 "provider": provider,
                 "channel_id": channel_id,
                 "manifest_url": stream_url,
+                "sw_drm_manifest_url": sw_drm_stream_url,
             }
 
         except ValueError as e:
@@ -678,6 +741,75 @@ def setup_stream_routes(app, manager, service):
             response.status = 500
             return {"error": f"Internal server error: {str(e)}"}
 
+    @app.route("/api/providers/<provider>/channels/<channel_id>/stream/sw-drm/index.mpd")
+    def get_channel_stream_sw_drm(provider, channel_id):
+        """
+        Software-DRM (ClearKey) channel stream endpoint.
+
+        Identical to the standard stream endpoint except that drm_variant='software'
+        is passed through to the resolution helpers.  Providers that expose a separate
+        ClearKey manifest URL will return it here; for proxy-routed streams, the
+        server will 400 if no ClearKey keys are available (rather than silently
+        serving a Widevine stream the client cannot decrypt).
+
+        Supports catchup via the same start_time / end_time / epg_id query params
+        as the standard endpoint.
+        """
+        try:
+            start_time = request.query.get("start_time")
+            end_time = request.query.get("end_time")
+            epg_id = request.query.get("epg_id")
+            country = request.query.get("country")
+            is_catchup = bool(start_time and end_time)
+
+            if is_catchup:
+                try:
+                    start_time_int = int(start_time)
+                    end_time_int = int(end_time)
+                except (ValueError, TypeError):
+                    response.status = 400
+                    return {"error": "Invalid start_time or end_time format"}
+
+                provider_instance = manager.get_provider(provider)
+                catchup_hours = getattr(provider_instance, "catchup_window", 0)
+                if catchup_hours == 0:
+                    response.status = 400
+                    return {"error": f'Catchup not supported for provider "{provider}"'}
+
+                import time
+                if (int(time.time()) - start_time_int) > catchup_hours * 3600:
+                    response.status = 400
+                    return {
+                        "error": f"Content outside catchup window (max {catchup_hours} hours)"
+                    }
+
+                return _resolve_stream(
+                    CONTENT_TYPE_CHANNEL, provider, channel_id,
+                    country=country,
+                    is_catchup=True,
+                    start_time_int=start_time_int,
+                    end_time_int=end_time_int,
+                    epg_id=epg_id,
+                    drm_variant="software",
+                )
+            else:
+                return _resolve_stream(
+                    CONTENT_TYPE_CHANNEL, provider, channel_id,
+                    country=country,
+                    drm_variant="software",
+                )
+
+        except HTTPResponse:
+            raise
+        except ValueError as e:
+            logger.error(f"sw-drm stream error for channel {provider}/{channel_id}: {e}")
+            response.status = 404
+            return {"error": str(e)}
+        except Exception as e:
+            logger.error(f"sw-drm stream error for channel {provider}/{channel_id}: {e}")
+            response.status = 500
+            return {"error": f"Internal server error: {str(e)}"}
+
     @app.route("/api/providers/<provider>/channels/<channel_id>/stream/decrypted/index.mpd")
     def get_channel_stream_decrypted(provider, channel_id):
         """Decrypted stream — all quality representations."""
@@ -759,15 +891,22 @@ def setup_stream_routes(app, manager, service):
         """
         Returns JSON with a manifest_url pointing to the event stream endpoint.
         Attaches x-kodi-drm-configs header.
+
+        Response includes both stream_url (auto DRM) and sw_drm_stream_url
+        (software / ClearKey DRM).
         """
         try:
             country = request.query.get("country")
             base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
+            qs = f"?country={country}" if country else ""
             stream_url = (
-                f"{base_url}/api/providers/{provider}/events/{event_id}/stream/index.mpd"
+                f"{base_url}/api/providers/{provider}/events/{event_id}"
+                f"/stream/index.mpd{qs}"
             )
-            if country:
-                stream_url += f"?country={country}"
+            sw_drm_stream_url = (
+                f"{base_url}/api/providers/{provider}/events/{event_id}"
+                f"/stream/sw-drm/index.mpd{qs}"
+            )
 
             _build_drm_header(CONTENT_TYPE_EVENT, provider, event_id, country=country)
             _build_stream_headers(CONTENT_TYPE_EVENT, provider, event_id, country=country)
@@ -776,6 +915,7 @@ def setup_stream_routes(app, manager, service):
                 "provider": provider,
                 "event_id": event_id,
                 "manifest_url": stream_url,
+                "sw_drm_manifest_url": sw_drm_stream_url,
             }
 
         except ValueError as e:
@@ -806,6 +946,31 @@ def setup_stream_routes(app, manager, service):
             return {"error": str(e)}
         except Exception as e:
             logger.error(f"stream error for event {provider}/{event_id}: {e}")
+            response.status = 500
+            return {"error": f"Internal server error: {str(e)}"}
+
+    @app.route("/api/providers/<provider>/events/<event_id>/stream/sw-drm/index.mpd")
+    def get_event_stream_sw_drm(provider, event_id):
+        """
+        Software-DRM (ClearKey) event stream endpoint.
+
+        Identical to the standard event stream endpoint except that
+        drm_variant='software' is passed through to the resolution helpers.
+        """
+        try:
+            country = request.query.get("country")
+            return _resolve_stream(
+                CONTENT_TYPE_EVENT, provider, event_id,
+                country=country, drm_variant="software",
+            )
+        except HTTPResponse:
+            raise
+        except ValueError as e:
+            logger.error(f"sw-drm stream error for event {provider}/{event_id}: {e}")
+            response.status = 404
+            return {"error": str(e)}
+        except Exception as e:
+            logger.error(f"sw-drm stream error for event {provider}/{event_id}: {e}")
             response.status = 500
             return {"error": f"Internal server error: {str(e)}"}
 
