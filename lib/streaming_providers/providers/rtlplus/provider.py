@@ -381,38 +381,72 @@ class RTLPlusProvider(StreamingProvider):
             assets: List[Dict],
             preferred_quality: str = None,
             preferred_format: str = None,
+            drm_variant: str = "auto",
     ) -> Optional[str]:
         """
-        Extract the best manifest URL from assets based on preferences.
+        Extract the best manifest URL from assets based on preferences and DRM variant.
+
+        Args:
+            assets: List of video assets from layout
+            preferred_quality: 'hd' or 'sd' (default from config)
+            preferred_format: 'dashcenc' or 'hlsfp' (default from config)
+            drm_variant: 'auto' (prefer hardware, fallback software),
+                         'software' (force software only),
+                         'hardware' (force hardware only)
+
+        Returns:
+            Manifest URL or None if no suitable asset found
         """
         quality = preferred_quality or next(iter(self.rtl_config.preferred_qualities), "hd")
         format_pref = preferred_format or next(iter(self.rtl_config.preferred_formats), "dashcenc")
 
-        # Try preferred format + quality first, then broaden search
-        for fmt in (format_pref,):
-            for qual in (quality,):
-                for asset in assets:
-                    if asset.get("quality") == qual and asset.get("format") == fmt:
-                        manifest_url = asset.get("path") or asset.get("reference")
-                        if manifest_url:
-                            return manifest_url
+        def asset_score(asset: Dict) -> int:
+            drm_type = asset.get("drm", {}).get("type", "")
 
-        # Try by all preferred formats/qualities
-        for fmt in self.rtl_config.preferred_formats:
-            for qual in self.rtl_config.preferred_qualities:
-                for asset in assets:
-                    if asset.get("format") == fmt and asset.get("quality") == qual:
-                        manifest_url = asset.get("path") or asset.get("reference")
-                        if manifest_url:
-                            return manifest_url
+            if drm_variant == "software":
+                if drm_type != "software":
+                    return -1
+                score = 1000
+            elif drm_variant == "hardware":
+                if drm_type != "hardware":
+                    return -1
+                score = 1000
+            else:  # "auto"
+                if drm_type == "hardware":
+                    score = 1000
+                elif drm_type == "software":
+                    score = 500
+                else:
+                    score = 0
 
-        # Last resort: any asset with a path
-        for asset in assets:
-            manifest_url = asset.get("path") or asset.get("reference")
-            if manifest_url:
-                return manifest_url
+            if asset.get("quality") == quality:
+                score += 100
+            if asset.get("format") == format_pref:
+                score += 10
 
-        return None
+            return score
+
+        scored_assets = [(asset_score(a), a) for a in assets if asset_score(a) >= 0]
+
+        if not scored_assets:
+            logger.warning(f"No assets found matching drm_variant='{drm_variant}'")
+            return None
+
+        scored_assets.sort(key=lambda x: x[0], reverse=True)
+        best_asset = scored_assets[0][1]
+
+        manifest_url = best_asset.get("path") or best_asset.get("reference")
+        if manifest_url:
+            drm_type = best_asset.get("drm", {}).get("type", "unknown")
+            logger.debug(
+                f"Selected manifest: quality={best_asset.get('quality')}, "
+                f"format={best_asset.get('format')}, drm={drm_type}, "
+                f"drm_variant={drm_variant}"
+            )
+        else:
+            logger.warning(f"Best asset has no manifest URL: {best_asset}")
+
+        return manifest_url
 
     def invalidate_layout_cache(self, cache_key: str = None):
         """Invalidate layout cache for a specific key or all keys."""
@@ -528,7 +562,19 @@ class RTLPlusProvider(StreamingProvider):
         - "clip_1417600"
         - "program_68137" (we need to extract the clip_id from the program)
         - "program_68137/clip_1417600"
+
+        kwargs:
+        - drm_variant: 'auto' (default), 'software', or 'hardware'
+        - program_context: Program context from VOD navigation
         """
+        # Extract and validate drm_variant
+        drm_variant = kwargs.get("drm_variant", RTLPlusDefaults.DEFAULT_DRM_VARIANT)
+        if drm_variant not in RTLPlusDefaults.VALID_DRM_VARIANTS:
+            logger.warning(f"Invalid drm_variant '{drm_variant}', falling back to 'auto'")
+            drm_variant = RTLPlusDefaults.DRM_VARIANT_AUTO
+
+        logger.debug(f"get_manifest called for content_id={content_id}, drm_variant={drm_variant}")
+
         # Check if we have a stored context from the VOD item
         if "program_context" in kwargs:
             if kwargs["program_context"].get("clip_id"):
@@ -557,16 +603,17 @@ class RTLPlusProvider(StreamingProvider):
 
         # Try linear TV channel first
         if self._is_linear_tv_channel(content_id):
+            # Linear TV does not yet support drm_variant selection
             return self.channel_manager.get_best_manifest_url(content_id)
 
         # Try as event (folder)
         if content_id.isdigit() and int(content_id) > 0:
-            manifest = self.event_manager.get_manifest_for_event(content_id)
+            manifest = self.event_manager.get_manifest_for_event(content_id, drm_variant=drm_variant)
             if manifest:
                 return manifest
 
         # Fall back to VOD/event manifest extraction
-        return self._get_manifest_vod_or_event(content_id, **kwargs)
+        return self._get_manifest_vod_or_event(content_id, drm_variant=drm_variant, **kwargs)
 
     def _find_clip_id_in_program_layout(self, layout: Dict) -> Optional[str]:
         """Extract the clip_id from a program layout."""
@@ -606,7 +653,16 @@ class RTLPlusProvider(StreamingProvider):
     def get_drm(self, content_id: str, **kwargs) -> List[DRMConfig]:
         """
         Get DRM configuration for content.
+
+        kwargs:
+        - drm_variant: 'auto' (default), 'software', or 'hardware'
         """
+        # Extract and validate drm_variant (mirrors get_manifest)
+        drm_variant = kwargs.get("drm_variant", RTLPlusDefaults.DEFAULT_DRM_VARIANT)
+        if drm_variant not in RTLPlusDefaults.VALID_DRM_VARIANTS:
+            logger.warning(f"Invalid drm_variant '{drm_variant}', falling back to 'auto'")
+            drm_variant = RTLPlusDefaults.DRM_VARIANT_AUTO
+
         # Handle combined paths and program IDs similar to get_manifest
         if "/" in content_id:
             parts = content_id.split("/")
@@ -628,18 +684,18 @@ class RTLPlusProvider(StreamingProvider):
                 logger.error(f"Failed to fetch program layout for {program_id}")
                 return []
 
-        # Try linear TV channel first
+        # Try linear TV channel first (drm_variant not yet supported for linear)
         if self._is_linear_tv_channel(content_id):
             return self.channel_manager.get_drm_config_for_channel(content_id)
 
         # Try as event (folder)
         if content_id.isdigit() and int(content_id) > 0:
-            drm_configs = self.event_manager.get_drm_for_event(content_id)
+            drm_configs = self.event_manager.get_drm_for_event(content_id, drm_variant=drm_variant)
             if drm_configs:
                 return drm_configs
 
         # Fall back to VOD DRM extraction
-        drm_configs = self._get_drm_vod_or_event(content_id, **kwargs)
+        drm_configs = self._get_drm_vod_or_event(content_id, drm_variant=drm_variant, **kwargs)
         if drm_configs:
             return drm_configs
 
@@ -663,9 +719,14 @@ class RTLPlusProvider(StreamingProvider):
                 and not content_id.startswith("http")
         )
 
-    def _get_manifest_vod_or_event(self, content_id: str, **kwargs) -> Optional[str]:
+    def _get_manifest_vod_or_event(self, content_id: str, drm_variant: str = "auto", **kwargs) -> Optional[str]:
         """
         Get manifest URL for VOD/event content using Bedrock layout extraction.
+
+        Args:
+            content_id: Content identifier (e.g., 'clip_1922663')
+            drm_variant: 'auto', 'software', or 'hardware'
+            **kwargs: Additional arguments (program_slug, program_id, etc.)
         """
         if not content_id.startswith("clip_") and content_id.isdigit():
             logger.warning(f"Non-clip content_id for manifest: {content_id}")
@@ -697,16 +758,23 @@ class RTLPlusProvider(StreamingProvider):
             logger.warning(f"No video assets found for {content_id}")
             return None
 
-        manifest_url = self.extract_best_manifest_url(assets)
+        manifest_url = self.extract_best_manifest_url(assets, drm_variant=drm_variant)
 
         if not manifest_url:
-            logger.warning(f"No suitable manifest URL found for {content_id}")
+            logger.warning(
+                f"No suitable manifest URL found for {content_id} "
+                f"with drm_variant={drm_variant}"
+            )
 
         return manifest_url
 
-    def _get_drm_vod_or_event(self, content_id: str, **kwargs) -> List[DRMConfig]:
+    def _get_drm_vod_or_event(self, content_id: str, drm_variant: str = "auto", **kwargs) -> List[DRMConfig]:
         """
         Get DRM configuration for VOD/event content using layout extraction.
+
+        Args:
+            content_id: Content identifier
+            drm_variant: 'auto', 'software', or 'hardware'
         """
         layout = self.fetch_layout(
             layout_type="video",
@@ -718,11 +786,18 @@ class RTLPlusProvider(StreamingProvider):
             logger.error(f"Failed to fetch layout for VOD/event content_id: {content_id}")
             return []
 
-        return self.get_drm_for_content(layout)
+        return self.get_drm_for_content(layout, drm_variant=drm_variant)
 
-    def get_drm_for_content(self, layout_data: Dict) -> List[DRMConfig]:
+    def get_drm_for_content(self, layout_data: Dict, drm_variant: str = "auto") -> List[DRMConfig]:
         """
-        Extract DRM configuration from layout data.
+        Extract DRM configuration from layout data with DRM variant awareness.
+
+        Args:
+            layout_data: Layout response from Bedrock API
+            drm_variant: 'auto' (prefer hardware), 'software', or 'hardware'
+
+        Returns:
+            List of DRMConfig objects
         """
         if self.authenticator.has_user_credentials():
             if not self.authenticator.ensure_profile_selected():
@@ -733,33 +808,43 @@ class RTLPlusProvider(StreamingProvider):
         if not assets:
             return []
 
-        # Priority: delta provider dashcenc format (best quality)
+        def asset_priority(asset: Dict) -> int:
+            drm_type = asset.get("drm", {}).get("type", "")
+
+            if drm_variant == "software":
+                if drm_type != "software":
+                    return -1
+                priority = 1000
+            elif drm_variant == "hardware":
+                if drm_type != "hardware":
+                    return -1
+                priority = 1000
+            else:  # "auto"
+                if drm_type == "hardware":
+                    priority = 1000
+                elif drm_type == "software":
+                    priority = 500
+                else:
+                    priority = 0
+
+            # Prefer dashcenc format and HD quality within the DRM tier
+            if asset.get("format") == "dashcenc":
+                priority += 10
+            if asset.get("quality") == "hd":
+                priority += 5
+
+            return priority
+
         target_asset = None
-
-        # First try: delta + dashcenc + hd quality
+        best_priority = -1
         for asset in assets:
-            if (asset.get("provider") == "delta" and
-                    asset.get("format") == "dashcenc" and
-                    asset.get("quality") == "hd"):
+            p = asset_priority(asset)
+            if p > best_priority:
+                best_priority = p
                 target_asset = asset
-                break
-
-        # Fallback: delta + dashcenc + any quality
-        if not target_asset:
-            for asset in assets:
-                if asset.get("provider") == "delta" and asset.get("format") == "dashcenc":
-                    target_asset = asset
-                    break
-
-        # Last resort: any dashcenc asset
-        if not target_asset:
-            for asset in assets:
-                if asset.get("format") == "dashcenc":
-                    target_asset = asset
-                    break
 
         if not target_asset:
-            logger.warning("No suitable DRM asset found")
+            logger.warning(f"No suitable DRM asset found for drm_variant='{drm_variant}'")
             return []
 
         drm_info = target_asset.get("drm", {})
@@ -791,6 +876,13 @@ class RTLPlusProvider(StreamingProvider):
                 referer=self.rtl_config.base_website,
                 user_agent=self.rtl_config.user_agent,
                 playready_user_agent=RTLPlusDefaults.PLAYREADY_USER_AGENT,
+            )
+
+            logger.debug(
+                f"DRM config created for content_id={content_id}, "
+                f"asset_format={target_asset.get('format')}, "
+                f"drm_type={target_asset.get('drm', {}).get('type')}, "
+                f"drm_variant={drm_variant}"
             )
 
             return drm_configs

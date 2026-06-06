@@ -93,7 +93,19 @@ class RTLPlusDefaults:
     # Linear TV Quality Presets
     LINEAR_TV_PREFERRED_QUALITIES = ["hd", "sd"]
     LINEAR_TV_PREFERRED_FORMATS = ["dashcenc", "hlsfp"]
+    # Deprecated: DRM type ordering is now handled by the scoring system in
+    # extract_best_manifest_url / get_drm_for_content. This list is retained
+    # only for backward-compatibility with existing config dicts.
     LINEAR_TV_PREFERRED_DRM_TYPES = ["hardware", "software"]
+
+    # DRM variant selection
+    DRM_VARIANT_AUTO = "auto"          # Prefer hardware DRM, fall back to software
+    DRM_VARIANT_SOFTWARE = "software"  # Force software DRM only
+    DRM_VARIANT_HARDWARE = "hardware"  # Force hardware DRM only
+    DEFAULT_DRM_VARIANT = DRM_VARIANT_AUTO
+
+    # All valid DRM variant values (used for input validation)
+    VALID_DRM_VARIANTS = frozenset([DRM_VARIANT_AUTO, DRM_VARIANT_SOFTWARE, DRM_VARIANT_HARDWARE])
 
     # Layout path patterns
     LAYOUT_PATH_LIVE = "/live/{id}/layout"

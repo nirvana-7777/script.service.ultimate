@@ -120,7 +120,7 @@ class RTLPlusEventManager:
         logger.info(f"Returning {len(filtered_events)} events after filtering")
         return filtered_events
 
-    def get_manifest_for_event(self, event_id: str) -> Optional[str]:
+    def get_manifest_for_event(self, event_id: str, drm_variant: str = "auto") -> Optional[str]:
         """
         Get manifest URL for an event using the two-step flow:
 
@@ -132,6 +132,10 @@ class RTLPlusEventManager:
 
         Falls back to direct asset extraction from the folder itself when no
         live redirect is present (handles VOD-style event folders).
+
+        Args:
+            event_id: Folder ID for the event
+            drm_variant: 'auto', 'software', or 'hardware'
         """
         # --- Step 1: folder layout -------------------------------------------
         folder_layout = self._provider.fetch_layout(
@@ -149,7 +153,7 @@ class RTLPlusEventManager:
                 f"Event {event_id} -> live redirect: id={live_id}, seo={live_seo}"
             )
             # --- Step 2: live layout -----------------------------------------
-            manifest = self._manifest_from_live_layout(live_id, live_seo)
+            manifest = self._manifest_from_live_layout(live_id, live_seo, drm_variant=drm_variant)
             if manifest:
                 return manifest
             logger.warning(
@@ -159,7 +163,7 @@ class RTLPlusEventManager:
         # Fallback: the folder itself may carry video assets (rare but possible)
         assets = self._provider.extract_video_assets(folder_layout)
         if assets:
-            manifest = self._provider.extract_best_manifest_url(assets)
+            manifest = self._provider.extract_best_manifest_url(assets, drm_variant=drm_variant)
             if manifest:
                 logger.debug(f"Event {event_id}: manifest resolved from folder assets")
                 return manifest
@@ -167,7 +171,7 @@ class RTLPlusEventManager:
         logger.error(f"get_manifest_for_event: no manifest found for event {event_id}")
         return None
 
-    def get_drm_for_event(self, event_id: str) -> List[DRMConfig]:
+    def get_drm_for_event(self, event_id: str, drm_variant: str = "auto") -> List[DRMConfig]:
         """
         Get DRM configuration for an event using the two-step flow:
 
@@ -179,6 +183,10 @@ class RTLPlusEventManager:
 
         Falls back to direct DRM extraction from the folder layout when no live
         redirect is found (handles VOD-style event folders).
+
+        Args:
+            event_id: Folder ID for the event
+            drm_variant: 'auto', 'software', or 'hardware'
         """
         # --- Step 1: folder layout -------------------------------------------
         folder_layout = self._provider.fetch_layout(
@@ -196,7 +204,7 @@ class RTLPlusEventManager:
                 f"Event {event_id} -> live redirect: id={live_id}, seo={live_seo}"
             )
             # --- Step 2: live layout -----------------------------------------
-            drm_configs = self._drm_from_live_layout(live_id, live_seo)
+            drm_configs = self._drm_from_live_layout(live_id, live_seo, drm_variant=drm_variant)
             if drm_configs:
                 return drm_configs
             logger.warning(
@@ -204,7 +212,7 @@ class RTLPlusEventManager:
             )
 
         # Fallback: try extracting DRM directly from the folder layout
-        drm_configs = self._provider.get_drm_for_content(folder_layout)
+        drm_configs = self._provider.get_drm_for_content(folder_layout, drm_variant=drm_variant)
         if drm_configs:
             logger.debug(f"Event {event_id}: DRM resolved from folder assets")
             return drm_configs
@@ -254,6 +262,7 @@ class RTLPlusEventManager:
             self,
             channel_id: str,
             channel_seo: Optional[str] = None,
+            drm_variant: str = "auto",
     ) -> Optional[str]:
         path_id = (
                 channel_seo
@@ -270,25 +279,6 @@ class RTLPlusEventManager:
             logger.warning(f"_manifest_from_live_layout: no live layout returned for '{path_id}'")
             return None
 
-        # --- TEMPORARY DEBUG ---
-        import json
-        blocks = live_layout.get("blocks", [])
-        logger.debug(f"[event33 debug] block count: {len(blocks)}")
-        for i, block in enumerate(blocks):
-            items = block.get("content", {}).get("items", [])
-            logger.debug(f"[event33 debug] block[{i}] type={block.get('type')} items={len(items)}")
-            for j, item in enumerate(items):
-                ic = item.get("itemContent", {})
-                video = ic.get("video", {})
-                assets = video.get("assets", [])
-                logger.debug(
-                    f"[event33 debug]   item[{j}] itemType={item.get('itemType')} "
-                    f"video_id={video.get('id')} asset_count={len(assets)}"
-                )
-                if assets:
-                    logger.debug(f"[event33 debug]   first asset: {json.dumps(assets[0], indent=2)}")
-        # --- END TEMPORARY DEBUG ---
-
         assets = self._provider.extract_video_assets(live_layout)
         if not assets:
             logger.warning(
@@ -296,12 +286,13 @@ class RTLPlusEventManager:
             )
             return None
 
-        return self._provider.extract_best_manifest_url(assets)
+        return self._provider.extract_best_manifest_url(assets, drm_variant=drm_variant)
 
     def _drm_from_live_layout(
             self,
             channel_id: str,
             channel_seo: Optional[str] = None,
+            drm_variant: str = "auto",
     ) -> List[DRMConfig]:
         """
         Step 2 for DRM: fetch the live layout and extract DRM configuration.
@@ -323,7 +314,7 @@ class RTLPlusEventManager:
             logger.warning(f"_drm_from_live_layout: no live layout returned for '{path_id}'")
             return []
 
-        return self._provider.get_drm_for_content(live_layout)
+        return self._provider.get_drm_for_content(live_layout, drm_variant=drm_variant)
 
     # --------------------------------------------------------------------------
     # Homepage Event Fetching (Primary Source)

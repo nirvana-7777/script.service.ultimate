@@ -202,6 +202,7 @@ class RTLPlusChannelManager:
             preferred_quality: str = None,
             preferred_format: str = None,
             preferred_drm_type: str = None,
+            drm_variant: str = "auto",
     ) -> Optional[str]:
         """
         Get the best manifest URL for a channel based on preferences.
@@ -232,7 +233,10 @@ class RTLPlusChannelManager:
         assets = self._provider.extract_video_assets(layout)
 
         # Extract best manifest URL using common method
-        return self._provider.extract_best_manifest_url(assets, preferred_quality, preferred_format)
+        return self._provider.extract_best_manifest_url(
+            assets, preferred_quality, preferred_format,
+            drm_variant=drm_variant,
+        )
 
     def get_drm_config_for_channel(self, channel_id: str) -> List[DRMConfig]:
         """
