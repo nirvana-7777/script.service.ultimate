@@ -395,7 +395,8 @@ class UltimateService:
 
     def get_decrypted_manifest(
             self, provider: str, channel_id: str, keyids: dict,
-            highest_quality_only: bool = False, receiver_side: bool = False
+            highest_quality_only: bool = False, receiver_side: bool = False,
+            drm_variant: str = "auto",
     ) -> str:
         """
         Get rewritten MPD manifest for decrypted playback via media proxy.
@@ -407,6 +408,9 @@ class UltimateService:
             keyids: Dictionary of kid:key pairs
             highest_quality_only: If True, keep only highest quality video representation
             receiver_side: If True, inject ClearKey signaling for receiver-side decryption
+            drm_variant: 'auto' (provider default) or 'software' (prefer ClearKey manifest).
+                         Must match the variant used in the original _resolve_stream call so
+                         the second manifest fetch selects the same stream as the first.
 
         Returns:
             Rewritten MPD content as string
@@ -416,11 +420,13 @@ class UltimateService:
         # Note: We don't cache decrypted manifests as they contain keys
         logger.info(
             f"Generating {'receiver-side clearkey' if receiver_side else 'decrypted'} manifest "
-            f"for {provider}/{channel_id} (highest_quality_only={highest_quality_only})"
+            f"for {provider}/{channel_id} (highest_quality_only={highest_quality_only}, "
+            f"drm_variant={drm_variant})"
         )
 
         manifest_url = self.manager.get_channel_manifest(
-            provider_name=provider, channel_id=channel_id, country=country
+            provider_name=provider, channel_id=channel_id, country=country,
+            drm_variant=drm_variant,
         )
         if not manifest_url:
             response.status = 404

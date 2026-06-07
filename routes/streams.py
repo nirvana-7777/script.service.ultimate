@@ -392,6 +392,7 @@ def setup_stream_routes(app, manager, service):
                 return service.get_decrypted_manifest(
                     provider, content_id, keyids,
                     receiver_side=True,
+                    drm_variant=drm_variant,
                 )
             else:
                 return service.get_proxied_manifest(provider, content_id)
