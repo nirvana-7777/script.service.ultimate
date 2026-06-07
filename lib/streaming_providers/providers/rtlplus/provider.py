@@ -603,8 +603,10 @@ class RTLPlusProvider(StreamingProvider):
 
         # Try linear TV channel first
         if self._is_linear_tv_channel(content_id):
-            # Linear TV does not yet support drm_variant selection
-            return self.channel_manager.get_best_manifest_url(content_id)
+            return self.channel_manager.get_best_manifest_url(
+                content_id,
+                drm_variant=drm_variant
+            )
 
         # Try as event (folder)
         if content_id.isdigit() and int(content_id) > 0:
