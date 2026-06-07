@@ -287,15 +287,52 @@ class DRMOperations:
 
         return configs
 
+    @staticmethod
+    def _build_cache_key(provider_name: str, channel_id: str, **kwargs) -> str:
+        """
+        Build a cache key that captures all kwargs which affect manifest URL selection
+        and therefore which DRM configs will be returned.
+
+        Including drm_variant, preferred_quality, and preferred_format prevents
+        cache collisions between requests that resolve to different manifests
+        (e.g. software vs. hardware DRM, HD vs. SD quality).
+
+        Only the subset of kwargs that are known to influence manifest selection
+        are included; proxy_config and other runtime-only params are excluded so
+        they don't inflate the key space unnecessarily.
+
+        Args:
+            provider_name: Provider identifier.
+            channel_id: Channel/content identifier.
+            **kwargs: All kwargs forwarded from get_content_drm_configs.
+
+        Returns:
+            A colon-separated string key suitable for use in both DRM config
+            and PSSH caches.
+        """
+        # Kwargs that change which manifest (and therefore which keys) are returned.
+        # Keep this list minimal and intentional — only add a key here when you can
+        # demonstrate that two values produce different manifests for the same channel.
+        VARIANT_KEYS = ("drm_variant", "preferred_quality", "preferred_format")
+        parts = [provider_name, channel_id]
+        for key in VARIANT_KEYS:
+            value = kwargs.get(key)
+            if value is not None:
+                # Normalize to lowercase so "Auto" and "auto" hit the same entry.
+                parts.append(f"{key}={str(value).lower()}")
+        return ":".join(parts)
+
     def get_content_drm_configs(self, provider_name: str, channel_id: str, **kwargs) -> List:
         """
         Get DRM configurations for a channel with two-phase plugin processing.
 
-        Phase 0: Fetch manifest once, short-circuit if stream is unencrypted.
-                 manifest_url, manifest_headers, and manifest_content are resolved
-                 here and threaded through to all subsequent phases — no phase ever
-                 calls get_manifest_with_headers() again unless Step 0a failed.
-        Phase 1: GENERIC plugins (pre-provider) — can generate configs from PSSH.
+        Phase 0: Resolve provider; inject proxy_config into kwargs.
+        Phase 1: DRM config cache check — return immediately on hit (no manifest fetch).
+        Phase 0a: Cache miss only — fetch manifest once, short-circuit if unencrypted.
+                  manifest_url, manifest_headers, and manifest_content are resolved
+                  here and threaded through to all subsequent phases — no phase ever
+                  calls get_manifest_with_headers() again unless this step failed.
+        Phase 1 (cont): GENERIC plugins (pre-provider) — can generate configs from PSSH.
                  If Phase 1 produces configs:
                    - Full ClearKey coverage  → cache ClearKey-only, return immediately.
                    - Partial ClearKey        → fall through to Phase 2 for a better result.
@@ -304,10 +341,16 @@ class DRMOperations:
                  Apply coverage check, cache, and return.
 
         Caching:
+          The cache key includes provider_name, channel_id, and any kwargs that
+          affect manifest URL selection (drm_variant, preferred_quality,
+          preferred_format).  This prevents a cached result for one variant
+          (e.g. hardware DRM) from being served to a request for a different
+          variant (e.g. software DRM).
+
           All resulting configs are cached uniformly with a simple TTL.
           On cache hit the result is returned directly with no re-validation.
         """
-        cache_key = f"{provider_name}:{channel_id}"
+        cache_key = self._build_cache_key(provider_name, channel_id, **kwargs)
         manifest_content = None  # stored to avoid redundant fetches
         manifest_url = None      # resolved once in Step 0a and reused throughout
         manifest_headers = None  # resolved once in Step 0a and reused throughout
@@ -332,9 +375,20 @@ class DRMOperations:
                     )
 
         # ------------------------------------------------------------------
-        # Step 0a: Fetch manifest once and short-circuit for unencrypted streams.
-        # manifest_url, manifest_headers, and manifest_content are stored here
-        # so that no later phase needs to call get_manifest_with_headers() again.
+        # Step 1: DRM config cache — simple TTL, no stale revalidation.
+        # Check before fetching the manifest to avoid a wasted network
+        # round-trip on every cache hit.
+        # ------------------------------------------------------------------
+        cached_configs = self.drm_config_cache.get(cache_key)
+        if cached_configs is not None:
+            logger.info(f"Using cached DRM configs for '{cache_key}'")
+            return cached_configs
+
+        # ------------------------------------------------------------------
+        # Step 0a: Cache miss — fetch manifest once and short-circuit for
+        # unencrypted streams. manifest_url, manifest_headers, and
+        # manifest_content are stored here so that no later phase needs to
+        # call get_manifest_with_headers() again.
         # ------------------------------------------------------------------
         manifest_url, manifest_headers = provider.get_manifest_with_headers(channel_id, **kwargs)
         if manifest_url and manifest_url.startswith(('http://', 'https://')):
@@ -354,14 +408,6 @@ class DRMOperations:
             except Exception as e:
                 logger.warning(f"Failed to check manifest encryption for '{channel_id}': {e}")
                 manifest_content = None
-
-        # ------------------------------------------------------------------
-        # Step 1: DRM config cache — simple TTL, no stale revalidation
-        # ------------------------------------------------------------------
-        cached_configs = self.drm_config_cache.get(cache_key)
-        if cached_configs is not None:
-            logger.info(f"Using cached DRM configs for '{cache_key}'")
-            return cached_configs
 
         # ------------------------------------------------------------------
         # Step 2: PHASE 1 — Try GENERIC plugins first (if registered)
