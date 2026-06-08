@@ -43,13 +43,14 @@ class RemoteLoginHandler:
     """
 
     def __init__(
-        self,
-        http_manager: HTTPManager,
-        sam3_client_id: str,
-        backchannel_start_url: str,
-        token_endpoint: str,
-        qr_code_url_template: str,
-        notifier: Optional[NotificationInterface] = None,
+            self,
+            http_manager: HTTPManager,
+            sam3_client_id: str,
+            backchannel_start_url: str,
+            token_endpoint: str,
+            qr_code_url_template: str,
+            notifier: Optional[NotificationInterface] = None,
+            provider_name: str = "MagentaTV",  # Add this parameter with default
     ):
         """
         Initialize remote login handler
@@ -61,12 +62,14 @@ class RemoteLoginHandler:
             token_endpoint: OAuth token endpoint for polling
             qr_code_url_template: QR code URL template with {code} placeholder
             notifier: Optional notification interface (auto-created if None)
+            provider_name: Provider name for notifications (default: "MagentaTV")
         """
         self.http_manager = http_manager
         self.sam3_client_id = sam3_client_id
         self.backchannel_start_url = backchannel_start_url
         self.token_endpoint = token_endpoint
         self.qr_code_url_template = qr_code_url_template
+        self.provider_name = provider_name  # Store it
 
         # FIX: Get platform config correctly
         self.platform_config = MAGENTA2_PLATFORMS[DEFAULT_PLATFORM]
@@ -78,9 +81,9 @@ class RemoteLoginHandler:
         else:
             self._notifier = NotificationFactory.create(
                 http_manager=http_manager,
-                provider_name="MagentaTV",
-                success_message="MagentaTV login successful",
-                failure_template="MagentaTV login failed: {reason}",
+                provider_name=provider_name,  # Use the passed provider_name
+                success_message=f"{provider_name} login successful",
+                failure_template=f"{provider_name} login failed: {{reason}}",
             )
 
         self._current_session: Optional[RemoteLoginSession] = None
