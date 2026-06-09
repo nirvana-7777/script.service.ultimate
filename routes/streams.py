@@ -287,8 +287,8 @@ def setup_stream_routes(app, manager, service):
             country=None,
             # catchup-specific — only used for channels
             is_catchup: bool = False,
-            start_time_int: int = None,
-            end_time_int: int = None,
+            start_time: int = None,
+            end_time: int = None,
             epg_id: str = None,
             drm_variant: str = "auto",
     ):
@@ -306,8 +306,8 @@ def setup_stream_routes(app, manager, service):
             content_type, provider, content_id,
             country=country,
             is_catchup=is_catchup,
-            start_time=start_time_int,
-            end_time=end_time_int,
+            start_time=start_time,
+            end_time=end_time,
             epg_id=epg_id,
             drm_variant=drm_variant,
         )
@@ -316,8 +316,8 @@ def setup_stream_routes(app, manager, service):
             content_type, provider, content_id,
             country=country,
             is_catchup=is_catchup,
-            start_time=start_time_int,
-            end_time=end_time_int,
+            start_time=start_time,
+            end_time=end_time,
             epg_id=epg_id,
         )
 
@@ -325,14 +325,14 @@ def setup_stream_routes(app, manager, service):
         if is_catchup:
             if manager.needs_proxy(provider):
                 return service.get_proxied_catchup_manifest(
-                    provider, content_id, start_time_int, end_time_int, epg_id, country
+                    provider, content_id, start_time, end_time, epg_id, country
                 )
             else:
                 manifest_url = manager.get_catchup_manifest(
                     provider_name=provider,
                     channel_id=content_id,
-                    start_time=start_time_int,
-                    end_time=end_time_int,
+                    start_time=start_time,
+                    end_time=end_time,
                     epg_id=epg_id,
                     country=country,
                     drm_variant=drm_variant,
@@ -722,8 +722,8 @@ def setup_stream_routes(app, manager, service):
                     CONTENT_TYPE_CHANNEL, provider, channel_id,
                     country=country,
                     is_catchup=True,
-                    start_time_int=start_time_int,
-                    end_time_int=end_time_int,
+                    start_time=start_time_int,
+                    end_time=end_time_int,
                     epg_id=epg_id,
                 )
             else:
@@ -788,8 +788,8 @@ def setup_stream_routes(app, manager, service):
                     CONTENT_TYPE_CHANNEL, provider, channel_id,
                     country=country,
                     is_catchup=True,
-                    start_time_int=start_time_int,
-                    end_time_int=end_time_int,
+                    start_time=start_time_int,
+                    end_time=end_time_int,
                     epg_id=epg_id,
                     drm_variant="software",
                 )
