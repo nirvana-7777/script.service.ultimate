@@ -698,9 +698,11 @@ def setup_stream_routes(app, manager, service):
             is_catchup = bool(start_time and end_time)
 
             if is_catchup:
+                logger.debug(f"CATCHUP REQUEST DETECTED: start={start_time}, end={end_time}")
                 try:
                     start_time_int = int(start_time)
                     end_time_int = int(end_time)
+                    logger.debug(f"CATCHUP TIMES CONVERTED: {start_time_int} to {end_time_int}")
                 except (ValueError, TypeError):
                     response.status = 400
                     return {"error": "Invalid start_time or end_time format"}
