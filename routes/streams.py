@@ -684,12 +684,8 @@ def setup_stream_routes(app, manager, service):
             response.status = 500
             return {"error": f"Failed to fetch manifest: {str(e)}"}
 
-    @app.route("/api/providers/<provider>/channels/<channel_id>/stream/index.mpd")
-    def get_channel_stream(provider, channel_id):
-        """
-        Returns HTTP 302 redirect to the actual manifest, or a rewritten
-        manifest body when media proxy is active.  Supports live and catchup.
-        """
+    def _handle_channel_stream(provider, channel_id, *, drm_variant="auto"):
+        """Shared implementation for /stream/index.mpd and /stream/sw-drm/index.mpd."""
         try:
             start_time = request.query.get("start_time")
             end_time = request.query.get("end_time")
@@ -707,8 +703,9 @@ def setup_stream_routes(app, manager, service):
                     response.status = 400
                     return {"error": "Invalid start_time or end_time format"}
 
-                provider_instance = manager.get_provider(provider)
-                catchup_hours = getattr(provider_instance, "catchup_window", 0)
+                channels = manager.get_channels(provider_name=provider, fetch_manifests=False)
+                channel_obj = next((c for c in channels if c.channel_id == channel_id), None)
+                catchup_hours = getattr(channel_obj, "catchup_window", 0) if channel_obj else 0
                 if catchup_hours == 0:
                     response.status = 400
                     return {"error": f'Catchup not supported for provider "{provider}"'}
@@ -716,102 +713,42 @@ def setup_stream_routes(app, manager, service):
                 import time
                 if (int(time.time()) - start_time_int) > catchup_hours * 3600:
                     response.status = 400
-                    return {
-                        "error": f"Content outside catchup window (max {catchup_hours} hours)"
-                    }
+                    return {"error": f"Content outside catchup window (max {catchup_hours} hours)"}
 
-                return _resolve_stream(
-                    CONTENT_TYPE_CHANNEL, provider, channel_id,
-                    country=country,
-                    is_catchup=True,
-                    start_time=start_time_int,
-                    end_time=end_time_int,
-                    epg_id=epg_id,
-                )
-            else:
-                return _resolve_stream(
-                    CONTENT_TYPE_CHANNEL, provider, channel_id, country=country
-                )
+            return _resolve_stream(
+                CONTENT_TYPE_CHANNEL, provider, channel_id,
+                country=country,
+                is_catchup=is_catchup,
+                start_time=start_time_int if is_catchup else None,
+                end_time=end_time_int if is_catchup else None,
+                epg_id=epg_id if is_catchup else None,
+                drm_variant=drm_variant,
+            )
 
         except HTTPResponse:
             raise
         except ValueError as e:
-            logger.error(f"stream error for channel {provider}/{channel_id}: {e}")
+            label = "sw-drm " if drm_variant == "software" else ""
+            logger.error(f"{label}stream error for channel {provider}/{channel_id}: {e}")
             response.status = 404
             return {"error": str(e)}
         except Exception as e:
-            logger.error(f"stream error for channel {provider}/{channel_id}: {e}")
+            label = "sw-drm " if drm_variant == "software" else ""
+            logger.error(f"{label}stream error for channel {provider}/{channel_id}: {e}")
             response.status = 500
             return {"error": f"Internal server error: {str(e)}"}
+
+    @app.route("/api/providers/<provider>/channels/<channel_id>/stream/index.mpd")
+    def get_channel_stream(provider, channel_id):
+        """Returns HTTP 302 redirect to the actual manifest, or a rewritten
+        manifest body when media proxy is active.  Supports live and catchup."""
+        return _handle_channel_stream(provider, channel_id)
 
     @app.route("/api/providers/<provider>/channels/<channel_id>/stream/sw-drm/index.mpd")
     def get_channel_stream_sw_drm(provider, channel_id):
-        """
-        Software-DRM (ClearKey) channel stream endpoint.
-
-        Identical to the standard stream endpoint except that drm_variant='software'
-        is passed through to the resolution helpers.  Providers that expose a separate
-        ClearKey manifest URL will return it here; for proxy-routed streams, the
-        server will 400 if no ClearKey keys are available (rather than silently
-        serving a Widevine stream the client cannot decrypt).
-
-        Supports catchup via the same start_time / end_time / epg_id query params
-        as the standard endpoint.
-        """
-        try:
-            start_time = request.query.get("start_time")
-            end_time = request.query.get("end_time")
-            epg_id = request.query.get("epg_id")
-            country = request.query.get("country")
-            is_catchup = bool(start_time and end_time)
-
-            if is_catchup:
-                try:
-                    start_time_int = int(start_time)
-                    end_time_int = int(end_time)
-                except (ValueError, TypeError):
-                    response.status = 400
-                    return {"error": "Invalid start_time or end_time format"}
-
-                provider_instance = manager.get_provider(provider)
-                catchup_hours = getattr(provider_instance, "catchup_window", 0)
-                if catchup_hours == 0:
-                    response.status = 400
-                    return {"error": f'Catchup not supported for provider "{provider}"'}
-
-                import time
-                if (int(time.time()) - start_time_int) > catchup_hours * 3600:
-                    response.status = 400
-                    return {
-                        "error": f"Content outside catchup window (max {catchup_hours} hours)"
-                    }
-
-                return _resolve_stream(
-                    CONTENT_TYPE_CHANNEL, provider, channel_id,
-                    country=country,
-                    is_catchup=True,
-                    start_time=start_time_int,
-                    end_time=end_time_int,
-                    epg_id=epg_id,
-                    drm_variant="software",
-                )
-            else:
-                return _resolve_stream(
-                    CONTENT_TYPE_CHANNEL, provider, channel_id,
-                    country=country,
-                    drm_variant="software",
-                )
-
-        except HTTPResponse:
-            raise
-        except ValueError as e:
-            logger.error(f"sw-drm stream error for channel {provider}/{channel_id}: {e}")
-            response.status = 404
-            return {"error": str(e)}
-        except Exception as e:
-            logger.error(f"sw-drm stream error for channel {provider}/{channel_id}: {e}")
-            response.status = 500
-            return {"error": f"Internal server error: {str(e)}"}
+        """Software-DRM (ClearKey) variant. Identical transport to the standard
+        endpoint; passes drm_variant='software' through to _resolve_stream."""
+        return _handle_channel_stream(provider, channel_id, drm_variant="software")
 
     @app.route("/api/providers/<provider>/channels/<channel_id>/stream/decrypted/index.mpd")
     def get_channel_stream_decrypted(provider, channel_id):
