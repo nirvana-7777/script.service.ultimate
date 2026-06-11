@@ -705,7 +705,7 @@ def setup_stream_routes(app, manager, service):
 
                 channels = manager.get_channels(provider_name=provider, fetch_manifests=False)
                 channel_obj = next((c for c in channels if c.channel_id == channel_id), None)
-                catchup_hours = getattr(channel_obj, "catchup_window", 0) if channel_obj else 0
+                catchup_hours = getattr(channel_obj, "catchup_hours", 0) if channel_obj else 0
                 if catchup_hours == 0:
                     response.status = 400
                     return {"error": f'Catchup not supported for provider "{provider}"'}
