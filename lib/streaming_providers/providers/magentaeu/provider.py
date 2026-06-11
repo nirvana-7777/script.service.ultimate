@@ -237,6 +237,8 @@ class MagentaEUProvider(StreamingProvider):
                 media_pid = channel_data.get("media_pid", "")
                 is_audio = channel_data.get("is_audio", False)
 
+                catchup_hours = channel_data.get("CatchupHours", self.catchup_window)
+
                 # Build manifest script from bifrost metadata fields
                 manifest_script_parts = []
                 if tp_channel.channel_number:
@@ -268,6 +270,7 @@ class MagentaEUProvider(StreamingProvider):
                     is_radio=is_audio,
                     language=get_language(self.country),
                     streaming_format=STREAMING_FORMAT_DASH,
+                    catchup_hours=catchup_hours,
                 )
                 channels.append(streaming_channel)
 

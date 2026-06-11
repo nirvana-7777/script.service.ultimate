@@ -14,6 +14,7 @@ class Channel(Content):
 
     channel_number: Optional[int] = None
     is_radio: bool = False
+    catchup_hours: Optional[int] = None
 
     def __post_init__(self):
         self._validate_fields()
@@ -46,6 +47,7 @@ class Channel(Content):
         result = super().to_dict()
         result["ChannelNumber"] = self.channel_number
         result["IsRadio"] = self.is_radio
+        result["CatchupHours"] = self.catchup_hours
         return result
 
     def is_audio_content(self) -> bool:
