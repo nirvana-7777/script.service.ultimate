@@ -60,6 +60,7 @@ class CatchupOperations:
         end_time: int,
         epg_id: Optional[str] = None,
         country: Optional[str] = None,
+        drm_variant: Optional[str] = None,
     ) -> List:
         """Get DRM configs for catchup content."""
         provider = self.registry.get_provider(provider_name)
@@ -78,6 +79,7 @@ class CatchupOperations:
                 end_time=end_time,
                 epg_id=epg_id,
                 country=country,
+                drm_variant=drm_variant,
             )
         except NotImplementedError:
             return self.drm_operations.get_channel_drm_configs(

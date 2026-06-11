@@ -241,8 +241,14 @@ class StreamingProvider(ABC):
         """
         return []
 
-    def get_drm(self, content_id: str, **kwargs) -> List[DRMConfig]:
-        """Get all DRM configurations for a channel by ID"""
+    def get_drm(self, content_id: str, drm_variant: Optional[str] = None, **kwargs) -> List[DRMConfig]:
+        """Get all DRM configurations for a channel by ID
+
+        Args:
+            content_id: Content identifier
+            drm_variant: Optional DRM variant (e.g., 'auto', 'software')
+            **kwargs: Additional provider-specific parameters
+        """
         return []
 
     @property
@@ -1219,6 +1225,7 @@ class StreamingProvider(ABC):
         start_time: int,
         end_time: int,
         epg_id: Optional[str] = None,
+        drm_variant: Optional[str] = None,
         **kwargs,
     ) -> List[DRMConfig]:
         """
@@ -1239,13 +1246,13 @@ class StreamingProvider(ABC):
         """
         if not self.supports_catchup:
             logger.debug(f"{self.provider_name}: Catchup not supported, falling back to live DRM")
-            return self.get_drm(content_id, **kwargs)
+            return self.get_drm(content_id, drm_variant=drm_variant, **kwargs)
 
         logger.debug(
             f"{self.provider_name}: get_catchup_drm not implemented, "
             f"using live DRM configuration"
         )
-        return self.get_drm(content_id, **kwargs)
+        return self.get_drm(content_id, drm_variant=drm_variant, **kwargs)
 
     # ============================================================================
     # CATCHUP HELPER METHODS

@@ -207,9 +207,10 @@ class ProviderManager:
             end_time: int,
             epg_id: Optional[str] = None,
             country: Optional[str] = None,
+            drm_variant: Optional[str] = None,
     ) -> List:
         return self.catchup_ops.get_catchup_drm_configs(
-            provider_name, channel_id, start_time, end_time, epg_id, country
+            provider_name, channel_id, start_time, end_time, epg_id, country, drm_variant=drm_variant
         )
 
     def get_catchup_window(self, provider_name: str, channel_id: Optional[str] = None) -> int:
