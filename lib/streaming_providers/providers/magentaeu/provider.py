@@ -365,7 +365,7 @@ class MagentaEUProvider(StreamingProvider):
         return None
 
     def get_catchup_manifest(
-            self, channel_id: str, start_time: int, end_time: int, **kwargs
+            self, content_id: str, start_time: int, end_time: int, **kwargs
     ) -> Optional[str]:
         """
         Get catchup manifest URL for Magenta TV.
@@ -374,7 +374,7 @@ class MagentaEUProvider(StreamingProvider):
         ?begin=YYYYMMDDTHHMMSS&end=YYYYMMDDTHHMMSS query parameters.
 
         Args:
-            channel_id: Channel identifier
+            content_id: Channel identifier
             start_time: Start time as Unix timestamp (epoch seconds)
             end_time: End time as Unix timestamp (epoch seconds)
             **kwargs: Additional parameters (epg_id, etc.)
@@ -384,21 +384,26 @@ class MagentaEUProvider(StreamingProvider):
         """
         # Ensure cache is populated first
         if not self._ensure_channels_cache():
-            logger.warning(f"Cannot get catchup manifest for {channel_id}, channels cache unavailable")
+            logger.warning(f"Cannot get catchup manifest for {content_id}, channels cache unavailable")
             return None
 
-        base_manifest = self.get_manifest(channel_id, **kwargs)
+        base_manifest = self.get_manifest(content_id, **kwargs)
         if not base_manifest:
-            logger.warning(f"Channel {channel_id} not found or has no manifest")
+            logger.warning(f"Channel {content_id} not found or has no manifest")
             return None
 
         try:
-            catchup_manifest = build_catchup_url(base_manifest, start_time, end_time)
-            logger.debug(f"Catchup manifest for channel {channel_id}: {catchup_manifest}")
+            # Convert Unix timestamps to UTC format: YYYYMMDDTHHMMSS
+            start_str = datetime.datetime.utcfromtimestamp(start_time).strftime("%Y%m%dT%H%M%S")
+            end_str = datetime.datetime.utcfromtimestamp(end_time).strftime("%Y%m%dT%H%M%S")
+
+            # Build the catchup URL with converted time strings
+            catchup_manifest = build_catchup_url(base_manifest, start_str, end_str)
+            logger.debug(f"Catchup manifest for channel {content_id}: {catchup_manifest}")
             return catchup_manifest
         except Exception as e:
-            logger.error(f"Error building catchup manifest for channel {channel_id}: {e}")
-            logger.warning(f"Falling back to live manifest for channel {channel_id}")
+            logger.error(f"Error building catchup manifest for channel {content_id}: {e}")
+            logger.warning(f"Falling back to live manifest for channel {content_id}")
             return base_manifest
 
     def get_drm(self, content_id: str, **kwargs) -> List[DRMConfig]:
