@@ -179,7 +179,7 @@ class PlaybackManager:
         return self._smil_manager.get_drm(content_id, content_type, **kwargs)
 
     def get_catchup_manifest(
-        self, channel_id: str, start_time: int, end_time: int, **kwargs
+        self, content_id: str, start_time: int, end_time: int, **kwargs
     ) -> Optional[str]:
         """
         Return a catchup manifest URL for *channel_id*.
@@ -204,7 +204,7 @@ class PlaybackManager:
             seconds.  Defaults to ``DVR_WINDOW_SECONDS_DEFAULT`` (14 400).
         """
         dvr_seconds: int = kwargs.get("dvr_window_seconds", DVR_WINDOW_SECONDS_DEFAULT)
-        return self._build_dvr_manifest_url(channel_id, dvr_seconds)
+        return self._build_dvr_manifest_url(content_id, dvr_seconds)
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #

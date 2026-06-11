@@ -664,10 +664,10 @@ class Magenta2Provider(StreamingProvider):
         return self._playback_manager.get_drm(content_id, content_type, **kwargs)
 
     def get_catchup_manifest(
-        self, channel_id: str, start_time: int, end_time: int, **kwargs: Any
+        self, content_id: str, start_time: int, end_time: int, **kwargs: Any
     ) -> Optional[str]:
         return self._playback_manager.get_catchup_manifest(
-            channel_id, start_time, end_time, **kwargs
+            content_id, start_time, end_time, **kwargs
         )
 
     def get_vod_category(
