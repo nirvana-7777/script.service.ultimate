@@ -85,6 +85,7 @@ class ChannelManager:
         provider_config: Optional[ProviderConfig],
         auth_callback: Callable[[], str],
         build_scaled_image_url_callback: Callable[[str], Optional[str]],
+        catchup_window: int = 4,
     ):
         self._http = http_manager
         self._provider_name = provider_name
@@ -96,6 +97,7 @@ class ChannelManager:
         self._provider_config = provider_config
         self._ensure_authenticated = auth_callback
         self._build_scaled_image_url = build_scaled_image_url_callback
+        self.catchup_window = catchup_window
 
         # Populated on first get_channels() call; returned directly on subsequent calls.
         self._cached_channels: Optional[List[StreamingChannel]] = None
@@ -213,6 +215,8 @@ class ChannelManager:
                         else tp_ch.channel_number
                     )
 
+                    catchup_hours = getattr(tp_ch, 'catchup_hours', None) or self.catchup_window
+
                     magenta2_channel = Magenta2Channel(
                         name=name,
                         channel_id=tp_ch.release_pid,
@@ -230,6 +234,8 @@ class ChannelManager:
                     streaming_channel.manifest = tp_ch.mpd_url
                     if tp_ch.hls_url:
                         streaming_channel.hls_url = tp_ch.hls_url
+
+                    streaming_channel.catchup_hours = catchup_hours
 
                     self._live_manifest_cache[tp_ch.release_pid] = tp_ch.mpd_url
                     self._live_pid_cache[tp_ch.release_pid] = tp_ch.release_pid

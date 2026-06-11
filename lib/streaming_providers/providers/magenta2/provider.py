@@ -226,6 +226,7 @@ class Magenta2Provider(StreamingProvider):
             provider_config=self.provider_config,
             auth_callback=self._ensure_authenticated,
             build_scaled_image_url_callback=self._build_scaled_image_url,
+            catchup_window=self.catchup_window,
         )
         logger.info("✓ ChannelManager initialized")
 
