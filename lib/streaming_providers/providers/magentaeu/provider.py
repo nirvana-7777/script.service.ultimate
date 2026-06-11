@@ -393,6 +393,9 @@ class MagentaEUProvider(StreamingProvider):
             return None
 
         try:
+            start_time = int(start_time) if start_time is not None else None
+            end_time = int(end_time) if end_time is not None else None
+
             # Convert Unix timestamps to UTC format: YYYYMMDDTHHMMSS
             start_str = datetime.datetime.utcfromtimestamp(start_time).strftime("%Y%m%dT%H%M%S")
             end_str = datetime.datetime.utcfromtimestamp(end_time).strftime("%Y%m%dT%H%M%S")
