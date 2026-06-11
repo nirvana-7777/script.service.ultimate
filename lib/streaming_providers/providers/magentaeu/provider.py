@@ -398,12 +398,8 @@ class MagentaEUProvider(StreamingProvider):
             if isinstance(end_time, str):
                 end_time = int(end_time)
 
-            # Convert Unix timestamps to UTC format: YYYYMMDDTHHMMSS
-            start_str = datetime.datetime.utcfromtimestamp(start_time).strftime("%Y%m%dT%H%M%S")
-            end_str = datetime.datetime.utcfromtimestamp(end_time).strftime("%Y%m%dT%H%M%S")
-
             # Build the catchup URL with converted time strings
-            catchup_manifest = build_catchup_url(base_manifest, start_str, end_str)
+            catchup_manifest = build_catchup_url(base_manifest, start_time, end_time)
             logger.debug(f"Catchup manifest for channel {content_id}: {catchup_manifest}")
             return catchup_manifest
         except Exception as e:
