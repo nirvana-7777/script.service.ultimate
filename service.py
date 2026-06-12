@@ -393,6 +393,65 @@ class UltimateService:
 
         return manifest_response.text, ttl, provider_proxy_url, segment_headers, manifest_response.url
 
+    def _fetch_and_rewrite_catchup_manifest(
+            self,
+            provider: str,
+            channel_id: str,
+            manifest_url: str,
+            start_time: int,
+            keyids: Optional[dict] = None,
+            highest_quality_only: bool = False,
+            receiver_side: bool = False,
+            segment_headers: dict = None,
+    ) -> tuple:
+        """
+        Core catchup manifest fetcher and rewriter.
+        Shared between proxied and decrypted catchup paths.
+
+        Args:
+            provider: Provider name
+            channel_id: Channel ID
+            manifest_url: Upstream catchup manifest URL
+            start_time: Requested start time (Unix timestamp) - used for Magenta2 adjustment
+            keyids: None for proxied (strip DRM), dict for decrypted with ClearKey
+            highest_quality_only: If True, keep only highest quality video representation
+            receiver_side: If True, inject ClearKey signaling for receiver-side decryption
+            segment_headers: Optional headers for segment requests
+
+        Returns:
+            (rewritten_mpd, ttl)
+        """
+        manifest_text, ttl, provider_proxy_url, fetched_segment_headers, effective_url = \
+            self.fetch_manifest_for_rewriter(provider, channel_id, manifest_url)
+
+        # Use provided segment_headers if given, otherwise use fetched ones
+        final_segment_headers = segment_headers or fetched_segment_headers
+
+        # ====================================================================
+        # MAGENTA2 TIMELINE ADJUSTMENT
+        # ====================================================================
+        if provider.lower() == "magenta2" and start_time:
+            from streaming_providers.providers.magenta2.catchup_adjuster import Magenta2CatchupAdjuster
+            manifest_text = Magenta2CatchupAdjuster.adjust(manifest_text, start_time)
+            ttl = min(ttl, 300)  # Shorter TTL for adjusted manifests
+
+        # ====================================================================
+        # STANDARD PROXY/DECRYPT REWRITING
+        # ====================================================================
+        rewriter = MPDRewriter(
+            self.media_proxy_url,
+            provider_proxy_url,
+            keyids,  # None for proxy, dict for decryption
+            highest_quality_only,
+            provider=provider,
+            channel=channel_id,
+            clearkey_receiver_side=receiver_side,
+            segment_headers=final_segment_headers,
+        )
+        rewritten_mpd = rewriter.rewrite_mpd(manifest_text, effective_url)
+
+        return rewritten_mpd, ttl
+
     def get_decrypted_manifest(
             self, provider: str, channel_id: str, keyids: dict,
             highest_quality_only: bool = False, receiver_side: bool = False,
@@ -501,6 +560,7 @@ class UltimateService:
             end_time=end_time,
             epg_id=epg_id,
             country=country,
+            drm_variant=drm_variant,
         )
         if not manifest_url:
             response.status = 404
@@ -508,31 +568,15 @@ class UltimateService:
             return json.dumps({"error": "Catchup manifest not available"})
 
         try:
-            manifest_text, ttl, provider_proxy_url, segment_headers, effective_url = self.fetch_manifest_for_rewriter(
-                provider, channel_id, manifest_url
-            )
-
-            # ====================================================================
-            # MAGENTA2 TIMELINE ADJUSTMENT
-            # ====================================================================
-            if provider.lower() == "magenta2" and start_time:
-                from streaming_providers.providers.magenta2.catchup_adjuster import Magenta2CatchupAdjuster
-                manifest_text = Magenta2CatchupAdjuster.adjust(manifest_text, start_time)
-                ttl = min(ttl, 300)  # Shorter TTL for adjusted manifests
-
-            # ====================================================================
-            # STANDARD PROXY REWRITING
-            # ====================================================================
-            rewriter = MPDRewriter(
-                self.media_proxy_url,
-                provider_proxy_url,
-                None,
-                False,
+            rewritten_mpd, ttl = self._fetch_and_rewrite_catchup_manifest(
                 provider=provider,
-                channel=channel_id,
-                segment_headers=segment_headers,
+                channel_id=channel_id,
+                manifest_url=manifest_url,
+                start_time=start_time,
+                keyids=None,  # Proxied mode - strip DRM
+                highest_quality_only=False,
+                receiver_side=False,
             )
-            rewritten_mpd = rewriter.rewrite_mpd(manifest_text, effective_url)
 
             self.mpd_cache.set(
                 provider=provider,
@@ -552,6 +596,72 @@ class UltimateService:
             return json.dumps({"error": str(e)})
         except Exception as fetch_err:
             logger.error(f"Failed to fetch catchup manifest: {fetch_err}")
+            response.status = 502
+            response.content_type = "application/json"
+            return json.dumps({"error": f"Failed to fetch manifest: {str(fetch_err)}"})
+
+    def get_decrypted_catchup_manifest(
+            self,
+            provider: str,
+            channel_id: str,
+            keyids: dict,
+            start_time: int,
+            end_time: int,
+            epg_id: str = None,
+            country: str = None,
+            highest_quality_only: bool = False,
+            receiver_side: bool = True,
+            drm_variant: str = "software",
+    ) -> str:
+        """
+        Get decrypted catchup manifest with ClearKey.
+        Uses the same core fetch/rewrite logic as proxied catchup.
+        """
+        logger.info(
+            f"Generating decrypted catchup manifest for {provider}/{channel_id} "
+            f"({start_time} to {end_time})"
+        )
+
+        if not self.media_proxy_url:
+            response.status = 503
+            response.content_type = "application/json"
+            return json.dumps({"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"})
+
+        manifest_url = self.manager.get_catchup_manifest(
+            provider_name=provider,
+            channel_id=channel_id,
+            start_time=start_time,
+            end_time=end_time,
+            epg_id=epg_id,
+            country=country,
+            drm_variant=drm_variant,
+        )
+        if not manifest_url:
+            response.status = 404
+            response.content_type = "application/json"
+            return json.dumps({"error": "Catchup manifest not available"})
+
+        try:
+            rewritten_mpd, _ = self._fetch_and_rewrite_catchup_manifest(
+                provider=provider,
+                channel_id=channel_id,
+                manifest_url=manifest_url,
+                start_time=start_time,
+                keyids=keyids,  # Decrypted mode - inject ClearKey
+                highest_quality_only=highest_quality_only,
+                receiver_side=receiver_side,
+            )
+
+            response.content_type = "application/dash+xml; charset=utf-8"
+            return rewritten_mpd
+
+        except ValueError as e:
+            logger.error(str(e))
+            response.status = 502
+            response.content_type = "application/json"
+            return json.dumps({"error": str(e)})
+        except Exception as fetch_err:
+            logger.error(f"Failed to fetch decrypted catchup manifest: {fetch_err}")
             response.status = 502
             response.content_type = "application/json"
             return json.dumps({"error": f"Failed to fetch manifest: {str(fetch_err)}"})

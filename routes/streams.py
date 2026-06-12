@@ -7,7 +7,13 @@ Architecture
 All content types (channels, events, future VOD) share identical transport-level
 operations: resolve a manifest URL, fetch DRM configs, optionally rewrite the
 manifest through a media proxy.  The typed route handlers (channel vs event vs
-vod) are therefore thin wrappers around two shared helpers:
+vod) are therefore thin wrappers around shared helpers:
+
+  _validate_catchup_params(provider, channel_id, start_time_raw, end_time_raw)
+      Validates catchup timestamps and window eligibility for a channel.
+      Returns an error string on failure, or (start_time_int, end_time_int) on
+      success.  Single source of truth — called by both _handle_channel_stream
+      and _resolve_decrypted_stream.
 
   _build_drm_header(content_type, provider, content_id, ...)
       Fetches DRM configs via the correct manager method and attaches them as a
@@ -16,6 +22,12 @@ vod) are therefore thin wrappers around two shared helpers:
   _resolve_stream(content_type, provider, content_id, ...)
       The single place that understands how to turn (type, provider, id) into a
       manifest response — redirect, proxied rewrite, or decrypted rewrite.
+
+  _resolve_decrypted_stream(content_type, provider, content_id, ...)
+      Handles /stream/decrypted/ endpoints.  Supports live and catchup for
+      channels (catchup via start_time/end_time query params).  Delegates all
+      fetch/rewrite work to the service layer — never constructs rewriters
+      directly.
 
 Adding VOD in the future means:
   1. Implement manager.get_vod_manifest() / get_vod_drm_configs() (same pattern).
@@ -26,6 +38,7 @@ Adding VOD in the future means:
 import base64
 import json
 import re
+import time
 from urllib.parse import urljoin
 from datetime import datetime
 
@@ -302,6 +315,67 @@ def setup_stream_routes(app, manager, service):
             count=1,
         )
 
+    def _validate_catchup_params(
+        provider: str,
+        channel_id: str,
+        start_time_raw,
+        end_time_raw,
+    ):
+        """
+        Validate catchup timestamps and window eligibility for a channel.
+
+        Returns a tuple (start_time_int, end_time_int) on success, or raises
+        ValueError with a human-readable message on any validation failure.
+
+        Single source of truth — called by both _handle_channel_stream and
+        _resolve_decrypted_stream so the logic is never duplicated.
+        """
+        try:
+            start_time_int = int(start_time_raw)
+            end_time_int   = int(end_time_raw)
+        except (ValueError, TypeError):
+            raise ValueError(
+                f"Invalid start_time={start_time_raw!r} or end_time={end_time_raw!r}: "
+                "expected Unix timestamps"
+            )
+
+        channels = manager.get_channels(provider_name=provider, fetch_manifests=False)
+        channel_obj = next((c for c in channels if c.channel_id == channel_id), None)
+
+        logger.debug(
+            f"_validate_catchup_params: channel lookup id={channel_id!r} -> "
+            + (
+                f"found (catchup_hours={getattr(channel_obj, 'catchup_hours', 'MISSING')!r}, "
+                f"catchup_window={getattr(channel_obj, 'catchup_window', 'MISSING')!r})"
+                if channel_obj
+                else "NOT FOUND in channel list"
+            )
+        )
+
+        # The model field is catchup_hours (serialises as CatchupHours).
+        # Fall back to catchup_window for providers using the older name.
+        catchup_hours = (
+            getattr(channel_obj, "catchup_hours", None)
+            or getattr(channel_obj, "catchup_window", 0)
+        ) if channel_obj else 0
+
+        logger.debug(f"_validate_catchup_params: resolved catchup_hours={catchup_hours!r}")
+
+        if not catchup_hours:
+            raise ValueError(f'Catchup not supported for channel "{channel_id}"')
+
+        age_seconds = int(time.time()) - start_time_int
+        logger.debug(
+            f"_validate_catchup_params: window check age={age_seconds}s "
+            f"limit={catchup_hours * 3600}s ({catchup_hours}h)"
+        )
+        if age_seconds > catchup_hours * 3600:
+            raise ValueError(
+                f"Content outside catchup window (max {catchup_hours} hours)"
+            )
+
+        return start_time_int, end_time_int
+
     def _resolve_stream(
             content_type: str,
             provider: str,
@@ -491,13 +565,53 @@ def setup_stream_routes(app, manager, service):
     ):
         """
         Shared handler for decrypted stream endpoints.
-        Resolves DRM, then returns an appropriately rewritten manifest.
+
+        Supports live and catchup content for channels.  Catchup is triggered
+        by the presence of start_time + end_time query parameters (same aliases
+        as _handle_channel_stream: start_time/start/utc and end_time/end).
+
+        All fetch/rewrite work is delegated to the service layer — this handler
+        only resolves DRM configs and routes to the appropriate service method.
         """
         try:
             country = request.query.get("country")
-            drm_configs = _get_drm_configs(
-                content_type, provider, content_id, country=country
+
+            # Parse catchup parameters — same aliases as _handle_channel_stream
+            start_time_raw = (
+                request.query.get("start_time")
+                or request.query.get("start")
+                or request.query.get("utc")
             )
+            end_time_raw = request.query.get("end_time") or request.query.get("end")
+            epg_id       = request.query.get("epg_id")
+            is_catchup   = bool(start_time_raw and end_time_raw) and content_type == CONTENT_TYPE_CHANNEL
+
+            start_time_int: int | None = None
+            end_time_int:   int | None = None
+
+            if is_catchup:
+                # _validate_catchup_params raises ValueError with a human-readable
+                # message on any failure; the except block below converts it to 400/404.
+                start_time_int, end_time_int = _validate_catchup_params(
+                    provider, content_id, start_time_raw, end_time_raw
+                )
+
+            # Fetch DRM configs — catchup and live use different manager methods
+            if is_catchup:
+                drm_configs = manager.get_catchup_drm_configs(
+                    provider_name=provider,
+                    channel_id=content_id,
+                    start_time=start_time_int,
+                    end_time=end_time_int,
+                    epg_id=epg_id,
+                    country=country,
+                    drm_variant="software",  # decrypted endpoint implies software DRM
+                )
+            else:
+                drm_configs = _get_drm_configs(
+                    content_type, provider, content_id,
+                    country=country, drm_variant="software",
+                )
 
             drm_dict = {}
             for config in drm_configs:
@@ -505,9 +619,12 @@ def setup_stream_routes(app, manager, service):
                     config.to_dict() if hasattr(config, "to_dict") else config
                 )
 
-            has_clearkey = "org.w3.clearkey" in drm_dict
+            has_clearkey  = "org.w3.clearkey" in drm_dict
             is_unencrypted = "none" in drm_dict
 
+            # ------------------------------------------------------------------
+            # ClearKey (software DRM) path
+            # ------------------------------------------------------------------
             if has_clearkey:
                 if not service.media_proxy_url:
                     response.status = 503
@@ -522,38 +639,85 @@ def setup_stream_routes(app, manager, service):
                     response.status = 400
                     return {"error": "ClearKey DRM found but no key IDs available"}
 
-                return service.get_decrypted_manifest(
-                    provider, content_id, keyids,
-                    highest_quality_only=highest_quality_only,
-                )
-
-
-            elif is_unencrypted:
-                # Decrypted-stream endpoints do not support catchup — catchup requires a
-                # live DVR manifest URL which must be resolved via _resolve_stream / the
-                # catchup path.  Unencrypted content here is always VOD or live-redirect.
-                needs_headers = _stream_needs_headers(content_type, provider, content_id, country)
-                needs_proxy = manager.needs_proxy(provider)
-
-                if (needs_headers or needs_proxy) and service.media_proxy_url:
-                    return service.get_proxied_manifest(
-                        provider, content_id,
+                if is_catchup:
+                    # Delegate to the service layer — it owns all fetch/rewrite
+                    # logic including proxy decisions and segment header injection.
+                    return service.get_decrypted_catchup_manifest(
+                        provider, content_id, keyids,
+                        start_time=start_time_int,
+                        end_time=end_time_int,
+                        epg_id=epg_id,
+                        country=country,
                         highest_quality_only=highest_quality_only,
+                        receiver_side=True,
+                        drm_variant="software",
                     )
-                elif (needs_headers or needs_proxy) and not service.media_proxy_url:
-                    logger.warning(
-                        f"Provider {provider}/{content_id} needs proxy/headers but MEDIA_PROXY_URL is not set; "
-                        "falling back to redirect (playback may fail)"
-                    )
-                    manifest_url = _get_manifest_url(content_type, provider, content_id, country=country)
-                    return redirect(manifest_url)
                 else:
-                    manifest_url = _get_manifest_url(content_type, provider, content_id, country=country)
-                    if not manifest_url:
-                        response.status = 404
-                        return {"error": f'Manifest not available for {content_type} "{content_id}"'}
-                    return redirect(manifest_url)
+                    return service.get_decrypted_manifest(
+                        provider, content_id, keyids,
+                        highest_quality_only=highest_quality_only,
+                        receiver_side=True,
+                        drm_variant="software",
+                    )
 
+            # ------------------------------------------------------------------
+            # Unencrypted path
+            # ------------------------------------------------------------------
+            elif is_unencrypted:
+                if is_catchup:
+                    # For unencrypted catchup we still need the DVR manifest URL —
+                    # route through the same proxy-aware catchup path as _resolve_stream.
+                    if manager.needs_proxy(provider):
+                        return service.get_proxied_catchup_manifest(
+                            provider, content_id,
+                            start_time_int, end_time_int, epg_id, country,
+                            drm_variant="auto",
+                        )
+                    else:
+                        manifest_url = manager.get_catchup_manifest(
+                            provider_name=provider,
+                            channel_id=content_id,
+                            start_time=start_time_int,
+                            end_time=end_time_int,
+                            epg_id=epg_id,
+                            country=country,
+                        )
+                        if not manifest_url:
+                            response.status = 404
+                            return {
+                                "error": f'Catchup manifest not available for channel "{content_id}"'
+                            }
+                        logger.debug(
+                            f"_resolve_decrypted_stream: redirecting to unencrypted "
+                            f"catchup manifest: {manifest_url}"
+                        )
+                        return redirect(manifest_url)
+                else:
+                    needs_headers = _stream_needs_headers(content_type, provider, content_id, country)
+                    needs_proxy   = manager.needs_proxy(provider)
+
+                    if (needs_headers or needs_proxy) and service.media_proxy_url:
+                        return service.get_proxied_manifest(
+                            provider, content_id,
+                            highest_quality_only=highest_quality_only,
+                        )
+                    elif (needs_headers or needs_proxy) and not service.media_proxy_url:
+                        logger.warning(
+                            f"Provider {provider}/{content_id} needs proxy/headers but "
+                            "MEDIA_PROXY_URL is not set; falling back to redirect (playback may fail)"
+                        )
+                        manifest_url = _get_manifest_url(content_type, provider, content_id, country=country)
+                        return redirect(manifest_url)
+                    else:
+                        manifest_url = _get_manifest_url(content_type, provider, content_id, country=country)
+                        if not manifest_url:
+                            response.status = 404
+                            return {"error": f'Manifest not available for {content_type} "{content_id}"'}
+                        return redirect(manifest_url)
+
+            # ------------------------------------------------------------------
+            # No supported DRM scheme
+            # ------------------------------------------------------------------
             else:
                 response.status = 400
                 return {
@@ -567,7 +731,7 @@ def setup_stream_routes(app, manager, service):
             raise
         except ValueError as e:
             logger.error(f"API Error in decrypted {content_type} stream: {e}")
-            response.status = 404
+            response.status = 400
             return {"error": str(e)}
         except Exception as e:
             logger.error(f"API Error in decrypted {content_type} stream: {e}")
@@ -708,15 +872,19 @@ def setup_stream_routes(app, manager, service):
     def _handle_channel_stream(provider, channel_id, *, drm_variant="auto"):
         """Shared implementation for /stream/index.mpd and /stream/sw-drm/index.mpd."""
         try:
-            start_time = request.query.get("start_time") or request.query.get("start") or request.query.get("utc")
-            end_time = request.query.get("end_time") or request.query.get("end")
-            epg_id = request.query.get("epg_id")
-            country = request.query.get("country")
-            is_catchup = bool(start_time and end_time)
+            start_time_raw = (
+                request.query.get("start_time")
+                or request.query.get("start")
+                or request.query.get("utc")
+            )
+            end_time_raw = request.query.get("end_time") or request.query.get("end")
+            epg_id       = request.query.get("epg_id")
+            country      = request.query.get("country")
+            is_catchup   = bool(start_time_raw and end_time_raw)
 
             logger.debug(
                 f"_handle_channel_stream: provider={provider} channel={channel_id} "
-                f"start_time={start_time!r} end_time={end_time!r} "
+                f"start_time={start_time_raw!r} end_time={end_time_raw!r} "
                 f"epg_id={epg_id!r} country={country!r} is_catchup={is_catchup} "
                 f"drm_variant={drm_variant}"
             )
@@ -725,54 +893,17 @@ def setup_stream_routes(app, manager, service):
             # even though the ternary guards already prevent None from being passed when
             # is_catchup is False.
             start_time_int: int | None = None
-            end_time_int: int | None = None
+            end_time_int:   int | None = None
 
             if is_catchup:
-                try:
-                    start_time_int = int(start_time)
-                    end_time_int = int(end_time)
-                    logger.debug(f"CATCHUP: times parsed OK: {start_time_int} to {end_time_int}")
-                except (ValueError, TypeError):
-                    logger.warning(
-                        f"CATCHUP: could not parse start_time={start_time!r} / end_time={end_time!r} as int"
-                    )
-                    response.status = 400
-                    return {"error": "Invalid start_time or end_time format"}
-
-                channels = manager.get_channels(provider_name=provider, fetch_manifests=False)
-                channel_obj = next((c for c in channels if c.channel_id == channel_id), None)
-                logger.debug(
-                    f"CATCHUP: channel lookup id={channel_id!r} -> "
-                    + (f"found (catchup_hours attr={getattr(channel_obj, 'catchup_hours', 'MISSING')!r}, "
-                       f"catchup_window attr={getattr(channel_obj, 'catchup_window', 'MISSING')!r})"
-                       if channel_obj else "NOT FOUND in channel list")
+                # _validate_catchup_params raises ValueError with a human-readable
+                # message; the except block below converts it to 400/404.
+                start_time_int, end_time_int = _validate_catchup_params(
+                    provider, channel_id, start_time_raw, end_time_raw
                 )
-
-                # The model field is catchup_hours (serialises as CatchupHours).
-                # Fall back to catchup_window for providers using the older name.
-                catchup_hours = (
-                    getattr(channel_obj, "catchup_hours", None)
-                    or getattr(channel_obj, "catchup_window", 0)
-                ) if channel_obj else 0
-                logger.debug(f"CATCHUP: resolved catchup_hours={catchup_hours!r}")
-
-                if not catchup_hours:
-                    logger.warning(
-                        f"CATCHUP: rejecting {provider}/{channel_id} — "
-                        f"catchup_hours=0 or attribute not found on channel model"
-                    )
-                    response.status = 400
-                    return {"error": f'Catchup not supported for channel "{channel_id}"'}
-
-                import time
-                age_seconds = int(time.time()) - start_time_int
                 logger.debug(
-                    f"CATCHUP: window check age={age_seconds}s limit={catchup_hours * 3600}s ({catchup_hours}h)"
+                    f"CATCHUP: validated OK: {start_time_int} to {end_time_int}"
                 )
-                if age_seconds > catchup_hours * 3600:
-                    response.status = 400
-                    return {"error": f"Content outside catchup window (max {catchup_hours} hours)"}
-
 
             return _resolve_stream(
                 CONTENT_TYPE_CHANNEL, provider, channel_id,
@@ -789,7 +920,7 @@ def setup_stream_routes(app, manager, service):
         except ValueError as e:
             label = "sw-drm " if drm_variant == "software" else ""
             logger.error(f"{label}stream error for channel {provider}/{channel_id}: {e}")
-            response.status = 404
+            response.status = 400
             return {"error": str(e)}
         except Exception as e:
             label = "sw-drm " if drm_variant == "software" else ""
