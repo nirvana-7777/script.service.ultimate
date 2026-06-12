@@ -708,8 +708,8 @@ def setup_stream_routes(app, manager, service):
     def _handle_channel_stream(provider, channel_id, *, drm_variant="auto"):
         """Shared implementation for /stream/index.mpd and /stream/sw-drm/index.mpd."""
         try:
-            start_time = request.query.get("start_time")
-            end_time = request.query.get("end_time")
+            start_time = request.query.get("start_time") or request.query.get("start") or request.query.get("utc")
+            end_time = request.query.get("end_time") or request.query.get("end")
             epg_id = request.query.get("epg_id")
             country = request.query.get("country")
             is_catchup = bool(start_time and end_time)
