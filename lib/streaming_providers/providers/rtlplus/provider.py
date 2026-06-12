@@ -568,7 +568,7 @@ class RTLPlusProvider(StreamingProvider):
         - program_context: Program context from VOD navigation
         """
         # Extract and validate drm_variant
-        drm_variant = kwargs.get("drm_variant", RTLPlusDefaults.DEFAULT_DRM_VARIANT)
+        drm_variant = kwargs.pop("drm_variant", RTLPlusDefaults.DEFAULT_DRM_VARIANT)
         if drm_variant not in RTLPlusDefaults.VALID_DRM_VARIANTS:
             logger.warning(f"Invalid drm_variant '{drm_variant}', falling back to 'auto'")
             drm_variant = RTLPlusDefaults.DRM_VARIANT_AUTO
@@ -660,7 +660,7 @@ class RTLPlusProvider(StreamingProvider):
         - drm_variant: 'auto' (default), 'software', or 'hardware'
         """
         # Extract and validate drm_variant (mirrors get_manifest)
-        drm_variant = kwargs.get("drm_variant", RTLPlusDefaults.DEFAULT_DRM_VARIANT)
+        drm_variant = kwargs.pop("drm_variant", RTLPlusDefaults.DEFAULT_DRM_VARIANT)
         if drm_variant not in RTLPlusDefaults.VALID_DRM_VARIANTS:
             logger.warning(f"Invalid drm_variant '{drm_variant}', falling back to 'auto'")
             drm_variant = RTLPlusDefaults.DRM_VARIANT_AUTO
