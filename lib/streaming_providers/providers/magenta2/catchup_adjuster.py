@@ -1,7 +1,4 @@
 # streaming_providers/magenta2/catchup_adjuster.py
-"""
-Magenta2 catchup manifest adjuster.
-"""
 
 from datetime import datetime, timezone
 from ...base.utils.logger import logger
@@ -25,13 +22,19 @@ class Magenta2CatchupAdjuster:
         requested_dt = datetime.fromtimestamp(requested_start_time, tz=timezone.utc)
 
         try:
-            events, ast = rewriter.extract_events(mpd_content, _MAGENTA2_EPG_SCHEME)
+            # FIX: extract_events returns ExtractedEvents object, not tuple
+            extracted = rewriter.extract_events(mpd_content, _MAGENTA2_EPG_SCHEME)
+
+            # Access events and availability_start from the object
+            events = extracted.events
+            ast = extracted.availability_start
 
             if not events:
                 logger.warning("Magenta2: no events found, using buffer offset")
-                return rewriter.rewrite_by_buffer_offset(mpd_content, ast, requested_dt)
+                return rewriter.rewrite_by_buffer_offset(mpd_content, extracted, requested_dt)
 
-            best_event, diff = rewriter.find_closest_event(events, ast, requested_dt)
+            # FIX: find_closest_event now takes ExtractedEvents as first argument
+            best_event, diff = rewriter.find_closest_event(extracted, requested_dt)
 
             if best_event and diff <= _EVENT_MATCH_THRESHOLD_S:
                 logger.info(
@@ -39,19 +42,20 @@ class Magenta2CatchupAdjuster:
                     f"(start={best_event.wall_clock_start(ast).isoformat()}, diff={diff:.0f}s)"
                 )
                 return rewriter.rewrite_for_event(
-                    mpd_content, ast, best_event,
+                    mpd_content, extracted, best_event,
                     keep_other_events=False,
                     force_static_if_ended=False,
                 )
 
             logger.info(f"Magenta2: no close event match (diff={diff:.0f}s), using buffer offset")
-            return rewriter.rewrite_by_buffer_offset(mpd_content, ast, requested_dt)
+            return rewriter.rewrite_by_buffer_offset(mpd_content, extracted, requested_dt)
 
         except ValueError as e:
             logger.warning(f"Magenta2: cannot parse events ({e}), using buffer offset")
             try:
-                _, ast = rewriter.extract_events(mpd_content)  # fallback without scheme
-                return rewriter.rewrite_by_buffer_offset(mpd_content, ast, requested_dt)
+                # Fallback: try without scheme filter
+                extracted = rewriter.extract_events(mpd_content)
+                return rewriter.rewrite_by_buffer_offset(mpd_content, extracted, requested_dt)
             except ValueError:
                 logger.error("Magenta2: MPD has no availabilityStartTime")
                 return mpd_content
