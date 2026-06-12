@@ -605,12 +605,11 @@ def setup_stream_routes(app, manager, service):
                     end_time=end_time_int,
                     epg_id=epg_id,
                     country=country,
-                    drm_variant="software",  # decrypted endpoint implies software DRM
                 )
             else:
                 drm_configs = _get_drm_configs(
                     content_type, provider, content_id,
-                    country=country, drm_variant="software",
+                    country=country,
                 )
 
             drm_dict = {}
@@ -650,14 +649,12 @@ def setup_stream_routes(app, manager, service):
                         country=country,
                         highest_quality_only=highest_quality_only,
                         receiver_side=True,
-                        drm_variant="software",
                     )
                 else:
                     return service.get_decrypted_manifest(
                         provider, content_id, keyids,
                         highest_quality_only=highest_quality_only,
                         receiver_side=True,
-                        drm_variant="software",
                     )
 
             # ------------------------------------------------------------------
