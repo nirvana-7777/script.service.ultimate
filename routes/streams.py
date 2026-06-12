@@ -648,13 +648,11 @@ def setup_stream_routes(app, manager, service):
                         epg_id=epg_id,
                         country=country,
                         highest_quality_only=highest_quality_only,
-                        receiver_side=True,
                     )
                 else:
                     return service.get_decrypted_manifest(
                         provider, content_id, keyids,
                         highest_quality_only=highest_quality_only,
-                        receiver_side=True,
                     )
 
             # ------------------------------------------------------------------
