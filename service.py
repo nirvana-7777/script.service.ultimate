@@ -474,12 +474,13 @@ class UltimateService:
             end_time: int,
             epg_id: str = None,
             country: str = None,
+            drm_variant: str = "auto",
     ) -> str:
         """
         Get proxied and rewritten MPD manifest for catchup content using media proxy.
-        Similar to get_proxied_manifest but for catchup streams.
         """
-        cache_key = f"{channel_id}_catchup_{start_time}_{end_time}"
+        # Use start_time for cache key (requested_start_time is same value, but start_time is guaranteed)
+        cache_key = f"{channel_id}_catchup_start_{start_time}" if provider.lower() == "magenta2" else f"{channel_id}_catchup_{start_time}_{end_time}"
 
         cached_mpd = self.mpd_cache.get(provider, cache_key)
         if cached_mpd:
@@ -511,11 +512,22 @@ class UltimateService:
                 provider, channel_id, manifest_url
             )
 
+            # ====================================================================
+            # MAGENTA2 TIMELINE ADJUSTMENT
+            # ====================================================================
+            if provider.lower() == "magenta2" and start_time:
+                from streaming_providers.providers.magenta2.catchup_adjuster import Magenta2CatchupAdjuster
+                manifest_text = Magenta2CatchupAdjuster.adjust(manifest_text, start_time)
+                ttl = min(ttl, 300)  # Shorter TTL for adjusted manifests
+
+            # ====================================================================
+            # STANDARD PROXY REWRITING
+            # ====================================================================
             rewriter = MPDRewriter(
                 self.media_proxy_url,
                 provider_proxy_url,
-                None,  # No keyids for catchup streams
-                False,  # highest_quality_only — not needed for catchup
+                None,
+                False,
                 provider=provider,
                 channel=channel_id,
                 segment_headers=segment_headers,

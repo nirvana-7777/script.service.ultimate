@@ -347,7 +347,8 @@ def setup_stream_routes(app, manager, service):
         if is_catchup:
             if manager.needs_proxy(provider):
                 return service.get_proxied_catchup_manifest(
-                    provider, content_id, start_time, end_time, epg_id, country
+                    provider, content_id, start_time, end_time, epg_id, country,
+                    drm_variant=drm_variant,
                 )
             else:
                 manifest_url = manager.get_catchup_manifest(
