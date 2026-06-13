@@ -194,9 +194,10 @@ class ProviderManager:
             end_time: int,
             epg_id: Optional[str] = None,
             country: Optional[str] = None,
+            drm_variant = "auto",
     ) -> Optional[str]:
         return self.catchup_ops.get_catchup_manifest(
-            provider_name, channel_id, start_time, end_time, epg_id, country
+            provider_name, channel_id, start_time, end_time, epg_id, country, drm_variant
         )
 
     def get_catchup_drm_configs(

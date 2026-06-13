@@ -25,6 +25,7 @@ class CatchupOperations:
         end_time: int,
         epg_id: Optional[str] = None,
         country: Optional[str] = None,
+        drm_variant: Optional[str] = "auto",
     ) -> Optional[str]:
         """Get catchup manifest URL."""
         provider = self.registry.get_provider(provider_name)
@@ -47,6 +48,7 @@ class CatchupOperations:
                 end_time=end_time,
                 epg_id=epg_id,
                 country=country,
+                drm_variant=drm_variant,
             )
         except NotImplementedError:
             logger.error(f"Provider '{provider_name}' hasn't implemented catchup")

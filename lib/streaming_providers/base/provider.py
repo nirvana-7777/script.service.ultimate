@@ -1189,6 +1189,7 @@ class StreamingProvider(ABC):
         start_time: int,
         end_time: int,
         epg_id: Optional[str] = None,
+        drm_variant: Optional[str] = "auto",
         **kwargs,
     ) -> Optional[str]:
         """

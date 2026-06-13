@@ -179,7 +179,7 @@ class PlaybackManager:
         return self._smil_manager.get_drm(content_id, content_type, **kwargs)
 
     def get_catchup_manifest(
-        self, content_id: str, start_time: int, end_time: int, **kwargs
+        self, content_id: str, start_time: int, end_time: int, drm_variant: str, **kwargs
     ) -> Optional[str]:
         """
         Return a catchup manifest URL for *channel_id*.
