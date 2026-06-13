@@ -822,15 +822,16 @@ class UltimateService:
             provider_label = provider_name
 
         # Get catchup information from channel
-        catchup_window = getattr(channel, 'catchup_window', 0)  # in hours
-        catchup_source = getattr(channel, 'catchup_source', 'default')
+        catchup_window = getattr(channel, 'catchup_hours', 0)  # in hours
+        catchup_type = getattr(channel, 'catchup_type', 'append')
+        catchup_source = getattr(channel, 'catchup_source', '?start_time={start}&end_time={end}')
 
         # Build EXTINF line with catchup tags if available
         import math
         if catchup_window > 0:
             # Convert hours to days (ceil to ensure full coverage)
             catchup_days = math.ceil(catchup_window / 24)
-            entry_content += f'#EXTINF:-1 tvg-id="{channel_id}"{epg_id_attr}{chno} tvg-logo="{channel_logo}" group-title="{provider_label}" catchup="{catchup_source}" catchup-days="{catchup_days}",{channel_name}\n'
+            entry_content += f'#EXTINF:-1 tvg-id="{channel_id}"{epg_id_attr}{chno} tvg-logo="{channel_logo}" group-title="{provider_label}" catchup="{catchup_type}" catchup-days="{catchup_days}" catchup-source="{catchup_source}",{channel_name}\n'
         else:
             entry_content += f'#EXTINF:-1 tvg-id="{channel_id}"{epg_id_attr}{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
 
@@ -896,14 +897,15 @@ class UltimateService:
 
         # Get catchup information from channel
         catchup_window = getattr(channel, 'catchup_hours', 0)  # in hours
-        catchup_source = getattr(channel, 'catchup_source', 'default')
+        catchup_type = getattr(channel, 'catchup_type', 'append')
+        catchup_source = getattr(channel, 'catchup_source', '?start_time={start}&end_time={end}')
 
         import math
         # Build EXTINF line with catchup tags if available
         if catchup_window > 0:
             # Convert hours to days (ceil to ensure full coverage)
             catchup_days = math.ceil(catchup_window / 24)
-            entry_content += f'#EXTINF:-1 tvg-id="{channel_id}"{epg_id_attr}{chno} tvg-logo="{channel_logo}" group-title="{provider_label}" catchup="{catchup_source}" catchup-days="{catchup_days}",{channel_name}\n'
+            entry_content += f'#EXTINF:-1 tvg-id="{channel_id}"{epg_id_attr}{chno} tvg-logo="{channel_logo}" group-title="{provider_label}" catchup="{catchup_type}" catchup-days="{catchup_days}" catchup-source="{catchup_source},{channel_name}\n'
         else:
             entry_content += f'#EXTINF:-1 tvg-id="{channel_id}"{epg_id_attr}{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
 
@@ -982,13 +984,14 @@ class UltimateService:
 
                     # Get catchup information
                     catchup_window = getattr(channel, 'catchup_hours', 0)
-                    catchup_source = getattr(channel, 'catchup_source', 'default')
+                    catchup_source = getattr(channel, 'catchup_source', '?start_time={start}&end_time={end}')
+                    catchup_type = getattr(channel, 'catchup_type', 'append')
 
                     import math
                     # Add M3U entry with catchup tags if available
                     if catchup_window > 0:
                         catchup_days = math.ceil(catchup_window / 24)
-                        m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}"{epg_id_attr}{chno} tvg-logo="{channel_logo}" group-title="{provider_label}" catchup="{catchup_source}" catchup-days="{catchup_days}",{channel_name}\n'
+                        m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}"{epg_id_attr}{chno} tvg-logo="{channel_logo}" group-title="{provider_label}" catchup="{catchup_type}" catchup-days="{catchup_days}" catchup-source="{catchup_source}",{channel_name}\n'
                     else:
                         m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}"{epg_id_attr}{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
 
