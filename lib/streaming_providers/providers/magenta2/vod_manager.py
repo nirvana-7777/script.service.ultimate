@@ -1763,3 +1763,446 @@ class VodManager:
             return int(season_id.rsplit("_DE_", 1)[-1])
         except (ValueError, IndexError):
             return None
+
+    # =========================================================================
+    # Search
+    # =========================================================================
+
+    def search(
+            self,
+            query: str,
+            cursor: Optional[str] = None,
+            page_size: int = VOD_DEFAULT_PAGE_SIZE,
+            **kwargs,
+    ) -> Dict[str, Any]:
+        """
+        Search the VOD catalogue using Magenta2's two-step SearchGrid API.
+
+        The API flow is:
+          1. GET DocumentGroupRedirect?q={query}&...  → {"$type":"redirect","redirectUrl":"..."}
+          2. GET redirectUrl                          → grouped SearchGrid results
+
+        Based on actual API logs:
+          First request: /DocumentGroupRedirect/TVHS_DG_SearchGrid?q=Geissens&...
+          Response: {"$type": "redirect", "redirectUrl": "https://tvhubs.t-online.de/v3/ftv-web/SearchGrid/294240?q=Geissens&..."}
+          Second request: GET redirectUrl
+          Response: {"$type": "groupgrid", "content": {"groups": [...]}}
+
+        Pagination notes:
+          Only the first page is supported in this implementation. The API
+          returns a fixed result set; full pagination via SearchUnstructuredGrid
+          can be added later by following allItems.href with $offset/$size.
+
+        Args:
+            query:     Search string. Empty / whitespace-only → empty result.
+            cursor:    Reserved for future pagination; ignored for now.
+            page_size: Reserved for future pagination; ignored for now.
+
+        Returns:
+            {"entries": List[VodCategory | VodItem], "next_cursor": None, "total": int}
+        """
+        from urllib.parse import quote as _quote
+
+        _empty: Dict[str, Any] = {"entries": [], "next_cursor": None, "total": 0}
+
+        if not query or not query.strip():
+            logger.debug(f"{self._provider}: Search called with empty query")
+            return _empty
+
+        # ── Resolve the search URL template ──────────────────────────────
+        # Priority: 1. endpoint_manager (if available), 2. provider_config, 3. fallback
+        search_template = self._get_search_url_template()
+        if not search_template:
+            logger.error(f"{self._provider}: No search URL template available")
+            return _empty
+
+        # The manifest template uses {clientModel} (camelCase) — same
+        # convention as home_url / _get_streaming_grid_url().
+        redirect_url = search_template.replace(
+            "{clientModel}", self._client_model
+        ).replace("{query}", _quote(query.strip(), safe=""))
+
+        # ── Step 1: DocumentGroupRedirect → API-level redirect ────────────
+        params = self._base_params()
+        logger.debug(f"{self._provider}: Search redirect URL: {redirect_url}")
+        logger.debug(f"{self._provider}: Search redirect params: {params}")
+
+        redirect_data = self._get(redirect_url, params)
+
+        if not redirect_data:
+            logger.error(f"{self._provider}: Search redirect request failed - no response")
+            return _empty
+
+        if redirect_data.get("$type") != "redirect":
+            logger.error(
+                f"{self._provider}: Search redirect response has unexpected "
+                f"$type={redirect_data.get('$type')!r}"
+            )
+            return _empty
+
+        redirect_target = redirect_data.get("redirectUrl")
+        if not redirect_target:
+            logger.error(f"{self._provider}: Search redirect response missing redirectUrl")
+            return _empty
+
+        # ── Step 2: Fetch actual search results ───────────────────────────
+        # The redirectUrl already carries all required query params baked in
+        # by the server. Pass an empty params dict so we don't duplicate or
+        # override them — this mirrors _get_streaming_grid_url()'s second call.
+        logger.debug(f"{self._provider}: Search results URL: {redirect_target}")
+        search_data = self._get(redirect_target, {})
+        if not search_data:
+            logger.error(f"{self._provider}: Search results request failed")
+            return _empty
+
+        # ── Step 3: Parse grouped results ────────────────────────────────
+        entries = self._parse_search_groups(search_data)
+
+        logger.info(
+            f"{self._provider}: Search '{query}' returned {len(entries)} entries"
+        )
+
+        return {"entries": entries, "next_cursor": None, "total": len(entries)}
+
+    def _get_search_url_template(self) -> Optional[str]:
+        """
+        Resolve the search URL template from available sources.
+
+        Priority order:
+            1. endpoint_manager.get_endpoint("search_template") - if available
+            2. provider_config.get_search_url_template() - direct manifest access
+            3. None (fallback logging only - no hardcoded fallback)
+
+        Returns:
+            Raw template string with {clientModel} and {query} placeholders,
+            or None if not found.
+        """
+        # Priority 1: Try endpoint manager (discovered via manifest)
+        if hasattr(self._provider, 'endpoint_manager'):
+            template = self._provider.endpoint_manager.get_endpoint("search_template")
+            if template:
+                logger.debug(f"{self._provider}: Found search template via endpoint_manager")
+                return template
+
+        # Priority 2: Try provider config directly
+        if hasattr(self._provider, 'provider_config') and self._provider.provider_config:
+            template = self._provider.provider_config.get_search_url_template()
+            if template:
+                logger.debug(f"{self._provider}: Found search template via provider_config")
+                return template
+
+        # Priority 3: Try manifest.tv_hubs.base_urls directly (fallback)
+        if hasattr(self._provider, 'provider_config'):
+            manifest = getattr(self._provider.provider_config, "manifest", None)
+            if manifest:
+                tv_hubs = getattr(manifest, "tv_hubs", None)
+                if tv_hubs:
+                    template = tv_hubs.base_urls.get("searchUrl")
+                    if template:
+                        logger.debug(f"{self._provider}: Found search template via manifest.tv_hubs")
+                        return template
+
+        logger.warning(
+            f"{self._provider}: Search URL template not found in any source. "
+            "Search functionality will not work."
+        )
+        return None
+
+    def _parse_search_groups(self, data: Dict) -> List[Union[VodCategory, VodItem]]:
+        """
+        Parse a SearchGrid response into a flat list of VodCategory / VodItem.
+
+        Response structure from actual API call:
+        {
+            "$type": "groupgrid",
+            "content": {
+                "groups": [
+                    {
+                        "title": "TV",
+                        "items": [...],
+                        "itemsCount": 213,
+                        "allItems": {"href": "https://..."}
+                    },
+                    {
+                        "title": "Streaming",
+                        "items": [...],
+                        "itemsCount": 213
+                    }
+                ]
+            }
+        }
+
+        External / non-VOD groups (Podcasts, Music, …) are skipped: a group
+        is included only when at least one of its items carries a recognisable
+        VOD type (Series / Episode / Movie / Group).
+        """
+        _VOD_TYPES = {"Series", "Episode", "Movie"}
+
+        entries: List[Union[VodCategory, VodItem]] = []
+        groups: List[Dict] = (data.get("content") or {}).get("groups", [])
+
+        for group in groups:
+            group_title: str = group.get("title", "")
+            items: List[Dict] = group.get("items", [])
+            items_count: int = group.get("itemsCount", 0)
+
+            # Skip groups that contain no recognisable VOD content so that
+            # Podcasts, Music and other non-video groups are silently dropped.
+            has_vod = any(
+                i.get("vodType") in _VOD_TYPES or i.get("type") == "Group"
+                for i in items
+            )
+            if not has_vod:
+                logger.debug(
+                    f"{self._provider}: Skipping non-VOD search group "
+                    f"'{group_title}' ({items_count} items)"
+                )
+                continue
+
+            logger.debug(
+                f"{self._provider}: Processing search group '{group_title}' "
+                f"with {len(items)} items"
+            )
+
+            for item in items:
+                entry = self._map_search_item(item)
+                if entry is not None:
+                    entries.append(entry)
+
+        return entries
+
+    def _map_search_item(
+            self, item: Dict
+    ) -> Optional[Union[VodCategory, VodItem]]:
+        """
+        Dispatch a single search result item to the appropriate mapper.
+
+        Based on actual API response for query "Geissens":
+
+        Items can have:
+            - type: "Group" (category folder, e.g., TV group items)
+            - vodType: "Series" (browsable series)
+            - vodType: "Episode" (playable episode)
+            - vodType: "Movie" (playable movie)
+
+        Examples from logs:
+            - Group: {"id": "groupType16byGenreAdult__...", "type": "Group", "title": "Die Geissens - Eine schrecklich glamouröse Familie", "size": 11}
+            - Series: {"id": "GN_SERIES_10862001", "vodType": "Series", "title": "Die Geissens - Eine schrecklich glamouröse Familie!", "seasonsAvailable": 24}
+            - Episode: {"id": "GN_EP019441760098", "vodType": "Episode", "title": "Die Geissens campen wieder!", "seasonNumber": 4, "episodeNumber": 8}
+
+        vodType / type → mapper
+        -----------------------
+        Group   → VodCategory  (category folder, e.g. a TV channel group)
+        Series  → VodCategory  (browsable, navigates to seasons)
+        Episode → VodItem      (playable)
+        Movie   → VodItem      (playable)
+        other   → None (logged and skipped)
+        """
+        vod_type: str = item.get("vodType", "")
+        item_type: str = item.get("type", "")
+
+        # Group items (category folders)
+        if item_type == "Group":
+            return self._map_search_group_item(item)
+
+        # Series (browsable content)
+        if vod_type == "Series":
+            return self._map_search_series_item(item)
+
+        # Episodes (playable)
+        if vod_type == "Episode":
+            season_number: Optional[int] = item.get("seasonNumber")
+            return self._map_episode_item(item, season_number)
+
+        # Movies (playable)
+        if vod_type == "Movie":
+            return self._map_search_movie_item(item)
+
+        # Unknown type - log once per unique type for debugging
+        logger.debug(
+            f"{self._provider}: Unknown search item type: "
+            f"vodType={vod_type!r} type={item_type!r} — skipping"
+        )
+        return None
+
+    def _map_search_group_item(self, item: Dict) -> Optional[VodCategory]:
+        """
+        Map a Group-type search item to a VodCategory.
+
+        Group items appear in the "TV" group and point to a category page
+        (e.g., all episodes of a TV channel's output) identified by groupContentLink.
+
+        Example from logs:
+        {
+            "id": "groupType16byGenreAdult__3cf311181b6a87f1aec3a3cc6abfbd62",
+            "title": "Die Geissens - Eine schrecklich glamouröse Familie",
+            "size": 11,
+            "image": {"href": "http://ngiss.t-online.de/..."},
+            "groupContentLink": {"href": "https://tvhubs.t-online.de/v3/ftv-web/SearchUnstructuredGrid/294240/0?$q=Geissens&$groupId=..."}
+        }
+        """
+        content_id: str = item.get("id", "")
+        if not content_id:
+            logger.debug(f"{self._provider}: Search group item missing id")
+            return None
+
+        title: str = item.get("title", "")
+        size: Optional[int] = item.get("size")
+
+        # Extract image URL
+        image: Optional[str] = None
+        if item.get("image"):
+            image = item["image"].get("href")
+
+        group_content_link: str = (item.get("groupContentLink") or {}).get("href", "")
+
+        # Create opaque ID for routing
+        opaque_id = f"search_group:{content_id}"
+
+        # Register the node for navigation if we have a fetch URL
+        if group_content_link:
+            self._register_node(opaque_id, group_content_link)
+            logger.debug(
+                f"{self._provider}: Registered search group '{title}' "
+                f"with content_id={opaque_id}"
+            )
+        else:
+            logger.warning(
+                f"{self._provider}: Search group '{title}' has no groupContentLink"
+            )
+
+        return VodCategory(
+            name=title,
+            content_id=opaque_id,
+            provider=self._provider,
+            logo_url=image,
+            child_count=size,
+            fetch_url=group_content_link or None,
+        )
+
+    def _map_search_series_item(self, item: Dict) -> VodCategory:
+        """
+        Map a Series search result to a VodCategory.
+
+        Reuses the same ``series:<GN_SERIES_id>`` prefix as lane browsing so
+        that navigation into seasons works identically regardless of how the
+        series was discovered.
+
+        Example from logs:
+        {
+            "id": "GN_SERIES_10862001",
+            "vodType": "Series",
+            "title": "Die Geissens - Eine schrecklich glamouröse Familie!",
+            "description": "Der Multimillionär Robert Geiss führt...",
+            "seasonsAvailable": 24,
+            "image": {"href": "http://ngiss.t-online.de/..."},
+            "details": {"href": "https://tvhubs.t-online.de/v3/ftv-web/VodDetails/202887/GN_SERIES_10862001"}
+        }
+        """
+        series_id: str = item.get("id", "")
+        title: str = item.get("title", "")
+
+        # Use longDescription if available, otherwise short description
+        description: Optional[str] = item.get("longDescription") or item.get("description")
+
+        # Extract image URL (prefer posterWide)
+        image: Optional[str] = None
+        if item.get("image"):
+            image = item["image"].get("href")
+
+        seasons_available: Optional[int] = item.get("seasonsAvailable")
+        details_href: str = (item.get("details") or {}).get("href", "")
+
+        opaque_id = f"series:{series_id}"
+
+        if details_href:
+            self._register_node(opaque_id, details_href)
+            logger.debug(
+                f"{self._provider}: Registered search series '{title}' "
+                f"with content_id={opaque_id}"
+            )
+
+        return VodCategory(
+            name=title,
+            content_id=opaque_id,
+            provider=self._provider,
+            logo_url=image,
+            description=description,
+            child_count=seasons_available,
+            details_url=details_href or None,
+            fetch_url=details_href or None,
+        )
+
+    def _map_search_movie_item(self, item: Dict) -> VodItem:
+        """
+        Map a Movie search result to a VodItem.
+
+        Playback resolution (VodDetails → productInformationLink → VodPlayer)
+        is deferred to get_manifest() — only triggered on play, not at search
+        time. This mirrors the behaviour of _map_unstructured_item for movies.
+
+        Example from logs (movie variant - not in Geissens example but similar to series):
+        {
+            "id": "GN_MV_12345678",
+            "vodType": "Movie",
+            "title": "Movie Title",
+            "description": "Movie description...",
+            "duration": 90,
+            "yearOfProduction": "2023",
+            "image": {"href": "http://ngiss.t-online.de/..."},
+            "details": {"href": "https://tvhubs.t-online.de/v3/ftv-web/VodDetails/202887/GN_MV_12345678"}
+        }
+        """
+        movie_id: str = item.get("id", "")
+        title: str = item.get("title", "")
+
+        description: Optional[str] = item.get("longDescription") or item.get("description")
+
+        # Extract image URL
+        image: Optional[str] = None
+        if item.get("image"):
+            image = item["image"].get("href")
+
+        # Duration in minutes from API → convert to seconds
+        duration_raw = item.get("duration")
+        try:
+            duration_seconds: Optional[int] = int(duration_raw) * 60 if duration_raw else None
+        except (ValueError, TypeError):
+            duration_seconds = None
+            logger.debug(f"{self._provider}: Invalid duration for movie {movie_id}: {duration_raw}")
+
+        # Year from API (may be "2023" or "2023-01-01")
+        year_raw = item.get("yearOfProduction")
+        try:
+            release_year: Optional[int] = (
+                int(str(year_raw).split("-")[0]) if year_raw else None
+            )
+        except (ValueError, TypeError):
+            release_year = None
+
+        # Store details URL for manifest resolution (used by get_manifest)
+        details_href: str = (item.get("details") or {}).get("href", "")
+
+        vod_item = VodItem.create_movie(
+            name=title,
+            content_id=f"movie:{movie_id}",
+            provider=self._provider,
+            logo_url=image,
+            description=description,
+            release_year=release_year,
+            duration_seconds=duration_seconds,
+            genre=item.get("mainGenre"),
+            genres=item.get("genres") or None,
+            rating=item.get("childProtectionRating"),
+        )
+
+        # Store manifest script for later playback resolution
+        if details_href:
+            vod_item.manifest_script = details_href
+
+        logger.debug(
+            f"{self._provider}: Mapped search movie '{title}' "
+            f"(id={movie_id}, year={release_year}, duration={duration_seconds}s)"
+        )
+
+        return vod_item

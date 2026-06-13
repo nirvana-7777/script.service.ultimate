@@ -159,6 +159,18 @@ class EndpointManager:
             if resolved_url:
                 self._add_endpoint(f"tvhub_{hub_name}", EndpointCategory.TVHUBS, resolved_url)
 
+        # ===== SEARCH URL TEMPLATE =====
+        # Store the raw template (with {clientModel} and {query}) for search
+        search_template = manifest.tv_hubs.base_urls.get("searchUrl")
+        if search_template:
+            self._add_endpoint(
+                "search_template",
+                EndpointCategory.CONTENT,
+                search_template,
+                is_fallback=False,
+            )
+            logger.debug(f"Search template found: {search_template}")
+
     def _add_openid_endpoints(self) -> None:
         """Add endpoints from OpenID configuration"""
         if not self.config.openid:

@@ -895,7 +895,7 @@ class UltimateService:
         stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/decrypted/index.mpd"
 
         # Get catchup information from channel
-        catchup_window = getattr(channel, 'catchup_window', 0)  # in hours
+        catchup_window = getattr(channel, 'catchup_hours', 0)  # in hours
         catchup_source = getattr(channel, 'catchup_source', 'default')
 
         import math
@@ -981,7 +981,7 @@ class UltimateService:
                     stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/decrypted/index.mpd"
 
                     # Get catchup information
-                    catchup_window = getattr(channel, 'catchup_window', 0)
+                    catchup_window = getattr(channel, 'catchup_hours', 0)
                     catchup_source = getattr(channel, 'catchup_source', 'default')
 
                     import math

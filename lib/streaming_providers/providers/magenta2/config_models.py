@@ -23,9 +23,9 @@ class BootstrapConfig:
     consumer_accounts_url: Optional[str] = None
     login_qr_code_url: Optional[str] = None
     # VOD / personal-bar fields from baseSettings
-    home_url: Optional[str] = None       # baseSettings.homeUrl
+    home_url: Optional[str] = None  # baseSettings.homeUrl
     profile_name: Optional[str] = None  # baseSettings.profileName
-    theme_id: Optional[str] = None      # baseSettings.themeId
+    theme_id: Optional[str] = None  # baseSettings.themeId
     raw_data: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -243,10 +243,23 @@ class TvHubConfig:
 
         extract_urls(tv_hubs_data)
 
-        # Log how many URLs were found
         logger.debug(f"Extracted {len(base_urls)} TV Hub URLs from manifest")
-
         return cls(base_urls=base_urls)
+
+    @property
+    def search_url(self) -> Optional[str]:
+        """Get the raw search URL template."""
+        return self.base_urls.get("searchUrl")
+
+    @property
+    def vod_details_url(self) -> Optional[str]:
+        """Get the raw VOD details URL template."""
+        return self.base_urls.get("vodDetailsUrl")
+
+    @property
+    def unstructured_grid_url(self) -> Optional[str]:
+        """Get the raw UnstructuredGrid URL template."""
+        return self.base_urls.get("UnstructuredGrid")
 
 
 @dataclass
@@ -370,18 +383,38 @@ class ProviderConfig:
 
         return feed_template.replace("{MpxAccountPid}", self.manifest.mpx.account_pid)
 
-    def get_resolved_tvhub_url(self, hub_name: str) -> Optional[str]:
+    def get_resolved_tvhub_url(self, hub_name: str, resolve: bool = True) -> Optional[str]:
+        """
+        Get resolved TV Hub URL with client model substitution.
+
+        Args:
+            hub_name: Name of the hub URL (e.g., "searchUrl", "vodDetailsUrl")
+            resolve: If True, substitute {clientModel} with actual value.
+                     If False, return the raw template.
+        """
         if not self.manifest or not self.bootstrap.client_model:
             return None
         template = self.manifest.tv_hubs.base_urls.get(hub_name)
         if not template:
             return None
+
+        if not resolve:
+            return template
+
         client_model: str = self.bootstrap.client_model
-        return (
-            template
-            .replace("{clientModel}", client_model)
-            .replace("{client_model}", client_model)
-        )
+        return template.replace("{clientModel}", client_model)
+
+    def get_search_url_template(self) -> Optional[str]:
+        """
+        Get the raw search URL template from manifest tvHubUrls.
+
+        The template contains {clientModel} and {query} placeholders:
+        e.g., "https://prod.tvhubs.ng.telekom.net/v3/{clientModel}/DocumentGroupRedirect/TVHS_DG_SearchGrid?q={query}"
+
+        Returns:
+            Raw template string, or None if not available.
+        """
+        return self.get_resolved_tvhub_url("searchUrl", resolve=False)
 
     def get_tvhubs_base_url(self, client_model: Optional[str] = None) -> Optional[str]:
         if not self.manifest:

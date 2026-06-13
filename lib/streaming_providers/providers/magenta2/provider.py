@@ -689,6 +689,25 @@ class Magenta2Provider(StreamingProvider):
             **kwargs,
         )
 
+    def search_vod(
+            self,
+            query: str,
+            cursor: Optional[str] = None,
+            page_size: int = 24,
+            **kwargs: Any,
+    ) -> Any:
+        """Search the VOD catalogue. Delegates to VodManager.search()."""
+        if not self._vod_manager:
+            raise RuntimeError(
+                "VodManager not available — configuration discovery may have failed"
+            )
+        return self._vod_manager.search(
+            query=query,
+            cursor=cursor,
+            page_size=page_size,
+            **kwargs,
+        )
+
     def get_recordings(self, include_deleted: bool = False, **kwargs: Any) -> Any:
         """Return a list of Recording objects from the nPVR backend."""
         if not self._recordings_manager:
