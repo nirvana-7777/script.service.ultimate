@@ -824,7 +824,7 @@ class UltimateService:
         # Get catchup information from channel
         catchup_window = getattr(channel, 'catchup_hours', 0)  # in hours
         catchup_type = getattr(channel, 'catchup_type', 'append')
-        catchup_source = getattr(channel, 'catchup_source', '?start_time={start}&end_time={end}')
+        catchup_source = getattr(channel, 'catchup_source', '?start_time={utc}&end_time={utcend}')
 
         # Build EXTINF line with catchup tags if available
         import math
@@ -898,7 +898,7 @@ class UltimateService:
         # Get catchup information from channel
         catchup_window = getattr(channel, 'catchup_hours', 0)  # in hours
         catchup_type = getattr(channel, 'catchup_type', 'append')
-        catchup_source = getattr(channel, 'catchup_source', '?start_time={start}&end_time={end}')
+        catchup_source = getattr(channel, 'catchup_source', '?start_time={utc}&end_time={utcend}')
 
         import math
         # Build EXTINF line with catchup tags if available
@@ -984,7 +984,7 @@ class UltimateService:
 
                     # Get catchup information
                     catchup_window = getattr(channel, 'catchup_hours', 0)
-                    catchup_source = getattr(channel, 'catchup_source', '?start_time={start}&end_time={end}')
+                    catchup_source = getattr(channel, 'catchup_source', '?start_time={utc}&end_time={utcend}')
                     catchup_type = getattr(channel, 'catchup_type', 'append')
 
                     import math
