@@ -365,7 +365,7 @@ class MagentaEUProvider(StreamingProvider):
         return None
 
     def get_catchup_manifest(
-            self, content_id: str, start_time: int, end_time: int, drm_variant: str, **kwargs
+            self, content_id: str, start_time: int, end_time: int, drm_variant: Optional[str] = "auto", **kwargs
     ) -> Optional[str]:
         """
         Get catchup manifest URL for Magenta TV.
