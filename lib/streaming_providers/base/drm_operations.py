@@ -830,6 +830,339 @@ class DRMOperations:
             logger.warning(f"Failed to extract PSSH: {e}")
             return []
 
+    def get_catchup_content_drm_configs(
+        self,
+        provider_name: str,
+        channel_id: str,
+        catchup_manifest_url: str,
+        catchup_manifest_headers: Dict[str, str],
+        start_time: int,
+        end_time: int,
+        epg_id: Optional[str] = None,
+        **kwargs,
+    ) -> List:
+        """
+        Get DRM configurations for catchup content using the full two-phase
+        DRM pipeline, driven by a pre-resolved catchup manifest URL.
+
+        This method is the catchup counterpart of get_content_drm_configs().
+        The key difference is that the manifest URL has already been resolved
+        by CatchupOperations (via provider.get_catchup_manifest_with_headers())
+        before this method is called, so the pipeline never accidentally fetches
+        the live manifest in place of the catchup one.
+
+        Execution flow mirrors get_content_drm_configs() exactly:
+          Step 0 : Resolve provider; inject proxy_config.
+          Step 1 : DRM config cache check (catchup-scoped key).
+          Step 0a: Fetch catchup manifest, short-circuit if unencrypted.
+          Step 2 : Phase 1 — GENERIC plugins.
+          Step 3 : Phase 2 — provider.get_catchup_drm() for provider DRM configs.
+                   Raises NotImplementedError → empty list, treated as "no static
+                   provider configs; rely entirely on PSSH extraction".
+                   Returns configs  → used as Phase 2 provider_drm_configs.
+          Steps 4-8: PSSH extraction, system-specific plugins, ClearKey
+                     validation, config merging, cache, return.
+
+        The cache key is scoped to catchup by including start_time, end_time,
+        and epg_id so that different time windows for the same channel never
+        collide with each other or with the live cache entry.
+
+        Args:
+            provider_name: Provider identifier.
+            channel_id: The actual channel ID (not a synthetic composite).
+            catchup_manifest_url: Pre-resolved catchup manifest URL.
+            catchup_manifest_headers: HTTP headers for the catchup manifest.
+            start_time: Catchup window start as Unix timestamp.
+            end_time: Catchup window end as Unix timestamp.
+            epg_id: Optional EPG event ID (forwarded to provider DRM call).
+            **kwargs: drm_variant, country, proxy_config, etc.
+        """
+        cache_key = self._build_catchup_cache_key(
+            provider_name, channel_id, start_time, end_time, epg_id, **kwargs
+        )
+        manifest_content = None
+
+        # ------------------------------------------------------------------
+        # Step 0: Resolve provider and inject proxy_config into kwargs
+        # ------------------------------------------------------------------
+        provider = self.registry.get_provider(provider_name)
+        if not provider:
+            raise ValueError(f"Provider '{provider_name}' not found or disabled")
+
+        if "proxy_config" not in kwargs:
+            http_mgr = getattr(provider, "http_manager", None)
+            if http_mgr is not None:
+                provider_proxy = getattr(getattr(http_mgr, "config", None), "proxy_config", None)
+                if provider_proxy is not None:
+                    kwargs["proxy_config"] = provider_proxy
+                    logger.debug(
+                        f"DRMOperations (catchup): Injected proxy_config from provider "
+                        f"'{provider_name}' ({provider_proxy.host}:{provider_proxy.port})"
+                    )
+
+        # ------------------------------------------------------------------
+        # Step 1: DRM config cache check (catchup-scoped key)
+        # ------------------------------------------------------------------
+        cached_configs = self.drm_config_cache.get(cache_key)
+        if cached_configs is not None:
+            logger.info(f"Using cached catchup DRM configs for '{cache_key}'")
+            return cached_configs
+
+        # ------------------------------------------------------------------
+        # Step 0a: Fetch catchup manifest, short-circuit if unencrypted.
+        # Uses the pre-resolved catchup manifest URL — never calls
+        # provider.get_manifest_with_headers().
+        # ------------------------------------------------------------------
+        manifest_url = catchup_manifest_url
+        manifest_headers = catchup_manifest_headers
+
+        if manifest_url and manifest_url.startswith(("http://", "https://")):
+            try:
+                from .network import HTTPManager
+                http = provider.http_manager if hasattr(provider, "http_manager") else HTTPManager()
+                response = http.get(manifest_url, headers=manifest_headers, timeout=10, operation="api")
+                response.raise_for_status()
+                manifest_content = response.text
+
+                if not self._is_manifest_encrypted(manifest_content):
+                    logger.info(
+                        f"Catchup stream '{channel_id}' [{start_time},{end_time}] "
+                        f"is unencrypted (no DRM in catchup manifest)"
+                    )
+                    return [DRMConfig(system=DRMSystem.NONE, priority=0)]
+
+                logger.debug(
+                    f"Catchup stream '{channel_id}' [{start_time},{end_time}] "
+                    f"is encrypted, proceeding with DRM processing"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to check catchup manifest encryption for "
+                    f"'{channel_id}' [{start_time},{end_time}]: {e}"
+                )
+                manifest_content = None
+        else:
+            logger.error(
+                f"Invalid catchup manifest URL for '{channel_id}': '{manifest_url}'"
+            )
+            return []
+
+        # ------------------------------------------------------------------
+        # Step 2: Phase 1 — GENERIC plugins
+        # ------------------------------------------------------------------
+        pssh_data_list = None
+        generic_configs = None
+
+        if DRMSystem.GENERIC in self.drm_plugin_manager.plugins:
+            logger.debug(
+                f"Catchup Phase 1: GENERIC plugin processing for "
+                f"'{channel_id}' [{start_time},{end_time}]"
+            )
+            generic_configs, pssh_data_list = self._try_generic_plugins(
+                provider_name, channel_id, cache_key,
+                manifest_content=manifest_content,
+                manifest_url=manifest_url,
+                manifest_headers=manifest_headers,
+                **kwargs,
+            )
+
+            if generic_configs and any(c.system != DRMSystem.NONE for c in generic_configs):
+                logger.info(
+                    f"Catchup Phase 1: Generated {len(generic_configs)} configs via GENERIC plugin"
+                )
+                if pssh_data_list:
+                    validated, has_full_coverage = self._check_clearkey_coverage(
+                        generic_configs, pssh_data_list
+                    )
+                else:
+                    validated = generic_configs
+                    has_full_coverage = False
+
+                if not validated:
+                    logger.warning(
+                        f"Catchup Phase 1: GENERIC plugins produced no valid ClearKey configs "
+                        f"for '{channel_id}', falling through to provider DRM"
+                    )
+                elif has_full_coverage:
+                    result = self._select_configs_for_cache_and_return(validated, has_full_coverage)
+                    self.drm_config_cache.set(cache_key, result)
+                    return result
+                else:
+                    logger.info(
+                        f"Catchup Phase 1: Partial ClearKey coverage for '{channel_id}', "
+                        f"continuing to Phase 2"
+                    )
+            else:
+                logger.debug(
+                    f"Catchup Phase 1: No DRM configs from GENERIC plugin for '{channel_id}'"
+                )
+                generic_configs = None
+
+        # ------------------------------------------------------------------
+        # Step 3: Phase 2 — Get provider's DRM configs for catchup.
+        # provider.get_catchup_drm() raises NotImplementedError by default,
+        # meaning the provider has no static catchup-specific DRM config and
+        # we rely entirely on PSSH extraction from the catchup manifest.
+        # That is not an error — fall through cleanly to PSSH processing.
+        # ------------------------------------------------------------------
+        try:
+            provider_drm_configs = provider.get_catchup_drm(
+                content_id=channel_id,
+                start_time=start_time,
+                end_time=end_time,
+                epg_id=epg_id,
+                **kwargs,
+            )
+        except NotImplementedError:
+            logger.debug(
+                f"Provider '{provider_name}' has no static catchup DRM config; "
+                f"PSSH will be extracted from the catchup manifest"
+            )
+            provider_drm_configs = []
+
+        if not provider_drm_configs:
+            # No static provider configs and no GENERIC configs either.
+            # If we already have pssh_data_list from Phase 1 we can still
+            # return an unencrypted sentinel only when the manifest truly has
+            # no encryption — but we already checked that in Step 0a.
+            # Arriving here means: encrypted manifest, no provider keys, no
+            # GENERIC keys.  Return empty so the caller can decide whether to
+            # surface an error or attempt hardware DRM passthrough.
+            if not generic_configs:
+                logger.warning(
+                    f"Catchup stream '{channel_id}' [{start_time},{end_time}]: "
+                    f"manifest is encrypted but no DRM configs available from "
+                    f"provider or GENERIC plugins"
+                )
+                return []
+            # generic_configs exist (partial coverage); fall through to merge.
+            provider_drm_configs = []
+
+        # ------------------------------------------------------------------
+        # Steps 4–8: PSSH extraction, system-specific plugins, ClearKey
+        # validation, merging, and cache — identical logic to
+        # get_content_drm_configs() Steps 4–8.
+        # ------------------------------------------------------------------
+        if pssh_data_list is None and self.drm_plugin_manager.has_system_specific_plugins():
+            if self._needs_pssh_extraction(provider_drm_configs):
+                pssh_data_list = self.pssh_cache.get(cache_key)
+
+                if pssh_data_list is None:
+                    if manifest_content:
+                        from .utils.drm_extractor import DRMExtractor
+                        pssh_data_list = DRMExtractor._extract_from_manifest_content(manifest_content)
+                        if pssh_data_list:
+                            self.pssh_cache.set(cache_key, pssh_data_list)
+
+                    if not pssh_data_list and manifest_url:
+                        pssh_data_list = self._extract_pssh_from_manifest(
+                            manifest_url, manifest_headers, provider_name,
+                            channel_id=channel_id,
+                        )
+                        if pssh_data_list:
+                            self.pssh_cache.set(cache_key, pssh_data_list)
+                else:
+                    logger.debug(f"Catchup Phase 2: Using cached PSSH for '{cache_key}'")
+
+        provider_configs_snapshot = list(provider_drm_configs)
+        sorted_systems = sorted(
+            {c.system for c in provider_drm_configs},
+            key=lambda s: min(c.priority for c in provider_drm_configs if c.system == s),
+        )
+        remaining = list(provider_drm_configs)
+
+        for drm_system in sorted_systems:
+            system_configs = [c for c in remaining if c.system == drm_system]
+            if not system_configs:
+                continue
+            batch_result = self.drm_plugin_manager.process_system_specific_plugins(
+                system_configs, pssh_data_list or [], **kwargs
+            )
+            remaining = [c for c in remaining if c.system != drm_system] + batch_result
+
+            if pssh_data_list and any(c.system == DRMSystem.CLEARKEY for c in remaining):
+                remaining, has_full_coverage = self._check_clearkey_coverage(
+                    remaining, pssh_data_list
+                )
+                if has_full_coverage:
+                    logger.info(
+                        f"Catchup: Full ClearKey coverage after {drm_system.value} — stopping early"
+                    )
+                    break
+
+        processed = remaining
+
+        if generic_configs:
+            phase2_systems = {c.system for c in processed}
+            extra = [c for c in generic_configs if c.system not in phase2_systems]
+            if extra:
+                logger.info(f"Catchup: Merging {len(extra)} Phase 1 config(s) into Phase 2 results")
+                processed = processed + extra
+
+        if pssh_data_list and any(c.system == DRMSystem.CLEARKEY for c in processed):
+            processed, has_full_coverage = self._check_clearkey_coverage(processed, pssh_data_list)
+        else:
+            has_full_coverage = False
+
+        if not has_full_coverage:
+            processed_systems = {c.system for c in processed}
+            reinstated = [
+                c for c in provider_configs_snapshot if c.system not in processed_systems
+            ]
+            if reinstated:
+                logger.info(
+                    f"Catchup: Partial/no ClearKey coverage — reinstating "
+                    f"{len(reinstated)} replaced provider config(s): "
+                    f"{[c.system.name for c in reinstated]}"
+                )
+                processed = processed + reinstated
+
+        if not processed:
+            logger.error(
+                f"Catchup DRM processing failed for '{channel_id}' "
+                f"[{start_time},{end_time}]: encrypted but no valid DRM configs"
+            )
+            return []
+
+        result = self._select_configs_for_cache_and_return(processed, has_full_coverage)
+        self.drm_config_cache.set(cache_key, result)
+        logger.info(
+            f"Catchup DRM processed for '{channel_id}' [{start_time},{end_time}]: "
+            f"returning {len(result)} config(s) "
+            f"({'full ClearKey' if has_full_coverage else 'mixed/partial'})"
+        )
+        return result
+
+    @staticmethod
+    def _build_catchup_cache_key(
+        provider_name: str,
+        channel_id: str,
+        start_time: int,
+        end_time: int,
+        epg_id: Optional[str],
+        **kwargs,
+    ) -> str:
+        """
+        Build a cache key scoped to a specific catchup time window.
+
+        Includes start_time, end_time, and epg_id so that different catchup
+        windows for the same channel never collide with each other or with the
+        live cache entry produced by _build_cache_key().
+
+        drm_variant, preferred_quality, and preferred_format are also included
+        (same rationale as in _build_cache_key) because different variants may
+        resolve to different catchup manifests with different encryption.
+        """
+        VARIANT_KEYS = ("drm_variant", "preferred_quality", "preferred_format")
+        parts = [provider_name, channel_id, "catchup", str(start_time), str(end_time)]
+        if epg_id:
+            parts.append(f"epg={epg_id}")
+        for key in VARIANT_KEYS:
+            value = kwargs.get(key)
+            if value is not None:
+                parts.append(f"{key}={str(value).lower()}")
+        return ":".join(parts)
+
     def list_drm_plugins(self) -> Dict:
         """List registered DRM plugins."""
         return self.drm_plugin_manager.list_plugins()

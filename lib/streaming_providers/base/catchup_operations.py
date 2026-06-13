@@ -55,38 +55,49 @@ class CatchupOperations:
             return None
 
     def get_catchup_drm_configs(
-        self,
-        provider_name: str,
-        channel_id: str,
-        start_time: int,
-        end_time: int,
-        epg_id: Optional[str] = None,
-        country: Optional[str] = None,
-        drm_variant: Optional[str] = None,
+            self,
+            provider_name: str,
+            channel_id: str,
+            start_time: int,
+            end_time: int,
+            epg_id: Optional[str] = None,
+            country: Optional[str] = None,
+            drm_variant: Optional[str] = None,
     ) -> List:
         """Get DRM configs for catchup content."""
         provider = self.registry.get_provider(provider_name)
         if not provider:
-            raise ValueError(f"Provider '{provider_name}' not found or disabled")
+            raise ValueError(...)
 
-        if not provider.supports_catchup:
-            return self.drm_operations.get_channel_drm_configs(
-                provider_name, channel_id, country=country
-            )
-
+        # First, get the catchup manifest URL and headers
         try:
-            return provider.get_catchup_drm(
+            manifest_url, manifest_headers = provider.get_catchup_manifest_with_headers(
                 content_id=channel_id,
                 start_time=start_time,
                 end_time=end_time,
                 epg_id=epg_id,
                 country=country,
-                drm_variant=drm_variant,
             )
         except NotImplementedError:
-            return self.drm_operations.get_channel_drm_configs(
-                provider_name, channel_id, country=country
-            )
+            logger.error(f"Provider '{provider_name}' hasn't implemented catchup manifest resolution")
+            return []
+
+        if not manifest_url:
+            logger.warning(f"No catchup manifest URL for '{channel_id}'")
+            return []
+
+        # Use the dedicated catchup DRM pipeline
+        return self.drm_operations.get_catchup_content_drm_configs(
+            provider_name=provider_name,
+            channel_id=channel_id,
+            catchup_manifest_url=manifest_url,
+            catchup_manifest_headers=manifest_headers,
+            start_time=start_time,
+            end_time=end_time,
+            epg_id=epg_id,
+            country=country,
+            drm_variant=drm_variant,
+        )
 
     def get_catchup_window(self, provider_name: str, channel_id: Optional[str] = None) -> int:
         """Get catchup window in hours."""

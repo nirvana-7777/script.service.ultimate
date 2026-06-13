@@ -1189,7 +1189,6 @@ class StreamingProvider(ABC):
         start_time: int,
         end_time: int,
         epg_id: Optional[str] = None,
-        drm_variant: Optional[str] = "auto",
         **kwargs,
     ) -> Optional[str]:
         """
@@ -1205,20 +1204,72 @@ class StreamingProvider(ABC):
         Returns:
             Manifest URL for catchup content, or None if not supported
 
-        Default implementation falls back to live manifest.
+        Default implementation raises NotImplementedError.
         Override in subclass to implement provider-specific catchup logic.
-        """
-        if not self.supports_catchup:
-            logger.debug(
-                f"{self.provider_name}: Catchup not supported, falling back to live manifest"
-            )
-            return self.get_manifest(content_id, **kwargs)
 
-        logger.warning(
-            f"{self.provider_name}: get_catchup_manifest not implemented, "
-            f"falling back to live manifest"
+        Do NOT fall back to self.get_manifest() here — returning the live
+        manifest URL as a catchup manifest will cause the DRM pipeline to
+        extract PSSH from the live stream, which may differ from the catchup
+        stream's encryption context.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__}.get_catchup_manifest() is not implemented."
         )
-        return self.get_manifest(content_id, **kwargs)
+
+    def get_catchup_manifest_headers(
+        self,
+        content_id: str,
+        start_time: int,
+        end_time: int,
+        epg_id: Optional[str] = None,
+        **kwargs,
+    ) -> Dict[str, str]:
+        """
+        Return HTTP headers for the catchup manifest request.
+
+        Default implementation delegates to get_manifest_headers() since many
+        providers use the same auth headers for live and catchup manifests.
+        Override when catchup requires different headers (e.g. extra tokens).
+        """
+        return self.get_manifest_headers(content_id, **kwargs)
+
+    def get_catchup_manifest_with_headers(
+        self,
+        content_id: str,
+        start_time: int,
+        end_time: int,
+        epg_id: Optional[str] = None,
+        **kwargs,
+    ) -> Tuple[Optional[str], Dict[str, str]]:
+        """
+        Convenience method returning (catchup_manifest_url, headers).
+
+        This is the single entry point used by CatchupOperations before
+        calling into the DRM pipeline, mirroring the role that
+        get_manifest_with_headers() plays for live content.
+
+        Providers should override get_catchup_manifest() (and optionally
+        get_catchup_manifest_headers()) rather than this method directly.
+
+        Raises:
+            NotImplementedError: propagated from get_catchup_manifest() if the
+                provider has not implemented catchup manifest resolution.
+        """
+        url = self.get_catchup_manifest(
+            content_id=content_id,
+            start_time=start_time,
+            end_time=end_time,
+            epg_id=epg_id,
+            **kwargs,
+        )
+        headers = self.get_catchup_manifest_headers(
+            content_id=content_id,
+            start_time=start_time,
+            end_time=end_time,
+            epg_id=epg_id,
+            **kwargs,
+        )
+        return url, headers
 
     def get_catchup_drm(
         self,
@@ -1237,23 +1288,33 @@ class StreamingProvider(ABC):
             start_time: Start time as Unix timestamp
             end_time: End time as Unix timestamp
             epg_id: Optional EPG event ID (might be needed for DRM licensing)
+            drm_variant: Optional DRM variant ('auto', 'software', 'hardware')
             **kwargs: Additional provider-specific parameters
 
         Returns:
             List of DRM configurations for catchup content
 
-        Default implementation falls back to live DRM.
-        Override in subclass if catchup requires different DRM configuration.
-        """
-        if not self.supports_catchup:
-            logger.debug(f"{self.provider_name}: Catchup not supported, falling back to live DRM")
-            return self.get_drm(content_id, drm_variant=drm_variant, **kwargs)
+        Default implementation raises NotImplementedError so that the DRM
+        pipeline falls through to PSSH extraction from the catchup manifest.
 
-        logger.debug(
-            f"{self.provider_name}: get_catchup_drm not implemented, "
-            f"using live DRM configuration"
+        Override in subclass when catchup requires a *different* DRM
+        configuration from live (e.g. a different license URL, extra request
+        headers, or a static ClearKey set).  If catchup uses exactly the same
+        DRM as live, implement as:
+
+            def get_catchup_drm(self, content_id, start_time, end_time,
+                                epg_id=None, drm_variant=None, **kwargs):
+                return self.get_drm(content_id, drm_variant=drm_variant, **kwargs)
+
+        Do NOT call super().get_drm() silently — that would make the pipeline
+        think Phase 2 produced valid configs from the live stream context,
+        which is wrong when the catchup manifest has different encryption.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__}.get_catchup_drm() is not implemented. "
+            "The DRM pipeline will extract PSSH from the catchup manifest directly. "
+            "Override this method only if catchup requires a custom DRM configuration."
         )
-        return self.get_drm(content_id, drm_variant=drm_variant, **kwargs)
 
     # ============================================================================
     # CATCHUP HELPER METHODS
