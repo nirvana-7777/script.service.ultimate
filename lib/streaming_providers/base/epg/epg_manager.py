@@ -142,6 +142,8 @@ class EPGManager:
         channel_id: str,
         start_time: Optional[Union[datetime, int, float]] = None,
         end_time: Optional[Union[datetime, int, float]] = None,
+        limit: Optional[int] = None,
+        country: Optional[str] = None,
     ) -> List[Dict]:
         """
         Get EPG data for a specific channel within a time range.
@@ -155,6 +157,8 @@ class EPGManager:
             channel_id: Channel ID within provider
             start_time: Start of time range (datetime), None for now
             end_time: End of time range (datetime), None for now+12h
+            limit: Maximum number of entries to return (None = no limit)
+            country: Optional country filter (forwarded to mapping lookup)
 
         Returns:
             List of EPG entries as dictionaries (empty on any error)
@@ -163,7 +167,9 @@ class EPGManager:
 
         try:
             # Step 1: Map to EPG channel ID
-            epg_channel_id = self.mapping.get_epg_channel_id(provider_name, channel_id)
+            epg_channel_id = self.mapping.get_epg_channel_id(
+                provider_name, channel_id, country=country
+            )
             if not epg_channel_id:
                 logger.warning(f"EPGManager: No EPG mapping found for {provider_name}/{channel_id}")
                 return []
@@ -198,12 +204,16 @@ class EPGManager:
                 provider_name,  # Enable provider encoding
             )
 
+            # Step 5: Apply limit if requested
+            if limit is not None and len(epg_entries) > limit:
+                epg_entries = epg_entries[:limit]
+
             logger.info(
                 f"EPGManager: Retrieved {len(epg_entries)} EPG entries for "
                 f"{provider_name}/{channel_id}"
             )
 
-            # Step 5: Convert EPGEntry objects to dictionaries for external consumers
+            # Step 6: Convert EPGEntry objects to dictionaries for external consumers
             return [entry.to_dict() for entry in epg_entries]
 
         except Exception as e:
@@ -262,6 +272,49 @@ class EPGManager:
         except Exception as e:
             logger.error(f"EPGManager: Error getting EPG entries: {e}", exc_info=True)
             return []
+
+    def get_channel_ids(self, provider_name: str) -> List[str]:
+        """
+        Return all channel IDs that have an EPG mapping for *provider_name*.
+
+        Used by EPGOperations.get_provider_epg_grid() as the fallback channel
+        list when the caller does not supply an explicit channel_ids filter.
+
+        Args:
+            provider_name: Registered provider identifier.
+
+        Returns:
+            List of channel IDs (may be empty if no mapping exists).
+        """
+        provider_mapping = self.mapping.get_provider_mapping(provider_name)
+        if not provider_mapping:
+            logger.warning(f"EPGManager: No channels mapped for provider '{provider_name}'")
+            return []
+        return list(provider_mapping.keys())
+
+    def get_program_by_id(self, program_id: str) -> Optional[Dict]:
+        """
+        Look up a single program by its broadcast/program ID.
+
+        NOTE: The generic EPG manager works on per-channel time-window scans
+        and does not maintain a global program index.  This method is
+        therefore not supported on the generic path and always returns None.
+        Providers that implement native EPG (``provider.implements_epg``)
+        should override this via ``provider.get_program_details(program_id)``
+        in EPGOperations instead.
+
+        Args:
+            program_id: Provider-scoped program identifier.
+
+        Returns:
+            Always None for the generic path.
+        """
+        logger.debug(
+            f"EPGManager.get_program_by_id: generic path does not support "
+            f"program ID lookup (id={program_id!r}); "
+            "implement get_program_details() on the provider for native support."
+        )
+        return None
 
     def get_epg_for_provider(
         self,
