@@ -59,8 +59,6 @@ from .constants import (
     VOD_PREFIX_EPISODE,
     VOD_PREFIX_SEASON,
     VOD_PREFIX_SERIES,
-    VOD_STREAMING_TILE_TITLES,
-    VOD_HOME_TILE_TITLES,
 )
 
 
@@ -550,56 +548,47 @@ class VodManager:
 
     def _discover_vod_tile_urls(self) -> Dict[str, Optional[str]]:
         """
-        Fetch the personal bar once and return discovered tile URLs.
+        Fetch the personal bar once and return ALL discovered VOD tile URLs.
 
-        Returns:
-            {"home": url_or_None, "streaming": url_or_None}
+        Returns a dict mapping tile title -> URL for all tiles that:
+        - Point to a StructuredGrid (VOD content hub)
+        - Are not external apps (onClick.href != "app")
         """
         bar_data = self._fetch_personal_bar()
         if not bar_data:
-            return {"home": None, "streaming": None}
+            return {}
 
-        # Collect all tiles (primary + secondary for streaming)
+        # Collect all tiles (primary + secondary)
         primary_tiles = bar_data.get("primary", {}).get("tiles", [])
         secondary_tiles = bar_data.get("secondary", {}).get("tiles", [])
+        all_tiles = primary_tiles + secondary_tiles
 
-        # Build lookup maps
-        primary_by_title = {t.get("title"): t for t in primary_tiles}
-        secondary_by_title = {t.get("title"): t for t in secondary_tiles}
+        vod_tiles = {}
 
-        # For streaming, also check secondary tiles
-        all_by_title = {**primary_by_title, **secondary_by_title}
+        for tile in all_tiles:
+            title = tile.get("title", "")
+            if not title:
+                continue
 
-        def _href_from_tile(tile):
-            if not tile:
-                return None
-            return tile.get("onFocus", {}).get("screen", {}).get("href")
+            # Skip external app tiles
+            onClick = tile.get("onClick", {})
+            if onClick.get("href") == "app":
+                logger.debug(f"{self._provider}: Skipping external app tile '{title}'")
+                continue
 
-        # Find home tile (primary only - home tiles are never in secondary)
-        home_href = None
-        for candidate in VOD_HOME_TILE_TITLES:
-            tile = primary_by_title.get(candidate)
-            if tile:
-                home_href = _href_from_tile(tile)
-                if home_href:
-                    logger.debug(f"{self._provider}: Found home tile '{candidate}': {home_href}")
-                    break
+            # Get the screen href
+            screen = tile.get("onFocus", {}).get("screen", {})
+            href = screen.get("href", "")
 
-        # Find streaming tile (primary + secondary)
-        streaming_href = None
-        for candidate in VOD_STREAMING_TILE_TITLES:
-            tile = all_by_title.get(candidate)
-            if tile:
-                streaming_href = _href_from_tile(tile)
-                if streaming_href:
-                    source = "primary" if candidate in primary_by_title else "secondary"
-                    logger.debug(
-                        f"{self._provider}: Found streaming tile '{candidate}' "
-                        f"in {source}: {streaming_href}"
-                    )
-                    break
+            # Only include tiles that point to DocumentGroupRedirect (which leads to StructuredGrid)
+            # or directly to StructuredGrid
+            if href and ("DocumentGroupRedirect" in href or "StructuredGrid" in href):
+                vod_tiles[title] = href
+                logger.debug(f"{self._provider}: Found VOD tile '{title}': {href}")
+            else:
+                logger.debug(f"{self._provider}: Skipping non-VOD tile '{title}' (href: {href})")
 
-        return {"home": home_href, "streaming": streaming_href}
+        return vod_tiles
 
     def _parse_theme_strings(self, data: Dict) -> None:
         """
@@ -658,69 +647,57 @@ class VodManager:
 
     def _fetch_home_lanes(self, params: Dict) -> List[VodCategory]:
         """
-        Fetch VOD lanes from all discovered entry points and return merged,
-        deduplicated list of lane categories.
+        Fetch VOD lanes from ALL discovered personal bar tiles.
 
-        Discovers both "Aktuelles" (home) and "Streaming" tiles from the personal
-        bar, fetches each StructuredGrid, and merges their lanes while deduplicating
-        by flex_id. This provides a flat VOD root with all available lanes without
-        requiring an extra navigation hop.
+        Returns a flat list of unique lanes from all VOD-capable tiles,
+        deduplicated by flex_id.
         """
-        urls = self._discover_vod_tile_urls()
-        home_url = urls["home"]
-        streaming_url = urls["streaming"]
+        tile_urls = self._discover_vod_tile_urls()
 
-        # Collect URLs to fetch, preferring home; skip streaming if same URL
-        to_fetch = []
-        seen_urls: set = set()
-
-        if home_url and home_url not in seen_urls:
-            to_fetch.append(home_url)
-            seen_urls.add(home_url)
-            logger.debug(f"{self._provider}: Will fetch home tile (Aktuelles) URL: {home_url}")
-
-        if streaming_url and streaming_url not in seen_urls:
-            to_fetch.append(streaming_url)
-            seen_urls.add(streaming_url)
-            logger.debug(f"{self._provider}: Will fetch streaming tile URL: {streaming_url}")
-
-        if not to_fetch:
+        if not tile_urls:
             fallback_url = f"{self._base_url()}/StructuredGrid/{VOD_FLEX_ID_HOME}"
-            logger.warning(
-                f"{self._provider}: No VOD tiles discovered, using fallback: {fallback_url}"
-            )
-            to_fetch = [fallback_url]
+            logger.warning(f"{self._provider}: No VOD tiles discovered, using fallback: {fallback_url}")
+            tile_urls = {"VOD": fallback_url}
 
         categories: List[VodCategory] = []
         seen_flex_ids: set = set()
         theme_parsed = False
 
-        for url in to_fetch:
+        for title, url in tile_urls.items():
+            # Fetch the StructuredGrid (follow redirect if needed)
             data = self._get(url, params)
             if not data:
-                logger.warning(f"{self._provider}: Failed to fetch StructuredGrid from {url}")
+                logger.warning(f"{self._provider}: Failed to fetch StructuredGrid for '{title}' from {url}")
                 continue
 
-            # Parse theme strings only once (from the first successful fetch)
+            # Handle redirect if necessary
+            if data.get("$type") == "redirect":
+                redirect_url = data.get("redirectUrl")
+                if redirect_url:
+                    data = self._get(redirect_url, params)
+
+            if not data or data.get("$type") != "structuredgrid":
+                continue
+
+            # Parse theme strings only once
             if not theme_parsed:
                 self._parse_theme_strings(data)
                 theme_parsed = True
 
+            # Extract lanes
             lanes = data.get("content", {}).get("lanes", [])
-            logger.debug(
-                f"{self._provider}: Processing {len(lanes)} lanes from {url}"
-            )
+            logger.debug(f"{self._provider}: Processing {len(lanes)} lanes from tile '{title}'")
 
             for lane in lanes:
                 lane_type = lane.get("type", "")
-                title = lane.get("title", "").strip()
+                lane_title = lane.get("title", "").strip()
                 flex_id = lane.get("flexId", "")
 
                 # Skip external partner lanes (e.g. action == "ChannelTuneOpenApp")
                 show_all = lane.get("showAllUrl", {})
                 action = show_all.get("action", "") if isinstance(show_all, dict) else ""
                 if action == "ChannelTuneOpenApp":
-                    logger.debug(f"{self._provider}: Skipping external partner lane '{title}'")
+                    logger.debug(f"{self._provider}: Skipping external partner lane '{lane_title}'")
                     continue
 
                 # Skip non-VOD lane types (Special, ContinueWatching, etc.)
@@ -728,16 +705,16 @@ class VodManager:
                 # as a hero/stage carousel, but still contains VOD content.
                 if lane_type not in ("UnstructuredGrid", "StageLane"):
                     logger.debug(
-                        f"{self._provider}: Skipping non-VOD lane type '{lane_type}': '{title}'"
+                        f"{self._provider}: Skipping non-VOD lane type '{lane_type}': '{lane_title}'"
                     )
                     continue
 
-                if not flex_id or not title:
+                if not flex_id or not lane_title:
                     continue
 
                 # Deduplicate by flex_id (same lane may appear in both grids)
                 if flex_id in seen_flex_ids:
-                    logger.debug(f"{self._provider}: Skipping duplicate lane '{title}' (flex_id={flex_id})")
+                    logger.debug(f"{self._provider}: Skipping duplicate lane '{lane_title}' (flex_id={flex_id})")
                     continue
                 seen_flex_ids.add(flex_id)
 
@@ -755,13 +732,13 @@ class VodManager:
                     self._register_node(opaque_id, best_fetch_url)
 
                 logger.debug(
-                    f"{self._provider}: Lane '{title}' → content_id={opaque_id!r} "
+                    f"{self._provider}: Lane '{lane_title}' → content_id={opaque_id!r} "
                     f"fetch_url={best_fetch_url!r}"
                 )
 
                 categories.append(
                     VodCategory(
-                        name=title,
+                        name=lane_title,
                         content_id=opaque_id,
                         provider=self._provider,
                         child_count=lane.get("totalCount"),
@@ -772,7 +749,7 @@ class VodManager:
 
         logger.info(
             f"{self._provider}: VOD root initialized with {len(categories)} lanes "
-            f"(from {len(to_fetch)} grid(s))"
+            f"(from {len(tile_urls)} tile(s))"
         )
         return categories
 
