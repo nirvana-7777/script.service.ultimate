@@ -49,14 +49,12 @@ def setup_stream_routes(app, manager, service):
     from .events import setup_event_routes
     from .vod import setup_vod_routes
     from .recordings import setup_recording_routes
-    from .epg import setup_epg_routes
 
     # Pass manager and service to all submodules
     setup_channel_routes(app, manager, service)
     setup_event_routes(app, manager, service)
     setup_vod_routes(app, manager, service)
     setup_recording_routes(app, manager, service)
-    setup_epg_routes(app, manager, service)
 
     # =========================================================================
     # ORIGINAL MANIFEST ENDPOINT (shared across content types)
