@@ -1865,47 +1865,24 @@ class VodManager:
         return {"entries": entries, "next_cursor": None, "total": len(entries)}
 
     def _get_search_url_template(self) -> Optional[str]:
-        """
-        Resolve the search URL template from available sources.
-
-        Priority order:
-            1. endpoint_manager.get_endpoint("search_template") - if available
-            2. provider_config.get_search_url_template() - direct manifest access
-            3. None (fallback logging only - no hardcoded fallback)
-
-        Returns:
-            Raw template string with {clientModel} and {query} placeholders,
-            or None if not found.
-        """
         # Priority 1: Try endpoint manager (discovered via manifest)
-        if hasattr(self._provider, 'endpoint_manager'):
-            template = self._provider.endpoint_manager.get_endpoint("search_template")
-            if template:
-                logger.debug(f"{self._provider}: Found search template via endpoint_manager")
-                return template
+        # This won't work because VodManager doesn't have endpoint_manager
 
-        # Priority 2: Try provider config directly
-        if hasattr(self._provider, 'provider_config') and self._provider.provider_config:
-            template = self._provider.provider_config.get_search_url_template()
+        # Priority 2: Try provider config directly (THIS IS THE CORRECT PATH)
+        if self._provider_config:
+            template = self._provider_config.get_search_url_template()
             if template:
                 logger.debug(f"{self._provider}: Found search template via provider_config")
                 return template
 
         # Priority 3: Try manifest.tv_hubs.base_urls directly (fallback)
-        if hasattr(self._provider, 'provider_config'):
-            manifest = getattr(self._provider.provider_config, "manifest", None)
-            if manifest:
-                tv_hubs = getattr(manifest, "tv_hubs", None)
-                if tv_hubs:
-                    template = tv_hubs.base_urls.get("searchUrl")
-                    if template:
-                        logger.debug(f"{self._provider}: Found search template via manifest.tv_hubs")
-                        return template
+        if self._provider_config and hasattr(self._provider_config, 'manifest') and self._provider_config.manifest:
+            template = self._provider_config.manifest.tv_hubs.base_urls.get("searchUrl")
+            if template:
+                logger.debug(f"{self._provider}: Found search template via manifest.tv_hubs")
+                return template
 
-        logger.warning(
-            f"{self._provider}: Search URL template not found in any source. "
-            "Search functionality will not work."
-        )
+        logger.warning(f"{self._provider}: Search URL template not found in any source.")
         return None
 
     def _parse_search_groups(self, data: Dict) -> List[Union[VodCategory, VodItem]]:
