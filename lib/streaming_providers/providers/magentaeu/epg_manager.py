@@ -278,20 +278,18 @@ class MagentaEUEpgManager:
         return headers
 
     def _fetch_day_schedules(self, date: datetime) -> Dict[str, Any]:
-        """
-        Fetch all 3-hour schedule blocks for *date* and return a merged dict
-        keyed by URL, ready for _extract_channel_items.
-        """
+        """Fetch all 6-hour schedule blocks for *date*."""
         merged: Dict[str, Any] = {}
         headers = self._guest_headers(flow="EPG", step="EPG_SCHEDULES")
         formatted = date.strftime("%Y-%m-%d")
 
-        for hour_offset in range(0, 24, 3):
+        # Change: 6-hour chunks (0, 6, 12, 18)
+        for hour_offset in range(0, 24, 6):
             url = (
                 f"{self._bifrost_url}/epg/channel/schedules"
                 f"?date={formatted}"
                 f"&hour_offset={hour_offset}"
-                f"&hour_range=3"
+                f"&hour_range=6"  # Changed from 3 to 6
                 f"&channelMap_id="
                 f"&filler=true"
                 f"&app_language={self._app_language}"
