@@ -356,13 +356,30 @@ def setup_epg_routes(app, manager, service):
         limit = request.query.get("limit", default=100, type=int)
 
         try:
-            # Re-use the shared epg_ops instance created at setup time —
-            # do NOT construct a new EPGOperations() here.
+            from datetime import datetime, timezone
+
+            # Convert timestamps to datetime objects
+            start_dt = None
+            end_dt = None
+
+            if start:
+                try:
+                    start_dt = datetime.fromtimestamp(int(start), tz=timezone.utc)
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid start timestamp: {start}, error: {e}")
+
+            if end:
+                try:
+                    end_dt = datetime.fromtimestamp(int(end), tz=timezone.utc)
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid end timestamp: {end}, error: {e}")
+
+            # Re-use the shared epg_ops instance
             programs = epg_ops.get_channel_epg(
                 provider_name=provider,
                 channel_id=channel_id,
-                start_time=int(start) if start else None,
-                end_time=int(end) if end else None,
+                start_time=start_dt,  # ← Now passing datetime, not int
+                end_time=end_dt,  # ← Now passing datetime, not int
                 limit=limit
             )
 
