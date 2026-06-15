@@ -60,6 +60,7 @@ from .constants import (
     VOD_PREFIX_SEASON,
     VOD_PREFIX_SERIES,
     VOD_STREAMING_TILE_TITLES,
+    VOD_HOME_TILE_TITLES,
 )
 
 
@@ -81,15 +82,15 @@ class VodManager:
     """
 
     def __init__(
-        self,
-        http_manager,
-        provider_name: str,
-        bootstrap=None,
-        provider_config=None,
-        session_id: Optional[str] = None,
-        serial_number: Optional[str] = None,
-        preferred_quality: str = "UHD",
-        auth_headers_callback=None,
+            self,
+            http_manager,
+            provider_name: str,
+            bootstrap=None,
+            provider_config=None,
+            session_id: Optional[str] = None,
+            serial_number: Optional[str] = None,
+            preferred_quality: str = "UHD",
+            auth_headers_callback=None,
     ):
         self._http = http_manager
         self._provider = provider_name
@@ -145,10 +146,10 @@ class VodManager:
     # =========================================================================
 
     def _register_node(
-        self,
-        content_id: str,
-        fetch_url: str,
-        extra_params: Optional[Dict] = None,
+            self,
+            content_id: str,
+            fetch_url: str,
+            extra_params: Optional[Dict] = None,
     ) -> str:
         """
         Register a node in the registry and return its content_id.
@@ -165,12 +166,12 @@ class VodManager:
         return content_id
 
     def get_children(
-        self,
-        content_id: str,
-        *,
-        cursor: Optional[str] = None,
-        page_size: int = VOD_DEFAULT_PAGE_SIZE,
-        offset: int = 0,
+            self,
+            content_id: str,
+            *,
+            cursor: Optional[str] = None,
+            page_size: int = VOD_DEFAULT_PAGE_SIZE,
+            offset: int = 0,
     ) -> Dict:
         """
         Return the children of a VOD node identified by *content_id*.
@@ -418,12 +419,12 @@ class VodManager:
         return None
 
     def _get_with_serial(
-        self,
-        url: str,
-        params: Dict,
-        serial_number: str,
-        dt_session_id: str = "",
-        dt_call_id: str = "",
+            self,
+            url: str,
+            params: Dict,
+            serial_number: str,
+            dt_session_id: str = "",
+            dt_call_id: str = "",
     ) -> Optional[Dict]:
         """
         Perform an authenticated GET with explicit serial/session headers.
@@ -461,57 +462,29 @@ class VodManager:
     # Private helpers – Personal Bar Discovery
     # =========================================================================
 
-    def _get_streaming_grid_url(self) -> Optional[str]:
+    def _fetch_personal_bar(self) -> Optional[Dict]:
         """
-        Fetch the personal bar and extract the Streaming tile's StructuredGrid URL.
+        Fetch the personal bar data (single two-hop fetch).
 
-        Flow:
-          1. Build the DocumentGroupRedirect URL using the platform's client model
-             (e.g. ftv-androidtv for Android TV) substituted into home_url.
-          2. Send an authenticated GET (Bearer + x-stbserialnumber + dt-session-id
-             + dt-call-id) with params matching the real device call:
-             $previewAutoMode, $deviceModel, $cid (dt-session-id::dt-call-id),
-             $theme, $profile, $redirect.
-          3. Follow the API-level redirect — the server returns
-             {"$type":"redirect","redirectUrl":"..."} instead of an HTTP redirect.
-          4. Fetch the redirectUrl authenticated with the same serial + session ID
-             but a fresh dt-call-id (matching real device behaviour).
-          5. Find the tile whose title matches VOD_STREAMING_TILE_TITLE and
-             return its onFocus.screen.href.
-
-        Falls back gracefully at each step so the hardcoded StructuredGrid URL
-        is used when discovery fails.
+        Returns the parsed PersonalBar JSON response, or None on failure.
+        This method encapsulates the common discovery logic used by
+        _discover_vod_tile_urls() and can be reused for other tile types.
         """
         import uuid as _uuid
         from urllib.parse import urlparse, urlunparse, parse_qs, urlencode, quote
 
         if not self._home_url:
-            logger.debug(
-                f"{self._provider}: No homeUrl available; "
-                "skipping personal-bar VOD discovery"
-            )
+            logger.debug(f"{self._provider}: No homeUrl available; cannot fetch personal bar")
             return None
 
         # Substitute the platform's actual client model into the home_url template
-        # (e.g. ftv-androidtv for Android TV, ftv-web for web).
         resolved_home_url = self._home_url.replace("{clientModel}", self._client_model)
 
-        # Use the provider's persistent session_id (same one used everywhere else)
-        # rather than generating a random one — the server uses this to personalise
-        # the bar, which is why the wrong session ID returns generic tiles instead
-        # of the user's personalised view including the "Streaming" tile.
         dt_session_id = self._session_id
         dt_call_id_1 = str(_uuid.uuid4())
         cid = f"{dt_session_id}::{dt_call_id_1}"
-
-        # Use the stable serial number set at construction time rather than
-        # generating a fresh UUID on every call — the server uses it to
-        # correlate requests within the same session.
         serial_number = self._serial_number
 
-        # Params mirror the real Android TV DocumentGroupRedirect request exactly.
-        # Note: $subscriberType and $reloadAfterChange are NOT sent by real devices;
-        # $previewAutoMode and $cid are required instead.
         discovery_params = {
             "$previewAutoMode": "false",
             "$deviceModel": self._device_model,
@@ -521,27 +494,9 @@ class VodManager:
             "$profile": self._profile_name,
         }
 
-        logger.debug(f"{self._provider}: home_url raw: {self._home_url}")
         logger.debug(f"{self._provider}: DocumentGroupRedirect URL: {resolved_home_url}")
-        logger.debug(f"{self._provider}: DocumentGroupRedirect params: {discovery_params}")
 
-        # Build and log the full header set for the first call so we can verify
-        # the Bearer token, session ID, call ID and serial are all correct.
-        _preview_headers: Dict[str, str] = {}
-        if self._auth_headers_callback:
-            try:
-                _preview_headers = dict(self._auth_headers_callback())
-            except Exception as exc:
-                logger.warning(f"{self._provider}: auth_headers_callback failed (preview): {exc}")
-        _preview_headers["x-stbserialnumber"] = serial_number
-        _preview_headers["dt-session-id"] = dt_session_id
-        _preview_headers["dt-call-id"] = dt_call_id_1
-        logger.debug(
-            f"{self._provider}: DocumentGroupRedirect headers: {_preview_headers}"
-        )
-
-        # The DocumentGroupRedirect endpoint requires authentication — real device
-        # sends Bearer token + x-stbserialnumber + dt-session-id + dt-call-id.
+        # First hop: DocumentGroupRedirect
         redirect_data = self._get_with_serial(
             resolved_home_url, discovery_params, serial_number,
             dt_session_id=dt_session_id, dt_call_id=dt_call_id_1,
@@ -550,81 +505,101 @@ class VodManager:
             logger.error(f"{self._provider}: Failed to fetch DocumentGroupRedirect")
             return None
 
-        logger.debug(
-            f"{self._provider}: DocumentGroupRedirect response: {redirect_data}"
-        )
+        # Follow API-level redirect
+        if redirect_data.get("$type") != "redirect":
+            logger.warning(
+                f"{self._provider}: DocumentGroupRedirect response has unexpected $type: "
+                f"{redirect_data.get('$type')!r}"
+            )
+            return None
 
-        # Step 2: follow the API-level redirect.
-        # The server-built redirectUrl omits $cid — append it with a fresh call ID
-        # so the PersonalBar endpoint can correlate the session and return the
-        # correct personalised tile set (including "Streaming").
-        if redirect_data.get("$type") == "redirect":
-            redirect_url = redirect_data.get("redirectUrl")
-            if not redirect_url:
-                logger.error(f"{self._provider}: Redirect response missing redirectUrl")
-                return None
+        redirect_url = redirect_data.get("redirectUrl")
+        if not redirect_url:
+            logger.error(f"{self._provider}: Redirect response missing redirectUrl")
+            return None
 
-            # Inject $cid into the redirectUrl (fresh call ID, same session ID).
-            dt_call_id_2 = str(_uuid.uuid4())
-            cid_2 = f"{dt_session_id}::{dt_call_id_2}"
-            parsed = urlparse(redirect_url)
-            qs = parse_qs(parsed.query, keep_blank_values=True)
-            qs["$cid"] = [cid_2]
-            # Use quote_via=quote with safe='$:' so that $ signs in
-            # parameter names and :: in the cid value are NOT percent-
-            # encoded (%24). The server requires literal $ characters.
-            redirect_url_with_cid = str(urlunparse(
-                parsed._replace(
-                    query=urlencode(
-                        {k: v[0] for k, v in qs.items()},
-                        quote_via=quote,
-                        safe="$:",
-                    )
+        # Inject $cid with fresh call ID
+        dt_call_id_2 = str(_uuid.uuid4())
+        cid_2 = f"{dt_session_id}::{dt_call_id_2}"
+        parsed = urlparse(redirect_url)
+        qs = parse_qs(parsed.query, keep_blank_values=True)
+        qs["$cid"] = [cid_2]
+        redirect_url_with_cid = str(urlunparse(
+            parsed._replace(
+                query=urlencode(
+                    {k: v[0] for k, v in qs.items()},
+                    quote_via=quote,
+                    safe="$:",
                 )
-            ))
+            )
+        ))
 
-            logger.debug(
-                f"{self._provider}: Following personal-bar redirect "
-                f"(with $cid): {redirect_url_with_cid}"
-            )
-            bar_data = self._get_with_serial(
-                redirect_url_with_cid, {}, serial_number,
-                dt_session_id=dt_session_id, dt_call_id=dt_call_id_2,
-            )
-            if not bar_data:
-                logger.error(f"{self._provider}: Failed to fetch PersonalBar from redirectUrl")
+        logger.debug(f"{self._provider}: Following personal-bar redirect: {redirect_url_with_cid}")
+
+        # Second hop: PersonalBar
+        bar_data = self._get_with_serial(
+            redirect_url_with_cid, {}, serial_number,
+            dt_session_id=dt_session_id, dt_call_id=dt_call_id_2,
+        )
+        if not bar_data:
+            logger.error(f"{self._provider}: Failed to fetch PersonalBar from redirectUrl")
+            return None
+
+        logger.debug(f"{self._provider}: PersonalBar response received")
+        return bar_data
+
+    def _discover_vod_tile_urls(self) -> Dict[str, Optional[str]]:
+        """
+        Fetch the personal bar once and return discovered tile URLs.
+
+        Returns:
+            {"home": url_or_None, "streaming": url_or_None}
+        """
+        bar_data = self._fetch_personal_bar()
+        if not bar_data:
+            return {"home": None, "streaming": None}
+
+        # Collect all tiles (primary + secondary for streaming)
+        primary_tiles = bar_data.get("primary", {}).get("tiles", [])
+        secondary_tiles = bar_data.get("secondary", {}).get("tiles", [])
+
+        # Build lookup maps
+        primary_by_title = {t.get("title"): t for t in primary_tiles}
+        secondary_by_title = {t.get("title"): t for t in secondary_tiles}
+
+        # For streaming, also check secondary tiles
+        all_by_title = {**primary_by_title, **secondary_by_title}
+
+        def _href_from_tile(tile):
+            if not tile:
                 return None
-            logger.debug(
-                f"{self._provider}: PersonalBar response keys: {list(bar_data.keys())}"
-            )
-        else:
-            # Response was the bar itself (no redirect needed)
-            bar_data = redirect_data
+            return tile.get("onFocus", {}).get("screen", {}).get("href")
 
-        tiles = bar_data.get("primary", {}).get("tiles", [])
-        logger.debug(
-            f"{self._provider}: Personal bar tiles: "
-            f"{[t.get('title') for t in tiles]}"
-        )
-        # Build a lookup so we can find the first matching tile by title
-        # regardless of which subscription/locale variant the user has.
-        tile_by_title = {t.get("title"): t for t in tiles}
-        for candidate in VOD_STREAMING_TILE_TITLES:
-            tile = tile_by_title.get(candidate)
+        # Find home tile (primary only - home tiles are never in secondary)
+        home_href = None
+        for candidate in VOD_HOME_TILE_TITLES:
+            tile = primary_by_title.get(candidate)
             if tile:
-                href = tile.get("onFocus", {}).get("screen", {}).get("href")
-                if href:
-                    logger.debug(
-                        f"{self._provider}: Found VOD grid tile '{candidate}': {href}"
-                    )
-                    return href
+                home_href = _href_from_tile(tile)
+                if home_href:
+                    logger.debug(f"{self._provider}: Found home tile '{candidate}': {home_href}")
+                    break
 
-        logger.warning(
-            f"{self._provider}: No VOD tile found in personal bar "
-            f"(tried: {VOD_STREAMING_TILE_TITLES}); "
-            f"available: {list(tile_by_title.keys())}"
-        )
-        return None
+        # Find streaming tile (primary + secondary)
+        streaming_href = None
+        for candidate in VOD_STREAMING_TILE_TITLES:
+            tile = all_by_title.get(candidate)
+            if tile:
+                streaming_href = _href_from_tile(tile)
+                if streaming_href:
+                    source = "primary" if candidate in primary_by_title else "secondary"
+                    logger.debug(
+                        f"{self._provider}: Found streaming tile '{candidate}' "
+                        f"in {source}: {streaming_href}"
+                    )
+                    break
+
+        return {"home": home_href, "streaming": streaming_href}
 
     def _parse_theme_strings(self, data: Dict) -> None:
         """
@@ -654,7 +629,7 @@ class VodManager:
 
         white_label = theme.get("whiteLabel")
         partner_map = theme.get("partnerMap")
-        portal      = theme.get("portal")
+        portal = theme.get("portal")
 
         logger.debug(
             f"{self._provider}: StructuredGrid theme strings — "
@@ -683,79 +658,122 @@ class VodManager:
 
     def _fetch_home_lanes(self, params: Dict) -> List[VodCategory]:
         """
-        Fetch the VOD home StructuredGrid and return each browsable lane as a
-        VodCategory. External-partner lanes (Disney+, RTL+, …) are skipped.
+        Fetch VOD lanes from all discovered entry points and return merged,
+        deduplicated list of lane categories.
+
+        Discovers both "Aktuelles" (home) and "Streaming" tiles from the personal
+        bar, fetches each StructuredGrid, and merges their lanes while deduplicating
+        by flex_id. This provides a flat VOD root with all available lanes without
+        requiring an extra navigation hop.
         """
-        streaming_grid_url = self._get_streaming_grid_url()
+        urls = self._discover_vod_tile_urls()
+        home_url = urls["home"]
+        streaming_url = urls["streaming"]
 
-        if streaming_grid_url:
-            url = streaming_grid_url
-            logger.debug(f"{self._provider}: Using discovered VOD home URL: {url}")
-        else:
-            url = f"{self._base_url()}/StructuredGrid/{VOD_FLEX_ID_HOME}"
-            logger.warning(f"{self._provider}: Falling back to hardcoded VOD home URL: {url}")
+        # Collect URLs to fetch, preferring home; skip streaming if same URL
+        to_fetch = []
+        seen_urls: set = set()
 
-        data = self._get(url, params)
-        if not data:
-            return []
+        if home_url and home_url not in seen_urls:
+            to_fetch.append(home_url)
+            seen_urls.add(home_url)
+            logger.debug(f"{self._provider}: Will fetch home tile (Aktuelles) URL: {home_url}")
 
-        # Extract portal-scoping values from the theme strings block.
-        # These are used in all subsequent vodproductinformation requests.
-        self._parse_theme_strings(data)
+        if streaming_url and streaming_url not in seen_urls:
+            to_fetch.append(streaming_url)
+            seen_urls.add(streaming_url)
+            logger.debug(f"{self._provider}: Will fetch streaming tile URL: {streaming_url}")
 
-        lanes = data.get("content", {}).get("lanes", [])
+        if not to_fetch:
+            fallback_url = f"{self._base_url()}/StructuredGrid/{VOD_FLEX_ID_HOME}"
+            logger.warning(
+                f"{self._provider}: No VOD tiles discovered, using fallback: {fallback_url}"
+            )
+            to_fetch = [fallback_url]
+
         categories: List[VodCategory] = []
+        seen_flex_ids: set = set()
+        theme_parsed = False
 
-        for lane in lanes:
-            lane_type = lane.get("type", "")
-            title = lane.get("title", "").strip()
-            flex_id = lane.get("flexId", "")
-
-            # Skip external partner lanes (e.g. action == "ChannelTuneOpenApp")
-            show_all = lane.get("showAllUrl", {})
-            action = show_all.get("action", "") if isinstance(show_all, dict) else ""
-            if action == "ChannelTuneOpenApp":
-                logger.debug(f"{self._provider}: Skipping external partner lane '{title}'")
+        for url in to_fetch:
+            data = self._get(url, params)
+            if not data:
+                logger.warning(f"{self._provider}: Failed to fetch StructuredGrid from {url}")
                 continue
 
-            if lane_type != "UnstructuredGrid" or not flex_id or not title:
-                continue
+            # Parse theme strings only once (from the first successful fetch)
+            if not theme_parsed:
+                self._parse_theme_strings(data)
+                theme_parsed = True
 
-            show_all_href = (lane.get("showAllUrl") or {}).get("href") or None
-            lane_content_href = (lane.get("laneContentLink") or {}).get("href") or None
-
+            lanes = data.get("content", {}).get("lanes", [])
             logger.debug(
-                f"{self._provider}: Lane '{title}' (flexId={flex_id}) "
-                f"showAllUrl={show_all_href!r} laneContentLink={lane_content_href!r}"
+                f"{self._provider}: Processing {len(lanes)} lanes from {url}"
             )
 
-            # Best fetch URL: showAllUrl is the paginated full grid (preferred);
-            # laneContentLink is the inline preview but always carries portal params.
-            best_fetch_url = show_all_href or lane_content_href or None
+            for lane in lanes:
+                lane_type = lane.get("type", "")
+                title = lane.get("title", "").strip()
+                flex_id = lane.get("flexId", "")
 
-            # Opaque content_id: "lane:<numeric_flex_id>" — router-safe, no slashes.
-            # The full fetch context lives in the registry, not in the ID.
-            opaque_id = f"lane:{flex_id}"
-            if best_fetch_url:
-                self._register_node(opaque_id, best_fetch_url)
+                # Skip external partner lanes (e.g. action == "ChannelTuneOpenApp")
+                show_all = lane.get("showAllUrl", {})
+                action = show_all.get("action", "") if isinstance(show_all, dict) else ""
+                if action == "ChannelTuneOpenApp":
+                    logger.debug(f"{self._provider}: Skipping external partner lane '{title}'")
+                    continue
 
-            logger.debug(
-                f"{self._provider}: Lane '{title}' → content_id={opaque_id!r} "
-                f"fetch_url={best_fetch_url!r}"
-            )
+                # Skip non-VOD lane types (Special, ContinueWatching, etc.)
+                # StageLane is a special case - it's an UnstructuredGrid that displays
+                # as a hero/stage carousel, but still contains VOD content.
+                if lane_type not in ("UnstructuredGrid", "StageLane"):
+                    logger.debug(
+                        f"{self._provider}: Skipping non-VOD lane type '{lane_type}': '{title}'"
+                    )
+                    continue
 
-            categories.append(
-                VodCategory(
-                    name=title,
-                    content_id=opaque_id,
-                    provider=self._provider,
-                    child_count=lane.get("totalCount"),
-                    details_url=show_all_href,
-                    fetch_url=best_fetch_url,
+                if not flex_id or not title:
+                    continue
+
+                # Deduplicate by flex_id (same lane may appear in both grids)
+                if flex_id in seen_flex_ids:
+                    logger.debug(f"{self._provider}: Skipping duplicate lane '{title}' (flex_id={flex_id})")
+                    continue
+                seen_flex_ids.add(flex_id)
+
+                show_all_href = (lane.get("showAllUrl") or {}).get("href") or None
+                lane_content_href = (lane.get("laneContentLink") or {}).get("href") or None
+
+                # Best fetch URL: showAllUrl is the paginated full grid (preferred);
+                # laneContentLink is the inline preview but always carries portal params.
+                best_fetch_url = show_all_href or lane_content_href or None
+
+                # Opaque content_id: "lane:<numeric_flex_id>" — router-safe, no slashes.
+                # The full fetch context lives in the registry, not in the ID.
+                opaque_id = f"lane:{flex_id}"
+                if best_fetch_url:
+                    self._register_node(opaque_id, best_fetch_url)
+
+                logger.debug(
+                    f"{self._provider}: Lane '{title}' → content_id={opaque_id!r} "
+                    f"fetch_url={best_fetch_url!r}"
                 )
-            )
 
-        logger.debug(f"{self._provider}: Found {len(categories)} VOD home lanes")
+                categories.append(
+                    VodCategory(
+                        name=title,
+                        content_id=opaque_id,
+                        provider=self._provider,
+                        child_count=lane.get("totalCount"),
+                        details_url=show_all_href,
+                        fetch_url=best_fetch_url,
+                    )
+                )
+
+        logger.info(
+            f"{self._provider}: VOD root initialized with {len(categories)} lanes "
+            f"(from {len(to_fetch)} grid(s))"
+        )
         return categories
 
     # =========================================================================
@@ -763,13 +781,13 @@ class VodManager:
     # =========================================================================
 
     def _fetch_lane_items(
-        self,
-        content_id: str,
-        params: Dict,
-        page_size: int = VOD_DEFAULT_PAGE_SIZE,
-        offset: int = 0,
-        fetch_url: Optional[str] = None,
-        extra_params: Optional[Dict] = None,
+            self,
+            content_id: str,
+            params: Dict,
+            page_size: int = VOD_DEFAULT_PAGE_SIZE,
+            offset: int = 0,
+            fetch_url: Optional[str] = None,
+            extra_params: Optional[Dict] = None,
     ) -> Dict:
         """
         Fetch items from an UnstructuredGrid lane.
@@ -848,7 +866,7 @@ class VodManager:
         return {"entries": results, "next_cursor": next_cursor, "total": total}
 
     def _map_unstructured_item(
-        self, item: Dict, params: Dict
+            self, item: Dict, params: Dict
     ) -> Optional[Union[VodCategory, VodItem]]:
         """
         Map a single UnstructuredGrid item dict to a VodCategory or VodItem.
@@ -914,11 +932,11 @@ class VodManager:
     # =========================================================================
 
     def _fetch_series_seasons(
-        self,
-        content_id: str,
-        params: Dict,
-        offset: int = 0,
-        page_size: int = VOD_DEFAULT_PAGE_SIZE,
+            self,
+            content_id: str,
+            params: Dict,
+            offset: int = 0,
+            page_size: int = VOD_DEFAULT_PAGE_SIZE,
     ) -> Dict:
         """
         Fetch seasons for a series with pagination support.
@@ -954,7 +972,7 @@ class VodManager:
         # Primary path: productInformationLink → subAssetLane with pagination
         # ------------------------------------------------------------------
         product_url: Optional[str] = (
-            content.get("productInformationLink") or {}
+                content.get("productInformationLink") or {}
         ).get("href")
 
         if product_url:
@@ -1001,12 +1019,12 @@ class VodManager:
         return {"entries": seasons, "next_cursor": None, "total": None}
 
     def _fetch_seasons_via_product_info(
-        self,
-        product_url: str,
-        series_title: str,
-        params: Dict,
-        offset: int = 0,
-        page_size: int = VOD_DEFAULT_PAGE_SIZE,
+            self,
+            product_url: str,
+            series_title: str,
+            params: Dict,
+            offset: int = 0,
+            page_size: int = VOD_DEFAULT_PAGE_SIZE,
     ) -> tuple:
         """
         Fetch the productInformation endpoint and resolve seasons from the
@@ -1061,7 +1079,7 @@ class VodManager:
                 if not season_id or not title:
                     continue
                 details_href: Optional[str] = (
-                    item.get("details") or {}
+                        item.get("details") or {}
                 ).get("href")
                 # content_id: strip base URL and query string from details href
                 # e.g. "https://.../VodDetails/202887/GN_SEASON_184925_DE_1?..."
@@ -1073,7 +1091,7 @@ class VodManager:
 
                 image_url: Optional[str] = (item.get("image") or {}).get("href")
                 description: Optional[str] = (
-                    item.get("description") or item.get("longDescription")
+                        item.get("description") or item.get("longDescription")
                 )
                 episode_count: Optional[int] = item.get("episodesProduced")
 
@@ -1110,11 +1128,11 @@ class VodManager:
     # =========================================================================
 
     def _fetch_season_episodes(
-        self,
-        season_id: str,
-        params: Dict,
-        offset: int = 0,
-        page_size: int = VOD_DEFAULT_PAGE_SIZE,
+            self,
+            season_id: str,
+            params: Dict,
+            offset: int = 0,
+            page_size: int = VOD_DEFAULT_PAGE_SIZE,
     ) -> Dict:
         """
         Fetch episodes for a season with pagination support.
@@ -1151,7 +1169,7 @@ class VodManager:
         # Primary path: productInformationLink → subAssetLane with pagination
         # ------------------------------------------------------------------
         product_url: Optional[str] = (
-            content.get("productInformationLink") or {}
+                content.get("productInformationLink") or {}
         ).get("href")
 
         if product_url:
@@ -1192,12 +1210,12 @@ class VodManager:
         return {"entries": episodes, "next_cursor": None, "total": None}
 
     def _fetch_episodes_via_product_info(
-        self,
-        product_url: str,
-        season_number: Optional[int],
-        params: Dict,
-        offset: int = 0,
-        page_size: int = VOD_DEFAULT_PAGE_SIZE,
+            self,
+            product_url: str,
+            season_number: Optional[int],
+            params: Dict,
+            offset: int = 0,
+            page_size: int = VOD_DEFAULT_PAGE_SIZE,
     ) -> tuple:
         """
         Resolve the episode list from the productInformation subAssetLane,
@@ -1268,9 +1286,9 @@ class VodManager:
         return [], None, None
 
     def _map_episode_item(
-        self,
-        ep: Dict,
-        season_number: Optional[int],
+            self,
+            ep: Dict,
+            season_number: Optional[int],
     ) -> Optional[VodItem]:
         """
         Map an episode item from a season lane content response to a VodItem.
@@ -1334,7 +1352,7 @@ class VodManager:
             int(info["runtime"]) * 60 if info.get("runtime") else None
         )
         product_url: Optional[str] = (
-            content_block.get("productInformationLink") or {}
+                content_block.get("productInformationLink") or {}
         ).get("href")
 
         # Walk the full playback chain to resolve a real MPX mediaId, just
@@ -1497,7 +1515,7 @@ class VodManager:
         # so the existing session-manifest path still has a chance to work.
         # ------------------------------------------------------------------
         product_url: Optional[str] = (
-            content_block.get("productInformationLink") or {}
+                content_block.get("productInformationLink") or {}
         ).get("href")
 
         playback_href: Optional[str] = None
@@ -1661,9 +1679,9 @@ class VodManager:
         self._instant_usage_fetched = True
 
     def _resolve_movie_playback_href(
-        self,
-        product_url: str,
-        params: Dict,
+            self,
+            product_url: str,
+            params: Dict,
     ) -> tuple:
         """
         Walk the playback chain for a movie and return ``(href, media_id)``.
@@ -1731,7 +1749,7 @@ class VodManager:
             return None, None
 
         playback_urls: List[Dict] = (
-            (vod_player_data.get("content") or {}).get("playbackUrls") or []
+                (vod_player_data.get("content") or {}).get("playbackUrls") or []
         )
         media_id = self._pick_playback_media_id(playback_urls)
         if not media_id:

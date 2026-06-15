@@ -325,11 +325,20 @@ VOD_PREFIX_EPISODE = "GN_EP"
 VOD_PREFIX_MOVIE_MV = "GN_MV"
 VOD_PREFIX_MOVIE_SH = "GN_SH"
 
-# Name of the personal-bar tile that leads to the VOD StructuredGrid.
-# Looked up by exact title match in the primary.tiles list returned by homeUrl.
-# Ordered list of personal-bar tile titles that lead to the VOD StructuredGrid.
-# Tried in order — first match wins.  Different user subscriptions/locales
-# may show different tile names (e.g. "MagentaTV+" instead of "Streaming").
+# Personal-bar tile discovery for VOD entry points.
+# Each list is tried in order — first match wins. Different user subscriptions/
+# locales may show different tile names.
+#
+# VOD_HOME_TILE_TITLES: The main mixed-content hub (includes VOD lanes).
+#   This is the primary entry point used by the real device.
+# VOD_STREAMING_TILE_TITLES: Pure VOD catalog (secondary entry point).
+#   Preserved for backwards compatibility and accounts that have this tile.
+VOD_HOME_TILE_TITLES = [
+    "Aktuelles",      # Main home screen with VOD lanes (real device uses this)
+    "Home",           # Alternative name for home screen
+    "Startseite",     # Another possible variant
+]
+
 VOD_STREAMING_TILE_TITLES = [
     "Streaming",      # Default / standard subscription
     "MagentaTV+",     # Alternative name observed in some accounts
