@@ -23,6 +23,7 @@ Design notes
 from __future__ import annotations
 
 import uuid
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -159,11 +160,12 @@ class MagentaEUEpgManager:
     """
 
     def __init__(
-        self,
-        country: str,
-        http_manager: Any,
-        authenticator: Any,
-        cache: Optional[_ProgramDetailsCache] = None,
+            self,
+            country: str,
+            http_manager: Any,
+            authenticator: Any,
+            cache: Optional[_ProgramDetailsCache] = None,
+            fetch_details: bool = False,  # NEW: default to False to avoid rate limits
     ) -> None:
         """
         Parameters
@@ -174,6 +176,8 @@ class MagentaEUEpgManager:
                        session_id from the current token (no auth calls made).
         cache:         Optional shared _ProgramDetailsCache.  A default in-memory
                        instance is created if omitted.
+        fetch_details: If True, fetch full programme details (description, credits,
+                       images). If False, only use schedule data (faster, fewer API calls).
         """
         if country not in SUPPORTED_COUNTRIES:
             raise ValueError(f"MagentaEUEpgManager: unsupported country '{country}'")
@@ -182,13 +186,17 @@ class MagentaEUEpgManager:
         self._http = http_manager
         self._auth = authenticator
         self._cache = cache or _ProgramDetailsCache()
+        self._fetch_details = fetch_details  # NEW
         self._role_map = _ROLE_MAPS.get(country, _ROLES_DE)
         self._bifrost_url = get_bifrost_url(country)
         self._natco_key = get_natco_key(country)
         self._app_language = get_language(country)
         self._app_key = get_app_key(country)
 
-        logger.info(f"[MagentaEUEpgManager] Initialised for country={country}")
+        logger.info(
+            f"[MagentaEUEpgManager] Initialised for country={country}, "
+            f"fetch_details={fetch_details}"
+        )
 
     # ------------------------------------------------------------------
     # Public API  (called by provider.get_epg)
@@ -310,6 +318,7 @@ class MagentaEUEpgManager:
                     f"[MagentaEUEpgManager/{self._country}] "
                     f"schedule fetch offset={hour_offset} date={formatted} failed: {exc}"
                 )
+            time.sleep(1)  # 1 second between chunks
 
         return merged
 
@@ -435,12 +444,13 @@ class MagentaEUEpgManager:
             return None
 
     def _parse_item(
-        self, item: Dict[str, Any], channel_id: str
+            self, item: Dict[str, Any], channel_id: str
     ) -> Optional[Dict[str, Any]]:
         """
-        Convert a single bifrost schedule item + its programme details into
+        Convert a single bifrost schedule item + (optionally) programme details into
         a normalised programme dict.
 
+        If fetch_details=False, only schedule data is used (faster, fewer API calls).
         Returns None if start/end cannot be parsed (programme is unusable).
         """
         start = self._parse_timestamp(item.get("start_time"))
@@ -449,15 +459,31 @@ class MagentaEUEpgManager:
             return None
 
         program_id = item.get("program_id")
-        details = self._fetch_program_details(program_id) if program_id else {}
-        credit_map = self._parse_credits(details)
+
+        # Only fetch details if enabled
+        details = {}
+        credit_map = {
+            "cast": None,
+            "directors": None,
+            "producers": None,
+            "writers": None,
+            "presenter": None,
+            "composers": None,
+            "contributors": None,
+        }
+
+        if self._fetch_details and program_id:
+            details = self._fetch_program_details(program_id)
+            credit_map = self._parse_credits(details)
 
         # Genre: take the first genre name if present
         genres = item.get("genres") or []
         genre_description = genres[0].get("name") if genres else None
 
-        # Release year — prefer schedule item, fall back to details
-        year = item.get("release_year") or details.get("release_year")
+        # Release year — prefer schedule item, fall back to details (if fetched)
+        year = item.get("release_year")
+        if not year and details:
+            year = details.get("release_year")
         try:
             year = int(year) if year else None
         except (ValueError, TypeError):
@@ -479,7 +505,7 @@ class MagentaEUEpgManager:
 
             # Title & description
             "title": item.get("description") or item.get("title") or "Unknown",
-            "description": (details.get("details") or {}).get("description"),
+            "description": (details.get("details") or {}).get("description") if details else None,
             "episode_name": item.get("episode_name"),
 
             # Episode info
@@ -493,7 +519,7 @@ class MagentaEUEpgManager:
             # Genre
             "genre_description": genre_description,
 
-            # Credits
+            # Credits (None if details not fetched)
             "cast": credit_map["cast"],
             "directors": credit_map["directors"],
             "producers": credit_map["producers"],
@@ -504,7 +530,7 @@ class MagentaEUEpgManager:
 
             # Metadata
             "year": year,
-            "image": details.get("poster_image_url"),
+            "image": details.get("poster_image_url") if details else None,
             "language": self._app_language,
 
             # Parental rating — schedule item returns a raw value (e.g. "12", "FSK 16").
