@@ -47,7 +47,7 @@ if [ ! -d "/app/routes/streams" ]; then
     MISSING_FILES=$((MISSING_FILES + 1))
 else
     # Verify all required stream module files exist
-    REQUIRED_STREAM_MODULES=("__init__.py" "channels.py" "events.py" "vod.py" "recordings.py" "epg.py")
+    REQUIRED_STREAM_MODULES=("__init__.py" "channels.py" "events.py" "vod.py" "recordings.py")
     for module in "${REQUIRED_STREAM_MODULES[@]}"; do
         if [ ! -f "/app/routes/streams/$module" ]; then
             echo "ERROR: Missing required stream module: /app/routes/streams/$module"
