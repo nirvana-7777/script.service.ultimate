@@ -23,6 +23,7 @@ from .models.subscription import SubscriptionPackage, UserSubscription
 from .models.recording import Recording
 from .models.timer import Timer
 from .models.timer_type import TimerType
+from .models.epg_models import EPGEntry
 from .network import HTTPManager, HTTPManagerFactory
 from .utils.logger import logger
 
@@ -196,27 +197,6 @@ class StreamingProvider(ABC):
         """Return True if provider uses truly dynamic manifests"""
         return False
 
-    @property
-    def epg_window(self) -> Tuple[int, int]:
-        """
-        Return the EPG window as (past_days, future_days).
-
-        Returns:
-            Tuple[int, int]: Number of days of EPG available in the past and future.
-                             (0, 0) means this provider does not implement EPG.
-        """
-        return 0, 0
-
-    @property
-    def implements_epg(self) -> bool:
-        """
-        Check if provider implements EPG.
-
-        Returns:
-            bool: True if any EPG data is available (past or future)
-        """
-        return self.epg_window != (0, 0)
-
     def get_channels(self, **kwargs) -> List[StreamingChannel]:
         """Fetch channels from the provider"""
         return []
@@ -270,21 +250,6 @@ class StreamingProvider(ABC):
             bool: True if catchup is supported
         """
         return self.catchup_window > 0
-
-    def get_epg(
-        self,
-        channel_id: str,
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
-        **kwargs,
-    ) -> List[Dict]:
-        """Get EPG data for a channel"""
-        return []
-
-    @staticmethod
-    def get_epg_xmltv(**kwargs) -> Optional[str]:
-        """Get complete EPG data for this provider in XMLTV format"""
-        return None
 
     def enrich_channel_data(
         self, channel: StreamingChannel, **kwargs
@@ -691,6 +656,86 @@ class StreamingProvider(ABC):
         except Exception as e:
             logger.error(f"{self.provider_name}: Error getting {token_type} token: {e}")
             return None
+
+    # ============================================================================
+    # EPG PROPERTIES - MUST be overridden by providers
+    # ============================================================================
+
+    @property
+    def epg_window(self) -> Tuple[int, int]:
+        """
+        Return the EPG window as (past_days, future_days).
+
+        Returns:
+            Tuple[int, int]: (past_days, future_days)
+            (0, 0) means no EPG support
+
+        MUST be overridden by providers.
+        """
+        return 0, 0
+
+    @property
+    def implements_epg(self) -> bool:
+        """Check if provider implements EPG."""
+        return self.epg_window != (0, 0)
+
+    # ============================================================================
+    # EPG METHODS - Optional with sensible defaults
+    # ============================================================================
+
+    def get_epg(
+            self,
+            channel_id: str,
+            start_time: Optional[datetime] = None,
+            end_time: Optional[datetime] = None,
+            country: Optional[str] = None,
+            **kwargs,
+    ) -> List["EPGEntry"]:
+        """
+        Get EPG data for a specific channel.
+
+        Override if provider supports per-channel EPG.
+        Default returns empty list (no EPG).
+        """
+        return []
+
+    def get_epg_grid(
+            self,
+            start_time: Optional[datetime] = None,
+            end_time: Optional[datetime] = None,
+            channel_ids: Optional[List[str]] = None,
+            country: Optional[str] = None,
+            **kwargs,
+    ) -> Dict[str, List["EPGEntry"]]:
+        """
+        Get EPG data for multiple channels in one operation.
+
+        Override if provider supports batch EPG.
+        Default returns empty dict (no batch EPG).
+
+        Note: If provider only supports per-channel EPG,
+        implement get_epg() and leave this as default.
+        """
+        return {}
+
+    def get_program_details(self, program_id: str, **kwargs) -> Optional["EPGEntry"]:
+        """
+        Get detailed metadata for a single program.
+
+        Override if provider supports program details.
+        Default returns None (no details).
+        """
+        return None
+
+    def get_epg_xmltv(self, country: Optional[str] = None, **kwargs) -> Optional[str]:
+        """
+        Get complete EPG data in XMLTV format.
+
+        Override if provider supports XMLTV export.
+        Default returns None (no XMLTV).
+        """
+        return None
+
     # =========================================================================
     # VOD
     # =========================================================================

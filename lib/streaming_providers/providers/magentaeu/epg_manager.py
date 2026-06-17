@@ -14,6 +14,11 @@ Design notes
   first authentication.
 * Returns ``List[Dict]`` from ``get_channel_epg()`` — the same raw-dict contract
   used by other native-EPG providers and expected by EPGOperations.
+* ``get_channel_epg_batch()`` fetches schedule data once per calendar day and
+  extracts all requested channels in a single pass.  For N channels over D days
+  the cost is 4*D HTTP requests rather than 4*D*N.  Each day still requires 4
+  sequential 6-hour chunks with a 1-second sleep between them; callers should
+  budget ~4 seconds of wall-clock time per calendar day in the window.
 * Programme details (description, credits, image) are fetched per-programme and
   cached in-memory via ``_ProgramDetailsCache`` to avoid hammering the API.
 * Credit labels are localised per country because the bifrost API returns
@@ -165,7 +170,7 @@ class MagentaEUEpgManager:
             http_manager: Any,
             authenticator: Any,
             cache: Optional[_ProgramDetailsCache] = None,
-            fetch_details: bool = False,  # NEW: default to False to avoid rate limits
+            fetch_details: bool = False,
     ) -> None:
         """
         Parameters
@@ -186,7 +191,7 @@ class MagentaEUEpgManager:
         self._http = http_manager
         self._auth = authenticator
         self._cache = cache or _ProgramDetailsCache()
-        self._fetch_details = fetch_details  # NEW
+        self._fetch_details = fetch_details
         self._role_map = _ROLE_MAPS.get(country, _ROLES_DE)
         self._bifrost_url = get_bifrost_url(country)
         self._natco_key = get_natco_key(country)
@@ -199,7 +204,7 @@ class MagentaEUEpgManager:
         )
 
     # ------------------------------------------------------------------
-    # Public API  (called by provider.get_epg)
+    # Public API
     # ------------------------------------------------------------------
 
     def get_channel_epg(
@@ -260,6 +265,110 @@ class MagentaEUEpgManager:
         )
         return programmes
 
+    def get_channel_epg_batch(
+        self,
+        channel_ids: List[str],
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        **_kwargs: Any,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Fetch EPG for multiple channels efficiently.
+
+        Fetches schedule data once per calendar day in the requested window and
+        extracts all requested channels in a single pass, reducing HTTP requests
+        from 4*D*N to 4*D (where D = calendar days, N = number of channels).
+
+        Note on wall-clock cost: each calendar day requires 4 sequential HTTP
+        requests with a 1-second sleep between them (~4 seconds minimum per day).
+        A 7-day window therefore takes at least 28 seconds of blocking I/O
+        regardless of channel count.  Do not call this on the hot path for
+        single-channel lookups — use get_channel_epg() instead.
+
+        Parameters
+        ----------
+        channel_ids: List of channel IDs to fetch.
+        start_time:  Window start (datetime, aware or naive-UTC, or None → today).
+        end_time:    Window end   (datetime, aware or naive-UTC, or None → today).
+
+        Returns
+        -------
+        Dictionary mapping channel_id -> list of programme dicts, each sorted
+        by start time.  Channels with no data map to an empty list.
+        """
+        if not channel_ids:
+            return {}
+
+        date_from, date_to = self._resolve_window(start_time, end_time)
+
+        # Collect the calendar dates spanned by the window
+        dates: List[datetime] = []
+        current = date_from.replace(hour=0, minute=0, second=0, microsecond=0)
+        while current.date() <= date_to.date():
+            dates.append(current)
+            current = current + timedelta(days=1)
+
+        # Fetch ALL schedule data once per date (4 requests per day).
+        # Blocks from different days are accumulated into a single dict; the
+        # URL-keyed structure from _fetch_day_schedules is stable within a
+        # single day (each URL is unique by date+hour_offset), so updates
+        # across days do not collide.
+        all_schedule_blocks: Dict[str, Any] = {}
+        for date in dates:
+            blocks = self._fetch_day_schedules(date)
+            if blocks:
+                all_schedule_blocks.update(blocks)
+
+        if not all_schedule_blocks:
+            return {channel_id: [] for channel_id in channel_ids}
+
+        # Extract and parse items for all requested channels using the shared
+        # helper — same logic path as get_channel_epg, no duplication.
+        ts_from = int(date_from.timestamp())
+        ts_to = int(date_to.timestamp())
+
+        result: Dict[str, List[Dict[str, Any]]] = {
+            channel_id: [] for channel_id in channel_ids
+        }
+
+        for channel_id in channel_ids:
+            items = self._extract_channel_items(all_schedule_blocks, channel_id)
+            for item in items:
+                prog = self._parse_item(item, channel_id)
+                if prog is None:
+                    continue
+                if prog["end"] <= ts_from:
+                    continue
+                if prog["start"] >= ts_to:
+                    continue
+                result[channel_id].append(prog)
+
+        # Sort each channel's programmes by start time
+        for channel_id in result:
+            result[channel_id].sort(key=lambda p: p["start"])
+
+        logger.info(
+            f"[MagentaEUEpgManager/{self._country}] "
+            f"Batch EPG: {sum(len(v) for v in result.values())} programmes "
+            f"across {len(channel_ids)} channels"
+        )
+
+        return result
+
+    def get_program_details(self, program_id: str) -> Dict[str, Any]:
+        """
+        Fetch detailed metadata for a single programme.
+
+        Returns the raw details dict from the bifrost API (with in-memory
+        caching), or an empty dict if the programme is not found or the
+        request fails.
+
+        Parameters
+        ----------
+        program_id: Programme identifier as returned by the schedule API.
+        """
+        return self._fetch_program_details(program_id)
+
     # ------------------------------------------------------------------
     # HTTP helpers
     # ------------------------------------------------------------------
@@ -291,13 +400,12 @@ class MagentaEUEpgManager:
         headers = self._guest_headers(flow="EPG", step="EPG_SCHEDULES")
         formatted = date.strftime("%Y-%m-%d")
 
-        # Change: 6-hour chunks (0, 6, 12, 18)
         for hour_offset in range(0, 24, 6):
             url = (
                 f"{self._bifrost_url}/epg/channel/schedules"
                 f"?date={formatted}"
                 f"&hour_offset={hour_offset}"
-                f"&hour_range=6"  # Changed from 3 to 6
+                f"&hour_range=6"
                 f"&channelMap_id="
                 f"&filler=true"
                 f"&app_language={self._app_language}"
@@ -318,7 +426,7 @@ class MagentaEUEpgManager:
                     f"[MagentaEUEpgManager/{self._country}] "
                     f"schedule fetch offset={hour_offset} date={formatted} failed: {exc}"
                 )
-            time.sleep(1)  # 1 second between chunks
+            time.sleep(1)  # 1 second between chunks to avoid rate limiting
 
         return merged
 
@@ -332,7 +440,7 @@ class MagentaEUEpgManager:
             return cached
 
         url = (
-            f"{self._bifrost_url}/details/program/{program_id}"
+            f"{self._bifrost_url}/programs/{program_id}/details"
             f"?natco_key={self._natco_key}"
             f"&interacted_with_nPVR=false"
             f"&app_language={self._app_language}"

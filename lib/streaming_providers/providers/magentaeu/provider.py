@@ -6,6 +6,7 @@ from typing import ClassVar, Dict, List, Optional, Tuple
 
 from ...base.auth import UserPasswordCredentials
 from ...base.models import DRMConfig, StreamingChannel, Event
+from ...base.models.epg_models import EPGEntry
 from ...base.models.proxy_models import ProxyConfig
 from ...base.network import ProxyConfigManager
 from ...base.provider import StreamingProvider
@@ -69,7 +70,6 @@ class MagentaEUProvider(StreamingProvider):
         if country not in SUPPORTED_COUNTRIES:
             raise ValueError(f"Unsupported country: {country}")
 
-        # ✅ AFTER: Using abstraction with automatic proxy resolution (6 lines)
         self.http_manager = self._setup_http_manager(
             provider_name="magentaeu",
             proxy_config=proxy_config,
@@ -93,9 +93,8 @@ class MagentaEUProvider(StreamingProvider):
             country=country,
             config_dir=config_dir,
             http_manager=self.http_manager,
-            proxy_config=self.http_manager.config.proxy_config,  # Use resolved proxy
+            proxy_config=self.http_manager.config.proxy_config,
         )
-
 
         # EPG manager — owns all schedule fetch/parse logic
         self.epg_manager = MagentaEUEpgManager(
@@ -125,7 +124,6 @@ class MagentaEUProvider(StreamingProvider):
         else:
             return f"Magenta TV ({self.country.upper()})"
 
-    # Also update the instance property for consistency
     @property
     def provider_logo(self) -> str:
         """Instance property that returns country-specific logo."""
@@ -167,7 +165,6 @@ class MagentaEUProvider(StreamingProvider):
     def get_channels(self, **kwargs) -> List[StreamingChannel]:
         """Fetch available channels from Magenta TV - no authentication required"""
         try:
-            # USE AUTHENTICATOR'S SESSION IDs (single source of truth)
             device_id = (
                 self.authenticator.current_token.device_id
                 if self.authenticator.current_token
@@ -231,7 +228,6 @@ class MagentaEUProvider(StreamingProvider):
                 if not tp_channel:
                     continue
 
-                # Bifrost-specific fields not covered by TheplatformChannel
                 title = channel_data.get("title", "Unknown Channel")
                 logo = channel_data.get("channel_logo", "")
                 media_pid = channel_data.get("media_pid", "")
@@ -239,7 +235,6 @@ class MagentaEUProvider(StreamingProvider):
 
                 catchup_hours = channel_data.get("CatchupHours", self.catchup_window)
 
-                # Build manifest script from bifrost metadata fields
                 manifest_script_parts = []
                 if tp_channel.channel_number:
                     manifest_script_parts.append(f"chno={tp_channel.channel_number}")
@@ -281,8 +276,8 @@ class MagentaEUProvider(StreamingProvider):
 
     def get_events(
             self,
-            start_time: Optional[datetime] = None,
-            end_time: Optional[datetime] = None,
+            start_time: Optional[datetime.datetime] = None,
+            end_time: Optional[datetime.datetime] = None,
             **kwargs,
     ) -> List[Event]:
         return []
@@ -291,8 +286,9 @@ class MagentaEUProvider(StreamingProvider):
         """
         Native EPG entry point called by EPGOperations when implements_epg=True.
 
-        Delegates entirely to MagentaEUEpgManager — the provider is only an
-        orchestrator here.
+        Delegates entirely to MagentaEUEpgManager and returns raw programme
+        dicts, preserving the List[Dict] contract expected by EPGOperations.
+        Callers that need EPGEntry objects should use get_epg_entries() instead.
 
         Parameters
         ----------
@@ -307,19 +303,109 @@ class MagentaEUProvider(StreamingProvider):
             end_time=kwargs.get("end_time"),
         )
 
+    def get_epg_entries(
+        self,
+        channel_id: str,
+        start_time: Optional[datetime.datetime] = None,
+        end_time: Optional[datetime.datetime] = None,
+        **kwargs,
+    ) -> List[EPGEntry]:
+        """
+        Get EPG data for a single channel as EPGEntry objects.
+
+        This is the typed counterpart to get_epg(). Use this when the caller
+        needs EPGEntry model instances rather than raw dicts — e.g. when
+        building an EPG grid or hydrating a UI layer.
+
+        Parameters
+        ----------
+        channel_id:  Station ID (theplatform Station URI).
+        start_time:  Window start (datetime, aware or naive-UTC, or None → today).
+        end_time:    Window end   (datetime, aware or naive-UTC, or None → today).
+        """
+        raw_entries = self.epg_manager.get_channel_epg(
+            channel_id=channel_id,
+            start_time=start_time,
+            end_time=end_time,
+        )
+        return [EPGEntry.from_dict(entry) for entry in raw_entries]
+
+    def get_epg_grid(
+        self,
+        channel_ids: Optional[List[str]] = None,
+        start_time: Optional[datetime.datetime] = None,
+        end_time: Optional[datetime.datetime] = None,
+        **kwargs,
+    ) -> Dict[str, List[EPGEntry]]:
+        """
+        Get EPG data for multiple channels efficiently as EPGEntry objects.
+
+        Uses get_channel_epg_batch() which fetches schedule data once per
+        calendar day and extracts all channels in a single pass (4*D HTTP
+        requests rather than 4*D*N).
+
+        Note on wall-clock cost: each calendar day in the window requires 4
+        sequential HTTP requests with a 1-second sleep between them (~4 seconds
+        minimum per day).  Do not call this without explicit channel_ids in a
+        hot path — see the note on channel_ids=None below.
+
+        Parameters
+        ----------
+        channel_ids: Channel IDs to fetch.  If None, all channels from the
+                     channel cache are used — this triggers a full cache refresh
+                     if the cache is stale and will be slow for large channel
+                     lists across multi-day windows.
+        start_time:  Window start (datetime, aware or naive-UTC, or None → today).
+        end_time:    Window end   (datetime, aware or naive-UTC, or None → today).
+
+        Returns
+        -------
+        Dictionary mapping channel_id -> List[EPGEntry], sorted by start time.
+        Channels with no data map to an empty list.
+        """
+        if channel_ids is None:
+            if not self._ensure_channels_cache():
+                return {}
+            channel_ids = [channel.channel_id for channel in self._channels_cache]
+
+        raw_batch = self.epg_manager.get_channel_epg_batch(
+            channel_ids=channel_ids,
+            start_time=start_time,
+            end_time=end_time,
+        )
+
+        return {
+            channel_id: [EPGEntry.from_dict(entry) for entry in raw_entries]
+            for channel_id, raw_entries in raw_batch.items()
+        }
+
+    def get_program_details(self, program_id: str, **kwargs) -> Optional[EPGEntry]:
+        """
+        Get detailed metadata for a single programme as an EPGEntry object.
+
+        Returns None if the programme is not found or the request fails.
+
+        Parameters
+        ----------
+        program_id: Programme identifier as returned by the schedule API.
+        """
+        details = self.epg_manager.get_program_details(program_id)
+        if not details:
+            return None
+        return EPGEntry.from_dict(details)
+
     def enrich_channel_data(
         self, channel: StreamingChannel, **kwargs
     ) -> Optional[StreamingChannel]:
         """
-        Enrich channel with streaming data
+        Enrich channel with streaming data.
         Magenta TV provides manifest URLs directly in channel data,
-        so this mainly ensures DRM configuration is set up
+        so this mainly ensures DRM configuration is set up.
         """
         try:
             if not channel.manifest:
                 return None
 
-            # Get DRM config (this requires authentication)
             drm_config = self.get_drm_config(channel)
             if drm_config:
                 channel.drm_config = drm_config
@@ -334,7 +420,6 @@ class MagentaEUProvider(StreamingProvider):
         """Ensure channels cache is populated, fetch if empty or forced"""
         current_time = time.time()
 
-        # Check if cache needs refresh
         if (force_refresh or
                 not self._channels_cache or
                 (current_time - self._channels_cache_timestamp) > self._cache_ttl):
@@ -351,12 +436,9 @@ class MagentaEUProvider(StreamingProvider):
 
     def get_manifest(self, content_id: str, **kwargs) -> Optional[str]:
         """Get manifest URL for a channel by ID"""
-
-        # Ensure cache is populated
         if not self._ensure_channels_cache():
             return None
 
-        # Look for the channel
         for channel in self._channels_cache:
             if channel.channel_id == content_id:
                 return channel.manifest
@@ -382,7 +464,6 @@ class MagentaEUProvider(StreamingProvider):
         Returns:
             Manifest URL with catchup time parameters, or None if channel not found
         """
-        # Ensure cache is populated first
         if not self._ensure_channels_cache():
             logger.warning(f"Cannot get catchup manifest for {content_id}, channels cache unavailable")
             return None
@@ -398,7 +479,6 @@ class MagentaEUProvider(StreamingProvider):
             if isinstance(end_time, str):
                 end_time = int(end_time)
 
-            # Build the catchup URL with converted time strings
             catchup_manifest = build_catchup_url(base_manifest, start_time, end_time)
             logger.debug(f"Catchup manifest for channel {content_id}: {catchup_manifest}")
             return catchup_manifest
@@ -411,12 +491,10 @@ class MagentaEUProvider(StreamingProvider):
         """Get DRM configurations for channel by ID"""
         logger.info(f"=== get_drm_configs_by_id CALLED for channel_id: {content_id} ===")
 
-        # Ensure cache is populated
         if not self._ensure_channels_cache():
             logger.warning(f"Cannot get DRM for {content_id}, channels cache unavailable")
             return []
 
-        # Find channel in cache
         channel = None
         for cached_channel in self._channels_cache:
             if cached_channel.channel_id == content_id:
@@ -427,7 +505,6 @@ class MagentaEUProvider(StreamingProvider):
             logger.warning(f"Channel with ID {content_id} not found in cache")
             return []
 
-        # Get DRM config using the existing method
         drm_config = self.get_drm_config(channel, **kwargs)
         return [drm_config] if drm_config else []
 
@@ -450,7 +527,6 @@ class MagentaEUProvider(StreamingProvider):
                 logger.debug(f"No PID found for channel {channel.name}")
                 return None
 
-            # Get access token (authenticate if needed)
             if not self.bearer_token:
                 try:
                     self.authenticate()
@@ -466,7 +542,6 @@ class MagentaEUProvider(StreamingProvider):
             if access_token.startswith("Bearer "):
                 access_token = access_token[7:]
 
-            # Decode JWT to extract account ID and persona token
             try:
                 current_token = self.authenticator.current_token
                 if isinstance(current_token, MagentaAuthToken) and hasattr(
@@ -513,9 +588,7 @@ class MagentaEUProvider(StreamingProvider):
     def validate_credentials(self, credentials: UserPasswordCredentials) -> bool:
         """Validate Magenta TV credentials"""
         try:
-            # Test authentication with provided credentials
             temp_authenticator = MagentaAuthenticator(
-                #                country=credentials.country,
                 config_dir=(
                     self.authenticator.settings_manager.config_dir
                     if hasattr(self.authenticator.settings_manager, "config_dir")
@@ -549,7 +622,6 @@ class MagentaEUProvider(StreamingProvider):
         Returns:
             Logo URL for the specified country, or default if not available
         """
-        # If country is provided, return country-specific logo
         if country:
             country_lower = country.lower()
             if country_lower == "at":
@@ -559,14 +631,11 @@ class MagentaEUProvider(StreamingProvider):
             elif country_lower == "pl":
                 return cls.PROVIDER_LOGO_PL
             elif country_lower == "hu":
-                # Hungary - use AT logo as fallback or add specific one
                 return cls.PROVIDER_LOGO_AT or cls.PROVIDER_LOGO_HR
             elif country_lower == "me":
-                # Montenegro - use HR logo as fallback or add specific one
                 return cls.PROVIDER_LOGO_HR
 
-        # No country specified - return a sensible default
-        return cls.PROVIDER_LOGO_HR  # or cls.PROVIDER_LOGO_AT
+        return cls.PROVIDER_LOGO_HR
 
     @classmethod
     def get_static_label(cls, country: str = None) -> str:
