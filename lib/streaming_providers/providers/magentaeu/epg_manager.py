@@ -590,9 +590,28 @@ class MagentaEUEpgManager:
             item.get("episode_number"), max_valid=None
         )
 
-        # Use program_id directly as broadcast_id
-        # For native EPG providers, the API's program_id is the natural identifier
-        broadcast_id = program_id if program_id else hash(f"{channel_id}_{start}")
+        # Use program_id as broadcast_id where possible.
+        # The bifrost API always returns program_id as a string; EPGEntry
+        # requires an int (EPGEntry.__post_init__ compares broadcast_id
+        # against EPG_TAG_INVALID_UID with <=, which raises TypeError if
+        # broadcast_id is still a str). Coerce numeric IDs to int and fall
+        # back to a hash-derived id for missing/non-numeric program_ids.
+        broadcast_id: Optional[int] = None
+        if program_id:
+            try:
+                broadcast_id = int(program_id)
+            except (ValueError, TypeError):
+                logger.debug(
+                    f"[MagentaEUEpgManager/{self._country}] "
+                    f"non-numeric program_id {program_id!r} for channel "
+                    f"{channel_id} — falling back to hash-derived broadcast_id"
+                )
+        if broadcast_id is None:
+            broadcast_id = hash(f"{channel_id}_{start}")
+            # EPGEntry requires broadcast_id > EPG_TAG_INVALID_UID (0); Python's
+            # hash() can return negative or zero values, so fold into a
+            # strictly-positive range.
+            broadcast_id = (broadcast_id % 2_147_483_647) + 1
 
         # Build EPGEntry with all available data
         return EPGEntry(
