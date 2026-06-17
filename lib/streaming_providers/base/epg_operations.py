@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 
 from .epg import EPGManager
 from .utils.logger import logger
+from .models.epg_models import EPGEntry
 
 
 class EPGOperations:
@@ -47,7 +48,7 @@ class EPGOperations:
         end_time=None,
         limit: int = 100,
         country: Optional[str] = None,
-    ) -> List[Dict]:
+    ) -> List[EPGEntry]:
         """Get EPG data for a specific channel.
 
         Args:
@@ -102,7 +103,7 @@ class EPGOperations:
         end_time=None,
         channel_ids: Optional[List[str]] = None,
         country: Optional[str] = None,
-    ) -> Dict[str, List[Dict]]:
+    ) -> Dict[str, List[EPGEntry]]:
         """Get a time-windowed EPG grid across multiple channels.
 
         Returns a dict keyed by channel_id, each value being a list of
@@ -153,7 +154,7 @@ class EPGOperations:
         self,
         provider_name: str,
         program_id: str,
-    ) -> Optional[Dict]:
+    ) -> Optional["EPGEntry"]:
         """Get full metadata for a single program.
 
         Args:

@@ -282,13 +282,13 @@ class MagentaEUProvider(StreamingProvider):
     ) -> List[Event]:
         return []
 
-    def get_epg(self, channel_id: str, **kwargs) -> List[Dict]:
+    def get_epg(self, channel_id: str, **kwargs) -> List[EPGEntry]:
         """
         Native EPG entry point called by EPGOperations when implements_epg=True.
 
-        Delegates entirely to MagentaEUEpgManager and returns raw programme
-        dicts, preserving the List[Dict] contract expected by EPGOperations.
-        Callers that need EPGEntry objects should use get_epg_entries() instead.
+        Delegates entirely to MagentaEUEpgManager and returns EPGEntry objects
+        directly (the manager constructs these internally; no dict conversion
+        happens at this layer).
 
         Parameters
         ----------
@@ -303,33 +303,6 @@ class MagentaEUProvider(StreamingProvider):
             end_time=kwargs.get("end_time"),
         )
 
-    def get_epg_entries(
-        self,
-        channel_id: str,
-        start_time: Optional[datetime.datetime] = None,
-        end_time: Optional[datetime.datetime] = None,
-        **kwargs,
-    ) -> List[EPGEntry]:
-        """
-        Get EPG data for a single channel as EPGEntry objects.
-
-        This is the typed counterpart to get_epg(). Use this when the caller
-        needs EPGEntry model instances rather than raw dicts — e.g. when
-        building an EPG grid or hydrating a UI layer.
-
-        Parameters
-        ----------
-        channel_id:  Station ID (theplatform Station URI).
-        start_time:  Window start (datetime, aware or naive-UTC, or None → today).
-        end_time:    Window end   (datetime, aware or naive-UTC, or None → today).
-        """
-        raw_entries = self.epg_manager.get_channel_epg(
-            channel_id=channel_id,
-            start_time=start_time,
-            end_time=end_time,
-        )
-        return [EPGEntry.from_dict(entry) for entry in raw_entries]
-
     def get_epg_grid(
         self,
         channel_ids: Optional[List[str]] = None,
@@ -341,13 +314,13 @@ class MagentaEUProvider(StreamingProvider):
         Get EPG data for multiple channels efficiently as EPGEntry objects.
 
         Uses get_channel_epg_batch() which fetches schedule data once per
-        calendar day and extracts all channels in a single pass (4*D HTTP
-        requests rather than 4*D*N).
+        calendar day and extracts all channels in a single pass (8*D HTTP
+        requests rather than 8*D*N).
 
-        Note on wall-clock cost: each calendar day in the window requires 4
-        sequential HTTP requests with a 1-second sleep between them (~4 seconds
-        minimum per day).  Do not call this without explicit channel_ids in a
-        hot path — see the note on channel_ids=None below.
+        Note on wall-clock cost: each calendar day in the window requires 8
+        sequential HTTP requests (3-hour blocks) with a 1-second sleep between
+        them (~8 seconds minimum per day).  Do not call this without explicit
+        channel_ids in a hot path — see the note on channel_ids=None below.
 
         Parameters
         ----------
@@ -368,16 +341,11 @@ class MagentaEUProvider(StreamingProvider):
                 return {}
             channel_ids = [channel.channel_id for channel in self._channels_cache]
 
-        raw_batch = self.epg_manager.get_channel_epg_batch(
+        return self.epg_manager.get_channel_epg_batch(
             channel_ids=channel_ids,
             start_time=start_time,
             end_time=end_time,
         )
-
-        return {
-            channel_id: [EPGEntry.from_dict(entry) for entry in raw_entries]
-            for channel_id, raw_entries in raw_batch.items()
-        }
 
     def get_program_details(self, program_id: str, **kwargs) -> Optional[EPGEntry]:
         """

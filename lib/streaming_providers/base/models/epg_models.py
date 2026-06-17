@@ -5,7 +5,7 @@ EPG Models - Data classes for Electronic Program Guide entries
 Based on Kodi PVR EPG Tag specification (ETSI EN 300 468 DVB-SI standard)
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from enum import IntEnum
 from typing import List, Optional

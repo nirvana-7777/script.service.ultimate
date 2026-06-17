@@ -33,6 +33,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ...base.utils.logger import logger
+from ...base.models.epg_models import EPGEntry
 from .constants import (
     DEFAULT_REQUEST_TIMEOUT,
     SUPPORTED_COUNTRIES,
@@ -208,28 +209,19 @@ class MagentaEUEpgManager:
     # ------------------------------------------------------------------
 
     def get_channel_epg(
-        self,
-        channel_id: str,
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
-        **_kwargs: Any,
-    ) -> List[Dict[str, Any]]:
+            self,
+            channel_id: str,
+            start_time: Optional[datetime] = None,
+            end_time: Optional[datetime] = None,
+            **_kwargs: Any,
+    ) -> List[EPGEntry]:
         """
         Fetch and normalise EPG for a single channel on the days covered by
         the requested window.
 
-        Parameters
-        ----------
-        channel_id:  Station ID (theplatform Station URI) — identical to the
-                     content_id stored on StreamingChannel / used as the key
-                     in the bifrost schedules response.
-        start_time:  Window start (datetime, aware or naive-UTC, or None → today).
-        end_time:    Window end   (datetime, aware or naive-UTC, or None → today).
-
-        Returns
-        -------
-        List of normalised programme dicts, filtered to the requested window,
-        sorted by start time.  Empty list on any error.
+        Returns:
+            List of EPGEntry objects, sorted by start time.
+            Empty list on any error.
         """
         date_from, date_to = self._resolve_window(start_time, end_time)
 
@@ -240,7 +232,9 @@ class MagentaEUEpgManager:
             dates.append(current)
             current = current + timedelta(days=1)
 
-        programmes: List[Dict[str, Any]] = []
+        programmes: List[EPGEntry] = []
+        ts_from = int(date_from.timestamp())
+        ts_to = int(date_to.timestamp())
 
         for date in dates:
             raw_blocks = self._fetch_day_schedules(date)
@@ -248,17 +242,17 @@ class MagentaEUEpgManager:
                 continue
             day_items = self._extract_channel_items(raw_blocks, channel_id)
             for item in day_items:
-                prog = self._parse_item(item, channel_id)
-                if prog is None:
+                entry = self._parse_item_to_entry(item, channel_id)
+                if entry is None:
                     continue
                 # Keep only programmes that overlap the requested window
-                if prog["end"] <= int(date_from.timestamp()):
+                if entry.end <= ts_from:
                     continue
-                if prog["start"] >= int(date_to.timestamp()):
+                if entry.start >= ts_to:
                     continue
-                programmes.append(prog)
+                programmes.append(entry)
 
-        programmes.sort(key=lambda p: p["start"])
+        programmes.sort(key=lambda p: p.start)
         logger.info(
             f"[MagentaEUEpgManager/{self._country}] "
             f"{len(programmes)} programmes for channel {channel_id}"
@@ -266,12 +260,12 @@ class MagentaEUEpgManager:
         return programmes
 
     def get_channel_epg_batch(
-        self,
-        channel_ids: List[str],
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
-        **_kwargs: Any,
-    ) -> Dict[str, List[Dict[str, Any]]]:
+            self,
+            channel_ids: List[str],
+            start_time: Optional[datetime] = None,
+            end_time: Optional[datetime] = None,
+            **_kwargs: Any,
+    ) -> Dict[str, List[EPGEntry]]:
         """
         Fetch EPG for multiple channels efficiently.
 
@@ -279,22 +273,9 @@ class MagentaEUEpgManager:
         extracts all requested channels in a single pass, reducing HTTP requests
         from 4*D*N to 4*D (where D = calendar days, N = number of channels).
 
-        Note on wall-clock cost: each calendar day requires 4 sequential HTTP
-        requests with a 1-second sleep between them (~4 seconds minimum per day).
-        A 7-day window therefore takes at least 28 seconds of blocking I/O
-        regardless of channel count.  Do not call this on the hot path for
-        single-channel lookups — use get_channel_epg() instead.
-
-        Parameters
-        ----------
-        channel_ids: List of channel IDs to fetch.
-        start_time:  Window start (datetime, aware or naive-UTC, or None → today).
-        end_time:    Window end   (datetime, aware or naive-UTC, or None → today).
-
-        Returns
-        -------
-        Dictionary mapping channel_id -> list of programme dicts, each sorted
-        by start time.  Channels with no data map to an empty list.
+        Returns:
+            Dictionary mapping channel_id -> list of EPGEntry objects,
+            each sorted by start time. Channels with no data map to an empty list.
         """
         if not channel_ids:
             return {}
@@ -308,11 +289,7 @@ class MagentaEUEpgManager:
             dates.append(current)
             current = current + timedelta(days=1)
 
-        # Fetch ALL schedule data once per date (4 requests per day).
-        # Blocks from different days are accumulated into a single dict; the
-        # URL-keyed structure from _fetch_day_schedules is stable within a
-        # single day (each URL is unique by date+hour_offset), so updates
-        # across days do not collide.
+        # Fetch ALL schedule data once per date (4 requests per day)
         all_schedule_blocks: Dict[str, Any] = {}
         for date in dates:
             blocks = self._fetch_day_schedules(date)
@@ -322,30 +299,29 @@ class MagentaEUEpgManager:
         if not all_schedule_blocks:
             return {channel_id: [] for channel_id in channel_ids}
 
-        # Extract and parse items for all requested channels using the shared
-        # helper — same logic path as get_channel_epg, no duplication.
+        # Extract and parse items for all requested channels
         ts_from = int(date_from.timestamp())
         ts_to = int(date_to.timestamp())
 
-        result: Dict[str, List[Dict[str, Any]]] = {
+        result: Dict[str, List[EPGEntry]] = {
             channel_id: [] for channel_id in channel_ids
         }
 
         for channel_id in channel_ids:
             items = self._extract_channel_items(all_schedule_blocks, channel_id)
             for item in items:
-                prog = self._parse_item(item, channel_id)
-                if prog is None:
+                entry = self._parse_item_to_entry(item, channel_id)
+                if entry is None:
                     continue
-                if prog["end"] <= ts_from:
+                if entry.end <= ts_from:
                     continue
-                if prog["start"] >= ts_to:
+                if entry.start >= ts_to:
                     continue
-                result[channel_id].append(prog)
+                result[channel_id].append(entry)
 
         # Sort each channel's programmes by start time
         for channel_id in result:
-            result[channel_id].sort(key=lambda p: p["start"])
+            result[channel_id].sort(key=lambda p: p.start)
 
         logger.info(
             f"[MagentaEUEpgManager/{self._country}] "
@@ -551,16 +527,24 @@ class MagentaEUEpgManager:
         except (ValueError, AttributeError):
             return None
 
-    def _parse_item(
+    def _parse_item_to_entry(
             self, item: Dict[str, Any], channel_id: str
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[EPGEntry]:
         """
-        Convert a single bifrost schedule item + (optionally) programme details into
-        a normalised programme dict.
+        Convert a single bifrost schedule item into an EPGEntry object.
 
-        If fetch_details=False, only schedule data is used (faster, fewer API calls).
-        Returns None if start/end cannot be parsed (programme is unusable).
+        If fetch_details=True, programme details (description, credits, images)
+        are fetched and merged into the EPGEntry. Otherwise, only schedule data
+        is used (faster, fewer API calls).
+
+        Args:
+            item: Raw schedule item from bifrost API
+            channel_id: Channel identifier (station ID)
+
+        Returns:
+            EPGEntry object, or None if start/end cannot be parsed
         """
+        # Parse time range - required fields
         start = self._parse_timestamp(item.get("start_time"))
         end = self._parse_timestamp(item.get("end_time"))
         if start is None or end is None or end <= start:
@@ -568,7 +552,7 @@ class MagentaEUEpgManager:
 
         program_id = item.get("program_id")
 
-        # Only fetch details if enabled
+        # Fetch programme details if enabled
         details = {}
         credit_map = {
             "cast": None,
@@ -598,53 +582,62 @@ class MagentaEUEpgManager:
             year = None
 
         # Season / episode — the API returns strings, and Gracenote encodes
-        # "no real season" as a large placeholder (e.g. "20230000", "39170000").
-        # Any value >= 9999 is treated as absent to avoid nonsense data.
-        # Season: values >= 9999 are Gracenote year-encoded placeholders (e.g.
-        # "20230000") meaning the show has no real season structure → treat as None.
-        # Episode: no upper bound — long-running daily shows can have 2000+ episodes.
-        season_number = self._parse_episode_number(item.get("season_number"), max_valid=9998)
-        episode_number = self._parse_episode_number(item.get("episode_number"), max_valid=None)
+        # "no real season" as a large placeholder (e.g. "20230000", "39170000")
+        season_number = self._parse_episode_number(
+            item.get("season_number"), max_valid=9998
+        )
+        episode_number = self._parse_episode_number(
+            item.get("episode_number"), max_valid=None
+        )
 
-        return {
-            # Identifiers
-            "channel_id": channel_id,
-            "program_id": program_id,
+        # Use program_id directly as broadcast_id
+        # For native EPG providers, the API's program_id is the natural identifier
+        broadcast_id = program_id if program_id else hash(f"{channel_id}_{start}")
 
-            # Title & description
-            "title": item.get("description") or item.get("title") or "Unknown",
-            "description": (details.get("details") or {}).get("description") if details else None,
-            "episode_name": item.get("episode_name"),
+        # Build EPGEntry with all available data
+        return EPGEntry(
+            # Required fields
+            broadcast_id=broadcast_id,
+            title=item.get("description") or item.get("title") or "Unknown",
+            start=start,
+            end=end,
 
-            # Episode info
-            "season_number": season_number,
-            "episode_number": episode_number,
+            # Optional fields - Programme Information
+            description=(details.get("details") or {}).get("description") if details else None,
+            plot_outline=None,  # Not available from bifrost API
+            episode_name=item.get("episode_name"),
+            original_title=None,  # Not available from bifrost API
 
-            # Time (Unix timestamps)
-            "start": start,
-            "end": end,
+            # Optional fields - Media Metadata
+            year=year,
+            icon=details.get("poster_image_url") if details else None,
 
-            # Genre
-            "genre_description": genre_description,
+            # Optional fields - People
+            cast=credit_map["cast"],
+            directors=credit_map["directors"],
+            writers=credit_map["writers"],
 
-            # Credits (None if details not fetched)
-            "cast": credit_map["cast"],
-            "directors": credit_map["directors"],
-            "producers": credit_map["producers"],
-            "writers": credit_map["writers"],
-            "presenter": credit_map["presenter"],
-            "composers": credit_map["composers"],
-            "contributors": credit_map["contributors"],
+            # Optional fields - Genre/Category
+            genre=None,  # Not using numeric DVB-SI genres
+            genre_sub_type=None,
+            genre_description=genre_description,
 
-            # Metadata
-            "year": year,
-            "image": details.get("poster_image_url") if details else None,
-            "language": self._app_language,
+            # Optional fields - Episode Information
+            season_number=season_number,
+            episode_number=episode_number,
+            episode_part_number=None,  # Not available from bifrost API
 
-            # Parental rating — schedule item returns a raw value (e.g. "12", "FSK 16").
-            # Stored as-is in parental_rating_code; numeric extraction left to the consumer.
-            "parental_rating_code": item.get("ratings") or None,
-        }
+            # Optional fields - Ratings
+            star_rating=None,  # Not available from bifrost API
+            parental_rating=None,  # Not using numeric rating
+            parental_rating_code=item.get("ratings"),
+
+            # Optional fields - Additional Metadata
+            first_aired=None,  # Not available from bifrost API
+            imdb_number=None,  # Not available from bifrost API
+            series_link=None,  # Not available from bifrost API
+            flags=None,  # Could be set based on programme properties if needed
+        )
 
     # ------------------------------------------------------------------
     # Window resolution
