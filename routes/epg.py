@@ -266,6 +266,13 @@ def setup_epg_routes(app, manager, service):
                 country=country,
             )
 
+            # Serialize EPGEntry objects to dicts here, at the response
+            # boundary — epg_ops returns EPGEntry objects (not JSON-safe).
+            grid_data = {
+                cid: [entry.to_dict() for entry in entries]
+                for cid, entries in grid_data.items()
+            }
+
             response.content_type = "application/json; charset=utf-8"
             return {
                 "provider": provider,
@@ -321,6 +328,10 @@ def setup_epg_routes(app, manager, service):
                 country=country,
             )
 
+            # Serialize EPGEntry objects to dicts here, at the response
+            # boundary — epg_ops returns EPGEntry objects (not JSON-safe).
+            programs = [entry.to_dict() for entry in programs]
+
             response.content_type = "application/json; charset=utf-8"
             return {
                 "provider": provider,
@@ -363,6 +374,13 @@ def setup_epg_routes(app, manager, service):
                 response.status = 404
                 response.content_type = "application/json; charset=utf-8"
                 return {"error": f"Program '{program_id}' not found for provider '{provider}'"}
+
+            # Serialize EPGEntry objects to dicts here, at the response
+            # boundary — epg_ops returns EPGEntry objects (not JSON-safe)
+            # on the native path. The generic fallback path can return a
+            # plain dict, so only convert if it's actually an EPGEntry.
+            if hasattr(program_data, "to_dict"):
+                program_data = program_data.to_dict()
 
             response.content_type = "application/json; charset=utf-8"
             return {
