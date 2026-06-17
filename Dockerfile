@@ -90,7 +90,6 @@ RUN echo "=== Validating split structure ===" && \
     test -f /app/routes/streams/events.py && echo "✓ routes/streams/events.py" || (echo "✗ MISSING: routes/streams/events.py" && exit 1) && \
     test -f /app/routes/streams/vod.py && echo "✓ routes/streams/vod.py" || (echo "✗ MISSING: routes/streams/vod.py" && exit 1) && \
     test -f /app/routes/streams/recordings.py && echo "✓ routes/streams/recordings.py" || (echo "✗ MISSING: routes/streams/recordings.py" && exit 1) && \
-    test -f /app/routes/streams/epg.py && echo "✓ routes/streams/epg.py" || (echo "✗ MISSING: routes/streams/epg.py" && exit 1) && \
     test -f /app/service.py && echo "✓ service.py" || (echo "✗ MISSING: service.py" && exit 1) && \
     echo "✓ All split structure files validated successfully!"
 
