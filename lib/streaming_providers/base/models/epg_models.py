@@ -566,6 +566,20 @@ class EPGEntry:
 
     def __post_init__(self):
         """Validate required fields after initialization."""
+        # --- COERCE TIMESTAMPS FIRST ---
+        start_coerced = _coerce_timestamp(self.start, "start")
+        end_coerced = _coerce_timestamp(self.end, "end")
+
+        if start_coerced is None:
+            raise ValueError("start is required and cannot be None")
+        if end_coerced is None:
+            raise ValueError("end is required and cannot be None")
+
+        self.start = start_coerced
+        self.end = end_coerced
+        # --- END COERCION ---
+
+        # Now validate
         if self.broadcast_id <= EPG_TAG_INVALID_UID:
             raise ValueError(
                 f"broadcast_id must be greater than EPG_TAG_INVALID_UID ({EPG_TAG_INVALID_UID})"
