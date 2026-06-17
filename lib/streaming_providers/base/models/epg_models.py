@@ -8,7 +8,7 @@ Based on Kodi PVR EPG Tag specification (ETSI EN 300 468 DVB-SI standard)
 from dataclasses import dataclass
 from datetime import datetime
 from enum import IntEnum
-from typing import List, Optional
+from typing import List, Optional, Union
 
 # EPG Constants from Kodi PVR specification
 EPG_TAG_INVALID_UID = 0
@@ -22,6 +22,61 @@ EPG_TIMEFRAME_UNLIMITED = -1
 
 EPG_STRING_TOKEN_SEPARATOR = ","
 """Separator for multiple values in string fields (cast, directors, writers)."""
+
+
+def _coerce_timestamp(value: Union[int, str, None], field_name: str) -> Optional[int]:
+    """
+    Coerce a raw timestamp value (int, numeric string, or ISO-8601 string)
+    into a Unix timestamp (int seconds).
+
+    This is the single source of truth for timestamp parsing used by
+    EPGEntry.__post_init__. Upstream providers are inconsistent about
+    whether they send epoch ints, epoch strings, or ISO-8601 datetimes,
+    so all three forms are accepted here.
+
+    Args:
+        value: Raw timestamp value to coerce.
+        field_name: Name of the field being coerced, used only for error
+            messages (e.g. "start", "end").
+
+    Returns:
+        Unix timestamp as int, or None if value was None.
+
+    Raises:
+        ValueError: If value is a non-empty string/other type that cannot
+            be parsed as either a numeric epoch or an ISO-8601 datetime.
+    """
+    if value is None:
+        return None
+
+    # Already an int (bools are ints too, but that's not a realistic
+    # input here so no special-casing).
+    if isinstance(value, int):
+        return value
+
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+
+        # Numeric epoch string, e.g. "1750000000" or "-1"
+        if stripped.lstrip("-").isdigit():
+            return int(stripped)
+
+        # ISO-8601 datetime string, e.g. "2026-06-17T16:28:00Z"
+        try:
+            dt = datetime.fromisoformat(stripped.replace("Z", "+00:00"))
+            return int(dt.timestamp())
+        except (ValueError, AttributeError) as e:
+            raise ValueError(
+                f"{field_name} could not be parsed as a timestamp: "
+                f"{value!r} ({e})"
+            ) from e
+
+    raise ValueError(
+        f"{field_name} must be an int, numeric string, or ISO-8601 string, "
+        f"got {type(value)}: {value!r}"
+    )
 
 
 class EPGEventState(IntEnum):
