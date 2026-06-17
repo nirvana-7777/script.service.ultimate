@@ -440,7 +440,7 @@ class MagentaEUEpgManager:
             return cached
 
         url = (
-            f"{self._bifrost_url}/programs/{program_id}/details"
+            f"{self._bifrost_url}/details/program/{program_id}"
             f"?natco_key={self._natco_key}"
             f"&interacted_with_nPVR=false"
             f"&app_language={self._app_language}"
