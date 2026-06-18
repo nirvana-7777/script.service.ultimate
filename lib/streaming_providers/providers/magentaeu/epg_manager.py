@@ -220,10 +220,13 @@ class MagentaEUEpgManager:
     ) -> List[EPGEntry]:
         date_from, date_to = self._resolve_window(start_time, end_time)
 
-        # Collect the calendar dates spanned by the window
+        # Collect the calendar dates spanned by the window, in Vienna local
+        # time — the bifrost API's `date` param is Vienna-local, so walking
+        # UTC calendar days here can pull in (or miss) an extra day.
         dates: List[datetime] = []
-        current = date_from.replace(hour=0, minute=0, second=0, microsecond=0)
-        while current.date() <= date_to.date():
+        current = date_from.astimezone(_VIENNA_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+        local_to = date_to.astimezone(_VIENNA_TZ)
+        while current.date() <= local_to.date():
             dates.append(current)
             current = current + timedelta(days=1)
 
@@ -267,10 +270,13 @@ class MagentaEUEpgManager:
 
         date_from, date_to = self._resolve_window(start_time, end_time)
 
-        # Collect the calendar dates spanned by the window
+        # Collect the calendar dates spanned by the window, in Vienna local
+        # time — the bifrost API's `date` param is Vienna-local, so walking
+        # UTC calendar days here can pull in (or miss) an extra day.
         dates: List[datetime] = []
-        current = date_from.replace(hour=0, minute=0, second=0, microsecond=0)
-        while current.date() <= date_to.date():
+        current = date_from.astimezone(_VIENNA_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+        local_to = date_to.astimezone(_VIENNA_TZ)
+        while current.date() <= local_to.date():
             dates.append(current)
             current = current + timedelta(days=1)
 
