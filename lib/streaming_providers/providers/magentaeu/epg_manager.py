@@ -419,7 +419,6 @@ class MagentaEUEpgManager:
                             f"[MagentaEUEpgManager/{self._country}] "
                             f"schedule fetch offset={hour_offset} failed after {max_retries} attempts: {exc}"
                         )
-            time.sleep(1)  # 1 second between chunks to avoid rate limiting
 
         return merged
 
