@@ -549,17 +549,6 @@ class MagentaEUEpgManager:
     ) -> Optional[EPGEntry]:
         """
         Convert a single bifrost schedule item into an EPGEntry object.
-
-        If fetch_details=True, programme details (description, credits, images)
-        are fetched and merged into the EPGEntry. Otherwise, only schedule data
-        is used (faster, fewer API calls).
-
-        Args:
-            item: Raw schedule item from bifrost API
-            channel_id: Channel identifier (station ID)
-
-        Returns:
-            EPGEntry object, or None if start/end cannot be parsed
         """
         # Parse time range - required fields
         start = self._parse_timestamp(item.get("start_time"))
@@ -567,7 +556,28 @@ class MagentaEUEpgManager:
         if start is None or end is None or end <= start:
             return None
 
+        # Get the original program_id from the API
         program_id = item.get("program_id")
+
+        # Generate broadcast_id (integer for Kodi)
+        if program_id:
+            try:
+                # If program_id is numeric, use it directly
+                broadcast_id = int(program_id)
+            except (ValueError, TypeError):
+                # Otherwise encode deterministically with provider info
+                broadcast_id = EPGEntry.encode_broadcast_id(
+                    self._country,  # provider name
+                    channel_id,  # channel ID
+                    start  # start timestamp
+                )
+        else:
+            # No program_id - encode from channel + start
+            broadcast_id = EPGEntry.encode_broadcast_id(
+                self._country,
+                channel_id,
+                start
+            )
 
         # Fetch programme details if enabled
         details = {}
@@ -598,8 +608,7 @@ class MagentaEUEpgManager:
         except (ValueError, TypeError):
             year = None
 
-        # Season / episode — the API returns strings, and Gracenote encodes
-        # "no real season" as a large placeholder (e.g. "20230000", "39170000")
+        # Season / episode
         season_number = self._parse_episode_number(
             item.get("season_number"), max_valid=9998
         )
@@ -607,36 +616,16 @@ class MagentaEUEpgManager:
             item.get("episode_number"), max_valid=None
         )
 
-        # Use program_id as broadcast_id where possible.
-        # The bifrost API always returns program_id as a string; EPGEntry
-        # requires an int (EPGEntry.__post_init__ compares broadcast_id
-        # against EPG_TAG_INVALID_UID with <=, which raises TypeError if
-        # broadcast_id is still a str). Coerce numeric IDs to int and fall
-        # back to a hash-derived id for missing/non-numeric program_ids.
-        broadcast_id: Optional[int] = None
-        if program_id:
-            try:
-                broadcast_id = int(program_id)
-            except (ValueError, TypeError):
-                logger.debug(
-                    f"[MagentaEUEpgManager/{self._country}] "
-                    f"non-numeric program_id {program_id!r} for channel "
-                    f"{channel_id} — falling back to hash-derived broadcast_id"
-                )
-        if broadcast_id is None:
-            broadcast_id = hash(f"{channel_id}_{start}")
-            # EPGEntry requires broadcast_id > EPG_TAG_INVALID_UID (0); Python's
-            # hash() can return negative or zero values, so fold into a
-            # strictly-positive range.
-            broadcast_id = (broadcast_id % 2_147_483_647) + 1
-
-        # Build EPGEntry with all available data
+        # Build EPGEntry with both IDs
         return EPGEntry(
             # Required fields
-            broadcast_id=broadcast_id,
+            broadcast_id=broadcast_id,  # Integer for Kodi
             title=item.get("description") or item.get("title") or "Unknown",
             start=start,
             end=end,
+
+            # API identifier (stored but not sent to Kodi)
+            program_id=program_id,  # Original string from API
 
             # Optional fields - Programme Information
             description=(details.get("details") or {}).get("description") if details else None,

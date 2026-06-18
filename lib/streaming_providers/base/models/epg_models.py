@@ -138,6 +138,8 @@ class EPGEntry:
     end: int
     """End time as Unix timestamp (seconds since epoch)."""
 
+    program_id: Optional[str] = None
+
     # Optional fields - Program Information
     description: Optional[str] = None
     """Full program description/plot. C++ expects 'description' key."""
@@ -238,11 +240,16 @@ class EPGEntry:
 
     def to_dict(self) -> dict:
         """
-        Convert EPGEntry to dictionary format expected by C++ frontend.
-        Only includes non-None values to minimize data transfer.
+        Convert EPGEntry to dictionary format for frontend consumption.
 
-        Returns:
-            Dictionary with EPG data
+        This format is used by:
+        - Kodi PVR frontend (C++)
+        - Web UI / API endpoints
+        - Other frontend clients
+
+        Note: The dict includes both broadcast_id (for Kodi) and program_id
+        (for provider-specific operations). Frontends that only need the
+        integer ID can ignore program_id.
         """
         result = {
             "broadcast_id": self.broadcast_id,
@@ -251,7 +258,11 @@ class EPGEntry:
             "end": self.end,
         }
 
-        # Add optional fields only if they have values
+        # Include program_id if available (multi-platform support)
+        if self.program_id is not None:
+            result["program_id"] = self.program_id
+
+        # Add all optional fields
         optional_fields = [
             "description",
             "plot_outline",
