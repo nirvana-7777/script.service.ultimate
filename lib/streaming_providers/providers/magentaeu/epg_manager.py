@@ -30,6 +30,7 @@ from __future__ import annotations
 import uuid
 import time
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ...base.utils.logger import logger
@@ -43,6 +44,8 @@ from .constants import (
     get_language,
     get_natco_key,
 )
+
+_VIENNA_TZ = ZoneInfo("Europe/Vienna")
 
 
 # ---------------------------------------------------------------------------
@@ -353,30 +356,51 @@ class MagentaEUEpgManager:
         )
         return headers
 
+    @staticmethod
+    def _ensure_tz(dt: datetime) -> datetime:
+        """Ensure datetime is timezone-aware (attach UTC if naive)."""
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt
+
     def _fetch_day_schedules(self, date: datetime, start_time: Optional[datetime] = None,
                              end_time: Optional[datetime] = None) -> Dict[str, Any]:
-        """Fetch only the 3-hour blocks that overlap with the requested time window."""
+        """Fetch only the 3-hour blocks that overlap with the requested time window.
+
+        `date` and the window bounds are UTC-aware (per _resolve_window). The
+        bifrost API's `date` / `hour_offset` params are Europe/Vienna local time,
+        so everything here is converted to Vienna local before deriving them.
+        """
         merged: Dict[str, Any] = {}
         headers = self._guest_headers(flow="EPG", step="EPG_SCHEDULES")
-        formatted = date.strftime("%Y-%m-%d")
 
-        # Determine which hour ranges to fetch for THIS SPECIFIC DATE
+        local_date = self._ensure_tz(date).astimezone(_VIENNA_TZ)
+        formatted = local_date.strftime("%Y-%m-%d")
+
         start_hour = 0
         end_hour = 24
 
-        if start_time and start_time.date() == date.date():
-            start_hour = start_time.hour
-            start_hour = (start_hour // 3) * 3  # Round down to 3-hour block
+        if start_time:
+            local_start = self._ensure_tz(start_time).astimezone(_VIENNA_TZ)
+            if local_start.date() == local_date.date():
+                start_hour = (local_start.hour // 3) * 3
+                logger.debug(
+                    f"start_time UTC={start_time} → Vienna local={local_start}, "
+                    f"hour_offset={start_hour}"
+                )
 
-        if end_time and end_time.date() == date.date():
-            end_hour = end_time.hour
-            # Round up to next 3-hour block, but cap at 24
-            end_hour = min(((end_hour // 3) + 1) * 3, 24)
+        if end_time:
+            local_end = self._ensure_tz(end_time).astimezone(_VIENNA_TZ)
+            if local_end.date() == local_date.date():
+                end_hour = min(((local_end.hour // 3) + 1) * 3, 24)
+                logger.debug(
+                    f"end_time UTC={end_time} → Vienna local={local_end}, "
+                    f"hour_offset={end_hour}"
+                )
 
-        # Optional: Log what we're fetching
         logger.debug(
             f"[MagentaEUEpgManager/{self._country}] "
-            f"Fetching {formatted} hours {start_hour}-{end_hour}"
+            f"Fetching {formatted} hours {start_hour}-{end_hour} (Vienna local)"
         )
 
         for hour_offset in range(start_hour, end_hour, 3):
