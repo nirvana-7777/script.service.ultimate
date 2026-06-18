@@ -34,7 +34,7 @@ from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ...base.utils.logger import logger
-from ...base.models.epg_models import EPGEntry
+from ...base.models.epg_models import EPGEntry, EPGProgramDetails
 from .constants import (
     DEFAULT_REQUEST_TIMEOUT,
     SUPPORTED_COUNTRIES,
@@ -323,19 +323,49 @@ class MagentaEUEpgManager:
 
         return result
 
-    def get_program_details(self, program_id: str) -> Dict[str, Any]:
+    def get_program_details(self, program_id: str) -> Optional[EPGProgramDetails]:
         """
         Fetch detailed metadata for a single programme.
 
-        Returns the raw details dict from the bifrost API (with in-memory
-        caching), or an empty dict if the programme is not found or the
-        request fails.
+        Fetches the raw bifrost detail response (with in-memory caching) and
+        maps it to an EPGProgramDetails instance.  Returns None if the
+        programme is not found or the request fails.
 
         Parameters
         ----------
         program_id: Programme identifier as returned by the schedule API.
         """
-        return self._fetch_program_details(program_id)
+        raw = self._fetch_program_details(program_id)
+        if not raw:
+            return None
+
+        credit_map = self._parse_credits(raw)
+
+        # Description lives under raw["details"]["description"]
+        details_block = (raw.get("details") or {})
+        description = details_block.get("description") or None
+
+        # Release year
+        year_raw = raw.get("release_year")
+        try:
+            year = int(year_raw) if year_raw else None
+        except (ValueError, TypeError):
+            year = None
+
+        return EPGProgramDetails(
+            program_id=program_id,
+            description=description,
+            episode_name=raw.get("episode_name") or None,
+            year=year,
+            icon=raw.get("poster_image_url") or None,
+            cast=credit_map.get("cast"),
+            directors=credit_map.get("directors"),
+            writers=credit_map.get("writers"),
+            producers=credit_map.get("producers"),
+            presenter=credit_map.get("presenter"),
+            composers=credit_map.get("composers"),
+            contributors=credit_map.get("contributors"),
+        )
 
     # ------------------------------------------------------------------
     # HTTP helpers

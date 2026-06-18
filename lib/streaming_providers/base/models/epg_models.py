@@ -631,6 +631,59 @@ class EPGEntry:
             )
 
 
+@dataclass(frozen=True)
+class EPGProgramDetails:
+    """
+    Enrichment metadata for a single programme fetched from a provider's
+    program-detail endpoint.
+
+    This is intentionally separate from EPGEntry: it carries only the fields
+    that a detail endpoint can return on its own — no scheduling context
+    (broadcast_id, title, start, end) is included because those fields live
+    in the schedule item, not the detail response.
+
+    Callers that already hold an EPGEntry (e.g. a route handler that looked up
+    a programme from the EPG grid) can merge these details into their response
+    without constructing a second full EPGEntry.
+    """
+
+    program_id: str
+    """Provider-scoped programme identifier."""
+
+    description: Optional[str] = None
+    """Full programme description/plot."""
+
+    episode_name: Optional[str] = None
+    """Episode title/sub-title."""
+
+    year: Optional[int] = None
+    """Production/release year."""
+
+    icon: Optional[str] = None
+    """Poster or thumbnail URL."""
+
+    cast: Optional[List[str]] = None
+    directors: Optional[List[str]] = None
+    writers: Optional[List[str]] = None
+    producers: Optional[List[str]] = None
+    presenter: Optional[List[str]] = None
+    composers: Optional[List[str]] = None
+    contributors: Optional[List[str]] = None
+
+    def to_dict(self) -> dict:
+        """Serialise to a plain dict, omitting None values."""
+        result: dict = {"program_id": self.program_id}
+        for field in (
+            "description", "episode_name", "year", "icon",
+            "cast", "directors", "writers", "producers",
+            "presenter", "composers", "contributors",
+        ):
+            value = getattr(self, field)
+            if value is not None:
+                result[field] = value
+        return result
+
+
 # Constants matching C++ EPG_TAG_FLAG values
 class EPGFlags:
     """
@@ -893,6 +946,7 @@ PVREPGTag = EPGEntry
 __all__ = [
     # Main classes
     "EPGEntry",
+    "EPGProgramDetails",
     "PVREPGTag",  # Legacy alias
     # Constants
     "EPG_TAG_INVALID_UID",

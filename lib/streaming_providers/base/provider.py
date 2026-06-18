@@ -23,7 +23,7 @@ from .models.subscription import SubscriptionPackage, UserSubscription
 from .models.recording import Recording
 from .models.timer import Timer
 from .models.timer_type import TimerType
-from .models.epg_models import EPGEntry
+from .models.epg_models import EPGEntry, EPGProgramDetails
 from .network import HTTPManager, HTTPManagerFactory
 from .utils.logger import logger
 
@@ -718,7 +718,7 @@ class StreamingProvider(ABC):
         """
         return {}
 
-    def get_program_details(self, program_id: str, **kwargs) -> Optional["EPGEntry"]:
+    def get_program_details(self, program_id: str, **kwargs) -> Optional["EPGProgramDetails"]:
         """
         Get detailed metadata for a single program.
 

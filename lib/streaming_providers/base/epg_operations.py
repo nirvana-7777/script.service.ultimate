@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 
 from .epg import EPGManager
 from .utils.logger import logger
-from .models.epg_models import EPGEntry
+from .models.epg_models import EPGEntry, EPGProgramDetails
 
 
 class EPGOperations:
@@ -154,7 +154,7 @@ class EPGOperations:
         self,
         provider_name: str,
         program_id: str,
-    ) -> Optional["EPGEntry"]:
+    ) -> Optional[EPGProgramDetails]:
         """Get full metadata for a single program.
 
         Args:
@@ -168,10 +168,9 @@ class EPGOperations:
             return provider.get_program_details(program_id)
 
         logger.debug(f"Using generic program detail for '{provider_name}/{program_id}'")
-        # EPGManager.get_program_by_id() always returns None on the generic
-        # path — there is no global program index.  Native providers should
-        # implement get_program_details() to support this endpoint.
-        return self.epg_manager.get_program_by_id(program_id)
+        # The generic EPGManager has no program-detail index; native providers
+        # must implement get_program_details() to support this endpoint.
+        return None
 
     # ------------------------------------------------------------------
     # XMLTV export

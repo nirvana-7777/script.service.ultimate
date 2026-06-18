@@ -6,7 +6,7 @@ from typing import ClassVar, Dict, List, Optional, Tuple
 
 from ...base.auth import UserPasswordCredentials
 from ...base.models import DRMConfig, StreamingChannel, Event
-from ...base.models.epg_models import EPGEntry
+from ...base.models.epg_models import EPGEntry, EPGProgramDetails
 from ...base.models.proxy_models import ProxyConfig
 from ...base.network import ProxyConfigManager
 from ...base.provider import StreamingProvider
@@ -347,9 +347,9 @@ class MagentaEUProvider(StreamingProvider):
             end_time=end_time,
         )
 
-    def get_program_details(self, program_id: str, **kwargs) -> Optional[EPGEntry]:
+    def get_program_details(self, program_id: str, **kwargs) -> Optional["EPGProgramDetails"]:
         """
-        Get detailed metadata for a single programme as an EPGEntry object.
+        Get detailed metadata for a single programme as an EPGProgramDetails object.
 
         Returns None if the programme is not found or the request fails.
 
@@ -357,10 +357,7 @@ class MagentaEUProvider(StreamingProvider):
         ----------
         program_id: Programme identifier as returned by the schedule API.
         """
-        details = self.epg_manager.get_program_details(program_id)
-        if not details:
-            return None
-        return EPGEntry.from_dict(details)
+        return self.epg_manager.get_program_details(program_id)
 
     def enrich_channel_data(
         self, channel: StreamingChannel, **kwargs
