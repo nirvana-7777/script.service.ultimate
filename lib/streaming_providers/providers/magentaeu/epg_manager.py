@@ -215,14 +215,6 @@ class MagentaEUEpgManager:
             end_time: Optional[datetime] = None,
             **_kwargs: Any,
     ) -> List[EPGEntry]:
-        """
-        Fetch and normalise EPG for a single channel on the days covered by
-        the requested window.
-
-        Returns:
-            List of EPGEntry objects, sorted by start time.
-            Empty list on any error.
-        """
         date_from, date_to = self._resolve_window(start_time, end_time)
 
         # Collect the calendar dates spanned by the window
@@ -237,7 +229,8 @@ class MagentaEUEpgManager:
         ts_to = int(date_to.timestamp())
 
         for date in dates:
-            raw_blocks = self._fetch_day_schedules(date)
+            # ✅ PASS THE TIME PARAMETERS!
+            raw_blocks = self._fetch_day_schedules(date, start_time, end_time)
             if not raw_blocks:
                 continue
             day_items = self._extract_channel_items(raw_blocks, channel_id)
@@ -266,17 +259,6 @@ class MagentaEUEpgManager:
             end_time: Optional[datetime] = None,
             **_kwargs: Any,
     ) -> Dict[str, List[EPGEntry]]:
-        """
-        Fetch EPG for multiple channels efficiently.
-
-        Fetches schedule data once per calendar day in the requested window and
-        extracts all requested channels in a single pass, reducing HTTP requests
-        from 4*D*N to 4*D (where D = calendar days, N = number of channels).
-
-        Returns:
-            Dictionary mapping channel_id -> list of EPGEntry objects,
-            each sorted by start time. Channels with no data map to an empty list.
-        """
         if not channel_ids:
             return {}
 
@@ -292,7 +274,8 @@ class MagentaEUEpgManager:
         # Fetch ALL schedule data once per date (4 requests per day)
         all_schedule_blocks: Dict[str, Any] = {}
         for date in dates:
-            blocks = self._fetch_day_schedules(date)
+            # ✅ PASS THE TIME PARAMETERS!
+            blocks = self._fetch_day_schedules(date, start_time, end_time)
             if blocks:
                 all_schedule_blocks.update(blocks)
 
@@ -370,13 +353,33 @@ class MagentaEUEpgManager:
         )
         return headers
 
-    def _fetch_day_schedules(self, date: datetime) -> Dict[str, Any]:
-        """Fetch all 3-hour schedule blocks for *date*."""
+    def _fetch_day_schedules(self, date: datetime, start_time: Optional[datetime] = None,
+                             end_time: Optional[datetime] = None) -> Dict[str, Any]:
+        """Fetch only the 3-hour blocks that overlap with the requested time window."""
         merged: Dict[str, Any] = {}
         headers = self._guest_headers(flow="EPG", step="EPG_SCHEDULES")
         formatted = date.strftime("%Y-%m-%d")
 
-        for hour_offset in range(0, 24, 3):
+        # Determine which hour ranges to fetch for THIS SPECIFIC DATE
+        start_hour = 0
+        end_hour = 24
+
+        if start_time and start_time.date() == date.date():
+            start_hour = start_time.hour
+            start_hour = (start_hour // 3) * 3  # Round down to 3-hour block
+
+        if end_time and end_time.date() == date.date():
+            end_hour = end_time.hour
+            # Round up to next 3-hour block, but cap at 24
+            end_hour = min(((end_hour // 3) + 1) * 3, 24)
+
+        # Optional: Log what we're fetching
+        logger.debug(
+            f"[MagentaEUEpgManager/{self._country}] "
+            f"Fetching {formatted} hours {start_hour}-{end_hour}"
+        )
+
+        for hour_offset in range(start_hour, end_hour, 3):
             url = (
                 f"{self._bifrost_url}/epg/channel/schedules"
                 f"?date={formatted}"
@@ -388,20 +391,34 @@ class MagentaEUEpgManager:
                 f"&natco_code={self._country}"
             )
             headers["x-request-tracking-id"] = str(uuid.uuid4())
-            try:
-                response = self._http.get(
-                    url,
-                    operation=f"epg_schedules_offset_{hour_offset}",
-                    headers=headers,
-                    timeout=DEFAULT_REQUEST_TIMEOUT,
-                )
-                response.raise_for_status()
-                merged[url] = response.json()
-            except Exception as exc:
-                logger.error(
-                    f"[MagentaEUEpgManager/{self._country}] "
-                    f"schedule fetch offset={hour_offset} date={formatted} failed: {exc}"
-                )
+
+            # Add retry logic
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    response = self._http.get(
+                        url,
+                        operation=f"epg_schedules_offset_{hour_offset}",
+                        headers=headers,
+                        timeout=DEFAULT_REQUEST_TIMEOUT,
+                    )
+                    response.raise_for_status()
+                    merged[url] = response.json()
+                    break  # Success, exit retry loop
+                except Exception as exc:
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt  # 1, 2, 4 seconds
+                        logger.warning(
+                            f"[MagentaEUEpgManager/{self._country}] "
+                            f"schedule fetch offset={hour_offset} attempt {attempt + 1} failed, "
+                            f"retrying in {wait_time}s: {exc}"
+                        )
+                        time.sleep(wait_time)
+                    else:
+                        logger.error(
+                            f"[MagentaEUEpgManager/{self._country}] "
+                            f"schedule fetch offset={hour_offset} failed after {max_retries} attempts: {exc}"
+                        )
             time.sleep(1)  # 1 second between chunks to avoid rate limiting
 
         return merged
