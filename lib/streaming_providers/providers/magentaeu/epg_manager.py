@@ -398,15 +398,15 @@ class MagentaEUEpgManager:
         if end_time:
             local_end = self._ensure_tz(end_time).astimezone(_VIENNA_TZ)
             if local_end.date() == local_date.date():
-                # Calculate which 3-hour block the end time falls into
+                # Calculate which block the end time falls into
                 end_block = local_end.hour // 3
-                # If end time is exactly at a block boundary (e.g., 3:00, 6:00),
-                # we don't need the block starting at that hour
-                if local_end.hour % 3 == 0:
-                    # End time is at the start of a block → we don't need that block
+                # If end time is EXACTLY at a block boundary, we don't need that block
+                # If it's inside a block (even at the very start), we need it
+                if local_end.hour % 3 == 0 and local_end.minute == 0 and local_end.second == 0:
+                    # Exactly at boundary (e.g., 15:00:00) → don't need the block
                     end_hour = end_block * 3
                 else:
-                    # End time is inside a block → we need that block
+                    # Inside the block → need it
                     end_hour = (end_block + 1) * 3
 
         logger.debug(
