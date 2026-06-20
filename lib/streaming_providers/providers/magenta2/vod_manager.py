@@ -856,12 +856,28 @@ class VodManager:
         content_id: str = item.get("id", "")
         title: str = (item.get("title") or "").strip()
         vod_type: str = item.get("vodType", "")
+        item_type: str = item.get("type", "")
         image_url: Optional[str] = (item.get("image") or {}).get("href")
         description: Optional[str] = item.get("description")
         seasons_available: Optional[int] = item.get("seasonsAvailable")
 
         if not content_id or not title:
             return None
+
+        # Season items from UnstructuredGrid (e.g. "WIEDERHOLUNGEN" lane)
+        if vod_type == "Season" or (vod_type == "Asset" and item_type == "Season"):
+            details_href = (item.get("details") or {}).get("href") or None
+            # content_id is already the GN_SEASON_* id from the lane
+            opaque_season_id = f"season:{content_id}"
+            if details_href:
+                self._register_node(opaque_season_id, details_href)
+            return VodCategory(
+                name=title,
+                content_id=opaque_season_id,
+                provider=self._provider,
+                logo_url=image_url,
+                description=description,
+            )
 
         if vod_type == "Series":
             details_href = (item.get("details") or {}).get("href") or None
@@ -1115,15 +1131,15 @@ class VodManager:
         Fetch episodes for a season with pagination support.
 
         Flow:
-          1. Fetch the season VodDetails page.
-          2. Follow productInformationLink → pick a primary button with a
-             subAssetLane (prefer videoload).
-          3. Fetch that subAssetLane with $offset/$size → items where
-             vodType == "Episode".
-
-        Fallback:
-          If productInformationLink is absent or yields nothing, fall back to
-          Episode-typed lanes embedded in the VodDetails response (no pagination).
+          1. PRIMARY: Episode/Asset lanes from VodDetails → SubAssetLane
+             (handles e.g. "WIEDERHOLUNGEN" lane items where Season nodes
+             come directly from an UnstructuredGrid lane rather than a
+             series→season VodDetails page, and would otherwise be missing
+             episode content entirely).
+          2. FALLBACK 1: productInformationLink → subAssetLane (the
+             previously-primary path; still works for series-rooted seasons).
+          3. FALLBACK 2: Episode lanes embedded in the VodDetails response,
+             fetched without pagination (last resort, take everything).
 
         Returns:
             {
@@ -1143,7 +1159,27 @@ class VodManager:
         season_number: Optional[int] = self._extract_season_number(season_id)
 
         # ------------------------------------------------------------------
-        # Primary path: productInformationLink → subAssetLane with pagination
+        # PRIMARY: Episode/Asset lanes from VodDetails → SubAssetLane
+        # ------------------------------------------------------------------
+        for lane in content.get("lanes", []):
+            if lane.get("type") not in ("Episode", "Asset"):
+                continue
+            lane_url = (lane.get("laneContentLink") or {}).get("href")
+            if not lane_url:
+                continue
+            episodes, next_offset, total = self._fetch_episodes_from_subasset_lane(
+                lane_url, season_number, params, offset=offset, page_size=page_size
+            )
+            if episodes:
+                logger.debug(
+                    f"{self._provider}: Season {season_id} → "
+                    f"{len(episodes)} episodes (via VodDetails Episode/Asset lane, offset={offset})"
+                )
+                next_cursor = str(next_offset) if next_offset is not None else None
+                return {"entries": episodes, "next_cursor": next_cursor, "total": total}
+
+        # ------------------------------------------------------------------
+        # FALLBACK 1: productInformationLink → subAssetLane with pagination
         # ------------------------------------------------------------------
         product_url: Optional[str] = (
                 content.get("productInformationLink") or {}
@@ -1162,7 +1198,7 @@ class VodManager:
                 return {"entries": episodes, "next_cursor": next_cursor, "total": total}
 
         # ------------------------------------------------------------------
-        # Fallback: Episode lanes embedded in the VodDetails response.
+        # FALLBACK 2: Episode lanes embedded in the VodDetails response.
         # These are not paginated by the API — return all episodes found.
         # ------------------------------------------------------------------
         episodes = []
@@ -1182,9 +1218,69 @@ class VodManager:
 
         logger.debug(
             f"{self._provider}: Season {season_id} → "
-            f"{len(episodes)} episodes (via VodDetails lanes)"
+            f"{len(episodes)} episodes (via VodDetails lanes, fallback)"
         )
         return {"entries": episodes, "next_cursor": None, "total": None}
+
+    def _fetch_episodes_from_subasset_lane(
+            self,
+            lane_url: str,
+            season_number: Optional[int],
+            params: Dict,
+            offset: int = 0,
+            page_size: int = VOD_DEFAULT_PAGE_SIZE,
+    ) -> tuple:
+        """
+        Fetch episodes from a SubAssetLane URL with pagination support.
+
+        Used by the PRIMARY path in _fetch_season_episodes, where the
+        SubAssetLane href comes directly from a VodDetails Episode/Asset
+        lane rather than via productInformationLink.
+
+        Args:
+            lane_url:      Full SubAssetLane URL from laneContentLink.href
+            season_number: Season number for episode metadata
+            params:        Base query parameters
+            offset:        Current page offset
+            page_size:     Items per page
+
+        Returns:
+            (episodes_list, next_offset, total_count)
+            next_offset is an int or None — caller is responsible for
+            converting to a string cursor.
+        """
+        paged_params = dict(params)
+        paged_params["$size"] = str(page_size)
+        paged_params["$offset"] = str(offset)
+
+        lane_data = self._get(lane_url, paged_params)
+        if not lane_data:
+            return [], None, None
+
+        episodes = []
+        for item in (lane_data.get("content") or {}).get("items", []):
+            vod_type = item.get("vodType", "")
+            item_type = item.get("type", "")
+            # Accept both "Episode" vodType and Asset items where type == "Episode"
+            if vod_type == "Episode" or (vod_type == "Asset" and item_type == "Episode"):
+                node = self._map_episode_item(item, season_number)
+                if node is not None:
+                    episodes.append(node)
+
+        if not episodes:
+            return [], None, None
+
+        page_info = (lane_data.get("content") or {}).get("page") or {}
+        total: Optional[int] = page_info.get("total")
+        next_offset_val = offset + len(episodes)
+        if total is not None:
+            next_offset: Optional[int] = (
+                next_offset_val if next_offset_val < total else None
+            )
+        else:
+            next_offset = next_offset_val if len(episodes) >= page_size else None
+
+        return episodes, next_offset, total
 
     def _fetch_episodes_via_product_info(
             self,
