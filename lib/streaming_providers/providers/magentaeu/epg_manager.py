@@ -220,13 +220,11 @@ class MagentaEUEpgManager:
     ) -> List[EPGEntry]:
         date_from, date_to = self._resolve_window(start_time, end_time)
 
-        # Collect the calendar dates spanned by the window, in Vienna local
-        # time — the bifrost API's `date` param is Vienna-local, so walking
-        # UTC calendar days here can pull in (or miss) an extra day.
+        # Collect the calendar dates spanned by the window in UTC
         dates: List[datetime] = []
-        current = date_from.astimezone(_VIENNA_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
-        local_to = date_to.astimezone(_VIENNA_TZ)
-        while current.date() <= local_to.date():
+        current = date_from.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        utc_to = date_to.astimezone(timezone.utc)
+        while current.date() <= utc_to.date():
             dates.append(current)
             current = current + timedelta(days=1)
 
@@ -270,13 +268,11 @@ class MagentaEUEpgManager:
 
         date_from, date_to = self._resolve_window(start_time, end_time)
 
-        # Collect the calendar dates spanned by the window, in Vienna local
-        # time — the bifrost API's `date` param is Vienna-local, so walking
-        # UTC calendar days here can pull in (or miss) an extra day.
+        # Collect the calendar dates spanned by the window in UTC
         dates: List[datetime] = []
-        current = date_from.astimezone(_VIENNA_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
-        local_to = date_to.astimezone(_VIENNA_TZ)
-        while current.date() <= local_to.date():
+        current = date_from.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        utc_to = date_to.astimezone(timezone.utc)
+        while current.date() <= utc_to.date():
             dates.append(current)
             current = current + timedelta(days=1)
 
@@ -404,35 +400,37 @@ class MagentaEUEpgManager:
         """Fetch only the 3-hour blocks that overlap with the requested time window.
 
         `date` and the window bounds are UTC-aware (per _resolve_window). The
-        bifrost API's `date` / `hour_offset` params are Europe/Vienna local time,
-        so everything here is converted to Vienna local before deriving them.
+        bifrost API's `date` / `hour_offset` params are plain UTC — confirmed
+        empirically: hour_offset=N on a given date returns the UTC block
+        [N:00, N+hour_range:00) of that UTC calendar day, with programs that
+        overlap the block boundary returned in full (not clipped). No Vienna
+        conversion belongs here; do not reintroduce it.
         """
         merged: Dict[str, Any] = {}
         headers = self._guest_headers(flow="EPG", step="EPG_SCHEDULES")
 
-        local_date = self._ensure_tz(date).astimezone(_VIENNA_TZ)
-        formatted = local_date.strftime("%Y-%m-%d")
+        utc_date = self._ensure_tz(date).astimezone(timezone.utc)
+        formatted = utc_date.strftime("%Y-%m-%d")
 
         start_hour = 0
         end_hour = 24
 
         if start_time:
-            local_start = self._ensure_tz(start_time).astimezone(_VIENNA_TZ)
-            if local_start.date() == local_date.date():
-                start_hour = (local_start.hour // 3) * 3
+            utc_start = self._ensure_tz(start_time).astimezone(timezone.utc)
+            if utc_start.date() == utc_date.date():
+                start_hour = (utc_start.hour // 3) * 3
                 logger.debug(
-                    f"start_time UTC={start_time} → Vienna local={local_start}, "
-                    f"hour_offset={start_hour}"
+                    f"start_time UTC={utc_start}, hour_offset={start_hour}"
                 )
 
         if end_time:
-            local_end = self._ensure_tz(end_time).astimezone(_VIENNA_TZ)
-            if local_end.date() == local_date.date():
+            utc_end = self._ensure_tz(end_time).astimezone(timezone.utc)
+            if utc_end.date() == utc_date.date():
                 # Calculate which block the end time falls into
-                end_block = local_end.hour // 3
+                end_block = utc_end.hour // 3
                 # If end time is EXACTLY at a block boundary, we don't need that block
                 # If it's inside a block (even at the very start), we need it
-                if local_end.hour % 3 == 0 and local_end.minute == 0 and local_end.second == 0:
+                if utc_end.hour % 3 == 0 and utc_end.minute == 0 and utc_end.second == 0:
                     # Exactly at boundary (e.g., 15:00:00) → don't need the block
                     end_hour = end_block * 3
                 else:
@@ -441,7 +439,7 @@ class MagentaEUEpgManager:
 
         logger.debug(
             f"[MagentaEUEpgManager/{self._country}] "
-            f"Fetching {formatted} hours {start_hour}-{end_hour} (Vienna local)"
+            f"Fetching {formatted} hours {start_hour}-{end_hour} (UTC)"
         )
 
         for hour_offset in range(start_hour, end_hour, 3):
