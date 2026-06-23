@@ -80,6 +80,9 @@ class ChannelManager:
         # release_pid -> mpd_url (for fast manifest lookup)
         self._live_manifest_cache: Dict[str, str] = {}
 
+        # release_pid -> release_pid (fast membership test for PlaybackManager)
+        self._live_pid_cache: Dict[str, str] = {}
+
         # Pre-fetched station metadata (unauthenticated)
         self.station_metadata: Dict[str, Dict] = self._fetch_station_metadata()
 
@@ -223,6 +226,7 @@ class ChannelManager:
                         streaming_channel.hls_url = tp_ch.hls_url
 
                     self._live_manifest_cache[playback_id] = tp_ch.mpd_url
+                    self._live_pid_cache[playback_id] = playback_id  # For PlaybackManager fast-path
 
                     channels.append(streaming_channel)
                 except Exception as exc:
@@ -423,6 +427,7 @@ class ChannelManager:
                         playback_id = self.get_playback_id_from_channel(channel)
                         if playback_id:
                             self._live_manifest_cache[playback_id] = manifest_url
+                            self._live_pid_cache[playback_id] = playback_id  # For PlaybackManager
 
                         logger.info(f"Streaming data populated for: {channel.name}")
                         successful_channels.append(channel)
@@ -453,6 +458,7 @@ class ChannelManager:
     def invalidate_cache(self) -> None:
         self._cached_channels = None
         self._live_manifest_cache.clear()
+        self._live_pid_cache.clear()
         logger.debug("ChannelManager: caches cleared")
 
     # ------------------------------------------------------------------ #
