@@ -214,9 +214,17 @@ class Magenta2EpgManager:
         return match.group(1) if match else None
 
     def _resolve_entry_channel_id(self, entry: Dict[str, Any]) -> Optional[str]:
-        station_id_uri = entry.get("stationId")
+        """Resolve the channel/station identifier from the entry's first listing."""
+        listings = entry.get("listings", [])
+        if not listings:
+            return None
+
+        # All listings in an entry share the same stationId
+        first_listing = listings[0]
+        station_id_uri = first_listing.get("stationId")
         if not station_id_uri:
             return None
+
         return self._extract_station_id(station_id_uri)
 
     # ------------------------------------------------------------------
@@ -290,10 +298,10 @@ class Magenta2EpgManager:
     # ------------------------------------------------------------------
 
     def _fetch_day_schedules(
-        self,
-        date: datetime,
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
+            self,
+            date: datetime,
+            start_time: Optional[datetime] = None,
+            end_time: Optional[datetime] = None,
     ) -> Dict[str, Any]:
         if not self._schedule_feed_url or not self._location_id:
             return {}
@@ -322,13 +330,11 @@ class Magenta2EpgManager:
             f"[Magenta2EpgManager] Fetching {formatted} hours {start_hour}-{end_hour} (UTC)"
         )
 
-        # Request stationId and programme fields we need
+        # Schedule only needs: time, title, guid, stationId
+        # Everything else is fetched via get_program_details() on demand
         fields = (
-            "stationId,"
+            "listings.stationId,"
             "listings.program.guid,listings.program.title,"
-            "listings.program.description,listings.program.secondaryTitle,"
-            "listings.program.tvSeasonNumber,listings.program.tvSeasonEpisodeNumber,"
-            "listings.program.year,listings.program.tags,"
             "listings.startTime,listings.endTime"
         )
 
@@ -373,12 +379,12 @@ class Magenta2EpgManager:
         return None
 
     def _parse_item_to_entry(
-        self,
-        item: Dict[str, Any],
-        channel_id: str,
-        start: int,
-        end: int,
-        program: Dict[str, Any],
+            self,
+            item: Dict[str, Any],
+            channel_id: str,
+            start: int,
+            end: int,
+            program: Dict[str, Any],
     ) -> Optional[EPGEntry]:
         program_guid = program.get("guid", "")
         title = program.get("title", "Unknown")
@@ -394,33 +400,30 @@ class Magenta2EpgManager:
             "presenter": None,
         }
 
+        # Fetch details only if enabled (on-demand or pre-fetch)
         if self._fetch_details and program_guid:
             details = self._fetch_program_details(program_guid)
-
             credit_ids = details.get("dt$creditIds", [])
             if credit_ids:
                 credit_map = self._parse_credit_names_from_ids(credit_ids)
 
+        # Use details if available, otherwise schedule data
         title = details.get("title") or title
-        description = details.get("description") or program.get("description")
+        description = details.get("description")
 
-        year = details.get("year") or program.get("year")
+        year = details.get("year")
         try:
             year = int(year) if year is not None else None
         except (ValueError, TypeError):
             year = None
 
-        season_number = self._parse_episode_number(
-            details.get("tvSeasonNumber") or program.get("tvSeasonNumber")
-        )
-        episode_number = self._parse_episode_number(
-            details.get("tvSeasonEpisodeNumber") or program.get("tvSeasonEpisodeNumber")
-        )
+        season_number = self._parse_episode_number(details.get("tvSeasonNumber"))
+        episode_number = self._parse_episode_number(details.get("tvSeasonEpisodeNumber"))
 
         thumbnails = details.get("thumbnails", {}) or {}
         icon = self._extract_icon(thumbnails)
 
-        tags = details.get("tags", []) or program.get("tags", [])
+        tags = details.get("tags", [])
         genre_description = self._extract_genre(tags)
 
         return EPGEntry(
@@ -432,7 +435,7 @@ class Magenta2EpgManager:
             description=description,
             plot_outline=None,
             episode_name=None,
-            original_title=program.get("secondaryTitle") or details.get("secondaryTitle"),
+            original_title=details.get("secondaryTitle"),
             year=year,
             icon=icon,
             cast=credit_map["cast"],
