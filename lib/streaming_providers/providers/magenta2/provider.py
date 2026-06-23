@@ -6,19 +6,21 @@ Magenta2 streaming provider.
 This module contains only lifecycle, authentication, and the thin public API
 that delegates to the three domain managers:
 
-    ChannelManager  – channel discovery, entitlement, streaming-data population
-    PlaybackManager – manifest / DRM routing (live fast-path + SMIL fallback)
-    VodManager      – VOD catalogue browsing
+    ChannelManager    – channel discovery, entitlement, streaming-data population
+    PlaybackManager   – manifest / DRM routing (live fast-path + SMIL fallback)
+    VodManager        – VOD catalogue browsing
     RecordingsManager – nPVR (list / delete / manifest)
-    SmilManager     – SMIL-based manifest and DRM for VOD / recordings
+    SmilManager       – SMIL-based manifest and DRM for VOD / recordings
+    Magenta2EpgManager – EPG grid + programme-details (ThePlatform API)
 """
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, ClassVar, Dict, List, Optional, Tuple, cast
 from urllib.parse import quote
 
 from ...base.models import DRMConfig, StreamingChannel, Event
 from ...base.models.auth import AuthState
+from ...base.models.epg_models import EPGEntry, EPGProgramDetails
 from ...base.models.proxy_models import ProxyConfig
 from ...base.network import HTTPManagerFactory, ProxyConfigManager
 from ...base.provider import StreamingProvider
@@ -28,6 +30,7 @@ from .smil_manager import SmilManager
 from .vod_manager import VodManager
 from .auth import Magenta2Authenticator, Magenta2Credentials, Magenta2UserCredentials
 from .channel_manager import ChannelManager
+from .epg_manager import Magenta2EpgManager
 from .playback_manager import PlaybackManager
 from .config_models import BootstrapConfig, ProviderConfig
 from .constants import (
@@ -182,6 +185,7 @@ class Magenta2Provider(StreamingProvider):
         self._vod_manager: Optional[VodManager] = None
         self._recordings_manager: Optional[RecordingsManager] = None
         self._smil_manager: Optional[SmilManager] = None
+        self._epg_manager: Optional[Magenta2EpgManager] = None
 
         self._vod_manager = VodManager(
             http_manager=self.http_manager,
@@ -241,6 +245,18 @@ class Magenta2Provider(StreamingProvider):
         )
         logger.info("✓ PlaybackManager initialized")
 
+        # ── EPG Manager ────────────────────────────────────────────────────────
+        self._epg_manager = Magenta2EpgManager(
+            endpoint_manager=self.endpoint_manager,
+            provider_config=self.endpoint_manager.config,
+            http_manager=self.http_manager,
+            authenticator=self.authenticator,
+            fetch_details=True,  # Fetch full programme details (credits, images, etc.)
+            default_past_days=7,
+            default_future_days=13,
+        )
+        logger.info("✓ EPG Manager initialized")
+
         # ── Auth bridge ───────────────────────────────────────────────────────
         self.device_token = None
         self._auth = AuthBridge(
@@ -297,8 +313,9 @@ class Magenta2Provider(StreamingProvider):
         return False
 
     @property
-    def implements_epg(self) -> bool:
-        return False
+    def epg_window(self) -> Tuple[int, int]:
+        """Return EPG window as (past_days, future_days)."""
+        return 7, 13  # 7 days past, 13 days future
 
     @property
     def implements_recordings(self) -> bool:
@@ -741,37 +758,61 @@ class Magenta2Provider(StreamingProvider):
         start_time: Optional[datetime] = None,
         end_time: Optional[datetime] = None,
         **kwargs: Any,
-    ) -> List[Dict[str, Any]]:
-        """Fetch EPG data for a channel."""
-        try:
-            if start_time is None:
-                start_time = datetime.now()
-            if end_time is None:
-                end_time = datetime.now() + timedelta(hours=DEFAULT_EPG_WINDOW_HOURS)
-
-            headers = self._get_api_headers(require_auth=False)
-            url: str = (
-                self.endpoint_manager.get_endpoint("epg")
-                or "https://api.magentatv.de/proxy/device/epg"
-            )
-
-            params = {
-                "channelId": channel_id,
-                "start": start_time.isoformat(),
-                "end": end_time.isoformat(),
-            }
-            response = self.http_manager.get(
-                url,
-                operation="api",
-                headers=headers,
-                params=params,
-                timeout=DEFAULT_REQUEST_TIMEOUT,
-            )
-            response.raise_for_status()
-            return response.json()  # type: ignore[no-any-return]
-        except Exception as e:
-            logger.error(f"Error getting EPG for channel {channel_id}: {e}")
+    ) -> List[EPGEntry]:
+        """Get EPG data for a specific channel (delegates to Magenta2EpgManager)."""
+        if not self._epg_manager:
+            logger.warning(f"{self.provider_name}: EPG manager not initialized")
             return []
+
+        try:
+            self._ensure_authenticated()
+        except Exception as e:
+            logger.warning(f"{self.provider_name}: Auth failed for EPG: {e}")
+
+        return self._epg_manager.get_channel_epg(
+            channel_id=channel_id,
+            start_time=start_time,
+            end_time=end_time,
+            **kwargs,
+        )
+
+    def get_epg_grid(
+        self,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        channel_ids: Optional[List[str]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, List[EPGEntry]]:
+        """Get EPG data for all channels (or a subset) over a time window."""
+        if not self._epg_manager:
+            logger.warning(f"{self.provider_name}: EPG manager not initialized")
+            return {}
+
+        try:
+            self._ensure_authenticated()
+        except Exception as e:
+            logger.warning(f"{self.provider_name}: Auth failed for EPG grid: {e}")
+
+        # If channel_ids is None, pull the full channel list and use each
+        # channel's station-ID-derived channel_id (the same ID space the
+        # EPG manager keys its grid by — see ChannelManager / EPGEntry wiring).
+        if channel_ids is None:
+            channels = self._channel_manager.get_channels(populate_streaming=False)
+            channel_ids = [ch.channel_id for ch in channels]
+
+        return self._epg_manager.get_epg_grid(
+            start_time=start_time,
+            end_time=end_time,
+            channel_ids=channel_ids,
+            **kwargs,
+        )
+
+    def get_program_details(self, program_id: str, **kwargs: Any) -> Optional[EPGProgramDetails]:
+        """Get detailed metadata for a single programme."""
+        if not self._epg_manager:
+            logger.warning(f"{self.provider_name}: EPG manager not initialized")
+            return None
+        return self._epg_manager.get_program_details(program_id)
 
     # ------------------------------------------------------------------ #
     # Auth state / readiness introspection                                 #

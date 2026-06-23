@@ -3,20 +3,9 @@
 """
 Manages channel discovery, metadata enrichment, entitlement, and streaming-data
 population for the Magenta2 provider.
-
-Responsibilities
-----------------
-- Fetch and cache the unauthenticated channel-stations feed (_fetch_station_metadata)
-- Build StreamingChannel objects from theplatform feed entries
-- Fetch the entitled-channels feed and merge it with station metadata (get_channels)
-- Request entitlement tokens and playlist data per channel
-- Populate streaming data (manifest URL, DRM) for a set of channels
-
-The live-manifest / live-pid caches live here because they are produced by
-get_channels() and consumed by PlaybackManager via the provider's cache
-attributes (_live_manifest_cache, _live_pid_cache).
 """
 import json
+import re
 import time
 from typing import Callable, Dict, List, Optional
 
@@ -47,31 +36,14 @@ class ChannelManager:
     """
     Handles all channel-related operations for Magenta2.
 
-    Parameters
-    ----------
-    http_manager:
-        Shared HTTP manager (created by the provider).
-    provider_name:
-        Provider name string used when building StreamingChannel objects.
-    country:
-        Two-letter country code.
-    platform_config:
-        Platform-specific dict from MAGENTA2_PLATFORMS (user_agent, etc.).
-    session_id:
-        Session UUID shared with the provider instance.
-    serial_number:
-        Device serial UUID shared with the provider instance.
-    endpoint_manager:
-        Populated EndpointManager after discovery.
-    provider_config:
-        ProviderConfig after discovery.
-    auth_callback:
-        Callable[[], str] — returns a valid persona token (Basic-auth value).
-        Provided by the provider as ``self._ensure_authenticated``.
-    build_scaled_image_url_callback:
-        Callable[[str], Optional[str]] — scales a logo URL.
-        Provided by the provider.
+    ID Model (matches MagentaEU pattern):
+    - content_id = station_id (numeric ID from stationId URI)
+    - playback_id = opaque PID from era$mediaPids["urn:theplatform:tv:location:any"]
+    - Both IDs are stored in manifest_script for later reference
     """
+
+    # Pattern to extract numeric station ID from stationId URI
+    _STATION_ID_PATTERN = re.compile(r"/Station/(\d+)$")
 
     def __init__(
         self,
@@ -99,15 +71,16 @@ class ChannelManager:
         self._build_scaled_image_url = build_scaled_image_url_callback
         self.catchup_window = catchup_window
 
-        # Populated on first get_channels() call; returned directly on subsequent calls.
+        # Populated on first get_channels() call
         self._cached_channels: Optional[List[StreamingChannel]] = None
 
-        # release_pid → mpd_url, keyed by release_pid (= channel_id after get_channels).
-        self._live_manifest_cache: Dict[str, str] = {}
-        # release_pid → release_pid (used as a fast membership test by PlaybackManager).
-        self._live_pid_cache: Dict[str, str] = {}
+        # station_id (numeric) -> playback_id (opaque PID)
+        self._station_to_playback_id: Dict[str, str] = {}
 
-        # Populated eagerly at provider init (unauthenticated call).
+        # release_pid -> mpd_url (for fast manifest lookup)
+        self._live_manifest_cache: Dict[str, str] = {}
+
+        # Pre-fetched station metadata (unauthenticated)
         self.station_metadata: Dict[str, Dict] = self._fetch_station_metadata()
 
     # ------------------------------------------------------------------ #
@@ -122,20 +95,8 @@ class ChannelManager:
         prefer_highest_quality: bool = True,
         **kwargs,
     ) -> List[StreamingChannel]:
-        """
-        Fetch available channels via the entitled-channels flow.
-
-        Uses lib_theplatform to:
-          1. Call getApplicableDistributionRights (license_service_url from manifest).
-          2. Fetch the entitled-channels feed filtered by those rights.
-          3. Merge with station metadata pre-fetched at init time (unauthenticated).
-          4. Convert each TheplatformChannel to a StreamingChannel.
-
-        Results are cached after the first successful call; subsequent calls
-        return from cache without hitting the network.
-        """
         if self._cached_channels:
-            logger.debug("get_channels: returning from cache (no network calls)")
+            logger.debug("get_channels: returning from cache")
             return list(self._cached_channels)
 
         try:
@@ -150,9 +111,7 @@ class ChannelManager:
                 else None
             )
             if not rights_url:
-                raise RuntimeError(
-                    "No license_service_url available – configuration discovery may have failed"
-                )
+                raise RuntimeError("No license_service_url available")
 
             persona_token = self._ensure_authenticated()
             auth_headers = {
@@ -201,11 +160,12 @@ class ChannelManager:
                 timeout=DEFAULT_REQUEST_TIMEOUT,
             )
 
-            # ── Step 3: merge with station metadata (pre-fetched at init) ────
+            # ── Step 3: merge with station metadata and build channels ──────
             channels: List[StreamingChannel] = []
             for tp_ch in tp_channels:
                 try:
-                    meta = self.station_metadata.get(tp_ch.station_id, {})
+                    station_id = self._extract_station_id(tp_ch.station_id)
+                    meta = self.station_metadata.get(station_id, {})
                     name = meta.get("title") or tp_ch.station_id
                     logo_url = meta.get("logo_url")
                     quality = meta.get("quality")
@@ -214,12 +174,33 @@ class ChannelManager:
                         if meta.get("channel_number") is not None
                         else tp_ch.channel_number
                     )
+                    playback_id = meta.get("playback_id") or tp_ch.release_pid
+
+                    if not station_id or not playback_id:
+                        logger.warning(
+                            f"Skipping channel {name}: missing station_id={station_id}, "
+                            f"playback_id={playback_id}"
+                        )
+                        continue
 
                     catchup_hours = getattr(tp_ch, 'catchup_hours', None) or self.catchup_window
 
+                    # Build manifest_script with both IDs (like MagentaEU)
+                    manifest_script_parts = []
+                    if channel_number:
+                        manifest_script_parts.append(f"chno={channel_number}")
+                    if station_id:
+                        manifest_script_parts.append(f"station={station_id}")
+                    if playback_id:
+                        manifest_script_parts.append(f"pid={playback_id}")
+                    manifest_script = " ".join(manifest_script_parts) if manifest_script_parts else ""
+
+                    # Store mapping for DRM lookup
+                    self._station_to_playback_id[station_id] = playback_id
+
                     magenta2_channel = Magenta2Channel(
                         name=name,
-                        channel_id=tp_ch.release_pid,
+                        channel_id=station_id,  # content_id = station_id (matches MagentaEU)
                         logo_url=logo_url,
                         mode=MODE_LIVE,
                         content_type=CONTENT_TYPE_LIVE,
@@ -232,13 +213,16 @@ class ChannelManager:
                     streaming_channel.channel_number = channel_number
                     streaming_channel.quality = quality
                     streaming_channel.manifest = tp_ch.mpd_url
+                    streaming_channel.manifest_script = manifest_script
+                    streaming_channel.cdm_type = DRM_SYSTEM_WIDEVINE
+                    streaming_channel.cdm = f"pid={playback_id}"
+                    streaming_channel.cdm_mode = "external"
+                    streaming_channel.catchup_hours = catchup_hours
+
                     if tp_ch.hls_url:
                         streaming_channel.hls_url = tp_ch.hls_url
 
-                    streaming_channel.catchup_hours = catchup_hours
-
-                    self._live_manifest_cache[tp_ch.release_pid] = tp_ch.mpd_url
-                    self._live_pid_cache[tp_ch.release_pid] = tp_ch.release_pid
+                    self._live_manifest_cache[playback_id] = tp_ch.mpd_url
 
                     channels.append(streaming_channel)
                 except Exception as exc:
@@ -256,16 +240,50 @@ class ChannelManager:
         except Exception as e:
             raise Exception(f"Error fetching channels from Magenta2 API: {e}")
 
+    def get_playback_id_for_station(self, station_id: str) -> Optional[str]:
+        """Get the playback ID (opaque PID) for a station ID."""
+        return self._station_to_playback_id.get(station_id)
+
+    def get_station_id_for_channel(self, channel: StreamingChannel) -> Optional[str]:
+        """Get the station ID from a channel's manifest_script."""
+        if not channel.manifest_script:
+            return None
+        # Parse "station=123456" from manifest_script
+        for part in channel.manifest_script.split():
+            if part.startswith("station="):
+                return part.split("=", 1)[1]
+        return None
+
+    def get_playback_id_from_channel(self, channel: StreamingChannel) -> Optional[str]:
+        """Get the playback ID from a channel's manifest_script or cdm field."""
+        # Try cdm field first
+        if channel.cdm and channel.cdm.startswith("pid="):
+            return channel.cdm.split("=", 1)[1]
+        # Fall back to manifest_script
+        if channel.manifest_script:
+            for part in channel.manifest_script.split():
+                if part.startswith("pid="):
+                    return part.split("=", 1)[1]
+        return None
+
     def get_entitlement_token(
         self, content_id: str, content_type: str = CONTENT_TYPE_LIVE
     ) -> str:
         """
-        Request an entitlement token for *content_id* using the persona token
-        (Basic auth).
+        Request an entitlement token for *content_id*.
+
+        Note: content_id here is the station_id (numeric). We need to map
+        it to playback_id for the entitlement request.
         """
         self._ensure_authenticated()
+
+        # Map station_id -> playback_id
+        playback_id = self._station_to_playback_id.get(content_id)
+        if not playback_id:
+            raise ValueError(f"No playback ID found for station {content_id}")
+
         headers = self._get_api_headers(require_auth=True)
-        payload = {"content_id": content_id, "content_type": content_type}
+        payload = {"content_id": playback_id, "content_type": content_type}
 
         url = (
             self._endpoint_manager.get_endpoint("entitlement")
@@ -274,7 +292,7 @@ class ChannelManager:
         )
 
         try:
-            logger.debug(f"Requesting entitlement token for: {content_id}")
+            logger.debug(f"Requesting entitlement token for: {content_id} (playback: {playback_id})")
             response = self._http.post(
                 url,
                 operation="auth",
@@ -325,12 +343,17 @@ class ChannelManager:
 
     def get_channel_playlist(self, channel_id: str, entitlement_token: str) -> Dict:
         """Fetch playlist data (manifest URL, licence URL, format) for a channel."""
+        # channel_id here is the station_id, but the API expects playback_id
+        playback_id = self._station_to_playback_id.get(channel_id)
+        if not playback_id:
+            raise ValueError(f"No playback ID found for station {channel_id}")
+
         if self._endpoint_manager and self._endpoint_manager.has_endpoint("channel_playlist"):
             url = self._endpoint_manager.get_endpoint("channel_playlist").format(
-                channel_id=channel_id
+                channel_id=playback_id
             )
         else:
-            url = f"https://api.magentatv.de/v1/channel/{channel_id}/playlist"
+            url = f"https://api.magentatv.de/v1/channel/{playback_id}/playlist"
 
         headers = {
             "Authorization": f"Bearer {entitlement_token}",
@@ -355,13 +378,6 @@ class ChannelManager:
         channels: List[StreamingChannel],
         max_retries: int = DEFAULT_MAX_RETRIES,
     ) -> List[StreamingChannel]:
-        """
-        Populate manifest URL, DRM config, and streaming format for each channel
-        by fetching an entitlement token and playlist.
-
-        Channels that are restricted or repeatedly fail are silently dropped from
-        the returned list.
-        """
         self._ensure_authenticated()
         successful_channels = []
 
@@ -372,6 +388,7 @@ class ChannelManager:
 
             while retries < max_retries and not success and not is_restricted:
                 try:
+                    # Use channel.channel_id (station_id) for entitlement
                     logger.debug(
                         f"Getting entitlement token for: {channel.name} (attempt {retries + 1})"
                     )
@@ -398,11 +415,15 @@ class ChannelManager:
 
                     if manifest_url:
                         channel.manifest = manifest_url
-                        channel.cdm_type = DRM_SYSTEM_WIDEVINE
-                        channel.cdm = f"pid={channel.channel_id}"
                         channel.license_url = license_url
                         channel.certificate_url = certificate_url
                         channel.streaming_format = streaming_format
+
+                        # Update manifest cache
+                        playback_id = self.get_playback_id_from_channel(channel)
+                        if playback_id:
+                            self._live_manifest_cache[playback_id] = manifest_url
+
                         logger.info(f"Streaming data populated for: {channel.name}")
                         successful_channels.append(channel)
                         success = True
@@ -430,36 +451,51 @@ class ChannelManager:
         return successful_channels
 
     def invalidate_cache(self) -> None:
-        """Clear the in-memory channel and live-manifest caches."""
         self._cached_channels = None
         self._live_manifest_cache.clear()
-        self._live_pid_cache.clear()
         logger.debug("ChannelManager: caches cleared")
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _extract_station_id(station_uri: str) -> Optional[str]:
+        """Extract numeric station ID from a stationId URI."""
+        if not station_uri:
+            return None
+        match = ChannelManager._STATION_ID_PATTERN.search(station_uri)
+        return match.group(1) if match else None
+
+    @staticmethod
+    def _extract_channel_id_from_entry(entry: Dict) -> Optional[str]:
+        """Extract the opaque playback PID from era$mediaPids."""
+        try:
+            stations = entry.get("stations", {})
+            if not stations:
+                return None
+            station_id = next(iter(stations.keys()))
+            station_info = stations[station_id]
+            era_media_pids = station_info.get("era$mediaPids", {})
+            channel_id = era_media_pids.get("urn:theplatform:tv:location:any")
+            if channel_id:
+                logger.debug(f"Extracted playback ID from era$mediaPids: {channel_id}")
+                return channel_id
+            return None
+        except Exception as e:
+            logger.warning(f"Error extracting playback ID from entry: {e}")
+            return None
+
     def _fetch_station_metadata(self) -> Dict[str, Dict]:
         """
-        Fetch the unauthenticated channel-stations feed and return a lookup map
-        keyed by the theplatform Station URI.
+        Fetch the unauthenticated channel-stations feed and build metadata.
 
-        The URI is the key of the ``stations`` dict in each feed entry, e.g.
-        ``http://data.entertainment.tv.theplatform.eu/…/Station/265808936224``.
-        This matches ``listings[0].stationId`` in the entitled-channels feed,
-        which is what ``TheplatformChannel.station_id`` contains after parsing.
-
-        Note: ``era$mediaPids["urn:theplatform:tv:location:any"]`` is a short
-        opaque PID used for other purposes — it is NOT the mapping key.
-
-        Each value dict contains:
-            title        – display name (" - Main" suffix stripped)
-            logo_url     – scaled logo URL or None
-            quality      – "HD", "SD", etc.
-            channel_number – display channel number or None
+        Returns a dict keyed by station_id (numeric), each value containing:
+            title, logo_url, quality, channel_number, playback_id
         """
         metadata: Dict[str, Dict] = {}
+        self._station_to_playback_id.clear()
+
         try:
             url = None
             if self._endpoint_manager:
@@ -488,6 +524,14 @@ class ChannelManager:
                     station_uri = next(iter(stations.keys()))
                     station_info = stations[station_uri]
 
+                    station_id = self._extract_station_id(station_uri)
+                    if not station_id:
+                        continue
+
+                    playback_id = self._extract_channel_id_from_entry(entry)
+                    if playback_id:
+                        self._station_to_playback_id[station_id] = playback_id
+
                     title = (
                         station_info.get("title") or entry.get("title", "")
                     ).replace(" - Main", "")
@@ -504,21 +548,23 @@ class ChannelManager:
 
                     channel_number = entry.get("dt$displayChannelNumber")
 
-                    existing = metadata.get(station_uri)
+                    existing = metadata.get(station_id)
                     if not existing or QUALITY_RANK.get(quality, 1) > QUALITY_RANK.get(
                         existing["quality"], 1
                     ):
-                        metadata[station_uri] = {
+                        metadata[station_id] = {
                             "title": title,
                             "logo_url": logo_url,
                             "quality": quality,
                             "channel_number": channel_number,
+                            "playback_id": playback_id,
                         }
                 except Exception as exc:
                     logger.debug(f"_fetch_station_metadata: skipping entry: {exc}")
 
             logger.debug(
-                f"_fetch_station_metadata: built metadata for {len(metadata)} stations"
+                f"_fetch_station_metadata: built metadata for {len(metadata)} stations, "
+                f"{len(self._station_to_playback_id)} playback mappings"
             )
         except Exception as exc:
             logger.warning(
@@ -527,122 +573,7 @@ class ChannelManager:
 
         return metadata
 
-    @staticmethod
-    def _extract_channel_id_from_entry(entry: Dict) -> Optional[str]:
-        """Extract the correct channel ID from ``era$mediaPids``."""
-        try:
-            stations = entry.get("stations", {})
-            if not stations:
-                return None
-            station_id = next(iter(stations.keys()))
-            station_info = stations[station_id]
-            era_media_pids = station_info.get("era$mediaPids", {})
-            channel_id = era_media_pids.get("urn:theplatform:tv:location:any")
-            if channel_id:
-                logger.debug(f"Extracted channel ID from era$mediaPids: {channel_id}")
-                return channel_id
-            fallback_id = entry.get("guid")
-            if fallback_id:
-                logger.warning(f"Using fallback channel ID from guid: {fallback_id}")
-                return fallback_id
-            logger.warning("No channel ID found in entry")
-            return None
-        except Exception as e:
-            logger.warning(f"Error extracting channel ID from entry: {e}")
-            return None
-
-    def _create_channel_from_entry(
-        self, entry: Dict, station_info: Dict, display_number
-    ) -> Optional[StreamingChannel]:
-        """Build a StreamingChannel from a raw feed entry."""
-        try:
-            title = station_info.get("title") or entry.get("title", "Unknown Channel")
-            title = title.replace(" - Main", "")
-
-            channel_id = self._extract_channel_id_from_entry(entry)
-            if not channel_id:
-                return None
-
-            logo_url = None
-            thumbnails = station_info.get("thumbnails", {})
-            for logo_type in ["stationLogo", "stationLogoColored"]:
-                if logo_type in thumbnails:
-                    original_url = thumbnails[logo_type].get("url")
-                    if original_url:
-                        logo_url = self._build_scaled_image_url(original_url)
-                        break
-
-            magenta2_channel = Magenta2Channel(
-                name=title,
-                channel_id=channel_id,
-                logo_url=logo_url,
-                mode=MODE_LIVE,
-                content_type=CONTENT_TYPE_LIVE,
-                country=self._country,
-                raw_data=entry,
-            )
-            streaming_channel = magenta2_channel.to_streaming_channel(
-                provider_name=self._provider_name
-            )
-            streaming_channel.channel_number = display_number
-            streaming_channel.quality = station_info.get("dt$quality", "SD")
-            return streaming_channel
-
-        except Exception as e:
-            logger.warning(f"Error creating channel from entry: {e}")
-            return None
-
-    def _process_channel_stations_response_optimized(
-        self, response_data: Dict, prefer_highest_quality: bool = True
-    ) -> List[StreamingChannel]:
-        """Single-pass deduplication and channel construction from a raw feed response."""
-        if "entries" not in response_data:
-            return []
-
-        best_entries: Dict = {}
-        channels: List[StreamingChannel] = []
-
-        for entry in response_data["entries"]:
-            try:
-                stations = entry.get("stations", {})
-                if not stations:
-                    continue
-                station_info = next(iter(stations.values()))
-                display_number = entry.get("dt$displayChannelNumber")
-
-                if display_number is None:
-                    channel = self._create_channel_from_entry(
-                        entry, station_info, display_number
-                    )
-                    if channel:
-                        channels.append(channel)
-                    continue
-
-                quality = station_info.get("dt$quality", "SD")
-                current_rank = QUALITY_RANK.get(quality, 1)
-
-                existing = best_entries.get(display_number)
-                if not existing:
-                    best_entries[display_number] = (entry, station_info, current_rank)
-                else:
-                    _, _, existing_rank = existing
-                    if (prefer_highest_quality and current_rank > existing_rank) or (
-                        not prefer_highest_quality and current_rank < existing_rank
-                    ):
-                        best_entries[display_number] = (entry, station_info, current_rank)
-
-            except Exception:
-                continue
-
-        for display_number, (entry, station_info, _) in best_entries.items():
-            channel = self._create_channel_from_entry(entry, station_info, display_number)
-            if channel:
-                channels.append(channel)
-
-        return channels
-
     def _get_api_headers(self, require_auth: bool = False) -> Dict[str, str]:
-        """Build standard API request headers."""
         headers = {
             "User-Agent": self._platform_config["user_agent"],
             "Accept": "application/json",
