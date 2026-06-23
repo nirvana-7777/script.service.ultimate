@@ -8,9 +8,8 @@ Uses the ThePlatform API:
 - Details:  mdeprod-all-programs
 
 Design:
-- 3-hour block fetching for schedules
+- Single-shot window fetching for schedules (byListingTime=ISO~ISO)
 - No in-memory caching (stateless)
-- Batch grid optimization (fetches once per day, distributes to all channels)
 - No authentication required (guest access) — only device/session IDs
 """
 
@@ -297,62 +296,53 @@ class Magenta2EpgManager:
     # Schedule fetching
     # ------------------------------------------------------------------
 
-    def _fetch_day_schedules(
-            self,
-            date: datetime,
-            start_time: Optional[datetime] = None,
-            end_time: Optional[datetime] = None,
+    def _fetch_schedule(
+        self,
+        date_from: datetime,
+        date_to: datetime,
     ) -> Dict[str, Any]:
+        """
+        Fetch the full schedule grid for the [date_from, date_to] window in
+        a single ThePlatform API call using byListingTime=ISO~ISO.
+
+        Returns the raw decoded JSON (with an "entries" list) or an empty
+        dict on failure / missing config.
+        """
         if not self._schedule_feed_url or not self._location_id:
             return {}
 
-        merged: Dict[str, Any] = {}
+        utc_from = self._ensure_tz(date_from).astimezone(timezone.utc)
+        utc_to = self._ensure_tz(date_to).astimezone(timezone.utc)
 
-        utc_date = self._ensure_tz(date).astimezone(timezone.utc)
-        formatted = utc_date.strftime("%Y-%m-%d")
-
-        start_hour, end_hour = 0, 24
-
-        if start_time:
-            utc_start = self._ensure_tz(start_time).astimezone(timezone.utc)
-            if utc_start.date() == utc_date.date():
-                start_hour = (utc_start.hour // 3) * 3
-
-        if end_time:
-            utc_end = self._ensure_tz(end_time).astimezone(timezone.utc)
-            if utc_end.date() == utc_date.date():
-                if utc_end.hour % 3 == 0 and utc_end.minute == 0 and utc_end.second == 0:
-                    end_hour = (utc_end.hour // 3) * 3
-                else:
-                    end_hour = ((utc_end.hour // 3) + 1) * 3
+        # ThePlatform expects: YYYY-MM-DDTHH:MM:SS.000Z~YYYY-MM-DDTHH:MM:SS.000Z
+        start_iso = utc_from.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        end_iso = utc_to.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
         logger.debug(
-            f"[Magenta2EpgManager] Fetching {formatted} hours {start_hour}-{end_hour} (UTC)"
+            f"[Magenta2EpgManager] Fetching schedule window "
+            f"{start_iso} ~ {end_iso} (UTC)"
         )
 
-        # Schedule only needs: time, title, guid, stationId
-        # Everything else is fetched via get_program_details() on demand
+        # Schedule only needs: time, title, guid, stationId.
+        # Everything else is fetched via get_program_details() on demand.
         fields = (
             "listings.stationId,"
             "listings.program.guid,listings.program.title,"
             "listings.startTime,listings.endTime"
         )
 
-        for hour_offset in range(start_hour, end_hour, 3):
-            url = (
-                f"{self._schedule_feed_url}"
-                f"?byListingTime={formatted}T{hour_offset:02d}:00:00.000Z"
-                f"~{formatted}T{hour_offset + 3:02d}:00:00.000Z"
-                f"&byLocationId={self._location_id}"
-                f"&fields={fields}"
-                f"&cid={uuid.uuid4()}"
-            )
+        url = (
+            f"{self._schedule_feed_url}"
+            f"?byListingTime={start_iso}~{end_iso}"
+            f"&byLocationId={self._location_id}"
+            f"&fields={fields}"
+            f"&cid={uuid.uuid4()}"
+        )
 
-            data = self._get_with_retry(url, operation=f"epg_schedule_offset_{hour_offset}")
-            if data and data.get("entries"):
-                merged[url] = data
-
-        return merged
+        data = self._get_with_retry(url, operation="epg_schedule_window")
+        if data and data.get("entries"):
+            return data
+        return {}
 
     # ------------------------------------------------------------------
     # Listing -> EPGEntry
@@ -497,18 +487,6 @@ class Magenta2EpgManager:
 
         return date_from, date_to
 
-    @staticmethod
-    def _dates_in_window(date_from: datetime, date_to: datetime) -> List[datetime]:
-        dates: List[datetime] = []
-        current = date_from.astimezone(timezone.utc).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
-        utc_to = date_to.astimezone(timezone.utc)
-        while current.date() <= utc_to.date():
-            dates.append(current)
-            current += timedelta(days=1)
-        return dates
-
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -520,43 +498,45 @@ class Magenta2EpgManager:
         channel_ids: Optional[List[str]] = None,
         **_kwargs: Any,
     ) -> Dict[str, List[EPGEntry]]:
+        """
+        Build the EPG grid for the given window.
+
+        Performs a single ThePlatform schedule request with
+        byListingTime=start~end, then buckets listings per channel and
+        filters by the resolved window + requested channel_ids.
+        """
         date_from, date_to = self._resolve_window(start_time, end_time)
         ts_from, ts_to = int(date_from.timestamp()), int(date_to.timestamp())
 
-        schedule_blocks: Dict[str, Any] = {}
-        for date in self._dates_in_window(date_from, date_to):
-            blocks = self._fetch_day_schedules(date, start_time, end_time)
-            if blocks:
-                schedule_blocks.update(blocks)
+        schedule_data = self._fetch_schedule(date_from, date_to)
 
         wanted = set(channel_ids) if channel_ids else None
 
-        if not schedule_blocks:
+        if not schedule_data:
             return {cid: [] for cid in wanted} if wanted else {}
 
         grid: Dict[str, List[EPGEntry]] = {}
 
-        for data in schedule_blocks.values():
-            for entry in data.get("entries", []):
-                channel_id = self._resolve_entry_channel_id(entry)
-                if channel_id is None:
+        for entry in schedule_data.get("entries", []):
+            channel_id = self._resolve_entry_channel_id(entry)
+            if channel_id is None:
+                continue
+            if wanted is not None and channel_id not in wanted:
+                continue
+
+            bucket = grid.setdefault(channel_id, [])
+            for item in entry.get("listings", []):
+                start = self._parse_timestamp(item.get("startTime"))
+                end = self._parse_timestamp(item.get("endTime"))
+                if start is None or end is None or end <= start:
                     continue
-                if wanted is not None and channel_id not in wanted:
+                if end <= ts_from or start >= ts_to:
                     continue
 
-                bucket = grid.setdefault(channel_id, [])
-                for item in entry.get("listings", []):
-                    start = self._parse_timestamp(item.get("startTime"))
-                    end = self._parse_timestamp(item.get("endTime"))
-                    if start is None or end is None or end <= start:
-                        continue
-                    if end <= ts_from or start >= ts_to:
-                        continue
-
-                    program = item.get("program", {}) or {}
-                    parsed = self._parse_item_to_entry(item, channel_id, start, end, program)
-                    if parsed:
-                        bucket.append(parsed)
+                program = item.get("program", {}) or {}
+                parsed = self._parse_item_to_entry(item, channel_id, start, end, program)
+                if parsed:
+                    bucket.append(parsed)
 
         for entries in grid.values():
             entries.sort(key=lambda p: p.start)
