@@ -391,6 +391,7 @@ class Magenta2EpgManager:
 
         broadcast_id = EPGEntry.encode_broadcast_id("magenta2", channel_id, start)
 
+        # Only fetch details if enabled (should be False for grid)
         details: Dict[str, Any] = {}
         credit_map = {
             "cast": None,
@@ -400,22 +401,22 @@ class Magenta2EpgManager:
             "presenter": None,
         }
 
-        # Fetch details only if enabled (on-demand or pre-fetch)
         if self._fetch_details and program_guid:
             details = self._fetch_program_details(program_guid)
             credit_ids = details.get("dt$creditIds", [])
             if credit_ids:
                 credit_map = self._parse_credit_names_from_ids(credit_ids)
 
-        # Use details if available, otherwise schedule data
+        # Use details only if fetched, otherwise use schedule data
         title = details.get("title") or title
         description = details.get("description")
-
+        original_title = details.get("secondaryTitle")
         year = details.get("year")
-        try:
-            year = int(year) if year is not None else None
-        except (ValueError, TypeError):
-            year = None
+        if year is not None:
+            try:
+                year = int(year)
+            except (ValueError, TypeError):
+                year = None
 
         season_number = self._parse_episode_number(details.get("tvSeasonNumber"))
         episode_number = self._parse_episode_number(details.get("tvSeasonEpisodeNumber"))
@@ -435,7 +436,7 @@ class Magenta2EpgManager:
             description=description,
             plot_outline=None,
             episode_name=None,
-            original_title=details.get("secondaryTitle"),
+            original_title=original_title,
             year=year,
             icon=icon,
             cast=credit_map["cast"],

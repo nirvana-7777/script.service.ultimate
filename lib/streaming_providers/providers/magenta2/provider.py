@@ -251,7 +251,7 @@ class Magenta2Provider(StreamingProvider):
             provider_config=self.endpoint_manager.config,
             http_manager=self.http_manager,
             authenticator=self.authenticator,
-            fetch_details=True,  # Fetch full programme details (credits, images, etc.)
+            fetch_details=False,  # ← Don't fetch details on schedule grid
             default_past_days=7,
             default_future_days=13,
         )
