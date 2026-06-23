@@ -100,10 +100,11 @@ class MpxConfig:
     bookmark_base_url: Optional[str] = None
     pvr_base_url: Optional[str] = None
     feeds: Dict[str, str] = field(default_factory=dict)
-    # ADD THIS: Channel stations feed
     channel_stations_feed: Optional[str] = None
-    mpx_account_uri: Optional[str] = None  # Actual account URI for persona token
-    mpx_basic_url_selector_service: Optional[str] = None  # MPD manifest endpoint
+    mpx_account_uri: Optional[str] = None
+    mpx_basic_url_selector_service: Optional[str] = None
+    # ADD THIS:
+    location_id_uri: Optional[str] = None  # ThePlatform Location ID for EPG
 
     @classmethod
     def from_manifest_data(cls, manifest_data: Dict[str, Any]) -> "MpxConfig":
@@ -115,6 +116,8 @@ class MpxConfig:
         user_profile_url = mpx_data.get("userProfileUrl")
         bookmark_base_url = mpx_data.get("bookmarkBaseUrl", "")
         pvr_base_url = mpx_data.get("pvrBaseUrl", "")
+        # ADD THIS:
+        location_id_uri = mpx_data.get("locationIdUri")
 
         # Build feeds dict from mpx.feeds
         feeds = {}
@@ -125,16 +128,13 @@ class MpxConfig:
         channel_stations_feed = mpx_feeds.get("allChannelStationsFeed")
 
         # Extract account ID from pvrBaseUrl: ".../npvr-audience/2709353023"
-        # Fall back to programGuidBaseUri if pvrBaseUrl is absent
         mpx_account_uri = mpx_data.get("accountUri")
         if not mpx_account_uri:
             account_id = None
             if pvr_base_url:
-                # pvrBaseUrl ends with "/<accountId>"
                 account_id = pvr_base_url.rstrip("/").split("/")[-1]
             if not account_id:
                 prog_uri = mpx_data.get("programGuidBaseUri", "")
-                # programGuidBaseUri contains "/guid/<accountId>/"
                 parts = prog_uri.split("/guid/")
                 if len(parts) == 2:
                     account_id = parts[1].split("/")[0]
@@ -157,6 +157,7 @@ class MpxConfig:
             channel_stations_feed=channel_stations_feed,
             mpx_account_uri=mpx_account_uri,
             mpx_basic_url_selector_service=selector_service_url,
+            location_id_uri=location_id_uri,  # ADD THIS
         )
 
     def get_account_uri(self) -> Optional[str]:
