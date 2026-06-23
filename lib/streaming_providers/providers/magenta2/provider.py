@@ -670,14 +670,38 @@ class Magenta2Provider(StreamingProvider):
     ) -> List[Event]:
         return []
 
+    def _get_playback_id(self, content_id: str) -> str:
+        """
+        Convert station_id to playback_id if needed.
+
+        If content_id is numeric (station_id), convert to playback_id.
+        Otherwise return as-is (already a playback_id or VOD ID).
+        """
+        # If it's a numeric station_id, convert to playback_id
+        if content_id.isdigit():
+            playback_id = self._channel_manager.get_playback_id_for_station(content_id)
+            if playback_id:
+                logger.debug(f"Converted station_id {content_id} -> playback_id {playback_id}")
+                return playback_id
+            else:
+                logger.warning(f"No playback_id found for station_id {content_id}")
+                return content_id
+        return content_id
+
     def get_manifest(
-        self, content_id: str, content_type: str = CONTENT_TYPE_LIVE, **kwargs: Any
+            self, content_id: str, content_type: str = CONTENT_TYPE_LIVE, **kwargs: Any
     ) -> Optional[str]:
+        # Convert station_id -> playback_id for live channels
+        if content_type == CONTENT_TYPE_LIVE:
+            content_id = self._get_playback_id(content_id)
         return self._playback_manager.get_manifest(content_id, content_type, **kwargs)
 
     def get_drm(
-        self, content_id: str, content_type: str = CONTENT_TYPE_LIVE, **kwargs: Any
+            self, content_id: str, content_type: str = CONTENT_TYPE_LIVE, **kwargs: Any
     ) -> List[DRMConfig]:
+        # Convert station_id -> playback_id for live channels
+        if content_type == CONTENT_TYPE_LIVE:
+            content_id = self._get_playback_id(content_id)
         return self._playback_manager.get_drm(content_id, content_type, **kwargs)
 
     def get_catchup_manifest(
