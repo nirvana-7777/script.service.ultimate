@@ -39,7 +39,7 @@ class ProviderMetadata:
             if len(supported_countries) == 1:
                 # Provider has exactly one supported country (e.g., HRTi with ["HR"])
                 # Use that country instead of the passed-in country
-                self.country = supported_countries[0].upper()
+                self.country = supported_countries[0]
                 self.is_multi_country = False
             else:
                 # True single-country or country-agnostic (empty list)
