@@ -912,3 +912,7 @@ class Magenta2Provider(StreamingProvider):
             result["sam3_client"] = self.authenticator.get_sam3_client_status()
 
         return result
+
+    @classmethod
+    def get_static_supported_countries(cls) -> List[str]:
+        return SUPPORTED_COUNTRIES.copy()
