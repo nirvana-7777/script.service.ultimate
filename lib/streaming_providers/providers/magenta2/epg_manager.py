@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ...base.models.epg_models import EPGEntry, EPGProgramDetails
 from ...base.utils.logger import logger
+from ..lib_theplatform import paginate_feed, PaginationError
 from .constants import DEFAULT_REQUEST_TIMEOUT
 
 
@@ -296,53 +297,46 @@ class Magenta2EpgManager:
     # Schedule fetching
     # ------------------------------------------------------------------
 
-    def _fetch_schedule(
-        self,
-        date_from: datetime,
-        date_to: datetime,
-    ) -> Dict[str, Any]:
-        """
-        Fetch the full schedule grid for the [date_from, date_to] window in
-        a single ThePlatform API call using byListingTime=ISO~ISO.
-
-        Returns the raw decoded JSON (with an "entries" list) or an empty
-        dict on failure / missing config.
-        """
+    def _fetch_schedule(self, date_from: datetime, date_to: datetime) -> Dict[str, Any]:
         if not self._schedule_feed_url or not self._location_id:
             return {}
 
         utc_from = self._ensure_tz(date_from).astimezone(timezone.utc)
         utc_to = self._ensure_tz(date_to).astimezone(timezone.utc)
-
-        # ThePlatform expects: YYYY-MM-DDTHH:MM:SS.000Z~YYYY-MM-DDTHH:MM:SS.000Z
         start_iso = utc_from.strftime("%Y-%m-%dT%H:%M:%S.000Z")
         end_iso = utc_to.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
-        logger.debug(
-            f"[Magenta2EpgManager] Fetching schedule window "
-            f"{start_iso} ~ {end_iso} (UTC)"
-        )
+        logger.debug(f"[Magenta2EpgManager] Fetching schedule window {start_iso} ~ {end_iso} (UTC)")
 
-        # Schedule only needs: time, title, guid, stationId.
-        # Everything else is fetched via get_program_details() on demand.
         fields = (
             "listings.stationId,"
             "listings.program.guid,listings.program.title,"
             "listings.startTime,listings.endTime"
         )
 
-        url = (
-            f"{self._schedule_feed_url}"
-            f"?byListingTime={start_iso}~{end_iso}"
-            f"&byLocationId={self._location_id}"
-            f"&fields={fields}"
-            f"&cid={uuid.uuid4()}"
-        )
+        def _fetch_page(start_index: int, page_size: int) -> Optional[Dict[str, Any]]:
+            url = (
+                f"{self._schedule_feed_url}"
+                f"?byListingTime={start_iso}~{end_iso}"
+                f"&byLocationId={self._location_id}"
+                f"&fields={fields}"
+                f"&range={start_index}-{start_index + page_size - 1}"
+                f"&cid={uuid.uuid4()}"
+            )
+            return self._get_with_retry(url, operation="epg_schedule_window")
 
-        data = self._get_with_retry(url, operation="epg_schedule_window")
-        if data and data.get("entries"):
-            return data
-        return {}
+        try:
+            entries = paginate_feed(
+                _fetch_page, items_per_page=200, max_pages=10, feed_name="epg_schedule_window"
+            )
+        except PaginationError as exc:
+            logger.error(
+                f"[Magenta2EpgManager] {exc} — EPG grid will be INCOMPLETE "
+                f"({len(exc.partial_entries)} stations fetched before failure)"
+            )
+            entries = exc.partial_entries
+
+        return {"entries": entries} if entries else {}
 
     # ------------------------------------------------------------------
     # Listing -> EPGEntry

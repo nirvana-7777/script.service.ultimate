@@ -11,6 +11,7 @@ from typing import Callable, Dict, List, Optional
 
 from ...base.models import StreamingChannel
 from ...base.utils.logger import logger
+from ..lib_theplatform import paginate_feed, PaginationError
 from .constants import (
     CONTENT_TYPE_LIVE,
     DEFAULT_EPG_WINDOW_HOURS,
@@ -493,12 +494,6 @@ class ChannelManager:
             return None
 
     def _fetch_station_metadata(self) -> Dict[str, Dict]:
-        """
-        Fetch the unauthenticated channel-stations feed and build metadata.
-
-        Returns a dict keyed by station_id (numeric), each value containing:
-            title, logo_url, quality, channel_number, playback_id
-        """
         metadata: Dict[str, Dict] = {}
         self._station_to_playback_id.clear()
 
@@ -506,23 +501,42 @@ class ChannelManager:
             url = None
             if self._endpoint_manager:
                 url = (
-                    self._endpoint_manager.get_endpoint("channel_stations")
-                    or self._endpoint_manager.get_endpoint("channel_list")
+                        self._endpoint_manager.get_endpoint("channel_stations")
+                        or self._endpoint_manager.get_endpoint("channel_list")
                 )
-            url = (
-                url
-                or "https://feed.entertainment.tv.theplatform.eu/f/mdeprod/mdeprod-channel-stations-main"
+            base_url = (
+                    url
+                    or "https://feed.entertainment.tv.theplatform.eu/f/mdeprod/mdeprod-channel-stations-main"
             )
-            url += "?lang=short-de&sort=dt%24displayChannelNumber&range=1-1000"
-
             headers = self._get_api_headers(require_auth=False)
-            response = self._http.get(
-                url, operation="api", headers=headers, timeout=DEFAULT_REQUEST_TIMEOUT
-            )
-            response.raise_for_status()
-            data = response.json()
 
-            for entry in data.get("entries", []):
+            def _fetch_page(start_index: int, page_size: int) -> Optional[Dict]:
+                page_url = (
+                    f"{base_url}?lang=short-de&sort=dt%24displayChannelNumber"
+                    f"&range={start_index}-{start_index + page_size - 1}"
+                )
+                try:
+                    response = self._http.get(
+                        page_url, operation="api", headers=headers, timeout=DEFAULT_REQUEST_TIMEOUT
+                    )
+                    response.raise_for_status()
+                    return response.json()
+                except Exception as exc:
+                    logger.warning(f"_fetch_station_metadata: page fetch failed: {exc}")
+                    return None
+
+            try:
+                entries = paginate_feed(
+                    _fetch_page, items_per_page=1000, max_pages=10, feed_name="channel_stations"
+                )
+            except PaginationError as exc:
+                logger.warning(
+                    f"_fetch_station_metadata: {exc} — using "
+                    f"{len(exc.partial_entries)} entries fetched before failure"
+                )
+                entries = exc.partial_entries
+
+            for entry in entries:
                 try:
                     stations = entry.get("stations", {})
                     if not stations:
@@ -573,9 +587,7 @@ class ChannelManager:
                 f"{len(self._station_to_playback_id)} playback mappings"
             )
         except Exception as exc:
-            logger.warning(
-                f"_fetch_station_metadata: failed, channels will have no names: {exc}"
-            )
+            logger.warning(f"_fetch_station_metadata: failed, channels will have no names: {exc}")
 
         return metadata
 
