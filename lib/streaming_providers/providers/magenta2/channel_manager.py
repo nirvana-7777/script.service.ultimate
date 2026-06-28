@@ -178,7 +178,7 @@ class ChannelManager:
                         if meta.get("channel_number") is not None
                         else tp_ch.channel_number
                     )
-                    playback_id = meta.get("playback_id") or tp_ch.release_pid
+                    playback_id = tp_ch.release_pid or meta.get("playback_id")
 
                     if not station_id or not playback_id:
                         logger.warning(
