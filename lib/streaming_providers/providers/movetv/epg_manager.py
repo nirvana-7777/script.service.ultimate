@@ -27,44 +27,44 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from ...base.utils.logger import logger
+from ...base.models.epg_models import EPGEntry, EPGFlags
 from .constants import MoveTVConfig
 
 
 class MoveTvEpgManager:
     """
-    Fetches and normalises EPG data from the MoveTV API.
+    Fetches and normalises EPG data from the MoveTV API into EPGEntry
+    objects (the same typed contract used by EPGOperations and the other
+    providers — see streaming_providers/base/models/epg_models.py).
 
-    Returns programme objects with the following fields:
+    Field mapping from the raw MoveTV API payload onto EPGEntry:
 
-    Core identifiers:
-        epg_id, schedule_id, live_id, live_name, content_id
+        epgId            -> program_id, and broadcast_id when > 0
+                             (falls back to EPGEntry.encode_broadcast_id()
+                             so the provider can still be recovered from
+                             the broadcast_id alone for catchup lookups)
+        title (cleaned)   -> title
+        title (raw, S/E)  -> episode_name (only when season/episode parsed)
+        originalTitle     -> original_title
+        epgDesc           -> description
+        start / end (ms)  -> start / end (seconds)
+        tagInfo.name      -> genre_description
+        director          -> directors (single-item list)
+        actor             -> cast (list, comma-split)
+        year              -> year
+        rating            -> star_rating
+        picture.background-> icon
+        season/episode    -> season_number / episode_number (+ IS_SERIES flag)
 
-    Title & Description:
-        title (cleaned), original_title, plot, episode_title
-
-    Episode Info (parsed from title):
-        season_num, episode_num, has_episode_info
-
-    Time:
-        start, end (ISO-8601 UTC strings)
-        start_ms, end_ms (millisecond timestamps)
-
-    Genre & Categories:
-        genre (name), genre_id (numeric)
-        categories (list of names)
-        category_ids (list of numeric IDs)
-        category_images (list of icon URLs)
-
-    Credits:
-        director, cast (list), producer
-
-    Metadata:
-        year, rating
-
-    Images:
-        thumbnail (background fanart) - legacy
-        images dict containing any of:
-            background, icon, poster, square_logo, poster_mark, original_title_logo
+    Known lossy fields
+    ------------------
+    EPGEntry has no slots for: schedule_id, live_id, live_name, content_id,
+    producer, multiple categories/category_ids/category_images, genre_id,
+    or the secondary images (poster, square_logo, poster_mark,
+    original_title_logo). These were present in the old dict-based return
+    value and are now dropped. Confirm nothing else in the MoveTV pipeline
+    (e.g. catchup/manifest matching) reads those keys before relying on
+    this contract.
     """
 
     def __init__(self, authenticator: Any) -> None:
@@ -97,7 +97,7 @@ class MoveTvEpgManager:
         # Absorb any other kwargs forwarded by EPGOperations / provider.get_epg()
         # so we never raise on unknown arguments.
         **_kwargs: Any,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[EPGEntry]:
         """
         Fetch the EPG schedule for a single live channel.
 
@@ -133,8 +133,8 @@ class MoveTvEpgManager:
 
         Returns
         -------
-        List of normalised programme dicts (see ``_parse_items``), or an
-        empty list on any error.
+        List of EPGEntry objects (see ``_parse_items``), or an empty list
+        on any error or for items that fail EPGEntry validation.
         """
         # ----------------------------------------------------------------
         # Step 1 — resolve the time anchor and API window parameters
@@ -238,7 +238,7 @@ class MoveTvEpgManager:
         logger.debug(
             f"MoveTV EPG: Received {len(items)} programme(s) for channel {channel_id}"
         )
-        return self._parse_items(items)
+        return self._parse_items(items, channel_id)
 
     def get_channels_epg(
         self,
@@ -247,14 +247,15 @@ class MoveTvEpgManager:
         forwards: int = 2,
         start_time: Optional[datetime] = None,
         end_time: Optional[datetime] = None,
-    ) -> Dict[str, List[Dict[str, Any]]]:
+    ) -> Dict[str, List[EPGEntry]]:
         """
         Convenience wrapper: fetch EPG for multiple channels.
 
-        Returns a dict keyed by channel_id.  Missing / failed channels are
-        present with an empty list so callers don't have to guard KeyError.
+        Returns a dict keyed by channel_id, each value a list of EPGEntry
+        objects. Missing / failed channels are present with an empty list
+        so callers don't have to guard KeyError.
         """
-        result: Dict[str, List[Dict[str, Any]]] = {}
+        result: Dict[str, List[EPGEntry]] = {}
         for cid in channel_ids:
             result[cid] = self.get_channel_epg(
                 cid,
@@ -373,200 +374,131 @@ class MoveTvEpgManager:
         # Native backwards/forwards — anchor to now
         return datetime.now(tz=timezone.utc), backwards, forwards
 
-    @staticmethod
-    def _ms_to_utc_str(ms: Optional[int]) -> Optional[str]:
+    def _parse_items(
+        self, items: List[Dict[str, Any]], channel_id: str
+    ) -> List[EPGEntry]:
         """
-        Convert a millisecond epoch timestamp to an ISO-8601 UTC string.
+        Normalise raw API programme objects into EPGEntry objects.
 
-        Example: 1775052120000 → '2026-04-30T12:02:00+00:00'
+        channel_id is needed (in addition to each item's own fields) only
+        as a fallback input to EPGEntry.encode_broadcast_id() for items
+        that arrive without a usable epgId.
 
-        Returns None when *ms* is falsy (None / 0).
-        """
-        if not ms:
-            return None
-        dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
-        return dt.isoformat()
-
-    def _parse_items(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Normalise raw API programme objects into a consistent internal format.
-
-        Field mapping (enhanced)
-        ------------------------
-        Basic info:
-            epg_id, schedule_id, live_id, live_name, content_id
-            title, original_title, plot
-
-        Time:
-            start, end (ISO-8601 UTC)
-            start_ms, end_ms (raw milliseconds)
-
-        Episode (parsed from title):
-            season_num, episode_num
-            episode_title (title without season/episode suffix)
-
-        Genre & Categories:
-            genre (name from tagInfo)
-            genre_id (numeric from tagInfo)
-            categories (list of category names)
-            category_ids (list of category IDs)
-            category_images (list of category icon URLs)
-
-        Credits:
-            director, cast (list), producer
-
-        Metadata:
-            year, rating
-
-        Images (all available):
-            thumbnail (background) - primary for backward compatibility
-            images dict containing:
-                - background (wide fanart)
-                - icon (small channel/program icon)
-                - poster (movie/show poster)
-                - square_logo (square logo)
-                - poster_mark (promotional image)
-                - original_title_logo (title logo)
+        Items that are missing start/end, or that fail EPGEntry's own
+        validation (e.g. empty title after season/episode stripping), are
+        logged and skipped rather than raising — matching the previous
+        "skip and continue" behaviour for malformed entries.
         """
         import re
 
-        parsed: List[Dict[str, Any]] = []
+        parsed: List[EPGEntry] = []
 
         for item in items:
             start_ms: Optional[int] = item.get("start")
             end_ms: Optional[int] = item.get("end")
 
-            # ------------------------------------------------------------
-            # Parse categories with their IDs and images
-            # ------------------------------------------------------------
-            categories = []
-            category_ids = []
-            category_images = []
+            if not start_ms or not end_ms:
+                continue
 
-            for cat in item.get("categories") or []:
-                if cat.get("name"):
-                    categories.append(cat["name"])
-                if cat.get("categoryId"):
-                    category_ids.append(cat["categoryId"])
-                cat_picture = cat.get("picture") or {}
-                if cat_picture.get("icon"):
-                    category_images.append(
-                        MoveTVConfig.build_image_url(cat_picture["icon"])
+            start_s = start_ms // 1000
+            end_s = end_ms // 1000
+
+            try:
+                # ------------------------------------------------------------
+                # Cast (split by comma)
+                # ------------------------------------------------------------
+                actor_raw: Optional[str] = item.get("actor")
+                cast: List[str] = (
+                    [a.strip() for a in actor_raw.split(",") if a.strip()]
+                    if actor_raw
+                    else []
+                )
+
+                # ------------------------------------------------------------
+                # Parse season and episode from title.
+                # Supports multiple patterns:
+                # - "Title S6:E2" (most common)
+                # - "Title S6E2"
+                # - "Title S6 E2"
+                # - "Title (S6, E2)"
+                # - "Title - Season 6 Episode 2"
+                # ------------------------------------------------------------
+                raw_title = item.get("title", "")
+                title = raw_title
+                season_num = None
+                episode_num = None
+
+                match = re.search(r'S(\d+):E(\d+)', title, re.IGNORECASE)
+                if not match:
+                    match = re.search(r'S(\d+)E(\d+)', title, re.IGNORECASE)
+                if not match:
+                    match = re.search(r'S(\d+)\s+E(\d+)', title, re.IGNORECASE)
+                if not match:
+                    match = re.search(r'\(S(\d+)[,\s]+E(\d+)\)', title, re.IGNORECASE)
+                if not match:
+                    match = re.search(
+                        r'Season\s+(\d+)\s+Episode\s+(\d+)', title, re.IGNORECASE
                     )
 
-            # ------------------------------------------------------------
-            # Parse cast (split by comma)
-            # ------------------------------------------------------------
-            actor_raw: Optional[str] = item.get("actor")
-            cast: List[str] = (
-                [a.strip() for a in actor_raw.split(",") if a.strip()]
-                if actor_raw
-                else []
-            )
+                if match:
+                    season_num = int(match.group(1))
+                    episode_num = int(match.group(2))
+                    title = re.sub(r'\s*S\d+:[Ee]\d+\s*', '', title)
+                    title = re.sub(r'\s*S\d+[Ee]\d+\s*', '', title)
+                    title = re.sub(r'\s*\(S\d+[,\s]+E\d+\)\s*', '', title)
+                    title = re.sub(r'\s*Season\s+\d+\s+Episode\s+\d+\s*', '', title)
+                    title = title.strip()
 
-            # ------------------------------------------------------------
-            # Parse season and episode from title
-            # Supports multiple patterns:
-            # - "Title S6:E2" (most common)
-            # - "Title S6E2"
-            # - "Title S6 E2"
-            # - "Title (S6, E2)"
-            # - "Title - Season 6 Episode 2"
-            # ------------------------------------------------------------
-            raw_title = item.get("title", "")
-            title = raw_title
-            season_num = None
-            episode_num = None
+                # ------------------------------------------------------------
+                # Images — only "background" maps onto EPGEntry.icon; the
+                # other picture variants (poster, square_logo, poster_mark,
+                # original_title_logo) have no EPGEntry field and are lost.
+                # ------------------------------------------------------------
+                picture = item.get("picture") or {}
+                icon = MoveTVConfig.build_image_url(picture.get("background"))
 
-            # Pattern 1: S6:E2 (MoveTV format)
-            match = re.search(r'S(\d+):E(\d+)', title, re.IGNORECASE)
-            if not match:
-                # Pattern 2: S6E2
-                match = re.search(r'S(\d+)E(\d+)', title, re.IGNORECASE)
-            if not match:
-                # Pattern 3: S6 E2
-                match = re.search(r'S(\d+)\s+E(\d+)', title, re.IGNORECASE)
-            if not match:
-                # Pattern 4: (S6, E2) or (S6 E2)
-                match = re.search(r'\(S(\d+)[,\s]+E(\d+)\)', title, re.IGNORECASE)
-            if not match:
-                # Pattern 5: Season 6 Episode 2
-                match = re.search(r'Season\s+(\d+)\s+Episode\s+(\d+)', title, re.IGNORECASE)
+                # ------------------------------------------------------------
+                # Broadcast ID — prefer the API's own epgId (stable across
+                # requests); fall back to the canonical provider-aware
+                # encoder so catchup code can still recover the provider
+                # from the broadcast_id alone (see EPGEntry.encode_broadcast_id
+                # / get_provider_hash docs in epg_models.py).
+                # ------------------------------------------------------------
+                epg_id_raw = item.get("epgId")
+                broadcast_id = (
+                    int(epg_id_raw)
+                    if epg_id_raw and int(epg_id_raw) > 0
+                    else EPGEntry.encode_broadcast_id(
+                        "movetv", channel_id, start_s
+                    )
+                )
 
-            if match:
-                season_num = int(match.group(1))
-                episode_num = int(match.group(2))
-                # Remove season/episode from title for cleaner display
-                title = re.sub(r'\s*S\d+:[Ee]\d+\s*', '', title)
-                title = re.sub(r'\s*S\d+[Ee]\d+\s*', '', title)
-                title = re.sub(r'\s*\(S\d+[,\s]+E\d+\)\s*', '', title)
-                title = re.sub(r'\s*Season\s+\d+\s+Episode\s+\d+\s*', '', title)
-                title = title.strip()
+                entry = EPGEntry(
+                    broadcast_id=broadcast_id,
+                    title=title,
+                    start=start_s,
+                    end=end_s,
+                    program_id=str(epg_id_raw) if epg_id_raw else None,
+                    description=item.get("epgDesc"),
+                    episode_name=raw_title if season_num else None,
+                    original_title=item.get("originalTitle"),
+                    year=item.get("year"),
+                    icon=icon,
+                    cast=cast,
+                    directors=[item["director"]] if item.get("director") else [],
+                    genre_description=(item.get("tagInfo") or {}).get("name"),
+                    season_number=season_num,
+                    episode_number=episode_num,
+                    star_rating=item.get("rating") or None,
+                )
 
-            # ------------------------------------------------------------
-            # Collect all available images
-            # ------------------------------------------------------------
-            picture = item.get("picture") or {}
-            images = {
-                "background": MoveTVConfig.build_image_url(picture.get("background")),
-                "icon": MoveTVConfig.build_image_url(picture.get("icon")),
-                "poster": MoveTVConfig.build_image_url(picture.get("poster")),
-                "square_logo": MoveTVConfig.build_image_url(picture.get("squareLogo")),
-                "poster_mark": MoveTVConfig.build_image_url(picture.get("posterMark")),
-                "original_title_logo": MoveTVConfig.build_image_url(
-                    picture.get("originalTitleLogo")
-                ),
-            }
-            # Remove None values
-            images = {k: v for k, v in images.items() if v}
+                if season_num is not None:
+                    entry.set_flag(EPGFlags.IS_SERIES)
 
-            # ------------------------------------------------------------
-            # Build the programme object
-            # ------------------------------------------------------------
-            parsed.append({
-                # Core identifiers
-                "epg_id": item.get("epgId"),
-                "schedule_id": item.get("scheduleId"),
-                "live_id": item.get("liveId"),
-                "live_name": item.get("liveName"),
-                "content_id": item.get("contentId"),
+                parsed.append(entry)
 
-                # Title and description
-                "title": title,
-                "original_title": item.get("originalTitle"),
-                "plot": item.get("epgDesc"),
-                "episode_title": raw_title if season_num else None,  # Original with S/E
-
-                # Episode information (CRITICAL for PVR)
-                "season_num": season_num,
-                "episode_num": episode_num,
-                "has_episode_info": season_num is not None,
-
-                # Time information
-                "start": self._ms_to_utc_str(start_ms),
-                "end": self._ms_to_utc_str(end_ms),
-                "start_ms": start_ms,
-                "end_ms": end_ms,
-
-                # Genre and categories (enhanced)
-                "genre": (item.get("tagInfo") or {}).get("name"),
-                "genre_id": (item.get("tagInfo") or {}).get("tagId"),
-                "categories": categories,
-                "category_ids": category_ids,
-                "category_images": category_images if category_images else None,
-
-                # Rating and year
-                "rating": item.get("rating", 0),
-                "year": item.get("year"),
-
-                # Credits
-                "director": item.get("director"),
-                "cast": cast,
-                "producer": item.get("producer"),
-
-                # Images (enhanced)
-                "thumbnail": images.get("background"),  # Keep for backward compatibility
-                "images": images if images else None,
-            })
+            except Exception as exc:
+                logger.warning(f"MoveTV EPG: Error parsing item: {exc} — {item}")
+                continue
 
         return parsed

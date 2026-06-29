@@ -6,6 +6,7 @@ from typing import ClassVar, Dict, List, Optional, Any, Tuple
 
 from ...base.models import DRMConfig, StreamingChannel
 from ...base.models.proxy_models import ProxyConfig
+from ...base.models.epg_models import EPGEntry
 from ...base.provider import StreamingProvider
 from ...base.utils.logger import logger
 from .auth import MoveTVAuthenticator
@@ -716,7 +717,7 @@ class MoveTVProvider(StreamingProvider):
             backwards: int = 2,
             forwards: int = 2,
             **kwargs,
-    ) -> List[Dict]:
+    ) -> List[EPGEntry]:
         """
         Return the EPG schedule for *channel_id*.
 
@@ -732,7 +733,8 @@ class MoveTVProvider(StreamingProvider):
 
         Returns
         -------
-        List of normalised programme dicts from ``MoveTvEpgManager``.
+        List of EPGEntry objects from ``MoveTvEpgManager`` (see
+        epg_manager.py for the field mapping and known lossy fields).
         """
         # content_id IS the contentId the EPG endpoint expects — no mapping needed.
         return self._epg.get_channel_epg(
