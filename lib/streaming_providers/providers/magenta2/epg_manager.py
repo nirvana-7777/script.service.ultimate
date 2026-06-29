@@ -6,11 +6,12 @@ EPG manager for the Magenta2 provider.
 Uses the ThePlatform API:
 - Schedule: mdeprod-all-channel-schedules
 - Details:  mdeprod-all-programs
+- Person Details: tvHubUrls.personDetailsUrl
 
 Design:
 - Single-shot window fetching for schedules (byListingTime=ISO~ISO)
-- No in-memory caching (stateless)
 - No authentication required (guest access) — only device/session IDs
+- Bounded LRU caching for person name lookups
 """
 
 from __future__ import annotations
@@ -18,10 +19,11 @@ from __future__ import annotations
 import re
 import time
 import uuid
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from ...base.models.epg_models import EPGEntry, EPGProgramDetails
+from ...base.models.epg_models import EPGEntry, EPGProgramDetails, PersonData
 from ...base.utils.logger import logger
 from ..lib_theplatform import paginate_feed, PaginationError
 from .constants import DEFAULT_REQUEST_TIMEOUT
@@ -33,19 +35,12 @@ class Magenta2EpgManager:
     Magenta2 ThePlatform API.
     """
 
-    # HTTP statuses that should never be retried
     _NO_RETRY_STATUSES: Set[int] = {400, 401, 403, 404}
 
-    # Pattern to extract the numeric station ID from a stationId URI
-    # e.g. "http://data.entertainment.tv.theplatform.eu/entertainment/data/Station/265809960047"
-    # -> "265809960047"
     _STATION_ID_PATTERN = re.compile(r"/Station/(\d+)$")
-
-    # Pattern to parse credit role from credit ID
-    # e.g. "telekom.de-030d1565-director-gnp_1022271" -> "director"
     _CREDIT_ROLE_PATTERN = re.compile(r"-[a-z]+-([a-z]+)-")
+    _PERSON_ID_PATTERN = re.compile(r"(gnp_\d+)$")
 
-    # Map credit role strings to bucket names
     _ROLE_MAP = {
         "director": "directors",
         "scriptwriter": "writers",
@@ -55,17 +50,21 @@ class Magenta2EpgManager:
         "actor": "cast",
         "presenter": "presenter",
         "host": "presenter",
+        "composer": "composers",
+        "contributor": "contributors",
     }
 
+    _CACHE_MAX_SIZE = 1000
+
     def __init__(
-        self,
-        endpoint_manager: Any,
-        provider_config: Any,
-        http_manager: Any,
-        authenticator: Any,
-        fetch_details: bool = True,
-        default_past_days: int = 7,
-        default_future_days: int = 13,
+            self,
+            endpoint_manager: Any,
+            provider_config: Any,
+            http_manager: Any,
+            authenticator: Any,
+            fetch_details: bool = True,
+            default_past_days: int = 7,
+            default_future_days: int = 13,
     ) -> None:
         self._endpoint_manager = endpoint_manager
         self._provider_config = provider_config
@@ -79,11 +78,15 @@ class Magenta2EpgManager:
         self._programs_feed_url = self._resolve_feed_url("allProgramsFeedUrl")
         self._location_id = self._get_location_id()
 
+        self._person_details_template = self._resolve_person_details_template()
+        self._person_cache: OrderedDict[str, Optional[PersonData]] = OrderedDict()
+
         logger.info(
             f"[Magenta2EpgManager] Initialised: "
             f"schedule_feed={self._schedule_feed_url is not None}, "
             f"programs_feed={self._programs_feed_url is not None}, "
             f"location_id={self._location_id is not None}, "
+            f"person_details={self._person_details_template is not None}, "
             f"fetch_details={fetch_details}"
         )
 
@@ -109,6 +112,23 @@ class Magenta2EpgManager:
         if not self._provider_config or not self._provider_config.manifest:
             return None
         return self._provider_config.manifest.mpx.location_id_uri
+
+    def _resolve_person_details_template(self) -> Optional[str]:
+        if not self._provider_config or not self._provider_config.manifest:
+            return None
+
+        person_details_url = self._provider_config.manifest.tv_hubs.base_urls.get("personDetailsUrl")
+        if not person_details_url:
+            logger.debug("[Magenta2EpgManager] personDetailsUrl not found in tvHubUrls")
+            return None
+
+        if "{clientModel}" not in person_details_url or "{id}" not in person_details_url:
+            logger.warning(
+                f"[Magenta2EpgManager] personDetailsUrl template missing placeholders: {person_details_url}"
+            )
+            return None
+
+        return person_details_url
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -161,7 +181,24 @@ class Magenta2EpgManager:
                     )
                     return None
 
-                if attempt < max_retries - 1:
+                if status == 429:
+                    retry_after_val = None
+                    exc_response = getattr(exc, "response", None)
+                    if exc_response and hasattr(exc_response, "headers"):
+                        retry_after_val = exc_response.headers.get("Retry-After")
+
+                    # Explicit type check for the type checker
+                    if isinstance(retry_after_val, str) and retry_after_val.isdigit():
+                        wait_time = int(retry_after_val)
+                    else:
+                        wait_time = 2 ** attempt
+
+                    logger.warning(
+                        f"[Magenta2EpgManager] {operation} rate limited (429), "
+                        f"retrying in {wait_time}s: {exc}"
+                    )
+                    time.sleep(wait_time)
+                elif attempt < max_retries - 1:
                     wait_time = 2 ** attempt
                     logger.warning(
                         f"[Magenta2EpgManager] {operation} attempt {attempt + 1} "
@@ -190,10 +227,12 @@ class Magenta2EpgManager:
     def _parse_timestamp(ts: Optional[Any]) -> Optional[int]:
         if ts is None:
             return None
-        try:
-            return int(ts) // 1000
-        except (ValueError, TypeError):
-            return None
+        if isinstance(ts, (int, str, float)):
+            try:
+                return int(ts) // 1000
+            except (ValueError, TypeError):
+                return None
+        return None
 
     @staticmethod
     def _parse_episode_number(value: Any) -> Optional[int]:
@@ -207,19 +246,23 @@ class Magenta2EpgManager:
 
     @staticmethod
     def _extract_station_id(station_uri: str) -> Optional[str]:
-        """Extract numeric station ID from a stationId URI."""
         if not station_uri:
             return None
         match = Magenta2EpgManager._STATION_ID_PATTERN.search(station_uri)
         return match.group(1) if match else None
 
+    @staticmethod
+    def _extract_person_id_from_credit(credit_id: str) -> Optional[str]:
+        if not credit_id:
+            return None
+        match = Magenta2EpgManager._PERSON_ID_PATTERN.search(credit_id)
+        return match.group(1) if match else None
+
     def _resolve_entry_channel_id(self, entry: Dict[str, Any]) -> Optional[str]:
-        """Resolve the channel/station identifier from the entry's first listing."""
         listings = entry.get("listings", [])
         if not listings:
             return None
 
-        # All listings in an entry share the same stationId
         first_listing = listings[0]
         station_id_uri = first_listing.get("stationId")
         if not station_id_uri:
@@ -238,38 +281,105 @@ class Magenta2EpgManager:
         match = cls._CREDIT_ROLE_PATTERN.search(credit_id)
         return match.group(1) if match else None
 
-    @classmethod
-    def _parse_credit_names_from_ids(
-        cls, credit_ids: List[str]
-    ) -> Dict[str, Optional[List[str]]]:
-        """
-        Parse credit IDs into role buckets.
+    def _get_client_model(self) -> Optional[str]:
+        if not self._provider_config or not self._provider_config.bootstrap:
+            return None
+        return self._provider_config.bootstrap.client_model
 
-        Credit IDs contain the role in their name pattern, but not the
-        actual person's name. For now, we store the credit ID itself
-        as a placeholder.
+    def _fetch_person_details(self, person_id: str) -> Optional[Dict[str, Any]]:
+        if not person_id or not self._person_details_template:
+            return None
+
+        client_model = self._get_client_model()
+        if not client_model:
+            logger.warning("[Magenta2EpgManager] Cannot fetch person details: no client_model")
+            return None
+
+        url = self._person_details_template.replace("{clientModel}", client_model).replace("{id}", person_id)
+        url = f"{url}?cid={uuid.uuid4()}"
+
+        data = self._get_with_retry(url, operation="person_details")
+        if not data:
+            return None
+
+        return data.get("content", {})
+
+    def _get_person_data(self, person_id: str) -> Optional[PersonData]:
         """
-        buckets: Dict[str, Set[str]] = {
-            "cast": set(),
-            "directors": set(),
-            "producers": set(),
-            "writers": set(),
-            "presenter": set(),
+        Resolve a person ID to a PersonData object, with bounded LRU caching.
+        Caches None results to prevent repeated failures.
+        """
+        if person_id in self._person_cache:
+            self._person_cache.move_to_end(person_id)
+            return self._person_cache[person_id]
+
+        details = self._fetch_person_details(person_id)
+        person_data = None
+        if details:
+            image_url = None
+            image_data = details.get("image")
+            if image_data and isinstance(image_data, dict):
+                image_url = image_data.get("href")
+
+            person_data = PersonData(
+                id=person_id,
+                name=details.get("fullName", person_id),
+                image=image_url,
+                roles=details.get("roles")
+            )
+
+        self._person_cache[person_id] = person_data
+        if len(self._person_cache) > self._CACHE_MAX_SIZE:
+            self._person_cache.popitem(last=False)
+
+        return person_data
+
+    def _resolve_credit_names(
+            self, credit_ids: List[str]
+    ) -> Tuple[Dict[str, Optional[List[str]]], Dict[str, Optional[List[PersonData]]]]:
+        """
+        Parse credit IDs into role buckets, resolving person names via API.
+        Returns a tuple of: (string_buckets, person_data_buckets)
+        """
+        string_buckets: Dict[str, Set[str]] = {
+            "cast": set(), "directors": set(), "producers": set(),
+            "writers": set(), "presenter": set(),
+            "composers": set(), "contributors": set(),
+        }
+        detail_buckets: Dict[str, List[PersonData]] = {
+            "cast": [], "directors": [], "producers": [],
+            "writers": [], "presenter": [],
+            "composers": [], "contributors": [],
         }
 
         for credit_id in credit_ids or []:
-            role = cls._parse_credit_role(credit_id)
+            role = self._parse_credit_role(credit_id)
             if not role:
                 continue
 
-            bucket = cls._ROLE_MAP.get(role)
+            bucket = self._ROLE_MAP.get(role)
             if bucket:
-                buckets[bucket].add(credit_id)
+                person_id = self._extract_person_id_from_credit(credit_id)
+                if person_id:
+                    person_data = self._get_person_data(person_id)
+                    if person_data:
+                        string_buckets[bucket].add(person_data.name)
+                        detail_buckets[bucket].append(person_data)
+                    else:
+                        string_buckets[bucket].add(credit_id)
+                else:
+                    string_buckets[bucket].add(credit_id)
 
-        return {
+        final_strings = {
             key: sorted(values) if values else None
-            for key, values in buckets.items()
+            for key, values in string_buckets.items()
         }
+        final_details = {
+            key: values if values else None
+            for key, values in detail_buckets.items()
+        }
+
+        return final_strings, final_details
 
     # ------------------------------------------------------------------
     # Programme details fetching
@@ -279,7 +389,6 @@ class Magenta2EpgManager:
         if not program_guid or not self._programs_feed_url:
             return {}
 
-        # Don't restrict fields - get everything available
         url = (
             f"{self._programs_feed_url}"
             f"?byGuid={program_guid}"
@@ -375,30 +484,26 @@ class Magenta2EpgManager:
 
         broadcast_id = EPGEntry.encode_broadcast_id("magenta2", channel_id, start)
 
-        # Only fetch details if enabled (should be False for grid)
         details: Dict[str, Any] = {}
-        credit_map = {
-            "cast": None,
-            "directors": None,
-            "producers": None,
-            "writers": None,
-            "presenter": None,
+        credit_map: Dict[str, Optional[List[str]]] = {
+            "cast": None, "directors": None, "producers": None,
+            "writers": None, "presenter": None,
         }
 
         if self._fetch_details and program_guid:
             details = self._fetch_program_details(program_guid)
             credit_ids = details.get("dt$creditIds", [])
             if credit_ids:
-                credit_map = self._parse_credit_names_from_ids(credit_ids)
+                credit_map, _ = self._resolve_credit_names(credit_ids)
 
-        # Use details only if fetched, otherwise use schedule data
         title = details.get("title") or title
         description = details.get("description")
         original_title = details.get("secondaryTitle")
-        year = details.get("year")
-        if year is not None:
+        year_raw = details.get("year")
+        year = None
+        if isinstance(year_raw, (int, str, float)):
             try:
-                year = int(year)
+                year = int(year_raw)
             except (ValueError, TypeError):
                 year = None
 
@@ -446,9 +551,9 @@ class Magenta2EpgManager:
     # ------------------------------------------------------------------
 
     def _resolve_window(
-        self,
-        start_time: Optional[datetime],
-        end_time: Optional[datetime],
+            self,
+            start_time: Optional[datetime],
+            end_time: Optional[datetime],
     ) -> Tuple[datetime, datetime]:
         def _to_utc(dt: datetime) -> datetime:
             return self._ensure_tz(dt).astimezone(timezone.utc)
@@ -469,6 +574,8 @@ class Magenta2EpgManager:
             date_to = _to_utc(end_time)
             date_from = date_to.replace(hour=0, minute=0, second=0, microsecond=0)
         else:
+            assert start_time is not None
+            assert end_time is not None
             date_from = _to_utc(start_time)
             date_to = _to_utc(end_time)
 
@@ -486,19 +593,12 @@ class Magenta2EpgManager:
     # ------------------------------------------------------------------
 
     def get_epg_grid(
-        self,
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
-        channel_ids: Optional[List[str]] = None,
-        **_kwargs: Any,
+            self,
+            start_time: Optional[datetime] = None,
+            end_time: Optional[datetime] = None,
+            channel_ids: Optional[List[str]] = None,
+            **_kwargs: Any,
     ) -> Dict[str, List[EPGEntry]]:
-        """
-        Build the EPG grid for the given window.
-
-        Performs a single ThePlatform schedule request with
-        byListingTime=start~end, then buckets listings per channel and
-        filters by the resolved window + requested channel_ids.
-        """
         date_from, date_to = self._resolve_window(start_time, end_time)
         ts_from, ts_to = int(date_from.timestamp()), int(date_to.timestamp())
 
@@ -547,13 +647,12 @@ class Magenta2EpgManager:
         return grid
 
     def get_channel_epg(
-        self,
-        channel_id: str,
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
-        **_kwargs: Any,
+            self,
+            channel_id: str,
+            start_time: Optional[datetime] = None,
+            end_time: Optional[datetime] = None,
+            **_kwargs: Any,
     ) -> List[EPGEntry]:
-        """Get EPG for a single channel (delegates to grid)."""
         result = self.get_epg_grid(
             start_time=start_time,
             end_time=end_time,
@@ -571,21 +670,27 @@ class Magenta2EpgManager:
             return None
 
         credit_ids = raw.get("dt$creditIds", [])
-        credit_map = {
-            "cast": None,
-            "directors": None,
-            "producers": None,
-            "writers": None,
-            "presenter": None,
+        credit_map: Dict[str, Optional[List[str]]] = {
+            "cast": None, "directors": None, "producers": None,
+            "writers": None, "presenter": None,
+            "composers": None, "contributors": None,
         }
-        if credit_ids:
-            credit_map = self._parse_credit_names_from_ids(credit_ids)
+        credit_details: Dict[str, Optional[List[PersonData]]] = {
+            "cast": None, "directors": None, "producers": None,
+            "writers": None, "presenter": None,
+            "composers": None, "contributors": None,
+        }
 
-        year = raw.get("year")
-        try:
-            year = int(year) if year is not None else None
-        except (ValueError, TypeError):
-            year = None
+        if credit_ids:
+            credit_map, credit_details = self._resolve_credit_names(credit_ids)
+
+        year_raw = raw.get("year")
+        year = None
+        if isinstance(year_raw, (int, str, float)):
+            try:
+                year = int(year_raw)
+            except (ValueError, TypeError):
+                year = None
 
         return EPGProgramDetails(
             program_id=program_id,
@@ -598,6 +703,11 @@ class Magenta2EpgManager:
             writers=credit_map["writers"],
             producers=credit_map["producers"],
             presenter=credit_map["presenter"],
-            composers=None,
-            contributors=None,
+            composers=credit_map["composers"],
+            contributors=credit_map["contributors"],
+            cast_details=credit_details["cast"],
+            directors_details=credit_details["directors"],
+            writers_details=credit_details["writers"],
+            producers_details=credit_details["producers"],
+            presenter_details=credit_details["presenter"],
         )

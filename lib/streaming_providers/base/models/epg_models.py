@@ -8,7 +8,7 @@ Based on Kodi PVR EPG Tag specification (ETSI EN 300 468 DVB-SI standard)
 from dataclasses import dataclass
 from datetime import datetime
 from enum import IntEnum
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict, Any
 
 # EPG Constants from Kodi PVR specification
 EPG_TAG_INVALID_UID = 0
@@ -632,36 +632,35 @@ class EPGEntry:
 
 
 @dataclass(frozen=True)
+class PersonData:
+    """Enriched person data with image and roles."""
+    id: str
+    name: str
+    image: Optional[str] = None
+    roles: Optional[List[str]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        result: Dict[str, Any] = {"id": self.id, "name": self.name}
+        if self.image:
+            result["image"] = self.image
+        if self.roles:
+            result["roles"] = self.roles
+        return result
+
+
+@dataclass(frozen=True)
 class EPGProgramDetails:
     """
     Enrichment metadata for a single programme fetched from a provider's
     program-detail endpoint.
-
-    This is intentionally separate from EPGEntry: it carries only the fields
-    that a detail endpoint can return on its own — no scheduling context
-    (broadcast_id, title, start, end) is included because those fields live
-    in the schedule item, not the detail response.
-
-    Callers that already hold an EPGEntry (e.g. a route handler that looked up
-    a programme from the EPG grid) can merge these details into their response
-    without constructing a second full EPGEntry.
     """
-
     program_id: str
-    """Provider-scoped programme identifier."""
-
     description: Optional[str] = None
-    """Full programme description/plot."""
-
     episode_name: Optional[str] = None
-    """Episode title/sub-title."""
-
     year: Optional[int] = None
-    """Production/release year."""
-
     icon: Optional[str] = None
-    """Poster or thumbnail URL."""
 
+    # String-based credits (backwards compatible for Kodi/PVR)
     cast: Optional[List[str]] = None
     directors: Optional[List[str]] = None
     writers: Optional[List[str]] = None
@@ -670,17 +669,50 @@ class EPGProgramDetails:
     composers: Optional[List[str]] = None
     contributors: Optional[List[str]] = None
 
+    # Enriched person data (for modern web UIs)
+    cast_details: Optional[List[PersonData]] = None
+    directors_details: Optional[List[PersonData]] = None
+    writers_details: Optional[List[PersonData]] = None
+    producers_details: Optional[List[PersonData]] = None
+    presenter_details: Optional[List[PersonData]] = None
+
+    # Extended media metadata
+    backdrop: Optional[str] = None
+    poster: Optional[str] = None
+
+    # Additional metadata
+    genres: Optional[List[str]] = None
+    parental_rating: Optional[int] = None
+    release_date: Optional[int] = None
+    duration: Optional[int] = None
+
     def to_dict(self) -> dict:
         """Serialise to a plain dict, omitting None values."""
         result: dict = {"program_id": self.program_id}
-        for field in (
+
+        simple_fields = (
             "description", "episode_name", "year", "icon",
             "cast", "directors", "writers", "producers",
             "presenter", "composers", "contributors",
-        ):
+            "backdrop", "poster", "genres", "parental_rating",
+            "release_date", "duration"
+        )
+
+        for field in simple_fields:
             value = getattr(self, field)
             if value is not None:
                 result[field] = value
+
+        detail_fields = (
+            "cast_details", "directors_details", "writers_details",
+            "producers_details", "presenter_details"
+        )
+
+        for field in detail_fields:
+            value = getattr(self, field)
+            if value is not None:
+                result[field] = [person.to_dict() for person in value]
+
         return result
 
 
@@ -947,6 +979,7 @@ __all__ = [
     # Main classes
     "EPGEntry",
     "EPGProgramDetails",
+    "PersonData",
     "PVREPGTag",  # Legacy alias
     # Constants
     "EPG_TAG_INVALID_UID",
