@@ -446,7 +446,7 @@ class MagentaEUEpgManager:
             url = (
                 f"{self._bifrost_url}/epg/channel/schedules"
                 f"?natco_key={self._natco_key}"
-                f"?date={formatted}"
+                f"&date={formatted}"
                 f"&hour_offset={hour_offset}"
                 f"&hour_range=3"
                 f"&channelMap_id="
