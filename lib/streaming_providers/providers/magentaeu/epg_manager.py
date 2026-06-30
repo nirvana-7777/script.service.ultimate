@@ -407,7 +407,7 @@ class MagentaEUEpgManager:
         conversion belongs here; do not reintroduce it.
         """
         merged: Dict[str, Any] = {}
-        headers = self._guest_headers(flow="EPG", step="EPG_SCHEDULES")
+        headers = self._guest_headers(flow="START_UP", step="EPG_SCHEDULES")
 
         utc_date = self._ensure_tz(date).astimezone(timezone.utc)
         formatted = utc_date.strftime("%Y-%m-%d")
