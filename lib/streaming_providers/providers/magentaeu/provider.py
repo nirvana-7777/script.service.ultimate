@@ -192,7 +192,8 @@ class MagentaEUProvider(StreamingProvider):
 
             params = {
                 "channelMap_id": "",
-                "includeVirtualChannels": "true",
+                "includeVirtualChannels": "false",
+                "includeSyntheticChannels": "false",
                 "natco_key": get_natco_key(self.country),
                 "app_language": get_language(self.country),
                 "natco_code": self.country,
