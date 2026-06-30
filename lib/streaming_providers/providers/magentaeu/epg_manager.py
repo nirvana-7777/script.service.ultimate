@@ -377,6 +377,10 @@ class MagentaEUEpgManager:
     def _guest_headers(self, flow: str, step: str) -> Dict[str, str]:
         """Build request headers for a guest (unauthenticated) bifrost call."""
         device_id, session_id = self._current_ids()
+
+        logger.info(f"[MagentaEUEpgManager] Using device_id: {device_id}")
+        logger.info(f"[MagentaEUEpgManager] Using session_id: {session_id}")
+
         headers = get_guest_headers(self._country, device_id, session_id)
         headers.update(
             {
