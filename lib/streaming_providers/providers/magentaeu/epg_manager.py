@@ -382,13 +382,13 @@ class MagentaEUEpgManager:
         logger.info(f"[MagentaEUEpgManager] Using session_id: {session_id}")
 
         headers = get_guest_headers(self._country, device_id, session_id)
-        headers.update(
-            {
-                "X-Tv-Flow": flow,
-                "X-Tv-Step": step,
-                "x-request-tracking-id": str(uuid.uuid4()),
-            }
-        )
+        headers.update({
+            "x-call-time": str(int(time.time() * 1000)),  # Unix timestamp in ms
+            "x-tv-flow": flow,
+            "x-tv-step": step,
+            "x-txn-id": uuid.uuid4().hex,                 # Transaction ID
+            "x-request-tracking-id": str(uuid.uuid4()),
+        })
         logger.debug(f"[MagentaEUEpgManager] Request headers: {headers}")
         return headers
 
@@ -411,7 +411,7 @@ class MagentaEUEpgManager:
         conversion belongs here; do not reintroduce it.
         """
         merged: Dict[str, Any] = {}
-        headers = self._guest_headers(flow="START_UP", step="EPG_SCHEDULES")
+        headers = self._guest_headers(flow="EPG", step="EPG_SCHEDULES")
 
         utc_date = self._ensure_tz(date).astimezone(timezone.utc)
         formatted = utc_date.strftime("%Y-%m-%d")
