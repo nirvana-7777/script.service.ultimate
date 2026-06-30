@@ -21,7 +21,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
 from bottle import request, response
-from streaming_providers.base.epg_operations import EPGOperations
+from streaming_providers.base.epg_operations import EPGOperations, EPGWindowError
 from streaming_providers.base.utils import logger
 
 
@@ -282,6 +282,18 @@ def setup_epg_routes(app, manager, service):
                 "grid": grid_data,
             }
 
+        except EPGWindowError as e:
+            logger.warning(f"EPG window rejected for {provider}: {e.message}")
+            response.status = 416  # Range Not Satisfiable
+            response.content_type = "application/json; charset=utf-8"
+            return {
+                "error": e.message,
+                "requested_start": e.requested_start,
+                "requested_end": e.requested_end,
+                "min_allowed": e.min_allowed,
+                "max_allowed": e.max_allowed,
+                "provider_window_days": e.provider_window_days,
+            }
         except ValueError as e:
             logger.error(f"Grid EPG error for {provider}: {e}")
             response.status = 404
@@ -342,6 +354,18 @@ def setup_epg_routes(app, manager, service):
                 "programs": programs,
             }
 
+        except EPGWindowError as e:
+            logger.warning(f"EPG window rejected for {provider}: {e.message}")
+            response.status = 416  # Range Not Satisfiable
+            response.content_type = "application/json; charset=utf-8"
+            return {
+                "error": e.message,
+                "requested_start": e.requested_start,
+                "requested_end": e.requested_end,
+                "min_allowed": e.min_allowed,
+                "max_allowed": e.max_allowed,
+                "provider_window_days": e.provider_window_days,
+            }
         except ValueError as e:
             logger.error(f"EPG error for {provider}/{channel_id}: {e}")
             response.status = 404
