@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 import time
 import datetime
+import uuid
 from typing import ClassVar, Dict, List, Optional, Tuple
 
 from ...base.auth import UserPasswordCredentials
@@ -181,6 +182,13 @@ class MagentaEUProvider(StreamingProvider):
             )
 
             headers = get_guest_headers(self.country, device_id, session_id)
+            headers.update({
+                "x-call-time": str(int(time.time() * 1000)),
+                "x-tv-flow": "START_UP",
+                "x-tv-step": "EPG_CHANNEL",
+                "x-txn-id": str(uuid.uuid4()),
+                "x-request-tracking-id": str(uuid.uuid4()),
+            })
 
             params = {
                 "channelMap_id": "",
@@ -297,6 +305,8 @@ class MagentaEUProvider(StreamingProvider):
         **kwargs:    Forwarded to the manager; recognised keys are
                      start_time and end_time (datetime objects).
         """
+        if not self._ensure_channels_cache():
+            return []
         return self.epg_manager.get_channel_epg(
             channel_id=channel_id,
             start_time=kwargs.get("start_time"),
@@ -336,9 +346,9 @@ class MagentaEUProvider(StreamingProvider):
         Dictionary mapping channel_id -> List[EPGEntry], sorted by start time.
         Channels with no data map to an empty list.
         """
+        if not self._ensure_channels_cache():
+            return {}
         if channel_ids is None:
-            if not self._ensure_channels_cache():
-                return {}
             channel_ids = [channel.channel_id for channel in self._channels_cache]
 
         return self.epg_manager.get_channel_epg_batch(
@@ -357,6 +367,8 @@ class MagentaEUProvider(StreamingProvider):
         ----------
         program_id: Programme identifier as returned by the schedule API.
         """
+        if not self._ensure_channels_cache():
+            return None
         return self.epg_manager.get_program_details(program_id)
 
     def enrich_channel_data(
