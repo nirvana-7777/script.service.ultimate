@@ -445,11 +445,13 @@ class MagentaEUEpgManager:
         for hour_offset in range(start_hour, end_hour, 3):
             url = (
                 f"{self._bifrost_url}/epg/channel/schedules"
+                f"?natco_key={self._natco_key}"
                 f"?date={formatted}"
                 f"&hour_offset={hour_offset}"
                 f"&hour_range=3"
                 f"&channelMap_id="
                 f"&filler=true"
+                f"&includeSyntheticChannels=true"
                 f"&app_language={self._app_language}"
                 f"&natco_code={self._country}"
             )
