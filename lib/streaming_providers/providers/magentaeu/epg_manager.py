@@ -384,12 +384,12 @@ class MagentaEUEpgManager:
         headers = get_guest_headers(self._country, device_id, session_id)
         headers.update(
             {
-                "x-tv-flow": flow,
-                "x-tv-step": step,
-                "x-call-type": "GUEST_USER",
+                "X-Tv-Flow": flow,
+                "X-Tv-Step": step,
                 "x-request-tracking-id": str(uuid.uuid4()),
             }
         )
+        logger.debug(f"[MagentaEUEpgManager] Request headers: {headers}")
         return headers
 
     @staticmethod
