@@ -451,7 +451,7 @@ class MagentaEUEpgManager:
                 f"&hour_range=3"
                 f"&channelMap_id="
                 f"&filler=true"
-                f"&includeSyntheticChannels=true"
+                f"&includeSyntheticChannels=false"
                 f"&app_language={self._app_language}"
                 f"&natco_code={self._country}"
             )
