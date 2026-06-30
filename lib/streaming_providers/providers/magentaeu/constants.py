@@ -176,6 +176,9 @@ AUTH_HEADERS_BASE = {
     "Tenant": "tv",
 }
 
+DEVICE_DENSITY = "xhdpi"
+ACCEPT_LANGUAGE = "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7"
+
 # ============================================================================
 # Content Configuration
 # ============================================================================
@@ -253,5 +256,7 @@ def get_guest_headers(country: str, device_id: str, session_id: str) -> Dict[str
         "App_version": APP_VERSION,
         "Device-Id": device_id,
         "Device-Name": DEVICE_NAME,
+        "Accept-Language": ACCEPT_LANGUAGE,
+        "Device-Density": DEVICE_DENSITY,
     }
     return headers
