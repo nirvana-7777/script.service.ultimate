@@ -463,6 +463,7 @@ class MagentaEUEpgManager:
 
             # Add retry logic
             max_retries = 3
+            block_success = False
             for attempt in range(max_retries):
                 try:
                     response = self._http.get(
@@ -473,6 +474,7 @@ class MagentaEUEpgManager:
                     )
                     response.raise_for_status()
                     merged[url] = response.json()
+                    block_success = True
                     break  # Success, exit retry loop
                 except Exception as exc:
                     if attempt < max_retries - 1:
@@ -488,6 +490,14 @@ class MagentaEUEpgManager:
                             f"[MagentaEUEpgManager/{self._country}] "
                             f"schedule fetch offset={hour_offset} failed after {max_retries} attempts: {exc}"
                         )
+
+            # If the block failed after all retries, skip it and move to the next block
+            if not block_success:
+                logger.warning(
+                    f"[MagentaEUEpgManager/{self._country}] "
+                    f"Skipping block offset={hour_offset} due to server 500/503 errors."
+                )
+                continue
 
         return merged
 

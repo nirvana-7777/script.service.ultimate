@@ -51,7 +51,10 @@ class HTTPManager:
         retry_strategy = Retry(
             total=self.config.max_retries,
             backoff_factor=self.config.retry_delay,
-            status_forcelist=[429, 500, 502, 503, 504],
+            # Only retry 429 (Rate limit) at the urllib3 level.
+            # 500/503 should be handled by the provider's EPG manager
+            # to prevent Akamai bot detection.
+            status_forcelist=[429],
             allowed_methods=["HEAD", "GET", "OPTIONS", "POST", "PUT", "DELETE"],
         )
 
@@ -196,10 +199,11 @@ class HTTPManager:
         # Merge with any additional kwargs (caller overrides win)
         request_kwargs.update(kwargs)
 
-        # Inject Referer from last response URL if not already set by caller
+        # Inject Referer from last response URL if not already set by caller.
+        # NOTE: Auto-injecting Referer is disabled by default because WAFs (like Akamai)
+        # flag API requests that have backend API URLs as the Referer.
+        # Providers should explicitly set the Referer header in their own header factories if needed.
         headers = request_kwargs.setdefault("headers", {})
-        if "Referer" not in headers and self._last_url:
-            headers["Referer"] = self._last_url
 
         # Inject Origin derived from target URL only when explicitly requested.
         # Origin injection is opt-in because some non-browser APIs reject
