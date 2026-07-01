@@ -44,12 +44,6 @@ class HTTPManager:
         self._setup_session()
 
     def _setup_session(self) -> None:
-        """Setup session — curl_cffi with Chrome TLS impersonation when available,
-        plain requests otherwise (always under Kodi)."""
-
-        # Lazy, guarded import — never at module level.
-        # curl_cffi is only available in the Docker/standalone environment.
-        # Under Kodi it is absent, so we fall back to plain requests silently.
         _use_cffi = False
         if self.config.use_tls_impersonation:
             from streaming_providers.base.utils.environment import is_kodi_environment
@@ -70,19 +64,18 @@ class HTTPManager:
         if not _use_cffi:
             self._session = requests.Session()
 
-        # Retry strategy — identical for both session types.
-        # curl_cffi.requests.Session accepts HTTPAdapter mounts the same way.
-        retry_strategy = Retry(
-            total=self.config.max_retries,
-            backoff_factor=self.config.retry_delay,
-            status_forcelist=[429],
-            allowed_methods=["HEAD", "GET", "OPTIONS", "POST", "PUT", "DELETE"],
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        self._session.mount("http://", adapter)
-        self._session.mount("https://", adapter)
+            # HTTPAdapter retry strategy — requests only, not compatible with curl_cffi
+            retry_strategy = Retry(
+                total=self.config.max_retries,
+                backoff_factor=self.config.retry_delay,
+                status_forcelist=[429],
+                allowed_methods=["HEAD", "GET", "OPTIONS", "POST", "PUT", "DELETE"],
+            )
+            adapter = HTTPAdapter(max_retries=retry_strategy)
+            self._session.mount("http://", adapter)
+            self._session.mount("https://", adapter)
 
-        # Headers — same as before
+        # Headers — identical for both session types
         self._session.headers.clear()
         base_headers: Dict[str, str] = {}
         if self.config.user_agent:
