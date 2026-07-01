@@ -240,9 +240,17 @@ class HTTPManager:
         try:
             # curl_cffi session has proxy baked in at construction — strip it from
             # per-request kwargs to prevent conflicts / double-proxy application
+#            if self._using_cffi:
+#                request_kwargs.pop("proxies", None)
+            # TEMP: for cffi, pass proxies per-request instead of relying on session-level
+            # to verify proxy is actually being used
             if self._using_cffi:
-                request_kwargs.pop("proxies", None)
+                if self.config.proxy_config:
+                    request_kwargs["proxies"] = self.config.proxy_config.to_proxy_dict()
+                # don't pop — let it pass through
 
+            logger.debug(
+                f"{self.config.provider}: cffi session proxies={getattr(self._session, 'proxies', 'N/A')}, request proxies={request_kwargs.get('proxies', 'none')}")
             response = self._session.request(method, url, **request_kwargs)
 
             # Log redirect chain — cookies set on intermediate responses are
