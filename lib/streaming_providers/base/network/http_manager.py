@@ -243,6 +243,16 @@ class HTTPManager:
             if self._using_cffi:
                 request_kwargs.pop("proxies", None)
 
+            logger.debug(
+                f"{self.config.provider}: final request — "
+                f"url={url} "
+                f"method={method} "
+                f"headers={dict(request_kwargs.get('headers', {}))} "
+                f"params={request_kwargs.get('params')} "
+                f"proxies={request_kwargs.get('proxies')} "
+                f"impersonate={getattr(self._session, 'impersonate', 'N/A')}"
+            )
+
             response = self._session.request(method, url, **request_kwargs)
 
             # Log redirect chain — cookies set on intermediate responses are
