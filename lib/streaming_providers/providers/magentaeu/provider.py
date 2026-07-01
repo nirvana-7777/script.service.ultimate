@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 import time
 import datetime
-import uuid
 from typing import ClassVar, Dict, List, Optional, Tuple
 
 from ...base.auth import UserPasswordCredentials
@@ -36,7 +35,6 @@ from .constants import (
     WV_URL,
     get_base_url,
     get_bifrost_url,
-    get_guest_headers,
     get_language,
     get_natco_key,
 )
@@ -182,14 +180,11 @@ class MagentaEUProvider(StreamingProvider):
                 bifrost_url=get_bifrost_url(self.country)
             )
 
-            headers = get_guest_headers(self.country, device_id, session_id)
-            headers.update({
-                "x-call-time": str(int(time.time() * 1000)),
-                "x-tv-flow": "START_UP",
-                "x-tv-step": "EPG_CHANNEL",
-                "x-txn-id": uuid.uuid4().hex,
-                "x-request-tracking-id": str(uuid.uuid4()),
-            })
+            from .utils import  build_guest_headers
+
+            headers = build_guest_headers(
+                self.country, device_id, session_id, flow="START_UP"
+            )
 
             params = {
                 "channelMap_id": "",

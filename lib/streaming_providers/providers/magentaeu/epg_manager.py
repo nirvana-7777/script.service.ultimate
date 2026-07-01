@@ -33,6 +33,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from .utils import build_guest_headers
 from ...base.utils.logger import logger
 from ...base.models.epg_models import EPGEntry, EPGProgramDetails
 from .constants import (
@@ -40,7 +41,6 @@ from .constants import (
     SUPPORTED_COUNTRIES,
     get_app_key,
     get_bifrost_url,
-    get_guest_headers,
     get_language,
     get_natco_key,
 )
@@ -375,22 +375,10 @@ class MagentaEUEpgManager:
         return device_id, session_id
 
     def _guest_headers(self, flow: str, step: str) -> Dict[str, str]:
-        """Build request headers for a guest (unauthenticated) bifrost call."""
         device_id, session_id = self._current_ids()
-
-        logger.info(f"[MagentaEUEpgManager] Using device_id: {device_id}")
-        logger.info(f"[MagentaEUEpgManager] Using session_id: {session_id}")
-
-        headers = get_guest_headers(self._country, device_id, session_id)
-        headers.update({
-            "x-call-time": str(int(time.time() * 1000)),  # Unix timestamp in ms
-            "x-tv-flow": flow,
-            "x-tv-step": step,
-            "x-txn-id": uuid.uuid4().hex,                 # Transaction ID
-            "x-request-tracking-id": str(uuid.uuid4()),
-        })
-        logger.debug(f"[MagentaEUEpgManager] Request headers: {headers}")
-        return headers
+        return build_guest_headers(
+            self._country, device_id, session_id, flow=flow, step=step
+        )
 
     @staticmethod
     def _ensure_tz(dt: datetime) -> datetime:
