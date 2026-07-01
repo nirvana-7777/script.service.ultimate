@@ -44,16 +44,27 @@ class HTTPManager:
         self._setup_session()
 
     def _setup_session(self) -> None:
-        _use_cffi = False
+        self._using_cffi = False
+
         if self.config.use_tls_impersonation:
             from streaming_providers.base.utils.environment import is_kodi_environment
             if not is_kodi_environment():
                 try:
                     from curl_cffi import requests as cffi_requests
-                    self._session = cffi_requests.Session(impersonate="chrome124")
-                    _use_cffi = True
+
+                    proxies = {}
+                    if self.config.proxy_config:
+                        proxy_url = self.config.proxy_config.to_proxy_url()
+                        proxies = {"http": proxy_url, "https": proxy_url}
+
+                    self._session = cffi_requests.Session(
+                        impersonate="chrome124",
+                        proxies=proxies or None,
+                    )
+                    self._using_cffi = True
                     logger.debug(
                         f"{self.config.provider}: using curl_cffi Chrome TLS impersonation"
+                        + (f" via proxy {proxies.get('https')}" if proxies else "")
                     )
                 except ImportError:
                     logger.warning(
@@ -61,10 +72,8 @@ class HTTPManager:
                         "falling back to requests"
                     )
 
-        if not _use_cffi:
+        if not self._using_cffi:
             self._session = requests.Session()
-
-            # HTTPAdapter retry strategy — requests only, not compatible with curl_cffi
             retry_strategy = Retry(
                 total=self.config.max_retries,
                 backoff_factor=self.config.retry_delay,
@@ -75,7 +84,6 @@ class HTTPManager:
             self._session.mount("http://", adapter)
             self._session.mount("https://", adapter)
 
-        # Headers — identical for both session types
         self._session.headers.clear()
         base_headers: Dict[str, str] = {}
         if self.config.user_agent:
@@ -225,6 +233,11 @@ class HTTPManager:
         self._log_request(method, url, operation, request_kwargs)
 
         try:
+            # curl_cffi session has proxy baked in at construction — strip it from
+            # per-request kwargs to prevent conflicts / double-proxy application
+            if self._using_cffi:
+                request_kwargs.pop("proxies", None)
+
             response = self._session.request(method, url, **request_kwargs)
 
             # Log redirect chain — cookies set on intermediate responses are
