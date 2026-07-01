@@ -245,6 +245,8 @@ class RequestConfig:
     # Provider-specific settings
     provider: str = ""
 
+    use_tls_impersonation: bool = False  # curl_cffi Chrome impersonation; ignored under Kodi
+
     def get_request_kwargs(self, operation: str = "api") -> Dict[str, Any]:
         """
         Get kwargs for requests library call

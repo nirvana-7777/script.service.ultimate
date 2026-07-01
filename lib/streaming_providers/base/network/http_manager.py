@@ -44,30 +44,45 @@ class HTTPManager:
         self._setup_session()
 
     def _setup_session(self) -> None:
-        """Setup requests session with retry strategy and browser-ordered headers"""
-        self._session = requests.Session()
+        """Setup session — curl_cffi with Chrome TLS impersonation when available,
+        plain requests otherwise (always under Kodi)."""
 
-        # Setup retry strategy
+        # Lazy, guarded import — never at module level.
+        # curl_cffi is only available in the Docker/standalone environment.
+        # Under Kodi it is absent, so we fall back to plain requests silently.
+        _use_cffi = False
+        if self.config.use_tls_impersonation:
+            from streaming_providers.base.utils.environment import is_kodi_environment
+            if not is_kodi_environment():
+                try:
+                    from curl_cffi import requests as cffi_requests
+                    self._session = cffi_requests.Session(impersonate="chrome124")
+                    _use_cffi = True
+                    logger.debug(
+                        f"{self.config.provider}: using curl_cffi Chrome TLS impersonation"
+                    )
+                except ImportError:
+                    logger.warning(
+                        f"{self.config.provider}: curl_cffi requested but not installed, "
+                        "falling back to requests"
+                    )
+
+        if not _use_cffi:
+            self._session = requests.Session()
+
+        # Retry strategy — identical for both session types.
+        # curl_cffi.requests.Session accepts HTTPAdapter mounts the same way.
         retry_strategy = Retry(
             total=self.config.max_retries,
             backoff_factor=self.config.retry_delay,
-            # Only retry 429 (Rate limit) at the urllib3 level.
-            # 500/503 should be handled by the provider's EPG manager
-            # to prevent Akamai bot detection.
             status_forcelist=[429],
             allowed_methods=["HEAD", "GET", "OPTIONS", "POST", "PUT", "DELETE"],
         )
-
         adapter = HTTPAdapter(max_retries=retry_strategy)
         self._session.mount("http://", adapter)
         self._session.mount("https://", adapter)
 
-        # Set headers in browser-natural insertion order.
-        # requests preserves this order in PreparedRequest, which matters
-        # for providers doing soft header-order fingerprinting.
-        # No defaults are imposed here — User-Agent, Accept-Language, and
-        # other opinionated values belong in the provider-specific factory
-        # or in RequestConfig, not in the base session setup.
+        # Headers — same as before
         self._session.headers.clear()
         base_headers: Dict[str, str] = {}
         if self.config.user_agent:
