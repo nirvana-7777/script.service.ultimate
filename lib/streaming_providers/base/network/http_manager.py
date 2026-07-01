@@ -44,6 +44,9 @@ class HTTPManager:
         self._setup_session()
 
     def _setup_session(self) -> None:
+        logger.debug(
+            f"{self.config.provider}: _setup_session called, use_tls_impersonation={self.config.use_tls_impersonation}")
+
         self._using_cffi = False
 
         if self.config.use_tls_impersonation:
@@ -209,6 +212,8 @@ class HTTPManager:
         the target URL, unless the caller has already set those headers explicitly.
         Logs the redirect chain when providers set cookies mid-redirect.
         """
+        logger.debug(f"{self.config.provider}: _using_cffi={self._using_cffi} for {method} {url}")
+
         # Get base request configuration
         request_kwargs = self.config.get_request_kwargs(operation)
 
