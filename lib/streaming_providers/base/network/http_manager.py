@@ -61,10 +61,7 @@ class HTTPManager:
                         proxies = {"http": proxy_url, "https": proxy_url}
 
                     self._session = cffi_requests.Session(
-                        # No impersonate — use curl's native TLS fingerprint,
-                        # which is exactly what the working curl command presents.
-                        # Chrome impersonation (chrome124) gets scored differently by
-                        # Akamai's HR bot profile and returns 503.
+                        impersonate="chrome124",
                         proxies=proxies or None,
                     )
                     self._using_cffi = True
@@ -243,26 +240,9 @@ class HTTPManager:
         try:
             # curl_cffi session has proxy baked in at construction — strip it from
             # per-request kwargs to prevent conflicts / double-proxy application
-#            if self._using_cffi:
-#                request_kwargs.pop("proxies", None)
-            # TEMP: for cffi, pass proxies per-request instead of relying on session-level
-            # to verify proxy is actually being used
             if self._using_cffi:
-                if self.config.proxy_config:
-                    request_kwargs["proxies"] = self.config.proxy_config.to_proxy_dict()
-                # don't pop — let it pass through
+                request_kwargs.pop("proxies", None)
 
-            logger.debug(
-                f"{self.config.provider}: cffi session proxies={getattr(self._session, 'proxies', 'N/A')}, request proxies={request_kwargs.get('proxies', 'none')}")
-            logger.debug(
-                f"{self.config.provider}: final request — "
-                f"url={url} "
-                f"method={method} "
-                f"headers={dict(request_kwargs.get('headers', {}))} "
-                f"params={request_kwargs.get('params')} "
-                f"proxies={request_kwargs.get('proxies')} "
-                f"impersonate={getattr(self._session, 'impersonate', 'N/A')}"
-            )
             response = self._session.request(method, url, **request_kwargs)
 
             # Log redirect chain — cookies set on intermediate responses are
