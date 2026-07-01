@@ -187,7 +187,7 @@ class MagentaEUProvider(StreamingProvider):
                 "x-call-time": str(int(time.time() * 1000)),
                 "x-tv-flow": "START_UP",
                 "x-tv-step": "EPG_CHANNEL",
-                "x-txn-id": str(uuid.uuid4()),
+                "x-txn-id": uuid.uuid4().hex,
                 "x-request-tracking-id": str(uuid.uuid4()),
             })
 

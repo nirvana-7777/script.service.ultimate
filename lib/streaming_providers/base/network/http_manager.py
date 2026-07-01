@@ -61,7 +61,10 @@ class HTTPManager:
                         proxies = {"http": proxy_url, "https": proxy_url}
 
                     self._session = cffi_requests.Session(
-                        impersonate="chrome124",
+                        # No impersonate — use curl's native TLS fingerprint,
+                        # which is exactly what the working curl command presents.
+                        # Chrome impersonation (chrome124) gets scored differently by
+                        # Akamai's HR bot profile and returns 503.
                         proxies=proxies or None,
                     )
                     self._using_cffi = True
