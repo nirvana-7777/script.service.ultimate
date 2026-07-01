@@ -54,7 +54,6 @@ class HTTPManager:
             if not is_kodi_environment():
                 try:
                     from curl_cffi import requests as cffi_requests
-                    from curl_cffi.const import CurlHttpVersion
 
                     proxies = {}
                     if self.config.proxy_config:
@@ -64,7 +63,6 @@ class HTTPManager:
                     self._session = cffi_requests.Session(
                         impersonate="chrome124",
                         proxies=proxies or None,
-                        http_version=CurlHttpVersion.V1_1,  # match --http1.1; avoids H2 fingerprinting
                     )
                     self._using_cffi = True
                     logger.debug(
@@ -253,6 +251,15 @@ class HTTPManager:
 
             logger.debug(
                 f"{self.config.provider}: cffi session proxies={getattr(self._session, 'proxies', 'N/A')}, request proxies={request_kwargs.get('proxies', 'none')}")
+            logger.debug(
+                f"{self.config.provider}: final request — "
+                f"url={url} "
+                f"method={method} "
+                f"headers={dict(request_kwargs.get('headers', {}))} "
+                f"params={request_kwargs.get('params')} "
+                f"proxies={request_kwargs.get('proxies')} "
+                f"impersonate={getattr(self._session, 'impersonate', 'N/A')}"
+            )
             response = self._session.request(method, url, **request_kwargs)
 
             # Log redirect chain — cookies set on intermediate responses are
