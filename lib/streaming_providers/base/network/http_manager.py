@@ -54,6 +54,7 @@ class HTTPManager:
             if not is_kodi_environment():
                 try:
                     from curl_cffi import requests as cffi_requests
+                    from curl_cffi.const import CurlHttpVersion
 
                     proxies = {}
                     if self.config.proxy_config:
@@ -63,6 +64,7 @@ class HTTPManager:
                     self._session = cffi_requests.Session(
                         impersonate="chrome124",
                         proxies=proxies or None,
+                        http_version=CurlHttpVersion.V1_1,  # match --http1.1; avoids H2 fingerprinting
                     )
                     self._using_cffi = True
                     logger.debug(
