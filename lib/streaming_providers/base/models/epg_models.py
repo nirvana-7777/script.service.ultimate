@@ -686,6 +686,9 @@ class EPGProgramDetails:
     release_date: Optional[int] = None
     duration: Optional[int] = None
 
+    season_number: Optional[int] = None
+    episode_number: Optional[int] = None
+
     def to_dict(self) -> dict:
         """Serialise to a plain dict, omitting None values."""
         result: dict = {"program_id": self.program_id}
