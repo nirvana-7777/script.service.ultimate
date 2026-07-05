@@ -5,7 +5,7 @@ EPG Models - Data classes for Electronic Program Guide entries
 Based on Kodi PVR EPG Tag specification (ETSI EN 300 468 DVB-SI standard)
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
 from datetime import datetime
 from enum import IntEnum
 from typing import List, Optional, Union, Dict, Any
@@ -216,7 +216,12 @@ class EPGEntry:
     """Original air date as Unix timestamp."""
 
     imdb_number: Optional[str] = None
-    """IMDB identifier."""
+    """
+    IMDB identifier (e.g. 'tt1234567').
+    May be unset on grid-import entries and only populated later once a
+    provider detail fetch (EPGProgramDetails.imdb_number) is merged in —
+    it is not guaranteed to be present in the initial schedule import.
+    """
 
     series_link: Optional[str] = None
     """Link to series information."""
@@ -305,14 +310,24 @@ class EPGEntry:
         Returns:
             EPGEntry instance
         """
-        from dataclasses import fields
-
         # Extract only fields that exist in EPGEntry
         valid_fields = {f.name for f in fields(cls)}
 
         filtered_data = {k: v for k, v in data.items() if k in valid_fields}
 
         return cls(**filtered_data)
+
+    def merge_details(self, details: "EPGProgramDetails") -> "EPGEntry":
+        """
+        Overlay shared EPGContent fields from a fetched EPGProgramDetails
+        onto this entry. Convenience wrapper around the module-level
+        merge_content() function - see its docstring for exact semantics
+        (non-None overlay only, returns a new EPGEntry).
+
+        Example:
+            entry = entry.merge_details(details)
+        """
+        return merge_content(self, details)
 
     @property
     def duration_seconds(self) -> int:
@@ -680,6 +695,22 @@ class EPGProgramDetails:
     backdrop: Optional[str] = None
     poster: Optional[str] = None
 
+    # External identifiers
+    imdb_number: Optional[str] = None
+    """
+    IMDB identifier (e.g. 'tt1234567'), when returned by the provider's
+    detail endpoint. Named to match EPGEntry.imdb_number so the two can be
+    merged directly without a field-name translation step.
+    """
+
+    provider_vod_id: Optional[str] = None
+    """
+    Provider-specific identifier valid for that provider's own VOD/catchup
+    service (distinct from imdb_number and from the general-purpose
+    program_id). Not a shared/EPGEntry concept — this is provider playback
+    plumbing, only meaningful in combination with the provider it came from.
+    """
+
     # Additional metadata
     genres: Optional[List[str]] = None
     parental_rating: Optional[int] = None
@@ -697,7 +728,8 @@ class EPGProgramDetails:
             "description", "episode_name", "year", "icon",
             "cast", "directors", "writers", "producers",
             "presenter", "composers", "contributors",
-            "backdrop", "poster", "genres", "parental_rating",
+            "backdrop", "poster", "imdb_number", "provider_vod_id",
+            "genres", "parental_rating",
             "release_date", "duration"
         )
 
@@ -717,6 +749,110 @@ class EPGProgramDetails:
                 result[field] = [person.to_dict() for person in value]
 
         return result
+
+
+@dataclass(frozen=True)
+class EPGContent:
+    """
+    Single source of truth for the fields that are shared in meaning
+    between EPGEntry (schedule/grid data) and EPGProgramDetails
+    (enrichment data fetched from a provider's detail endpoint).
+
+    This is deliberately NOT used via class inheritance. EPGEntry is
+    mutable (it mutates `flags` via set_flag/clear_flag) while
+    EPGProgramDetails is frozen, and dataclasses do not allow mixing
+    frozen and non-frozen classes across an inheritance chain in either
+    direction. EPGEntry also has required positional fields
+    (broadcast_id, title, start, end) which, combined with a base
+    class's defaulted fields, would hit dataclasses' "non-default
+    argument follows default argument" ordering error.
+
+    Instead, EPGContent is used as:
+      1. A single declared list of "shared" field names, walked by
+         merge_content() below - adding a new shared field means adding
+         it here AND to whichever of EPGEntry/EPGProgramDetails don't
+         already have it, rather than hand-copying merge logic in three
+         separate places.
+      2. A documentation anchor: a same-named field on EPGEntry and
+         EPGProgramDetails is expected to carry the same meaning and be
+         safe to overlay via merge_content().
+
+    Field types/defaults here must stay in sync with the matching
+    fields on EPGEntry and EPGProgramDetails.
+    """
+    description: Optional[str] = None
+    episode_name: Optional[str] = None
+    year: Optional[int] = None
+    icon: Optional[str] = None
+    cast: Optional[List[str]] = None
+    directors: Optional[List[str]] = None
+    writers: Optional[List[str]] = None
+    season_number: Optional[int] = None
+    episode_number: Optional[int] = None
+    parental_rating: Optional[int] = None
+    imdb_number: Optional[str] = None
+
+
+def merge_content(entry: "EPGEntry", details: "EPGProgramDetails") -> "EPGEntry":
+    """
+    Overlay the shared EPGContent fields from a fetched EPGProgramDetails
+    onto an existing EPGEntry, returning a NEW EPGEntry.
+
+    Only non-None values from `details` are applied, so a detail fetch
+    that didn't return a given field (e.g. no imdb_number available for
+    this title) will not clobber a value already present on `entry`.
+
+    Fields that exist on EPGProgramDetails but NOT in EPGContent (e.g.
+    provider_vod_id, genres, backdrop/poster, producers/presenter/
+    composers/contributors, the *_details enriched-person fields) are
+    intentionally NOT copied here - EPGEntry has no matching field for
+    them. Callers that need that richer data should keep the
+    EPGProgramDetails instance itself rather than expecting it to appear
+    on the merged EPGEntry.
+
+    A new EPGEntry is returned (rather than mutating in place) because
+    EPGEntry is not frozen, but merge_content should behave predictably
+    even if a caller holds another reference to the original entry.
+
+    Args:
+        entry: The existing schedule entry (e.g. from a grid import).
+        details: Freshly-fetched detail-endpoint enrichment data.
+
+    Returns:
+        A new EPGEntry with EPGContent-shared fields overlaid from
+        details wherever details provided a non-None value.
+
+    Example:
+        # Two-step: grid import now, detail fetch later
+        entry = merge_content(entry, details)
+
+        # Or via the EPGEntry convenience method:
+        entry = entry.merge_details(details)
+
+    Raises:
+        ValueError: If both entry.program_id and details.program_id are
+            set but differ, since applying details for a different
+            programme onto this entry would silently mix data - the
+            same class of bug as the Magenta2/ThePlatform field-mapping
+            issue, just at the merge step instead of the parse step.
+    """
+    if (
+        entry.program_id is not None
+        and details.program_id is not None
+        and entry.program_id != details.program_id
+    ):
+        raise ValueError(
+            f"program_id mismatch: entry has {entry.program_id!r}, "
+            f"details has {details.program_id!r} - refusing to merge "
+            f"details for a different programme onto this entry"
+        )
+
+    updates = {
+        f.name: getattr(details, f.name)
+        for f in fields(EPGContent)
+        if getattr(details, f.name) is not None
+    }
+    return replace(entry, **updates)
 
 
 # Constants matching C++ EPG_TAG_FLAG values
@@ -982,8 +1118,11 @@ __all__ = [
     # Main classes
     "EPGEntry",
     "EPGProgramDetails",
+    "EPGContent",
     "PersonData",
     "PVREPGTag",  # Legacy alias
+    # Functions
+    "merge_content",
     # Constants
     "EPG_TAG_INVALID_UID",
     "EPG_TAG_INVALID_SERIES_EPISODE",
