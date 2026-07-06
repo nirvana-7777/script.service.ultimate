@@ -170,6 +170,16 @@ class EPGEntry:
     writers: Optional[List[str]] = None
     """List of writer names. C++ expects 'writers' array."""
 
+    producers: Optional[List[str]] = None
+    """
+    List of producer names. Note: unlike cast/directors/writers, Kodi's
+    PVREPGTag C++ interface has no dedicated producer slot, so this field
+    is not rendered by the Kodi frontend today. It is still captured here
+    for JSON/API consumers and providers (e.g. MoveTV's channel-based EPG
+    endpoint) that return producer data as part of a single one-shot
+    fetch with no separate enrichment pass to fall back on.
+    """
+
     # Optional fields - Genre/Category
     genre: Optional[int] = None
     """
@@ -189,6 +199,14 @@ class EPGEntry:
     """
     Text description of genre.
     Used when genre=EPGGenre.USE_STRING or for custom genres not in DVB-SI standard.
+    """
+
+    genres: Optional[List[str]] = None
+    """
+    List of text genre/category labels (e.g. ["Komedija", "Drama", "Romansa"]),
+    distinct from the single numeric DVB-SI `genre` field and from the single
+    `genre_description` string above. Named to match EPGProgramDetails.genres
+    so the two line up if this ever gets pulled into a shared merge field.
     """
 
     # Optional fields - Episode Information
@@ -278,8 +296,10 @@ class EPGEntry:
             "cast",
             "directors",
             "writers",
+            "producers",
             "genre",
             "genre_description",
+            "genres",
             "season_number",
             "episode_number",
             "episode_part_number",
@@ -803,12 +823,17 @@ def merge_content(entry: "EPGEntry", details: "EPGProgramDetails") -> "EPGEntry"
     this title) will not clobber a value already present on `entry`.
 
     Fields that exist on EPGProgramDetails but NOT in EPGContent (e.g.
-    provider_vod_id, genres, backdrop/poster, producers/presenter/
-    composers/contributors, the *_details enriched-person fields) are
-    intentionally NOT copied here - EPGEntry has no matching field for
-    them. Callers that need that richer data should keep the
-    EPGProgramDetails instance itself rather than expecting it to appear
-    on the merged EPGEntry.
+    provider_vod_id, genres, backdrop/poster, presenter/composers/
+    contributors, the *_details enriched-person fields) are intentionally
+    NOT copied here - EPGEntry has no matching field for them. Callers
+    that need that richer data should keep the EPGProgramDetails instance
+    itself rather than expecting it to appear on the merged EPGEntry.
+
+    Note: EPGEntry.producers is the one exception - it exists directly on
+    EPGEntry (not via EPGContent/merge) for providers like MoveTV that
+    return producer data in a single one-shot grid fetch with no separate
+    detail-fetch step to enrich later. It is set at parse time, not
+    merged in here.
 
     A new EPGEntry is returned (rather than mutating in place) because
     EPGEntry is not frozen, but merge_content should behave predictably

@@ -44,27 +44,34 @@ class MoveTvEpgManager:
                              so the provider can still be recovered from
                              the broadcast_id alone for catchup lookups)
         title (cleaned)   -> title
-        title (raw, S/E)  -> episode_name (only when season/episode parsed)
+        (raw title's S/E marker is now fully captured by season_number/
+        episode_number below, so episode_name is left None — MoveTV
+        doesn't provide a distinct episode subtitle)
         originalTitle     -> original_title
         epgDesc           -> description
         start / end (ms)  -> start / end (seconds)
         tagInfo.name      -> genre_description
+        categories[].name -> genres (list)
         director          -> directors (single-item list)
         actor             -> cast (list, comma-split)
+        producer          -> producers (list, comma-split)
         year              -> year
-        rating            -> star_rating
+        rating            -> parental_rating (age/content classification,
+                             e.g. 12, 0=unrestricted — not a 0-10 star score)
         picture.background-> icon
         season/episode    -> season_number / episode_number (+ IS_SERIES flag)
 
     Known lossy fields
     ------------------
     EPGEntry has no slots for: schedule_id, live_id, live_name, content_id,
-    producer, multiple categories/category_ids/category_images, genre_id,
-    or the secondary images (poster, square_logo, poster_mark,
-    original_title_logo). These were present in the old dict-based return
-    value and are now dropped. Confirm nothing else in the MoveTV pipeline
-    (e.g. catchup/manifest matching) reads those keys before relying on
-    this contract.
+    category_ids, category_images/genre_id (per-category numeric IDs and
+    their picture objects — always null in observed data), or the
+    secondary images (poster, square_logo, poster_mark,
+    original_title_logo) — confirmed always null in observed MoveTV
+    responses, so not wired up. These were present in the old dict-based
+    return value and are now dropped. Confirm nothing else in the MoveTV
+    pipeline (e.g. catchup/manifest matching) reads those keys before
+    relying on this contract.
     """
 
     def __init__(self, authenticator: Any) -> None:
@@ -374,8 +381,9 @@ class MoveTvEpgManager:
         # Native backwards/forwards — anchor to now
         return datetime.now(tz=timezone.utc), backwards, forwards
 
+    @staticmethod
     def _parse_items(
-        self, items: List[Dict[str, Any]], channel_id: str
+        items: List[Dict[str, Any]], channel_id: str
     ) -> List[EPGEntry]:
         """
         Normalise raw API programme objects into EPGEntry objects.
@@ -413,6 +421,18 @@ class MoveTvEpgManager:
                     if actor_raw
                     else []
                 )
+
+                producer_raw: Optional[str] = item.get("producer")
+                producers: List[str] = (
+                    [p.strip() for p in producer_raw.split(",") if p.strip()]
+                    if producer_raw
+                    else []
+                )
+
+                categories_raw: List[Dict[str, Any]] = item.get("categories") or []
+                genres: List[str] = [
+                    c["name"] for c in categories_raw if c.get("name")
+                ]
 
                 # ------------------------------------------------------------
                 # Parse season and episode from title.
@@ -480,16 +500,18 @@ class MoveTvEpgManager:
                     end=end_s,
                     program_id=str(epg_id_raw) if epg_id_raw else None,
                     description=item.get("epgDesc"),
-                    episode_name=raw_title if season_num else None,
+                    episode_name=None,
                     original_title=item.get("originalTitle"),
                     year=item.get("year"),
                     icon=icon,
                     cast=cast,
                     directors=[item["director"]] if item.get("director") else [],
+                    producers=producers,
                     genre_description=(item.get("tagInfo") or {}).get("name"),
+                    genres=genres,
                     season_number=season_num,
                     episode_number=episode_num,
-                    star_rating=item.get("rating") or None,
+                    parental_rating=item.get("rating") or None,
                 )
 
                 if season_num is not None:
