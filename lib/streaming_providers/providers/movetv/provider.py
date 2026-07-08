@@ -746,4 +746,4 @@ class MoveTVProvider(StreamingProvider):
 
     @property
     def epg_window(self) -> Tuple[int, int]:
-        return 7, 3
+        return 3, 7
