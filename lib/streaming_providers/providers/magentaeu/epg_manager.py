@@ -401,6 +401,16 @@ class MagentaEUEpgManager:
         merged: Dict[str, Any] = {}
         headers = self._guest_headers(flow="EPG", step="EPG_SCHEDULES")
 
+        # ✅ LOG THE FULL HEADERS (or at least the critical ones)
+        logger.info(
+            f"[MagentaEUEpgManager/{self._country}] "
+            f"Making EPG request with headers: "
+            f"device-id={headers.get('device-id')}, "
+            f"session-id={headers.get('x-request-session-id')}, "
+            f"txn-id={headers.get('x-txn-id')}, "
+            f"x-tv-flow={headers.get('x-tv-flow')}"
+        )
+
         utc_date = self._ensure_tz(date).astimezone(timezone.utc)
         formatted = utc_date.strftime("%Y-%m-%d")
 
@@ -486,14 +496,6 @@ class MagentaEUEpgManager:
                     f"Skipping block offset={hour_offset} due to server 500/503 errors."
                 )
                 continue
-
-            # ✅ Log the critical headers for debugging
-            logger.debug(
-                f"[MagentaEUEpgManager/{self._country}] "
-                f"device-id: {headers.get('device-id')}, "
-                f"session-id: {headers.get('x-request-session-id')}, "
-                f"txn-id: {headers.get('x-txn-id')}"
-            )
 
         return merged
 
