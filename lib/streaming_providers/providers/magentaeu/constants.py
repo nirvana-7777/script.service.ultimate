@@ -255,7 +255,7 @@ def get_guest_headers(country: str, device_id: str, session_id: str) -> Dict[str
         "origin": get_base_url(country),
         "pragma": "akamai-x-cache-on,akamai-x-check-cacheable,akamai-x-get-cache-key",
         "priority": "u=1, i",
-        "sec-ch-ua": '"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"',
+        "sec-ch-ua": '"Google Chrome";v="149", "Chromium";v="149", "Not;A;Brand";v="24"',
         "sec-ch-ua-mobile": "?0",
         "sec-ch-ua-platform": '"Linux"',
         "sec-fetch-dest": "empty",
