@@ -404,11 +404,7 @@ class MagentaEUEpgManager:
         # ✅ LOG THE FULL HEADERS (or at least the critical ones)
         logger.info(
             f"[MagentaEUEpgManager/{self._country}] "
-            f"Making EPG request with headers: "
-            f"device-id={headers.get('device-id')}, "
-            f"session-id={headers.get('x-request-session-id')}, "
-            f"txn-id={headers.get('x-txn-id')}, "
-            f"x-tv-flow={headers.get('x-tv-flow')}"
+            f"EPG request FULL HEADERS: {headers}"
         )
 
         utc_date = self._ensure_tz(date).astimezone(timezone.utc)
