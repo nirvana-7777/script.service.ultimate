@@ -399,7 +399,7 @@ class MagentaEUEpgManager:
         conversion belongs here; do not reintroduce it.
         """
         merged: Dict[str, Any] = {}
-        headers = self._guest_headers(flow="EPG", step="EPG_SCHEDULES")
+        headers = self._guest_headers(flow="START_UP", step="EPG_SCHEDULES")
 
         # ✅ LOG THE FULL HEADERS (or at least the critical ones)
         logger.info(
