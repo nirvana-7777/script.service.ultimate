@@ -487,6 +487,14 @@ class MagentaEUEpgManager:
                 )
                 continue
 
+            # ✅ Log the critical headers for debugging
+            logger.debug(
+                f"[MagentaEUEpgManager/{self._country}] "
+                f"device-id: {headers.get('device-id')}, "
+                f"session-id: {headers.get('x-request-session-id')}, "
+                f"txn-id: {headers.get('x-txn-id')}"
+            )
+
         return merged
 
     def _fetch_program_details(self, program_id: str) -> Dict[str, Any]:
