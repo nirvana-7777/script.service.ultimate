@@ -347,6 +347,33 @@ class MagentaEUEpgManager:
         except (ValueError, TypeError):
             year = None
 
+        # Genres: details.metadata carries a GENRES-typed entry with a
+        # comma-separated text value (e.g. "Serija, Telenovela"). This is
+        # distinct from the schedule item's own `genres` list of
+        # {id, name} dicts, which _parse_item_to_entry reads separately
+        # into genre_description.
+        genres = None
+        for meta_entry in (details_block.get("metadata") or []):
+            if meta_entry.get("type") == "GENRES" and meta_entry.get("value"):
+                genres = [
+                    g.strip() for g in meta_entry["value"].split(",") if g.strip()
+                ] or None
+                break
+
+        # Parental rating: `ratings` is a numeric-looking string (e.g.
+        # "12", "0"). Coerced to int when possible; left unset if
+        # missing/non-numeric rather than fabricating a 0 rating.
+        # NOTE: not yet confirmed whether "0" from the API means "no
+        # restriction" or "no rating provided" - treated as a real 0
+        # for now, flag if that turns out to be wrong.
+        parental_rating = None
+        ratings_raw = raw.get("ratings")
+        if ratings_raw is not None:
+            try:
+                parental_rating = int(ratings_raw)
+            except (ValueError, TypeError):
+                parental_rating = None
+
         return EPGProgramDetails(
             program_id=program_id,
             description=description,
@@ -360,6 +387,8 @@ class MagentaEUEpgManager:
             presenter=credit_map.get("presenter"),
             composers=credit_map.get("composers"),
             contributors=credit_map.get("contributors"),
+            genres=genres,
+            parental_rating=parental_rating,
             duration=raw.get("runtime_seconds"),
             country_of_origin=raw.get("country_of_origin") or None,
             trailer=raw.get("trailer") or None,
@@ -521,15 +550,16 @@ class MagentaEUEpgManager:
         if cached is not None:
             return cached
 
-        # -SH indicates a series
-        if "-SH" in program_id:
-            endpoint = f"/details/series/{program_id}"
-            flow = "SERIES_DETAIL"
-            step = "SERIES_METADATA"
-        else:
-            endpoint = f"/details/program/{program_id}"
-            flow = "SINGLE_PROGRAM_DETAIL"
-            step = "PROGRAM_METADATA"
+        # program_id is always episode-scoped, even for series
+        # (e.g. "HRT1-SH4506209-S4E236"), so a single endpoint handles
+        # both movies and series episodes. The previous "-SH" in
+        # program_id branch routed series episodes to
+        # /details/series/{program_id}, which is not a valid endpoint
+        # shape for an episode-scoped ID (only for the bare series ID)
+        # and returned empty description/genres/ratings as a result.
+        endpoint = f"/details/program/{program_id}"
+        flow = "SINGLE_PROGRAM_DETAIL"
+        step = "PROGRAM_METADATA"
 
         url = (
             f"{self._bifrost_url}{endpoint}"
