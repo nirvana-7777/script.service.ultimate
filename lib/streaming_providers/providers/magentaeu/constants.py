@@ -161,6 +161,17 @@ DEFAULT_REQUEST_TIMEOUT = 30
 DEFAULT_MAX_RETRIES = 3
 
 # ============================================================================
+# Guest Session Configuration
+# ============================================================================
+
+# How long a device_id/session_id pair (obtained from the startup-page
+# cookies) is trusted before it gets re-validated against the server again.
+# The real server-side TTL is unknown/unmeasured -- this is a conservative
+# starting point, not an observed value. Tighten or loosen once we have
+# data on how long a pair actually survives server-side.
+GUEST_SESSION_TTL_SECONDS = 6 * 60 * 60  # 6 hours
+
+# ============================================================================
 # Headers Configuration
 # ============================================================================
 

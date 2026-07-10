@@ -368,7 +368,17 @@ class MagentaEUEpgManager:
     # ------------------------------------------------------------------
 
     def _current_ids(self) -> Tuple[str, str]:
-        """Return (device_id, session_id) from the authenticator token."""
+        """Return (device_id, session_id) for guest EPG requests.
+
+        Sourced from the authenticator's guest session (get_guest_session_ids),
+        which is validated and refreshed on its own TTL -- not read directly
+        off current_token, since those values could otherwise go stale
+        without ever being re-checked for the lifetime of the process.
+        """
+        if hasattr(self._auth, "get_guest_session_ids"):
+            return self._auth.get_guest_session_ids()
+
+        # Fallback for authenticators that don't implement guest sessions
         token = getattr(self._auth, "current_token", None)
         device_id = getattr(token, "device_id", "") or ""
         session_id = getattr(token, "session_id", "") or ""
@@ -399,7 +409,7 @@ class MagentaEUEpgManager:
         conversion belongs here; do not reintroduce it.
         """
         merged: Dict[str, Any] = {}
-        headers = self._guest_headers(flow="START_UP", step="EPG_SCHEDULES")
+        headers = self._guest_headers(flow="EPG", step="EPG_SCHEDULES")
 
         # ✅ LOG THE FULL HEADERS (or at least the critical ones)
         logger.info(

@@ -165,16 +165,7 @@ class MagentaEUProvider(StreamingProvider):
     def get_channels(self, **kwargs) -> List[StreamingChannel]:
         """Fetch available channels from Magenta TV - no authentication required"""
         try:
-            device_id = (
-                self.authenticator.current_token.device_id
-                if self.authenticator.current_token
-                else ""
-            )
-            session_id = (
-                self.authenticator.current_token.session_id
-                if self.authenticator.current_token
-                else ""
-            )
+            device_id, session_id = self.authenticator.get_guest_session_ids()
 
             channels_url = API_ENDPOINTS["EPG_CHANNELS"].format(
                 bifrost_url=get_bifrost_url(self.country)
