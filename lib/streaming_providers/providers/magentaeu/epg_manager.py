@@ -27,7 +27,6 @@ Design notes
 
 from __future__ import annotations
 
-import uuid
 import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -409,13 +408,6 @@ class MagentaEUEpgManager:
         conversion belongs here; do not reintroduce it.
         """
         merged: Dict[str, Any] = {}
-        headers = self._guest_headers(flow="EPG", step="EPG_SCHEDULES")
-
-        # ✅ LOG THE FULL HEADERS (or at least the critical ones)
-        logger.info(
-            f"[MagentaEUEpgManager/{self._country}] "
-            f"EPG request FULL HEADERS: {headers}"
-        )
 
         utc_date = self._ensure_tz(date).astimezone(timezone.utc)
         formatted = utc_date.strftime("%Y-%m-%d")
@@ -463,12 +455,24 @@ class MagentaEUEpgManager:
                 f"&app_language={self._app_language}"
                 f"&natco_code={self._country}"
             )
-            headers["x-request-tracking-id"] = str(uuid.uuid4())
-
             # Add retry logic
             max_retries = 3
             block_success = False
             for attempt in range(max_retries):
+                # Build a fresh, internally-consistent header set for every
+                # single request (including retries). x-txn-id is a hash of
+                # tracking-id + call-time, so all three must be regenerated
+                # together — patching only tracking-id (as before) left
+                # x-txn-id bound to a stale/mismatched tracking-id on every
+                # request after the first, which upstream's edge (Akamai)
+                # appears to reject as malformed/replayed.
+                headers = self._guest_headers(flow="EPG", step="EPG_SCHEDULES")
+
+                logger.debug(
+                    f"[MagentaEUEpgManager/{self._country}] "
+                    f"EPG request headers (offset={hour_offset}, attempt={attempt + 1}): {headers}"
+                )
+
                 try:
                     response = self._http.get(
                         url,

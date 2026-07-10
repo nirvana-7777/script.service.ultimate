@@ -77,7 +77,7 @@ class MagentaEUProvider(StreamingProvider):
             user_agent=USER_AGENT,
             timeout=DEFAULT_REQUEST_TIMEOUT,
             max_retries=DEFAULT_MAX_RETRIES,
-            use_tls_impersonation=(country == "hr"),  # HR bifrost enforces strict JA3 fingerprinting
+#            use_tls_impersonation=(country == "hr"),  # HR bifrost enforces strict JA3 fingerprinting
         )
 
         # Initialize attributes
