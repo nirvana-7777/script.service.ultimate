@@ -740,6 +740,19 @@ class EPGProgramDetails:
     season_number: Optional[int] = None
     episode_number: Optional[int] = None
 
+    country_of_origin: Optional[List[str]] = None
+    """
+    Country/countries of origin as returned by the provider's detail
+    endpoint (e.g. ["Österreich"], ["USA"]). Not part of EPGContent —
+    EPGEntry has no matching field, same treatment as presenter/composers.
+    """
+
+    trailer: Optional[List[str]] = None
+    """
+    Trailer URL(s), when the provider's detail endpoint returns them.
+    Not part of EPGContent — no matching EPGEntry field.
+    """
+
     def to_dict(self) -> dict:
         """Serialise to a plain dict, omitting None values."""
         result: dict = {"program_id": self.program_id}
@@ -750,7 +763,8 @@ class EPGProgramDetails:
             "presenter", "composers", "contributors",
             "backdrop", "poster", "imdb_number", "provider_vod_id",
             "genres", "parental_rating",
-            "release_date", "duration"
+            "release_date", "duration",
+            "country_of_origin", "trailer",
         )
 
         for field in simple_fields:

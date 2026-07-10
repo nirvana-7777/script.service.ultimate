@@ -34,7 +34,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .utils import build_guest_headers
 from ...base.utils.logger import logger
-from ...base.models.epg_models import EPGEntry, EPGProgramDetails
+from ...base.models.epg_models import EPGEntry, EPGProgramDetails, EPGFlags
 from .constants import (
     DEFAULT_REQUEST_TIMEOUT,
     SUPPORTED_COUNTRIES,
@@ -360,6 +360,9 @@ class MagentaEUEpgManager:
             presenter=credit_map.get("presenter"),
             composers=credit_map.get("composers"),
             contributors=credit_map.get("contributors"),
+            duration=raw.get("runtime_seconds"),
+            country_of_origin=raw.get("country_of_origin") or None,
+            trailer=raw.get("trailer") or None,
         )
 
     # ------------------------------------------------------------------
@@ -714,6 +717,17 @@ class MagentaEUEpgManager:
             item.get("episode_number"), max_valid=None
         )
 
+        # Flags — only derivable when details were fetched
+        flags = None
+        if details:
+            flag_bits = []
+            if details.get("is_live"):
+                flag_bits.append(EPGFlags.IS_LIVE)
+            if details.get("show_type") == "TVShow":
+                flag_bits.append(EPGFlags.IS_SERIES)
+            if flag_bits:
+                flags = EPGFlags.combine(*flag_bits)
+
         # Build EPGEntry with both IDs
         return EPGEntry(
             # Required fields
@@ -760,7 +774,7 @@ class MagentaEUEpgManager:
             first_aired=None,  # Not available from bifrost API
             imdb_number=None,  # Not available from bifrost API
             series_link=None,  # Not available from bifrost API
-            flags=None,  # Could be set based on programme properties if needed
+            flags=flags, # Could be set based on programme properties if needed
         )
 
     # ------------------------------------------------------------------
