@@ -187,7 +187,7 @@ AUTH_HEADERS_BASE = {
     "Tenant": "tv",
 }
 
-DEVICE_DENSITY = "xhdpi"
+DEVICE_DENSITY = "ldpi"
 ACCEPT_LANGUAGE = "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7"
 
 # ============================================================================
