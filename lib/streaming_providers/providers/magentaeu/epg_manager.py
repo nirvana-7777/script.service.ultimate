@@ -28,6 +28,7 @@ Design notes
 from __future__ import annotations
 
 import time
+import json
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -584,6 +585,13 @@ class MagentaEUEpgManager:
                 logger.debug(
                     f"[{self._country}] Found details for {program_id} "
                     f"using {endpoint} endpoint"
+                )
+                # TEMP DEBUG: dump raw response to confirm season_number/
+                # episode_number key names for /details/program/ before
+                # mapping them in get_program_details(). Remove once confirmed.
+                logger.info(
+                    f"[{self._country}] TEMP DEBUG raw /details/program/ response "
+                    f"for {program_id}: {json.dumps(details, ensure_ascii=False)}"
                 )
             return details
         except Exception as exc:
