@@ -518,16 +518,25 @@ class MagentaEUEpgManager:
         if cached is not None:
             return cached
 
+        # -SH indicates a series
+        if "-SH" in program_id:
+            endpoint = f"/details/series/{program_id}"
+            flow = "SERIES_DETAIL"
+            step = "SERIES_METADATA"
+        else:
+            endpoint = f"/details/program/{program_id}"
+            flow = "SINGLE_PROGRAM_DETAIL"
+            step = "PROGRAM_METADATA"
+
         url = (
-            f"{self._bifrost_url}/details/program/{program_id}"
+            f"{self._bifrost_url}{endpoint}"
             f"?natco_key={self._natco_key}"
             f"&interacted_with_nPVR=false"
             f"&app_language={self._app_language}"
             f"&natco_code={self._country}"
         )
-        headers = self._guest_headers(
-            flow="SINGLE_PROGRAM_DETAIL", step="PROGRAM_METADATA"
-        )
+        headers = self._guest_headers(flow=flow, step=step)
+
         try:
             response = self._http.get(
                 url,
@@ -539,11 +548,14 @@ class MagentaEUEpgManager:
             details = response.json()
             if details:
                 self._cache.put(self._country, program_id, details)
+                logger.debug(
+                    f"[{self._country}] Found details for {program_id} "
+                    f"using {endpoint} endpoint"
+                )
             return details
         except Exception as exc:
             logger.error(
-                f"[MagentaEUEpgManager/{self._country}] "
-                f"program details fetch failed for {program_id}: {exc}"
+                f"[{self._country}] Program details fetch failed for {program_id}: {exc}"
             )
             return {}
 
@@ -727,6 +739,7 @@ class MagentaEUEpgManager:
             cast=credit_map["cast"],
             directors=credit_map["directors"],
             writers=credit_map["writers"],
+            producers=credit_map["producers"],
 
             # Optional fields - Genre/Category
             genre=None,  # Not using numeric DVB-SI genres
