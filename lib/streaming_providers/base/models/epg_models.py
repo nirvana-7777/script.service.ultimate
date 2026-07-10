@@ -731,6 +731,15 @@ class EPGProgramDetails:
     plumbing, only meaningful in combination with the provider it came from.
     """
 
+    series_id: Optional[str] = None
+    """
+    Provider-specific series identifier (e.g. 'HRT1-SH4506209'), distinct
+    from program_id which is episode-scoped (e.g.
+    'HRT1-SH4506209-S4E236'). Not part of EPGContent — EPGEntry has no
+    matching field. Useful as a grouping key if detail fetches are ever
+    batched/cached per-series or per-season rather than per-episode.
+    """
+
     # Additional metadata
     genres: Optional[List[str]] = None
     parental_rating: Optional[int] = None
@@ -762,8 +771,10 @@ class EPGProgramDetails:
             "cast", "directors", "writers", "producers",
             "presenter", "composers", "contributors",
             "backdrop", "poster", "imdb_number", "provider_vod_id",
+            "series_id",
             "genres", "parental_rating",
             "release_date", "duration",
+            "season_number", "episode_number",
             "country_of_origin", "trailer",
         )
 

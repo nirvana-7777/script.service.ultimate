@@ -28,7 +28,6 @@ Design notes
 from __future__ import annotations
 
 import time
-import json
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -375,6 +374,20 @@ class MagentaEUEpgManager:
             except (ValueError, TypeError):
                 parental_rating = None
 
+        # Season / episode number: string-encoded on this endpoint too
+        # (e.g. "1", "41"), same as the grid item. Populating these here
+        # (rather than leaving them None) matters because they're part
+        # of EPGContent's shared field list - merge_content() can use
+        # them to backfill a schedule entry whose own season_number/
+        # episode_number was missing or filtered out as Gracenote
+        # placeholder junk (e.g. "20230000").
+        season_number = self._parse_episode_number(
+            raw.get("season_number"), max_valid=9998
+        )
+        episode_number = self._parse_episode_number(
+            raw.get("episode_number"), max_valid=None
+        )
+
         return EPGProgramDetails(
             program_id=program_id,
             description=description,
@@ -390,6 +403,9 @@ class MagentaEUEpgManager:
             contributors=credit_map.get("contributors"),
             genres=genres,
             parental_rating=parental_rating,
+            season_number=season_number,
+            episode_number=episode_number,
+            series_id=raw.get("series_id") or None,
             duration=raw.get("runtime_seconds"),
             country_of_origin=raw.get("country_of_origin") or None,
             trailer=raw.get("trailer") or None,
@@ -585,13 +601,6 @@ class MagentaEUEpgManager:
                 logger.debug(
                     f"[{self._country}] Found details for {program_id} "
                     f"using {endpoint} endpoint"
-                )
-                # TEMP DEBUG: dump raw response to confirm season_number/
-                # episode_number key names for /details/program/ before
-                # mapping them in get_program_details(). Remove once confirmed.
-                logger.info(
-                    f"[{self._country}] TEMP DEBUG raw /details/program/ response "
-                    f"for {program_id}: {json.dumps(details, ensure_ascii=False)}"
                 )
             return details
         except Exception as exc:
