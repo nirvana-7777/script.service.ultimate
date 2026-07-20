@@ -1,5 +1,4 @@
 # streaming_providers/base/network/proxy_manager.py
-import json
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -436,8 +435,9 @@ class ProxyConfigManager:
                 "providers": providers_export,
             }
 
-            with open(export_path, "w", encoding="utf-8") as f:
-                json.dump(export_data, f, indent=2, ensure_ascii=False)
+            success = self.vfs.write_json(export_path, export_data)
+            if not success:
+                raise IOError(f"VFS write_json failed for {export_path}")
 
             logger.info(f"Exported proxy configurations to {export_path}")
             return export_path
@@ -458,8 +458,10 @@ class ProxyConfigManager:
             True if successful, False otherwise
         """
         try:
-            with open(import_path, "r", encoding="utf-8") as f:
-                import_data = json.load(f)
+            import_data = self.vfs.read_json(import_path)
+            if import_data is None:
+                logger.error(f"No data found at {import_path}")
+                return False
 
             if not merge:
                 # Clear existing configurations

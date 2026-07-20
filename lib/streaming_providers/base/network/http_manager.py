@@ -128,10 +128,25 @@ class HTTPManager:
         """
         Update just the proxy configuration
 
+        For plain `requests` sessions the proxy is resolved per-request from
+        self.config.proxy_config (via get_request_kwargs), so updating the
+        config alone is sufficient.
+
+        For curl_cffi sessions the proxy is baked into the Session object at
+        construction time (see _setup_session), so simply updating the config
+        would silently leave the session using the old proxy. In that case we
+        rebuild the session, preserving cookies across the rebuild.
+
         Args:
             proxy_config: New proxy configuration (None to disable proxy)
         """
         self.config.proxy_config = proxy_config
+
+        if self._using_cffi:
+            old_cookies = self._session.cookies if self._session else None
+            self._setup_session()
+            if old_cookies is not None:
+                self._session.cookies.update(old_cookies)  # type: ignore[arg-type]
 
     def reset_referer(self) -> None:
         """
@@ -220,11 +235,21 @@ class HTTPManager:
         # Merge with any additional kwargs (caller overrides win)
         request_kwargs.update(kwargs)
 
-        # Inject Referer from last response URL if not already set by caller.
-        # NOTE: Auto-injecting Referer is disabled by default because WAFs (like Akamai)
-        # flag API requests that have backend API URLs as the Referer.
-        # Providers should explicitly set the Referer header in their own header factories if needed.
         headers = request_kwargs.setdefault("headers", {})
+
+        # Inject Referer from the last response URL, but only when the caller
+        # opts in via config.inject_referer (mirrors inject_origin below).
+        # Disabled by default because WAFs (like Akamai) flag API requests
+        # that carry backend API URLs as the Referer. Providers that want
+        # this should set inject_referer=True in their RequestConfig, or
+        # continue setting Referer explicitly in their own header factories.
+        #
+        # NOTE: `inject_referer` isn't (yet) a declared field on RequestConfig
+        # in proxy_models.py — using getattr so this doesn't break if it's
+        # absent. Add `inject_referer: bool = False` to RequestConfig to make
+        # this a first-class, documented option.
+        if getattr(self.config, "inject_referer", False) and self._last_url and "Referer" not in headers:
+            headers["Referer"] = self._last_url
 
         # Inject Origin derived from target URL only when explicitly requested.
         # Origin injection is opt-in because some non-browser APIs reject
