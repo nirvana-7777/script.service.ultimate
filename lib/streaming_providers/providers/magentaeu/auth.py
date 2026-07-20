@@ -44,6 +44,7 @@ from .constants import (
     SUPPORTED_COUNTRIES,
     USER_AGENT,
     X_USER_AGENT,
+    build_auth_headers,
     get_base_headers,
     get_base_url,
     get_bifrost_url,
@@ -160,27 +161,20 @@ class MagentaAuthConfig:
         step: str = AUTH_STEPS["GET_ACCESS_TOKEN"],
         device_id: str = None,
         session_id: str = None,
+        tracking_id: str = None,
+        call_time: str = None,
     ) -> Dict[str, str]:
-        """Get authentication headers"""
-        headers = get_base_headers()
-        headers.update(
-            {
-                "X-User-Agent": self.x_user_agent,
-                "X-Call-Type": call_type,
-                "X-Tv-Flow": flow,
-                "X-Tv-Step": step,
-                "x-request-session-id": session_id or str(uuid.uuid4()),
-                "x-request-tracking-id": str(uuid.uuid4()),
-                "requestid": str(uuid.uuid4()),
-                "Tenant": "tv",
-                "Origin": self.country_config["base_url"],
-                "App_key": self.country_config["app_key"],
-                "App_version": self.app_version,
-                "Device-Id": device_id or str(uuid.uuid4()),
-                "Device-Name": self.device_name,
-            }
+        """Get authentication headers, including x-txn-id"""
+        return build_auth_headers(
+            country=self.country,
+            device_id=device_id,
+            session_id=session_id,
+            flow=flow,
+            step=step,
+            call_type=call_type,
+            tracking_id=tracking_id,
+            call_time=call_time,
         )
-        return headers
 
     def encrypt_password(self, password: str) -> str:
         """Encrypt password using RSA public key"""
@@ -427,12 +421,17 @@ class MagentaAuthenticator(BaseAuthenticator):
             device_id = self._current_token.device_id or ""
             session_id = self._current_token.session_id or ""
 
+        tracking_id = str(uuid.uuid4())
+        call_time = str(int(time.time() * 1000))
+
         return self._config.get_auth_headers(
             call_type=CALL_TYPES["GUEST_USER"],
             flow=AUTH_FLOWS["USERNAME_PASSWORD_LOGIN"],
             step=AUTH_STEPS["GET_ACCESS_TOKEN"],
             device_id=device_id,
             session_id=session_id,
+            tracking_id=tracking_id,
+            call_time=call_time,
         )
 
     def _build_auth_payload(self) -> Dict[str, Any]:
@@ -619,10 +618,19 @@ class MagentaAuthenticator(BaseAuthenticator):
         """Upgrade token when device limit is exceeded"""
         upgrade_url = API_ENDPOINTS["UPGRADE_TOKEN"].format(natco=self.country)
 
+        device_id, session_id, _, _ = self._get_session_data()
+
+        tracking_id = str(uuid.uuid4())
+        call_time = str(int(time.time() * 1000))
+
         headers = self._config.get_auth_headers(
             call_type=CALL_TYPES["GUEST_USER"],
             flow=AUTH_FLOWS["USERNAME_PASSWORD_LOGIN"],
             step=AUTH_STEPS["UPGRADE_TOKEN"],
+            device_id=device_id,
+            session_id=session_id,
+            tracking_id=tracking_id,
+            call_time=call_time,
         )
         headers["Refresh_token"] = refresh_token
 
@@ -663,11 +671,18 @@ class MagentaAuthenticator(BaseAuthenticator):
 
             device_id, session_id, channel_map_id, session_id_updated_at = self._get_session_data()
 
+            tracking_id = str(uuid.uuid4())
+            call_time = str(int(time.time() * 1000))
+
             # Build headers according to your working example
             headers = self._config.get_auth_headers(
                 call_type=CALL_TYPES["AUTH_USER"],
                 flow=AUTH_FLOWS["START_UP"],
                 step=AUTH_STEPS["REFRESH_TOKEN"],
+                device_id=device_id,
+                session_id=session_id,
+                tracking_id=tracking_id,
+                call_time=call_time,
             )
 
             # Add the specific headers from your working example
@@ -782,12 +797,17 @@ class MagentaAuthenticator(BaseAuthenticator):
             device_id = self._current_token.device_id or ""
             session_id = self._current_token.session_id or ""
 
+        tracking_id = str(uuid.uuid4())
+        call_time = str(int(time.time() * 1000))
+
         headers = self._config.get_auth_headers(
             call_type=CALL_TYPES["AUTH_USER"],
             flow=AUTH_FLOWS["START_UP"],
             step=AUTH_STEPS["GET_USER_ACCOUNT"],
             device_id=device_id,
             session_id=session_id,
+            tracking_id=tracking_id,
+            call_time=call_time,
         )
         headers["Bff_token"] = access_token
 

@@ -3,7 +3,10 @@
 # Magenta TV Configuration
 # ============================================================================
 
-from typing import Dict
+import hashlib
+import time
+import uuid
+from typing import Dict, Optional
 
 # Supported countries
 SUPPORTED_COUNTRIES = ["hr", "pl", "me", "at", "hu"]
@@ -280,3 +283,138 @@ def get_guest_headers(country: str, device_id: str, session_id: str) -> Dict[str
         "x-user-agent": X_USER_AGENT,
     }
     return headers
+
+
+# ============================================================================
+# Header Generation with x-txn-id
+# ============================================================================
+
+
+def _generate_txn_id(
+    tracking_id: str, session_id: str, device_id: str, call_time: str
+) -> str:
+    """SHA-256(trackingId + sessionId + deviceId + callTime)[:32]"""
+    raw = tracking_id + session_id + device_id + call_time
+    return hashlib.sha256(raw.encode()).hexdigest()[:32]
+
+
+def build_guest_headers(
+    country: str,
+    device_id: str,
+    session_id: str,
+    flow: str,
+    step: Optional[str] = None,
+    tracking_id: Optional[str] = None,
+) -> Dict[str, str]:
+    """
+    Build complete guest headers with x-txn-id.
+
+    Note: device_id and session_id must already be resolved by the caller
+    (via get_guest_session_ids() or similar) before calling this. No
+    fallback UUIDs are generated here -- that's intentional, to avoid a
+    mismatch between the header value actually sent and the value hashed
+    into x-txn-id.
+
+    (Relocated verbatim from utils.py; utils.py now re-exports this.)
+    """
+    if tracking_id is None:
+        tracking_id = str(uuid.uuid4())
+
+    # Snapshot call_time once -- x-txn-id is derived from it, so both
+    # headers must use the same value.
+    call_time = str(int(time.time() * 1000))
+
+    headers = get_guest_headers(country, device_id, session_id)
+    headers["x-call-time"] = call_time
+    headers["x-tv-flow"] = flow
+    headers["x-request-tracking-id"] = tracking_id
+    headers["x-txn-id"] = _generate_txn_id(tracking_id, session_id, device_id, call_time)
+    if step is not None:
+        headers["x-tv-step"] = step
+    return headers
+
+
+def build_headers_with_txn(
+    base_headers: Dict[str, str],
+    device_id: str,
+    session_id: str,
+    tracking_id: Optional[str] = None,
+    call_time: Optional[str] = None,
+) -> Dict[str, str]:
+    """
+    Add x-txn-id and related headers to any headers dict.
+
+    Args:
+        base_headers: Existing headers to add to
+        device_id: Device ID for x-txn-id calculation -- must be the same
+            value already present as the Device-Id header in base_headers
+        session_id: Session ID for x-txn-id calculation -- must be the same
+            value already present as the x-request-session-id header
+        tracking_id: Optional tracking ID (generated if not provided)
+        call_time: Optional call time (generated if not provided)
+
+    Returns:
+        Headers dict with x-txn-id, x-call-time, x-request-tracking-id added
+    """
+    if tracking_id is None:
+        tracking_id = str(uuid.uuid4())
+
+    if call_time is None:
+        call_time = str(int(time.time() * 1000))
+
+    headers = base_headers.copy()
+    headers.update({
+        "x-request-tracking-id": tracking_id,
+        "x-call-time": call_time,
+        "x-txn-id": _generate_txn_id(tracking_id, session_id, device_id, call_time),
+    })
+    return headers
+
+
+def build_auth_headers(
+    country: str,
+    device_id: str,
+    session_id: str,
+    flow: str,
+    step: str,
+    call_type: str = CALL_TYPES["GUEST_USER"],
+    tracking_id: Optional[str] = None,
+    call_time: Optional[str] = None,
+) -> Dict[str, str]:
+    """
+    Build complete authentication headers with x-txn-id.
+
+    CRITICAL: device_id and session_id fallbacks are resolved ONCE here,
+    then reused for both the Device-Id / x-request-session-id headers and
+    the x-txn-id hash. Resolving `device_id or str(uuid.uuid4())` more than
+    once produces a different random value each time, which would send a
+    Device-Id header that doesn't match what's hashed into x-txn-id.
+    """
+    resolved_device_id = device_id if device_id else str(uuid.uuid4())
+    resolved_session_id = session_id if session_id else str(uuid.uuid4())
+
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "X-User-Agent": X_USER_AGENT,
+        "X-Call-Type": call_type,
+        "X-Tv-Flow": flow,
+        "X-Tv-Step": step,
+        "x-request-session-id": resolved_session_id,
+        "requestid": str(uuid.uuid4()),
+        "Tenant": "tv",
+        "Origin": get_base_url(country),
+        "App_key": get_app_key(country),
+        "App_version": APP_VERSION,
+        "Device-Id": resolved_device_id,
+        "Device-Name": DEVICE_NAME,
+    }
+
+    return build_headers_with_txn(
+        base_headers=headers,
+        device_id=resolved_device_id,
+        session_id=resolved_session_id,
+        tracking_id=tracking_id,
+        call_time=call_time,
+    )

@@ -171,7 +171,7 @@ class MagentaEUProvider(StreamingProvider):
                 bifrost_url=get_bifrost_url(self.country)
             )
 
-            from .utils import  build_guest_headers
+            from .constants import build_guest_headers
 
             headers = build_guest_headers(
                 self.country, device_id, session_id, flow="START_UP"

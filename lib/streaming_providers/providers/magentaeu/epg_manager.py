@@ -32,12 +32,12 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from .utils import build_guest_headers
 from ...base.utils.logger import logger
 from ...base.models.epg_models import EPGEntry, EPGProgramDetails, EPGFlags
 from .constants import (
     DEFAULT_REQUEST_TIMEOUT,
     SUPPORTED_COUNTRIES,
+    build_guest_headers,
     get_app_key,
     get_bifrost_url,
     get_language,
