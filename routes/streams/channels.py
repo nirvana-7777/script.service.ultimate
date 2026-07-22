@@ -11,14 +11,9 @@ import time
 from bottle import HTTPResponse, request, response
 from streaming_providers.base.utils import logger
 
-from . import make_helpers
 
-
-def setup_channel_routes(app, manager, service):
+def setup_channel_routes(app, manager, service, helpers):
     """Setup all channel-related stream routes."""
-
-    # Create helpers with manager and service closures
-    helpers = make_helpers(manager, service)
 
     CONTENT_TYPE_CHANNEL = helpers["CONTENT_TYPE_CHANNEL"]
     _build_drm_header = helpers["_build_drm_header"]

@@ -9,14 +9,9 @@ IDs (paths like "clip_1417600/stream") and without catchup support.
 from bottle import HTTPResponse, request, response
 from streaming_providers.base.utils import logger
 
-from . import make_helpers
 
-
-def setup_vod_routes(app, manager, service):
+def setup_vod_routes(app, manager, service, helpers):
     """Setup all VOD-related stream routes."""
-
-    # Create helpers with manager and service closures
-    helpers = make_helpers(manager, service)
 
     CONTENT_TYPE_VOD = helpers["CONTENT_TYPE_VOD"]
     _build_drm_header = helpers["_build_drm_header"]

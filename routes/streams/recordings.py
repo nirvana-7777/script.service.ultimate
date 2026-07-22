@@ -11,14 +11,9 @@ Recordings are always on-demand (pre-captured), so:
 from bottle import HTTPResponse, request, response
 from streaming_providers.base.utils import logger
 
-from . import make_helpers
 
-
-def setup_recording_routes(app, manager, service):
+def setup_recording_routes(app, manager, service, helpers):
     """Setup all recording-related stream routes."""
-
-    # Create helpers with manager and service closures
-    helpers = make_helpers(manager, service)
 
     CONTENT_TYPE_RECORDING = helpers["CONTENT_TYPE_RECORDING"]
     _build_drm_header = helpers["_build_drm_header"]

@@ -9,14 +9,9 @@ share the same transport pattern as channels but without catchup support.
 from bottle import HTTPResponse, request, response
 from streaming_providers.base.utils import logger
 
-from . import make_helpers
 
-
-def setup_event_routes(app, manager, service):
+def setup_event_routes(app, manager, service, helpers):
     """Setup all event-related stream routes."""
-
-    # Create helpers with manager and service closures
-    helpers = make_helpers(manager, service)
 
     CONTENT_TYPE_EVENT = helpers["CONTENT_TYPE_EVENT"]
     _build_drm_header = helpers["_build_drm_header"]

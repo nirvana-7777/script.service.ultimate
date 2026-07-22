@@ -16,6 +16,8 @@ helpers:
   _build_drm_header(content_type, provider, content_id, ...)
       Fetches DRM configs via the correct manager method and attaches them as a
       base64-encoded response header. Non-fatal — logs a warning on failure.
+      Returns the fetched DRMConfig list (or [] on failure) so callers that
+      also need the configs don't have to fetch them a second time.
 
   _resolve_stream(content_type, provider, content_id, ...)
       The single place that understands how to turn (type, provider, id) into a
@@ -50,11 +52,14 @@ def setup_stream_routes(app, manager, service):
     from .vod import setup_vod_routes
     from .recordings import setup_recording_routes
 
-    # Pass manager and service to all submodules
-    setup_channel_routes(app, manager, service)
-    setup_event_routes(app, manager, service)
-    setup_vod_routes(app, manager, service)
-    setup_recording_routes(app, manager, service)
+    # Build the shared helpers once and hand the same dict to every submodule,
+    # rather than each submodule creating its own independent closure set.
+    helpers = make_helpers(manager, service)
+
+    setup_channel_routes(app, manager, service, helpers)
+    setup_event_routes(app, manager, service, helpers)
+    setup_vod_routes(app, manager, service, helpers)
+    setup_recording_routes(app, manager, service, helpers)
 
     # =========================================================================
     # ORIGINAL MANIFEST ENDPOINT (shared across content types)
@@ -79,8 +84,6 @@ def setup_stream_routes(app, manager, service):
         try:
             country = request.query.get("country")
 
-            # Create helpers to use the manager methods
-            helpers = make_helpers(manager, service)
             _get_manifest_url = helpers["_get_manifest_url"]
 
             # Map content_type string to constant
@@ -123,6 +126,22 @@ def setup_stream_routes(app, manager, service):
             logger.error(f"Original manifest error for {provider}/{content_type}/{content_id}: {e}")
             response.status = 500
             return {"error": f"Failed to fetch manifest: {str(e)}"}
+
+
+def _serialize_drm_configs(drm_configs) -> dict:
+    """
+    Merge a list of DRMConfig objects (or plain dicts) into a single dict,
+    keyed by DRM scheme (e.g. 'org.w3.clearkey', 'none').
+
+    Shared by every call site that needs to turn a list of DRM configs into
+    the merged dict shape used for the response header and for ClearKey
+    keyid lookups.
+    """
+    merged = {}
+    for config in drm_configs:
+        config_dict = config.to_dict() if hasattr(config, "to_dict") else config
+        merged.update(config_dict)
+    return merged
 
 
 def make_helpers(manager, service):
@@ -223,12 +242,17 @@ def make_helpers(manager, service):
         """
         Fetch DRM configs, serialise to JSON and attach as a base64-encoded
         response header (x-kodi-drm-configs).  Non-fatal: logs a warning and
-        returns None on any error.
+        returns [] on any error.
 
         Args:
             drm_variant: 'auto' or 'software'.  Forwarded to the DRM config
                          fetch so the provider can return ClearKey configs when
                          the software-DRM variant is requested.
+
+        Returns:
+            The list of DRMConfig objects that were fetched (or [] on failure).
+            Callers that also need the raw configs (e.g. _resolve_stream) can
+            reuse this instead of fetching them again.
         """
         try:
             if is_catchup and content_type == CONTENT_TYPE_CHANNEL:
@@ -247,24 +271,21 @@ def make_helpers(manager, service):
                     country=country, drm_variant=drm_variant,
                 )
 
-            merged = {}
-            for config in drm_configs:
-                config_dict = config.to_dict() if hasattr(config, "to_dict") else config
-                merged.update(config_dict)
+            merged = _serialize_drm_configs(drm_configs)
 
             encoded = base64.b64encode(
                 json.dumps(merged).encode("utf-8")
             ).decode("ascii")
 
             response.headers["x-kodi-drm-configs"] = encoded
-            return encoded
+            return drm_configs
 
         except Exception as e:
             logger.warning(
                 f"Could not build x-kodi-drm-configs header for "
                 f"{content_type} {provider}/{content_id} (variant={drm_variant}): {e}"
             )
-            return None
+            return []
 
     def _build_stream_headers(
             content_type: str,
@@ -410,8 +431,10 @@ def make_helpers(manager, service):
                          software-decodable DRM).  Threaded through to all helpers so
                          providers can return the correct manifest URL and DRM configs.
         """
-        # --- DRM header (best-effort, never fatal) ---
-        _build_drm_header(
+        # --- DRM header (best-effort, never fatal). Also returns the DRM
+        # configs it fetched so the proxy branch below can reuse them instead
+        # of fetching from the provider a second time. ---
+        drm_configs_for_header = _build_drm_header(
             content_type, provider, content_id,
             country=country,
             is_catchup=is_catchup,
@@ -459,22 +482,12 @@ def make_helpers(manager, service):
             # Check for ClearKey DRM — if present, rewrite manifest with ClearKey signaling
             # so the receiver can decrypt itself, rather than serving a plain proxy stream
             # with stripped ContentProtection that the player cannot handle.
-            try:
-                drm_configs = _get_drm_configs(
-                    content_type, provider, content_id,
-                    country=country, drm_variant=drm_variant,
-                )
-                drm_dict = {}
-                for config in drm_configs:
-                    drm_dict.update(
-                        config.to_dict() if hasattr(config, "to_dict") else config
-                    )
-            except Exception as e:
-                logger.warning(
-                    f"Could not fetch DRM configs for {content_type} "
-                    f"{provider}/{content_id} during proxy resolution: {e}"
-                )
-                drm_dict = {}
+            #
+            # Reuse the configs _build_drm_header already fetched above rather than
+            # calling the provider again. This branch is only reached when
+            # is_catchup is False, so drm_configs_for_header always corresponds to
+            # the non-catchup fetch performed above.
+            drm_dict = _serialize_drm_configs(drm_configs_for_header)
 
             keyids = (
                 drm_dict.get("org.w3.clearkey", {})
@@ -620,11 +633,7 @@ def make_helpers(manager, service):
                     epg_id=epg_id,
                     country=country,
                 )
-                catchup_drm_dict = {}
-                for config in catchup_drm_configs:
-                    catchup_drm_dict.update(
-                        config.to_dict() if hasattr(config, "to_dict") else config
-                    )
+                catchup_drm_dict = _serialize_drm_configs(catchup_drm_configs)
 
                 is_unencrypted = "none" in catchup_drm_dict
                 keyids = (
@@ -658,11 +667,7 @@ def make_helpers(manager, service):
                 content_type, provider, content_id, country=country
             )
 
-            drm_dict = {}
-            for config in drm_configs:
-                drm_dict.update(
-                    config.to_dict() if hasattr(config, "to_dict") else config
-                )
+            drm_dict = _serialize_drm_configs(drm_configs)
 
             has_clearkey = "org.w3.clearkey" in drm_dict
             is_unencrypted = "none" in drm_dict
@@ -746,4 +751,5 @@ def make_helpers(manager, service):
         "_inject_base_url": _inject_base_url,
         "_resolve_stream": _resolve_stream,
         "_resolve_decrypted_stream": _resolve_decrypted_stream,
+        "_serialize_drm_configs": _serialize_drm_configs,
     }
