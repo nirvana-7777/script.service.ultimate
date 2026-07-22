@@ -126,7 +126,7 @@ class MPDRewriter:
         encoded = self.encode_url(urlencode(params))
         decrypt_server_side = self.key_config.keys and is_encrypted and not self.clearkey_receiver_side
         endpoint = "decrypt" if decrypt_server_side else "proxy"
-        proxy_url = f"{self.media_proxy_url}/api/{endpoint}/{encoded}"
+        proxy_url = f"{self.media_proxy_url}/{endpoint}/{encoded}"
 
         if template_pattern:
             # Substitute $RepresentationID$ if we have it and highest_quality_video_only is enabled
