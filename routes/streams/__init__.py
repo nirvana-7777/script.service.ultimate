@@ -626,11 +626,18 @@ def make_helpers(manager, service):
                         config.to_dict() if hasattr(config, "to_dict") else config
                     )
 
+                is_unencrypted = "none" in catchup_drm_dict
                 keyids = (
                     catchup_drm_dict.get("org.w3.clearkey", {})
                     .get("license", {})
                     .get("keyids", {})
                 )
+
+                if is_unencrypted:
+                    return service.get_proxied_catchup_manifest(
+                        provider, content_id, start_time_int, end_time_int, epg_id, country
+                    )
+
                 if not keyids:
                     response.status = 400
                     return {"error": "ClearKey DRM not available for this catchup content"}
