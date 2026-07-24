@@ -486,7 +486,7 @@ class ChannelManager:
             era_media_pids = station_info.get("era$mediaPids", {})
             channel_id = era_media_pids.get("urn:theplatform:tv:location:any")
             if channel_id:
-                logger.debug(f"Extracted playback ID from era$mediaPids: {channel_id}")
+#                logger.debug(f"Extracted playback ID from era$mediaPids: {channel_id}")
                 return channel_id
             return None
         except Exception as e:

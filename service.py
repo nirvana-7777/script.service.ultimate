@@ -1782,6 +1782,19 @@ class UltimateService:
 
     def setup_routes(self):
         """Setup all routes from separate modules"""
+
+        # Add request logging hooks
+        @self.app.hook('before_request')
+        def log_request():
+            request._start_time = time.time()
+            logger.info(
+                f"→ {request.method} {request.path} from {request.remote_addr} (User-Agent: {request.headers.get('User-Agent', 'unknown')[:50]})")
+
+        @self.app.hook('after_request')
+        def log_response():
+            logger.info(
+                f"← {request.method} {request.path} → {response.status_code} (took {time.time() - getattr(request, '_start_time', time.time()):.2f}s)")
+
         # Import route handlers here
         from routes.providers import setup_provider_routes
         from routes.streams import setup_stream_routes
