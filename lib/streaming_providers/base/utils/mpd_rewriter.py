@@ -449,7 +449,7 @@ class MPDRewriter:
         removed_count = 0
 
         # Debug: Log what keys we have
-        logger.debug(f"Available keys: {list(self.key_config.keys.keys())}")
+#        logger.debug(f"Available keys: {list(self.key_config.keys.keys())}")
 
         for period in root.findall(".//mpd:Period", self.MPD_NAMESPACE):
             period_id = period.get("id", "")

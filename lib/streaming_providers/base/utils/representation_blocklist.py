@@ -26,10 +26,10 @@ class RepresentationBlocklist:
                     for provider in self.blocklist.values()
                     for rep_ids in provider.values()
                 )
-                logger.info(
-                    f"Loaded representation blocklist: "
-                    f"{len(self.blocklist)} providers, {total_blocked} total blocked representations"
-                )
+#                logger.info(
+#                    f"Loaded representation blocklist: "
+#                    f"{len(self.blocklist)} providers, {total_blocked} total blocked representations"
+#                )
             else:
                 logger.info(f"No blocklist found at {self.blocklist_path}, starting with empty blocklist")
 
