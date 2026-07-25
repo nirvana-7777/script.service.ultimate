@@ -123,6 +123,10 @@ class MoveTVProvider(StreamingProvider):
         # Unified thread-safe cache for both Live and Catchup sources
         self._source_cache = _SourceCache(max_size=100)
 
+        # EPG response cache to prevent hammering the API on rapid manifest polls
+        self._epg_cache: Dict[str, Tuple[List[EPGEntry], float]] = {}
+        self._epg_lock = threading.Lock()
+
         try:
             self.authenticator.authenticate()
             logger.info("move.tv: Authentication successful during initialisation")
@@ -446,8 +450,24 @@ class MoveTVProvider(StreamingProvider):
         return url
 
     def get_manifest_headers(self, content_id: str, **kwargs) -> Dict[str, str]:
+        start_time = kwargs.get("start_time")
+        end_time = kwargs.get("end_time")
+        epg_id = kwargs.get("epg_id")
+
+        # If start_time and end_time are present, this is a catchup manifest/segment request
+        if start_time is not None and end_time is not None:
+            try:
+                return self.get_catchup_manifest_headers(
+                    content_id, int(start_time), int(end_time), epg_id, **kwargs
+                )
+            except ValueError:
+                pass
+
         _, headers = self.get_manifest_with_headers(content_id, **kwargs)
         return headers
+
+    def get_segment_headers(self, content_id: str, **kwargs) -> Dict[str, str]:
+        return self.get_manifest_headers(content_id, **kwargs)
 
     def get_drm(self, content_id: str, **kwargs) -> List[DRMConfig]:
         return []
@@ -464,14 +484,36 @@ class MoveTVProvider(StreamingProvider):
             # 1. Resolve EPG ID
             resolved_epg_id = epg_id
             if not resolved_epg_id:
-                # A fixed 6-hour backward window anchored at start_time covers long-running
-                # programs (like films or sports) without pulling massive EPG ranges.
-                epg_entries = self._epg.get_channel_epg(
-                    channel_id=content_id,
-                    backwards=6,
-                    forwards=2,
-                    start_time=datetime.fromtimestamp(start_time, tz=timezone.utc),
-                )
+                # Check EPG cache first to avoid hammering the API on repeated manifest polls
+                epg_entries = None
+                with self._epg_lock:
+                    cached_epg = self._epg_cache.get(content_id)
+                    if cached_epg:
+                        entries, expires_at = cached_epg
+                        if time.time() < expires_at and entries:
+                            # Validate that start_time actually falls within the cached entries' covered range
+                            min_start = min(e.start for e in entries)
+                            max_end = max(e.end for e in entries)
+                            # Add a 1-hour buffer to handle edge cases gracefully
+                            if min_start - 3600 <= start_time <= max_end + 3600:
+                                epg_entries = entries
+                                logger.debug(
+                                    f"move.tv: EPG cache hit for {content_id} covering [{min_start}, {max_end}]")
+
+                if epg_entries is None:
+                    logger.debug(f"move.tv: EPG cache miss for {content_id} at {start_time}")
+                    # A fixed 6-hour backward window anchored at start_time covers long-running
+                    # programs (like films or sports) without pulling massive EPG ranges.
+                    epg_entries = self._epg.get_channel_epg(
+                        channel_id=content_id,
+                        backwards=6,
+                        forwards=2,
+                        start_time=datetime.fromtimestamp(start_time, tz=timezone.utc),
+                    )
+                    # Cache the EPG response for 60 seconds to handle rapid manifest polls
+                    if epg_entries is not None:
+                        with self._epg_lock:
+                            self._epg_cache[content_id] = (epg_entries, time.time() + 60)
 
                 if not epg_entries:
                     return None, {"User-Agent": MoveTVConfig.USER_AGENT}
