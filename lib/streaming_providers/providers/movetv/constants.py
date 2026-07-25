@@ -33,6 +33,7 @@ class MoveTVConfig:
 
     # EPG
     PATH_EPG_ALL: str = "/api/v2/content/epg/all"
+    PATH_EPG_SOURCE: str = "/api/v2/content/epg/source/get"  # Catchup manifest
 
     # VOD — catalogue / filtering
     PATH_VOD_FILTERS: str = "/api/v2/content/vod/filters"
@@ -150,6 +151,11 @@ class MoveTVConfig:
     def epg_all_url(cls) -> str:
         """Full URL for fetching EPG data for a single channel."""
         return f"{cls.API_BASE_URL}{cls.PATH_EPG_ALL}"
+
+    @classmethod
+    def epg_source_url(cls) -> str:
+        """Full URL for fetching catchup manifest for an EPG entry."""
+        return f"{cls.API_BASE_URL}{cls.PATH_EPG_SOURCE}"
 
     @classmethod
     def vod_filters_url(cls) -> str:

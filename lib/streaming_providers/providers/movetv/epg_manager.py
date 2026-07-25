@@ -125,18 +125,18 @@ class MoveTvEpgManager:
             The provider's numeric content ID for the channel (as a string).
         backwards:
             Hours of past programming to include (API default: 2).
-            Ignored when start_time/end_time are provided.
+            Ignored when both start_time and end_time are provided.
         forwards:
             Hours of future programming to include (API default: 2).
-            Ignored when start_time/end_time are provided.
+            Ignored when both start_time and end_time are provided.
         start_time:
             Inclusive window start (timezone-aware or naive-local datetime).
-            When provided together with end_time, takes precedence over
-            backwards/forwards.
+            When provided, anchors the API query. If end_time is omitted,
+            uses `backwards` and `forwards` around this anchor.
         end_time:
             Inclusive window end (timezone-aware or naive-local datetime).
             When provided together with start_time, takes precedence over
-            backwards/forwards.
+            backwards/forwards and calculates a symmetric window.
 
         Returns
         -------
@@ -303,7 +303,7 @@ class MoveTvEpgManager:
 
         Only start_time given:
             anchor    = start_time
-            backwards = 0
+            backwards = backwards (caller's value, default 2)
             forwards  = forwards (caller's value, default 2)
 
         Only end_time given:
@@ -366,9 +366,9 @@ class MoveTvEpgManager:
             anchor_utc = _to_utc(start_time)
             logger.debug(
                 f"MoveTV EPG: start_time only — anchor={anchor_utc.isoformat()} "
-                f"backwards=0 forwards={forwards}h"
+                f"backwards={backwards}h forwards={forwards}h"
             )
-            return anchor_utc, 0, forwards
+            return anchor_utc, backwards, forwards
 
         if end_time is not None:
             anchor_utc = _to_utc(end_time)
