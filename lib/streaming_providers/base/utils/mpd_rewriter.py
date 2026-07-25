@@ -353,7 +353,7 @@ class MPDRewriter:
                     extracted_kid = self._extract_kid_from_adaptationset(adaptation_set)
                     if extracted_kid:
                         as_id_to_kid[unique_id] = extracted_kid
-                        logger.debug(f"AdaptationSet {unique_id} KID: {extracted_kid[:8]}...")
+#                        logger.debug(f"AdaptationSet {unique_id} KID: {extracted_kid[:8]}...")
 
                 # Handle ContentProtection elements based on mode:
                 #   - server-side decrypt: strip all (player sees plain stream)
@@ -390,7 +390,7 @@ class MPDRewriter:
             default_kid = cp.get("{urn:mpeg:cenc:2013}default_KID")
             if default_kid:
                 normalized = default_kid.replace("-", "").lower()
-                logger.debug(f"Extracted KID from default_KID attribute: {normalized}")
+#                logger.debug(f"Extracted KID from default_KID attribute: {normalized}")
                 return normalized
 
         # Try PSSH box
@@ -413,7 +413,7 @@ class MPDRewriter:
                             if kid_count > 0 and len(pssh_data) >= 48:
                                 kid_bytes = pssh_data[32:48]
                                 kid_hex = kid_bytes.hex().lower()
-                                logger.debug(f"Extracted KID from PSSH header: {kid_hex}")
+#                                logger.debug(f"Extracted KID from PSSH header: {kid_hex}")
                                 return kid_hex
                 except Exception as e:
                     logger.debug(f"Error extracting KID from PSSH: {e}")
