@@ -120,8 +120,11 @@ class MoveTVProvider(StreamingProvider):
 
         self.http_manager = self._share_http_manager_with_authenticator(self.authenticator)
 
-        # Unified thread-safe cache for both Live and Catchup sources
-        self._source_cache = _SourceCache(max_size=100)
+        # Unified thread-safe LRU cache for both Live and Catchup sources.
+        # Keyed by content_id (live) or content_id:epg_id (catchup).
+        # Also stores entries keyed by the content_url itself so segment/manifest
+        # header requests can look them up safely.
+        self._source_cache = _SourceCache(max_size=200)
 
         # EPG response cache to prevent hammering the API on rapid manifest polls
         self._epg_cache: Dict[str, Tuple[List[EPGEntry], float]] = {}
@@ -287,7 +290,14 @@ class MoveTVProvider(StreamingProvider):
             else:
                 logger.warning(f"move.tv: Could not parse expiry from X-Play-Auth for {cache_key}")
 
+        # Cache by the primary key (e.g. content_id or content_id:epg_id)
         self._source_cache.set(cache_key, (content_url, header_value, expires_at))
+
+        # CRITICAL: Also cache by the content_url itself. This allows stateless
+        # proxy/segment header lookups if they pass the URL back to get_manifest_headers.
+        if content_url:
+            self._source_cache.set(content_url, (content_url, header_value, expires_at))
+
         logger.info(f"move.tv: Fetched and cached {operation} for {cache_key}: {content_url}")
 
         # Update channel object if it exists in memory
@@ -450,19 +460,50 @@ class MoveTVProvider(StreamingProvider):
         return url
 
     def get_manifest_headers(self, content_id: str, **kwargs) -> Dict[str, str]:
+        # 1. Check if URL is provided in kwargs (common for segment/manifest proxy requests)
+        url = kwargs.get("url") or kwargs.get("manifest_url") or kwargs.get("segment_url")
+        if url:
+            cached = self._source_cache.get(url)
+            if cached:
+                content_url, header_value, expires_at = cached
+                if expires_at and time.time() < (expires_at - MoveTVChannel._PLAY_AUTH_EARLY_EXPIRY_BUFFER):
+                    return {"User-Agent": MoveTVConfig.USER_AGENT, "X-Play-Auth": header_value}
+
         start_time = kwargs.get("start_time")
         end_time = kwargs.get("end_time")
         epg_id = kwargs.get("epg_id")
 
-        # If start_time and end_time are present, this is a catchup manifest/segment request
+        # 2. If start_time and end_time are present, this is a catchup manifest/segment request
         if start_time is not None and end_time is not None:
             try:
+                # FIX: Strip start_time, end_time, and epg_id from kwargs before forwarding
+                # to prevent Python TypeError (multiple values for argument).
+                forward_kwargs = {
+                    k: v for k, v in kwargs.items()
+                    if k not in ("start_time", "end_time", "epg_id")
+                }
+
+                if epg_id:
+                    logger.debug(f"move.tv: Fetching catchup headers with provided epg_id={epg_id}")
+                else:
+                    logger.debug(f"move.tv: epg_id missing in kwargs, will re-resolve for catchup headers")
+
                 return self.get_catchup_manifest_headers(
-                    content_id, int(start_time), int(end_time), epg_id, **kwargs
+                    content_id, int(start_time), int(end_time), epg_id, **forward_kwargs
                 )
             except ValueError:
-                pass
+                logger.warning(f"move.tv: ValueError parsing catchup times for {content_id}")
+            except Exception as exc:
+                # Don't silently swallow TypeErrors or other exceptions here
+                logger.error(f"move.tv: Error getting catchup manifest headers: {exc}")
 
+            # SAFETY NET: If catchup resolution failed for any reason, do NOT fall back
+            # to live headers. Return an empty auth header so the CDN rejects it
+            # loudly (401/403) rather than silently applying the wrong token.
+            logger.error(f"move.tv: Catchup header resolution failed for {content_id}. Returning safe empty headers.")
+            return {"User-Agent": MoveTVConfig.USER_AGENT}
+
+        # 3. Fallback to live manifest headers (only if NOT a catchup request)
         _, headers = self.get_manifest_with_headers(content_id, **kwargs)
         return headers
 
