@@ -555,7 +555,7 @@ class MPDRewriter:
             if period_key in base_url_map:
                 # Update base_url to the period-specific base URL
                 base_url = base_url_map[period_key]
-                logger.debug(f"Period {current_period_id} using stored base URL: {base_url}")
+#                logger.debug(f"Period {current_period_id} using stored base URL: {base_url}")
 
             # Process all children of this period
             for child in list(element):
@@ -580,7 +580,7 @@ class MPDRewriter:
             # Update base_url to the AdaptationSet-specific base URL
             if unique_id in base_url_map:
                 base_url = base_url_map[unique_id]
-                logger.debug(f"AdaptationSet {unique_id} using stored base URL: {base_url}")
+#                logger.debug(f"AdaptationSet {unique_id} using stored base URL: {base_url}")
 
             # Get specific KID for this AdaptationSet (multi-key mode only)
             if current_encrypted and not self.key_config.single_key_mode:
