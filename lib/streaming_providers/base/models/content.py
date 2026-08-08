@@ -135,6 +135,8 @@ class Content:
             "Country": self.country,
             "Language": self.language,
             "StreamingFormat": self.streaming_format,
+            "LicenseUrl": self.license_url,
+            "CertificateUrl": self.certificate_url,
         }
         if self.drm_config:
             result["DrmConfig"] = self.drm_config.to_dict()
