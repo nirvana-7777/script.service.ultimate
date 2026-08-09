@@ -77,6 +77,8 @@ class UltimateService:
         self.mpd_cache = MPDCacheManager()
         logger.info(f"MPD cache initialized: {self.mpd_cache.vfs.base_path}")
 
+        self._decrypted_cache = {}  # key -> (content, expiry_ts) — memory-only, never persisted
+
         # 1. Determine EPG URL FIRST (with proper precedence)
         self.epg_url = self._determine_epg_url()
         logger.info(f"UltimateService: Final EPG URL determined: {self.epg_url}")
@@ -393,234 +395,58 @@ class UltimateService:
 
         return manifest_response.text, ttl, provider_proxy_url, segment_headers, manifest_response.url
 
-    def get_decrypted_manifest(
-            self, provider: str, channel_id: str, keyids: dict,
-            highest_quality_only: bool = False, receiver_side: bool = False,
-            drm_variant: str = "auto",
-    ) -> str:
+    def _get_decrypted_cached(self, key: str, max_stale: int = 0) -> Optional[str]:
+        entry = self._decrypted_cache.get(key)
+        if not entry:
+            return None
+        content, expiry = entry
+        now = time.time()
+        if now < expiry:
+            return content
+        if max_stale and (now - expiry) <= max_stale:
+            logger.warning(f"Serving STALE decrypted manifest for {key} ({now - expiry:.1f}s past expiry)")
+            return content
+        del self._decrypted_cache[key]
+        return None
+
+    def _set_decrypted_cached(self, key: str, content: str, ttl: int) -> None:
+        self._decrypted_cache[key] = (content, time.time() + ttl)
+
+    @staticmethod
+    def _fetch_and_cache_manifest(fetch_fn, cache_set, cache_get_stale, *,
+                                   cacheable: bool, stale_window: int, label: str) -> str:
         """
-        Get rewritten MPD manifest for decrypted playback via media proxy.
-        Similar to get_proxied_manifest but adds kid/key parameters.
+        Shared fetch -> rewrite -> cache -> stale-fallback flow.
 
-        Args:
-            provider: Provider name
-            channel_id: Channel ID
-            keyids: Dictionary of kid:key pairs
-            highest_quality_only: If True, keep only highest quality video representation
-            receiver_side: If True, inject ClearKey signaling for receiver-side decryption
-            drm_variant: 'auto' (provider default) or 'software' (prefer ClearKey manifest).
-                         Must match the variant used in the original _resolve_stream call so
-                         the second manifest fetch selects the same stream as the first.
+        fetch_fn()          -> (content: str, ttl: int), raises on failure
+        cache_set(content, ttl) -> None
+        cache_get_stale(max_stale) -> Optional[str]
 
-        Returns:
-            Rewritten MPD content as string
+        Caller is responsible for the upfront "is it already cached" check and
+        manifest_url/config validation before calling this — that keeps a warm
+        cache hit from paying for a manifest_url lookup it doesn't need.
         """
-        country = request.query.get("country")
-
-        # Note: We don't cache decrypted manifests as they contain keys
-        logger.info(
-            f"Generating {'receiver-side clearkey' if receiver_side else 'decrypted'} manifest "
-            f"for {provider}/{channel_id} (highest_quality_only={highest_quality_only}, "
-            f"drm_variant={drm_variant})"
-        )
-
-        manifest_url = self.manager.get_channel_manifest(
-            provider_name=provider, channel_id=channel_id, country=country,
-            drm_variant=drm_variant,
-        )
-        if not manifest_url:
-            response.status = 404
-            response.content_type = "application/json"
-            return json.dumps(
-                {"error": f'Manifest not available for channel "{channel_id}" from provider "{provider}"'}
-            )
-
         try:
-            manifest_text, _ttl, provider_proxy_url, segment_headers, effective_url = self.fetch_manifest_for_rewriter(
-                provider, channel_id, manifest_url
-            )
-
-            rewriter = MPDRewriter(
-                self.media_proxy_url,
-                provider_proxy_url,
-                keyids,
-                highest_quality_only,
-                provider=provider,
-                channel=channel_id,
-                clearkey_receiver_side=receiver_side,
-                segment_headers=segment_headers,
-            )
-            rewritten_mpd = rewriter.rewrite_mpd(manifest_text, effective_url)
-
+            content, ttl = fetch_fn()
+            if cacheable:
+                cache_set(content, ttl)
             response.content_type = "application/dash+xml; charset=utf-8"
-            return rewritten_mpd
-
+            return content
         except ValueError as e:
+            # Config error (e.g. no HTTP manager) — not transient, don't mask with stale cache
             logger.error(str(e))
             response.status = 502
             response.content_type = "application/json"
             return json.dumps({"error": str(e)})
         except Exception as fetch_err:
-            logger.error(f"Failed to fetch manifest for decryption: {fetch_err}")
-            response.status = 502
-            response.content_type = "application/json"
-            return json.dumps({"error": f"Failed to fetch manifest: {str(fetch_err)}"})
-
-    def get_proxied_catchup_manifest(
-            self,
-            provider: str,
-            channel_id: str,
-            start_time: int,
-            end_time: int,
-            epg_id: str = None,
-            country: str = None,
-    ) -> str:
-        """
-        Get proxied and rewritten MPD manifest for catchup content using media proxy.
-        Similar to get_proxied_manifest but for catchup streams.
-        """
-        cache_key = f"{channel_id}_catchup_{start_time}_{end_time}"
-
-        cached_mpd = self.mpd_cache.get(provider, cache_key)
-        if cached_mpd:
-            response.content_type = "application/dash+xml; charset=utf-8"
-            return cached_mpd
-
-        logger.info(f"Cache miss for catchup {provider}/{channel_id}, fetching manifest")
-
-        if not self.media_proxy_url:
-            response.status = 503
-            response.content_type = "application/json"
-            return json.dumps({"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"})
-
-        manifest_url = self.manager.get_catchup_manifest(
-            provider_name=provider,
-            channel_id=channel_id,
-            start_time=start_time,
-            end_time=end_time,
-            epg_id=epg_id,
-            country=country,
-        )
-        if not manifest_url:
-            response.status = 404
-            response.content_type = "application/json"
-            return json.dumps({"error": "Catchup manifest not available"})
-
-        try:
-            manifest_text, ttl, provider_proxy_url, segment_headers, effective_url = self.fetch_manifest_for_rewriter(
-                provider, channel_id, manifest_url
-            )
-
-            rewriter = MPDRewriter(
-                self.media_proxy_url,
-                provider_proxy_url,
-                None,  # No keyids for catchup streams
-                False,  # highest_quality_only — not needed for catchup
-                provider=provider,
-                channel=channel_id,
-                segment_headers=segment_headers,
-            )
-            rewritten_mpd = rewriter.rewrite_mpd(manifest_text, effective_url)
-
-            self.mpd_cache.set(
-                provider=provider,
-                channel_id=cache_key,
-                mpd_content=rewritten_mpd,
-                ttl=ttl,
-                original_url=manifest_url,
-            )
-
-            response.content_type = "application/dash+xml; charset=utf-8"
-            return rewritten_mpd
-
-        except ValueError as e:
-            logger.error(str(e))
-            response.status = 502
-            response.content_type = "application/json"
-            return json.dumps({"error": str(e)})
-        except Exception as fetch_err:
-            logger.error(f"Failed to fetch catchup manifest: {fetch_err}")
-            response.status = 502
-            response.content_type = "application/json"
-            return json.dumps({"error": f"Failed to fetch manifest: {str(fetch_err)}"})
-
-    def get_decrypted_catchup_manifest(
-            self,
-            provider: str,
-            channel_id: str,
-            start_time: int,
-            end_time: int,
-            keyids: dict,
-            epg_id: str = None,
-            highest_quality_only: bool = False,
-    ) -> str:
-        """
-        Get a server-side-decrypted MPD manifest for catchup/DVR playback.
-
-        Mirrors get_decrypted_manifest() but fetches the catchup manifest URL
-        (via manager.get_catchup_manifest) rather than the live channel URL.
-        receiver_side is always False — the /decrypted/ endpoint contract is
-        that the server performs decryption, never the client.
-
-        Args:
-            provider:              Provider name.
-            channel_id:            Channel ID.
-            start_time:            Catchup window start (Unix timestamp).
-            end_time:              Catchup window end (Unix timestamp).
-            keyids:                dict of {kid: key} ClearKey pairs.
-            epg_id:                Optional EPG programme ID forwarded to the
-                                   provider for asset-based catchup resolution.
-            highest_quality_only:  If True, strip all but the highest-quality
-                                   video representation from the manifest.
-        """
-        country = request.query.get("country")
-
-        logger.info(
-            f"Generating decrypted catchup manifest for {provider}/{channel_id} "
-            f"(start={start_time} end={end_time} highest_quality_only={highest_quality_only})"
-        )
-
-        manifest_url = self.manager.get_catchup_manifest(
-            provider_name=provider,
-            channel_id=channel_id,
-            start_time=start_time,
-            end_time=end_time,
-            epg_id=epg_id,
-            country=country,
-        )
-        if not manifest_url:
-            response.status = 404
-            response.content_type = "application/json"
-            return json.dumps(
-                {"error": f'Catchup manifest not available for channel "{channel_id}" from provider "{provider}"'}
-            )
-
-        try:
-            manifest_text, _ttl, provider_proxy_url, segment_headers, effective_url = \
-                self.fetch_manifest_for_rewriter(provider, channel_id, manifest_url)
-
-            rewriter = MPDRewriter(
-                self.media_proxy_url,
-                provider_proxy_url,
-                keyids,
-                highest_quality_only,
-                provider=provider,
-                channel=channel_id,
-                clearkey_receiver_side=False,   # server decrypts — never inject ClearKey CP
-                segment_headers=segment_headers,
-            )
-            rewritten_mpd = rewriter.rewrite_mpd(manifest_text, effective_url)
-
-            response.content_type = "application/dash+xml; charset=utf-8"
-            return rewritten_mpd
-
-        except ValueError as e:
-            logger.error(str(e))
-            response.status = 502
-            response.content_type = "application/json"
-            return json.dumps({"error": str(e)})
-        except Exception as fetch_err:
-            logger.error(f"Failed to fetch catchup manifest for decryption: {fetch_err}")
+            logger.warning(f"{label} fetch failed: {fetch_err} — checking stale cache")
+            if cacheable:
+                stale = cache_get_stale(stale_window)
+                if stale:
+                    logger.warning(f"Serving stale {label} due to fetch failure")
+                    response.content_type = "application/dash+xml; charset=utf-8"
+                    return stale
+            logger.error(f"Failed to fetch {label}: {fetch_err}")
             response.status = 502
             response.content_type = "application/json"
             return json.dumps({"error": f"Failed to fetch manifest: {str(fetch_err)}"})
@@ -648,39 +474,167 @@ class UltimateService:
             return json.dumps(
                 {"error": f'Manifest not available for channel "{channel_id}" from provider "{provider}"'})
 
-        try:
+        def fetch_fn():
             manifest_text, ttl, provider_proxy_url, segment_headers, effective_url = self.fetch_manifest_for_rewriter(
                 provider, channel_id, manifest_url
             )
-
             rewriter = MPDRewriter(
-                self.media_proxy_url,
-                provider_proxy_url,
-                None,
-                highest_quality_only,
-                provider=provider,
-                channel=channel_id,
+                self.media_proxy_url, provider_proxy_url, None, highest_quality_only,
+                provider=provider, channel=channel_id, segment_headers=segment_headers,
+            )
+            return rewriter.rewrite_mpd(manifest_text, effective_url), ttl
+
+        return self._fetch_and_cache_manifest(
+            fetch_fn,
+            cache_set=lambda content, ttl: self.mpd_cache.set(
+                provider=provider, channel_id=channel_id, mpd_content=content, ttl=ttl, original_url=manifest_url
+            ),
+            cache_get_stale=lambda max_stale: self.mpd_cache.get(provider, channel_id, max_stale=max_stale),
+            cacheable=not highest_quality_only,
+            stale_window=15,
+            label=f"manifest for {provider}/{channel_id}",
+        )
+
+    def get_proxied_catchup_manifest(self, provider: str, channel_id: str, start_time: int, end_time: int,
+                                      epg_id: str = None, country: str = None) -> str:
+        cache_key = f"{channel_id}_catchup_{start_time}_{end_time}"
+
+        cached_mpd = self.mpd_cache.get(provider, cache_key)
+        if cached_mpd:
+            response.content_type = "application/dash+xml; charset=utf-8"
+            return cached_mpd
+
+        logger.info(f"Cache miss for catchup {provider}/{channel_id}, fetching manifest")
+
+        if not self.media_proxy_url:
+            response.status = 503
+            response.content_type = "application/json"
+            return json.dumps({"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"})
+
+        manifest_url = self.manager.get_catchup_manifest(
+            provider_name=provider, channel_id=channel_id, start_time=start_time, end_time=end_time,
+            epg_id=epg_id, country=country,
+        )
+        if not manifest_url:
+            response.status = 404
+            response.content_type = "application/json"
+            return json.dumps({"error": "Catchup manifest not available"})
+
+        def fetch_fn():
+            manifest_text, ttl, provider_proxy_url, segment_headers, effective_url = self.fetch_manifest_for_rewriter(
+                provider, channel_id, manifest_url
+            )
+            rewriter = MPDRewriter(
+                self.media_proxy_url, provider_proxy_url, None, False,
+                provider=provider, channel=channel_id, segment_headers=segment_headers,
+            )
+            return rewriter.rewrite_mpd(manifest_text, effective_url), ttl
+
+        return self._fetch_and_cache_manifest(
+            fetch_fn,
+            cache_set=lambda content, ttl: self.mpd_cache.set(
+                provider=provider, channel_id=cache_key, mpd_content=content, ttl=ttl, original_url=manifest_url
+            ),
+            cache_get_stale=lambda max_stale: self.mpd_cache.get(provider, cache_key, max_stale=max_stale),
+            cacheable=True,
+            stale_window=15,
+            label=f"catchup manifest for {provider}/{channel_id}",
+        )
+
+    def get_decrypted_manifest(self, provider: str, channel_id: str, keyids: dict,
+                                highest_quality_only: bool = False, receiver_side: bool = False,
+                                drm_variant: str = "auto") -> str:
+        country = request.query.get("country")
+        cache_key = f"{provider}_{channel_id}_drm_{drm_variant}"
+
+        if not highest_quality_only:
+            cached_mpd = self._get_decrypted_cached(cache_key)
+            if cached_mpd:
+                response.content_type = "application/dash+xml; charset=utf-8"
+                return cached_mpd
+
+        logger.info(
+            f"Generating {'receiver-side clearkey' if receiver_side else 'decrypted'} manifest "
+            f"for {provider}/{channel_id} (highest_quality_only={highest_quality_only}, drm_variant={drm_variant})"
+        )
+
+        manifest_url = self.manager.get_channel_manifest(
+            provider_name=provider, channel_id=channel_id, country=country, drm_variant=drm_variant,
+        )
+        if not manifest_url:
+            response.status = 404
+            response.content_type = "application/json"
+            return json.dumps(
+                {"error": f'Manifest not available for channel "{channel_id}" from provider "{provider}"'})
+
+        def fetch_fn():
+            manifest_text, ttl, provider_proxy_url, segment_headers, effective_url = self.fetch_manifest_for_rewriter(
+                provider, channel_id, manifest_url
+            )
+            rewriter = MPDRewriter(
+                self.media_proxy_url, provider_proxy_url, keyids, highest_quality_only,
+                provider=provider, channel=channel_id, clearkey_receiver_side=receiver_side,
                 segment_headers=segment_headers,
             )
             rewritten_mpd = rewriter.rewrite_mpd(manifest_text, effective_url)
+            return rewritten_mpd, min(ttl, 10)  # holds key material — keep exposure window short
 
-            if not highest_quality_only:
-                self.mpd_cache.set(provider=provider, channel_id=channel_id,
-                                   mpd_content=rewritten_mpd, ttl=ttl, original_url=manifest_url)
+        return self._fetch_and_cache_manifest(
+            fetch_fn,
+            cache_set=lambda content, ttl: self._set_decrypted_cached(cache_key, content, ttl),
+            cache_get_stale=lambda max_stale: self._get_decrypted_cached(cache_key, max_stale=max_stale),
+            cacheable=not highest_quality_only,
+            stale_window=5,
+            label=f"decrypted manifest for {provider}/{channel_id}",
+        )
 
-            response.content_type = "application/dash+xml; charset=utf-8"
-            return rewritten_mpd
+    def get_decrypted_catchup_manifest(self, provider: str, channel_id: str, start_time: int, end_time: int,
+                                        keyids: dict, epg_id: str = None,
+                                        highest_quality_only: bool = False) -> str:
+        country = request.query.get("country")
+        cache_key = f"{provider}_{channel_id}_catchup_{start_time}_{end_time}_drm"
 
-        except ValueError as e:
-            logger.error(str(e))
-            response.status = 502
+        if not highest_quality_only:
+            cached_mpd = self._get_decrypted_cached(cache_key)
+            if cached_mpd:
+                response.content_type = "application/dash+xml; charset=utf-8"
+                return cached_mpd
+
+        logger.info(
+            f"Generating decrypted catchup manifest for {provider}/{channel_id} "
+            f"(start={start_time} end={end_time} highest_quality_only={highest_quality_only})"
+        )
+
+        manifest_url = self.manager.get_catchup_manifest(
+            provider_name=provider, channel_id=channel_id, start_time=start_time, end_time=end_time,
+            epg_id=epg_id, country=country,
+        )
+        if not manifest_url:
+            response.status = 404
             response.content_type = "application/json"
-            return json.dumps({"error": str(e)})
-        except Exception as fetch_err:
-            logger.error(f"Failed to fetch manifest: {fetch_err}")
-            response.status = 502
-            response.content_type = "application/json"
-            return json.dumps({"error": f"Failed to fetch manifest: {str(fetch_err)}"})
+            return json.dumps(
+                {"error": f'Catchup manifest not available for channel "{channel_id}" from provider "{provider}"'})
+
+        def fetch_fn():
+            manifest_text, ttl, provider_proxy_url, segment_headers, effective_url = self.fetch_manifest_for_rewriter(
+                provider, channel_id, manifest_url
+            )
+            rewriter = MPDRewriter(
+                self.media_proxy_url, provider_proxy_url, keyids, highest_quality_only,
+                provider=provider, channel=channel_id, clearkey_receiver_side=False,
+                segment_headers=segment_headers,
+            )
+            rewritten_mpd = rewriter.rewrite_mpd(manifest_text, effective_url)
+            return rewritten_mpd, min(ttl, 30)
+
+        return self._fetch_and_cache_manifest(
+            fetch_fn,
+            cache_set=lambda content, ttl: self._set_decrypted_cached(cache_key, content, ttl),
+            cache_get_stale=lambda max_stale: self._get_decrypted_cached(cache_key, max_stale=max_stale),
+            cacheable=not highest_quality_only,
+            stale_window=10,
+            label=f"decrypted catchup manifest for {provider}/{channel_id}",
+        )
 
     @staticmethod
     def _sort_channels(channels):

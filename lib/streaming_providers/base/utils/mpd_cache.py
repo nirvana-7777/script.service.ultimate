@@ -31,42 +31,55 @@ class MPDCacheManager:
         """Get filename for cache metadata"""
         return f"{cache_key}.meta"
 
-    def get(self, provider: str, channel_id: str) -> Optional[str]:
+    def get(self, provider: str, channel_id: str, max_stale: int = 0) -> Optional[str]:
         """
-        Get cached MPD manifest if valid
+        Get cached MPD manifest if valid.
 
         Args:
             provider: Provider name
             channel_id: Channel ID
+            max_stale: If > 0, still return manifest content up to this many
+                       seconds past expiry instead of None/deleting it. The
+                       caller is expected to only pass this when a live
+                       refetch has already failed — a stale manifest is a
+                       fallback of last resort, not a normal cache hit.
+                       Default 0 preserves existing behaviour everywhere
+                       this is called without the new argument.
 
         Returns:
-            Cached MPD content if valid and not expired, None otherwise
+            Cached MPD content if valid (or within max_stale), None otherwise
         """
         cache_key = self._get_cache_key(provider, channel_id)
         meta_file = self._get_meta_filename(cache_key)
         manifest_file = self._get_manifest_filename(cache_key)
 
         try:
-            # Read metadata first (small file)
             meta = self.vfs.read_json(meta_file)
             if not meta:
                 logger.debug(f"No cache metadata found for {cache_key}")
                 return None
 
-            # Check expiry
             expiry = meta.get("expiry", 0)
             now = int(time.time())
 
             if now >= expiry:
+                staleness = now - expiry
+                if max_stale and staleness <= max_stale:
+                    manifest_content = self.vfs.read_text(manifest_file)
+                    if manifest_content:
+                        logger.warning(
+                            f"Serving STALE cache for {cache_key} "
+                            f"({staleness}s past expiry, max_stale={max_stale}s)"
+                        )
+                        return manifest_content
+                    # meta exists but file missing — nothing to serve stale
                 logger.debug(
-                    f"Cache expired for {cache_key} (expired {now - expiry}s ago)"
+                    f"Cache expired for {cache_key} (expired {staleness}s ago)"
                 )
-                # Clean up expired cache
                 self.vfs.delete(manifest_file)
                 self.vfs.delete(meta_file)
                 return None
 
-            # Cache is valid, read manifest
             manifest_content = self.vfs.read_text(manifest_file)
             if manifest_content:
                 logger.info(f"Cache hit for {cache_key} (expires in {expiry - now}s)")
