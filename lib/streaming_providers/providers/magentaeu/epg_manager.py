@@ -84,9 +84,11 @@ _ROLES_DE: Dict[str, str] = {
     "Drehbuch": "writers",
     "Moderation": "presenter",
     "Musik": "composers",
-    "songs": "composers",       # songwriter credit (English label used across AT content)
+    "songs": "composers",
     "Mitarbeiter": "contributors",
-    "Technik": "contributors",  # technical crew
+    "Technik": "contributors",
+    "Gestaltung": "directors",      # Art direction / production design
+    "Sonstiges": "contributors",    # Other miscellaneous credits
 }
 
 _ROLES_PL: Dict[str, str] = {
@@ -98,12 +100,11 @@ _ROLES_PL: Dict[str, str] = {
 }
 
 _ROLES_HR: Dict[str, str] = {
-    # ALL-CAPS as returned by the bifrost API for HR
     "GLUMI": "cast",
     "REŽIJA": "directors",
     "PRODUKCIJA": "producers",
     "SCENARIJ": "writers",
-    "AUTOR": "writers",       # second writer label — both map to the same bucket
+    "AUTOR": "writers",
     "VODITELJ": "presenter",
 }
 
@@ -113,6 +114,10 @@ _ROLES_ME: Dict[str, str] = {
     "Producent": "producers",
     "Scenarista": "writers",
     "Voditelj": "presenter",
+    "Produkcija": "producers",      # Production
+    "Scenario": "writers",          # Screenplay
+    "Pripovijeda": "presenter",     # Narrator
+    "Autor": "writers",             # Author
 }
 
 _ROLES_HU: Dict[str, str] = {
@@ -120,7 +125,7 @@ _ROLES_HU: Dict[str, str] = {
     "Rendező": "directors",
     "Producer": "producers",
     "Író": "writers",
-    "Forgatókönyvíró": "writers",   # screenwriter — also maps to writers
+    "Forgatókönyvíró": "writers",
     "Műsorvezető": "presenter",
     "Stáb": "contributors",
 }
