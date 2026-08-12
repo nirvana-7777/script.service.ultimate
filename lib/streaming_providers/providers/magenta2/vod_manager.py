@@ -61,7 +61,7 @@ Public interface
 
 import time
 import uuid as _uuid_mod
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Union
 from ...base.utils.logger import logger
@@ -111,14 +111,55 @@ def _map_quality(api_quality: Optional[str]) -> Optional[Quality]:
 
 
 def _parse_iso(dt_str: Optional[str]) -> Optional[datetime]:
-    """Parse an ISO-8601 datetime string (e.g. partnerValidFrom/To), or None."""
+    """
+    Parse an ISO-8601 datetime string (e.g. partnerValidFrom/To), or None.
+
+    Normalises to a naive UTC datetime. partnerValidFrom/partnerValidTo carry
+    a timezone offset (e.g. "+02:00"), but PricePoint.is_active() compares
+    valid_from/valid_until against datetime.now() (naive) -- comparing a
+    naive and a timezone-aware datetime raises TypeError in Python. Stripping
+    to naive UTC here keeps that comparison working without touching
+    pricing.py. Precision loss vs. datetime.now()'s naive *local* time is at
+    most a few hours, which is immaterial for validity windows spanning
+    months/years, as seen in this API.
+    """
     if not dt_str:
         return None
     try:
-        return datetime.fromisoformat(dt_str)
+        dt = datetime.fromisoformat(dt_str)
     except (ValueError, TypeError):
         logger.debug(f"Could not parse ISO datetime: {dt_str!r}")
         return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _partner_is_active(partner: Dict) -> bool:
+    """
+    Whether a partners[] entry represents a currently usable access path.
+
+    Excludes:
+      - isExpiredPartner == True (server-flagged stale entry, e.g. a partner
+        the account no longer has, or a withdrawn offer).
+      - Entries with a partnerValidFrom/partnerValidTo window that does not
+        currently include now().
+
+    Partners with no validity window at all (neither field present) are
+    treated as active as long as they aren't flagged expired -- some
+    partners in real responses omit the window entirely.
+    """
+    if partner.get("isExpiredPartner"):
+        return False
+
+    valid_from = _parse_iso(partner.get("partnerValidFrom"))
+    valid_until = _parse_iso(partner.get("partnerValidTo"))
+    now = datetime.utcnow()
+    if valid_from and now < valid_from:
+        return False
+    if valid_until and now > valid_until:
+        return False
+    return True
 
 
 class VodManager:
