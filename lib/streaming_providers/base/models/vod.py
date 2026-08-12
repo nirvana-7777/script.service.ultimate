@@ -5,7 +5,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from .content import Content
+from .content import Content, StreamingMode, ContentType
 from ..utils.logger import logger
 
 
@@ -129,13 +129,10 @@ class VodCategory:
 
     def __post_init__(self):
         """Validate and clean up required fields."""
-        # Defensive: ensure name is a string
-        if self.name is None:
-            logger.warning(f"VodCategory created with None name for content_id {self.content_id}")
+        # Defensive: ensure name is a valid string
+        if not isinstance(self.name, str) or not self.name.strip():
+            logger.warning(f"VodCategory created with invalid name for content_id {self.content_id}")
             self.name = f"Unbenannt_{self.content_id}"
-        elif not isinstance(self.name, str):
-            logger.warning(f"VodCategory created with non-string name '{self.name}' for content_id {self.content_id}")
-            self.name = str(self.name)
 
         # Ensure content_id is valid
         if not self.content_id:
@@ -226,25 +223,25 @@ class VodItem(Content):
 
     def __post_init__(self):
         """Validate and clean up required fields."""
-        # Defensive: ensure name is a string
-        if self.name is None:
-            logger.warning(f"VodItem created with None name for content_id {self.content_id}")
+        # Defensive: ensure name is a valid string
+        if not isinstance(self.name, str) or not self.name.strip():
+            logger.warning(f"VodItem created with invalid name for content_id {self.content_id}")
             self.name = f"Unbenanntes Video_{self.content_id}"
-        elif not isinstance(self.name, str):
-            logger.warning(f"VodItem created with non-string name '{self.name}' for content_id {self.content_id}")
-            self.name = str(self.name)
 
         # Ensure mode and content_type are set correctly for on-demand content
-        if self.mode == "live":
-            self.mode = "vod"
-        if self.content_type == "LIVE":
-            self.content_type = "VOD"
+        if self.mode == StreamingMode.LIVE:
+            self.mode = StreamingMode.VOD
+        if self.content_type == ContentType.LIVE:
+            self.content_type = ContentType.VOD
 
-        # Defensive: handle None for season/episode numbers
+        # Defensive: handle negative season/episode numbers
         if self.season_number is not None and self.season_number < 0:
             self.season_number = None
         if self.episode_number is not None and self.episode_number < 0:
             self.episode_number = None
+
+        # 🔥 CRITICAL: Call parent __post_init__ to validate Pricing vs Mode!
+        super().__post_init__()
 
     @property
     def slug(self) -> str:
@@ -312,32 +309,32 @@ class VodItem(Content):
     # Factory methods
     @classmethod
     def create_movie(
-            cls, name: str, content_id: str, provider: str, **kwargs
+            cls, name: Optional[str], content_id: str, provider: str, **kwargs
     ) -> "VodItem":
         # Defensive: ensure name is string
-        if name is None:
+        if not isinstance(name, str) or not name:
             name = f"Film_{content_id}"
         return cls(
             name=name,
             content_id=content_id,
             provider=provider,
-            mode="vod",
-            content_type="MOVIE",
+            mode=StreamingMode.VOD,
+            content_type=ContentType.MOVIE,
             **kwargs,
         )
 
     @classmethod
     def create_episode(
             cls,
-            name: str,
+            name: Optional[str],
             content_id: str,
             provider: str,
-            season_number: int,
-            episode_number: int,
+            season_number: Optional[int],
+            episode_number: Optional[int],
             **kwargs,
     ) -> "VodItem":
         # Defensive: ensure name is string
-        if name is None:
+        if not isinstance(name, str) or not name:
             name = f"Episode_{content_id}"
         # Defensive: handle negative season/episode numbers
         if season_number is not None and season_number < 0:
@@ -349,8 +346,8 @@ class VodItem(Content):
             name=name,
             content_id=content_id,
             provider=provider,
-            mode="vod",
-            content_type="SERIES",
+            mode=StreamingMode.VOD,
+            content_type=ContentType.SERIES,
             season_number=season_number,
             episode_number=episode_number,
             **kwargs,

@@ -2,7 +2,8 @@
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-from .content import Content, Quality
+from .content import Content
+from .quality import Quality
 from ..utils.logger import logger
 
 

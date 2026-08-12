@@ -1,9 +1,9 @@
-# streaming_providers/base/models/content.py
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from decimal import Decimal
+from typing import Dict, List, Optional, Set
 
 from .drm import DRMConfig
-
+from .pricing import AccessType, PricePoint, Pricing
 
 class StreamingMode:
     """Enum for streaming modes"""
@@ -18,16 +18,6 @@ class ContentType:
     SERIES = "SERIES"
     MOVIE = "MOVIE"
     RADIO = "RADIO"
-
-
-class Quality:
-    """Enum for stream quality"""
-    SD = "SD"
-    HD = "HD"
-    UHD = "UHD"
-    FOUR_K = "4K"
-    AUDIO = "AUDIO"
-
 
 @dataclass
 class Content:
@@ -75,6 +65,106 @@ class Content:
     certificate_url: Optional[str] = None
     streaming_format: Optional[str] = None
 
+    # Pricing (None = UNKNOWN, NOT FREE)
+    pricing: Optional[Pricing] = None
+
+    def __post_init__(self):
+        """Validate pricing and mode consistency."""
+        if not self.pricing:
+            return
+
+        # Define mode mappings
+        live_types: Set[AccessType] = {
+            AccessType.PPV_LIVE,
+            AccessType.PPV_REPLAY,
+            AccessType.SVOD_PPV,
+            AccessType.AVOD
+        }
+        vod_types: Set[AccessType] = {
+            AccessType.TVOD_RENTAL,
+            AccessType.TVOD_PURCHASE
+        }
+
+        # Check mode consistency
+        if self.pricing.access_type in live_types and self.mode != StreamingMode.LIVE:
+            raise ValueError(
+                f"Content '{self.name}' has {self.pricing.access_type.value} pricing "
+                f"but mode is '{self.mode}' (expected '{StreamingMode.LIVE}')"
+            )
+        elif self.pricing.access_type in vod_types and self.mode != StreamingMode.VOD:
+            raise ValueError(
+                f"Content '{self.name}' has {self.pricing.access_type.value} pricing "
+                f"but mode is '{self.mode}' (expected '{StreamingMode.VOD}')"
+            )
+
+    # --- Pricing Properties ---
+
+    @property
+    def is_free(self) -> Optional[bool]:
+        """Returns None if pricing is unknown."""
+        if not self.pricing:
+            return None
+        return self.pricing.is_free_at_point_of_use
+
+    @property
+    def requires_subscription(self) -> Optional[bool]:
+        if not self.pricing:
+            return None
+        return self.pricing.requires_subscription
+
+    @property
+    def requires_payment(self) -> Optional[bool]:
+        if not self.pricing:
+            return None
+        return self.pricing.requires_transactional_payment
+
+    @property
+    def has_pricing(self) -> bool:
+        """Check if pricing is set."""
+        return self.pricing is not None
+
+    # --- Pricing Helpers ---
+
+    def set_free(self) -> None:
+        """Mark content as free."""
+        self.pricing = Pricing(access_type=AccessType.FREE)
+
+    def set_subscription(self, tiers: Optional[List[str]] = None, bouquets: Optional[List[str]] = None) -> None:
+        """Mark content as subscription-only."""
+        self.pricing = Pricing(
+            access_type=AccessType.SVOD,
+            required_tiers=tiers or [],
+            required_bouquets=bouquets or []
+        )
+
+    def set_ppv(self, amount: Decimal, currency: str = "EUR",
+                access_type: AccessType = AccessType.PPV_LIVE, **kwargs) -> None:
+        """Mark content as PPV (live or replay)."""
+        if access_type not in (AccessType.PPV_LIVE, AccessType.PPV_REPLAY):
+            raise ValueError("access_type must be PPV_LIVE or PPV_REPLAY")
+        self.pricing = Pricing(
+            access_type=access_type,
+            price_points=[PricePoint(amount=amount, currency=currency, **kwargs)]
+        )
+
+    def set_rental(self, amount: Decimal, currency: str = "EUR",
+                   rental_duration_hours: int = 48, **kwargs) -> None:
+        """Mark content as TVOD rental."""
+        self.pricing = Pricing(
+            access_type=AccessType.TVOD_RENTAL,
+            rental_duration_hours=rental_duration_hours,
+            price_points=[PricePoint(amount=amount, currency=currency, **kwargs)]
+        )
+
+    def set_purchase(self, amount: Decimal, currency: str = "EUR", **kwargs) -> None:
+        """Mark content as EST purchase (buy-to-own)."""
+        self.pricing = Pricing(
+            access_type=AccessType.TVOD_PURCHASE,
+            price_points=[PricePoint(amount=amount, currency=currency, **kwargs)]
+        )
+
+    # --- Manifest & DRM Methods ---
+
     def set_static_manifest(self, manifest_url: str) -> None:
         """Set a static manifest URL."""
         self.manifest = manifest_url
@@ -113,6 +203,8 @@ class Content:
     def requires_session_manifest(self) -> bool:
         return self.session_manifest
 
+    # --- Serialization ---
+
     def to_dict(self) -> Dict:
         result = {
             "Name": self.name,
@@ -137,7 +229,14 @@ class Content:
             "StreamingFormat": self.streaming_format,
             "LicenseUrl": self.license_url,
             "CertificateUrl": self.certificate_url,
+            # Pricing derived fields
+            "IsFree": self.is_free,
+            "RequiresSubscription": self.requires_subscription,
+            "RequiresPayment": self.requires_payment,
+            "HasPricing": self.has_pricing,
         }
         if self.drm_config:
             result["DrmConfig"] = self.drm_config.to_dict()
+        if self.pricing:
+            result["Pricing"] = self.pricing.to_dict()
         return result
