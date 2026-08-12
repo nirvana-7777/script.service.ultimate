@@ -29,7 +29,24 @@ Playback chain  (implemented in provider.get_manifest)
           That MPX selector URL is the manifest -- identical format to live channels.
 
     Bonus: buttons.secondary[] where rel=="trailer"
-          → href = trailer URL  (populate VodItem.trailer_url if desired)
+          → href = trailer URL  (populates VodItem.trailer_url)
+
+Pricing
+-------
+    VodDetails.content.contentInformation carries pricing in one of two shapes:
+      1. Direct fields: buyPrice, rentPrice on contentInformation itself.
+      2. partners[] array: each partner may carry its own buyPrice/rentPrice
+         plus a validity window (partnerValidFrom/partnerValidTo).
+
+    A single partner commonly exposes BOTH buyPrice and rentPrice at once
+    (this is the normal case, not an edge case, e.g. the "videoload" partner).
+    Both are captured as parallel PricePoint entries on one Pricing object,
+    disambiguated via PricePoint.offer_type -- see base/models/pricing.py.
+
+    Pricing.access_type is treated as the "default CTA": TVOD_RENTAL when a
+    rental offer exists, TVOD_PURCHASE otherwise. Callers that need the other
+    offer explicitly should use Pricing.primary_rental_price /
+    Pricing.primary_purchase_price rather than relying on access_type alone.
 
 tvhubs base URL resolution order
 ---------------------------------
@@ -44,10 +61,14 @@ Public interface
 
 import time
 import uuid as _uuid_mod
+from datetime import datetime
+from decimal import Decimal
 from typing import Any, Dict, List, Optional, Union
 from ...base.utils.logger import logger
 
 from ...base.models.vod import VodCategory, VodItem
+from ...base.models.pricing import AccessType, PricePoint, Pricing
+from ...base.models.quality import Quality
 
 from .constants import (
     QUALITY_FALLBACK,
@@ -60,6 +81,44 @@ from .constants import (
     VOD_PREFIX_SEASON,
     VOD_PREFIX_SERIES,
 )
+
+
+# =============================================================================
+# Pricing helpers (module-level, no instance state required)
+# =============================================================================
+
+# The API exposes "UHDHDR" as a distinct video-quality tier but the shared
+# Quality enum has no HDR variant -- collapse it into UHD. Revisit if HDR
+# badging is ever needed on price points.
+_QUALITY_MAP: Dict[str, Quality] = {
+    "UHDHDR": Quality.UHD,
+    "UHD": Quality.UHD,
+    "HD": Quality.HD,
+    "SD": Quality.SD,
+}
+
+# Not present anywhere in the VodDetails response -- this is an unconfirmed
+# guess. Replace with a real value if/when the API or app is found to expose
+# the actual rental window.
+_DEFAULT_RENTAL_HOURS = 48
+
+
+def _map_quality(api_quality: Optional[str]) -> Optional[Quality]:
+    """Map a raw API videoQualities string to the shared Quality enum."""
+    if not api_quality:
+        return None
+    return _QUALITY_MAP.get(api_quality.upper())
+
+
+def _parse_iso(dt_str: Optional[str]) -> Optional[datetime]:
+    """Parse an ISO-8601 datetime string (e.g. partnerValidFrom/To), or None."""
+    if not dt_str:
+        return None
+    try:
+        return datetime.fromisoformat(dt_str)
+    except (ValueError, TypeError):
+        logger.debug(f"Could not parse ISO datetime: {dt_str!r}")
+        return None
 
 
 class VodManager:
@@ -852,6 +911,13 @@ class VodManager:
         Movies → delegate to _fetch_single_item so the full playback chain
                  (VodDetails → productInformationLink → VodPlayer → playbackUrls)
                  is resolved and the correct MPX mediaId is stored as content_id.
+
+        Note: pricing is intentionally NOT resolved here. Lane browsing can
+        return dozens of items per page; fetching VodDetails per item just to
+        populate pricing would multiply request volume for data the user may
+        never look at. Pricing is resolved lazily in _fetch_single_item /
+        _fetch_single_episode, i.e. when the user actually opens the detail
+        view or triggers playback.
         """
         content_id: str = item.get("id", "")
         title: str = (item.get("title") or "").strip()
@@ -918,6 +984,183 @@ class VodManager:
             genres=item.get("genres") or None,
             duration_seconds=int(duration_raw) * 60 if duration_raw else None,
             rating=item.get("childProtectionId"),
+            # No pricing here — resolved lazily, see docstring above.
+        )
+
+    # =========================================================================
+    # Private helpers – Pricing
+    # =========================================================================
+
+    def _parse_pricing_from_vod_details(self, data: Dict) -> Optional[Pricing]:
+        """
+        Extract pricing information from a VodDetails response.
+
+        Pricing can appear in two shapes:
+          1. Direct fields on contentInformation: buyPrice, rentPrice.
+          2. A partners[] array, each partner carrying its own buyPrice/
+             rentPrice and a validity window (partnerValidFrom/To).
+
+        Both buy and rent can be present simultaneously on the same partner
+        (this is the common case, not an edge case — see the "videoload"
+        partner in the sample VodDetails response). Both are kept as
+        parallel PricePoints on one Pricing object, distinguished by
+        PricePoint.offer_type.
+
+        Returns:
+            Pricing object, or None if no pricing data is available.
+        """
+        content_info = data.get("content", {}).get("contentInformation", {})
+        if not content_info:
+            return None
+
+        # Check for direct pricing fields first.
+        buy_price = content_info.get("buyPrice")
+        rent_price = content_info.get("rentPrice")
+        if buy_price is not None or rent_price is not None:
+            return self._create_pricing_from_direct_fields(
+                buy_price=buy_price,
+                rent_price=rent_price,
+                currency="EUR",  # Not present in response; assumed from provider locale.
+            )
+
+        # Otherwise, check the partners array.
+        partners = content_info.get("partners", [])
+        if not partners:
+            return None
+
+        # Prefer "videoload" (native Magenta VOD partner) as the pricing source.
+        for partner in partners:
+            if partner.get("partnerId") == "videoload":
+                pricing = self._create_pricing_from_partner(partner)
+                if pricing:
+                    return pricing
+
+        # Fall back to the first partner that actually carries a price.
+        # Partners such as Disney+ in the sample response have no buy/rentPrice
+        # at all (SVOD-only access) and are naturally skipped here.
+        for partner in partners:
+            if partner.get("buyPrice") is not None or partner.get("rentPrice") is not None:
+                pricing = self._create_pricing_from_partner(partner)
+                if pricing:
+                    return pricing
+
+        return None
+
+    def _create_pricing_from_partner(self, partner: Dict) -> Optional[Pricing]:
+        """
+        Create a Pricing object from a partners[] entry in the VodDetails response.
+
+        Partner shape (see sample VodDetails response):
+        {
+            "partnerId": "videoload",
+            "buyPrice": 13.99,
+            "rentPrice": 4.99,
+            "videoQualities": ["UHDHDR", "UHD", "HD", "SD"],
+            "partnerValidFrom": "2026-06-30T00:01:00+02:00",
+            "partnerValidTo": "2099-12-31T23:59:00+01:00",
+            ...
+        }
+
+        The price itself is not quality-differentiated — one buyPrice/rentPrice
+        covers every quality listed in videoQualities — so PricePoint.quality is
+        left unset here rather than misleadingly tagged with only the top tier.
+        """
+        buy_price = partner.get("buyPrice")
+        rent_price = partner.get("rentPrice")
+        if buy_price is None and rent_price is None:
+            return None
+
+        valid_from = _parse_iso(partner.get("partnerValidFrom"))
+        valid_until = _parse_iso(partner.get("partnerValidTo"))
+        partner_label = partner.get("partnerName", partner.get("partnerId", "unknown"))
+
+        price_points: List[PricePoint] = []
+        has_rental = rent_price is not None and rent_price > 0
+        has_purchase = buy_price is not None and buy_price > 0
+
+        if has_rental:
+            price_points.append(
+                PricePoint(
+                    amount=Decimal(str(rent_price)),
+                    currency="EUR",
+                    offer_type=AccessType.TVOD_RENTAL,
+                    rental_duration_hours=_DEFAULT_RENTAL_HOURS,
+                    valid_from=valid_from,
+                    valid_until=valid_until,
+                )
+            )
+
+        if has_purchase:
+            price_points.append(
+                PricePoint(
+                    amount=Decimal(str(buy_price)),
+                    currency="EUR",
+                    offer_type=AccessType.TVOD_PURCHASE,
+                    valid_from=valid_from,
+                    valid_until=valid_until,
+                )
+            )
+
+        if not price_points:
+            return None
+
+        return Pricing(
+            access_type=AccessType.TVOD_RENTAL if has_rental else AccessType.TVOD_PURCHASE,
+            price_points=price_points,
+            rental_duration_hours=_DEFAULT_RENTAL_HOURS if has_rental else None,
+            description=f"Available via {partner_label}",
+        )
+
+    def _create_pricing_from_direct_fields(
+            self,
+            buy_price: Optional[float],
+            rent_price: Optional[float],
+            currency: str = "EUR",
+    ) -> Optional[Pricing]:
+        """
+        Create a Pricing object from direct price fields on contentInformation.
+
+        Fields:
+            buyPrice: float  - Purchase price
+            rentPrice: float - Rental price
+
+        Same parallel-offer handling as _create_pricing_from_partner — both
+        buy and rent, when present, become separate PricePoints on one
+        Pricing object rather than one being silently dropped.
+        """
+        if buy_price is None and rent_price is None:
+            return None
+
+        price_points: List[PricePoint] = []
+        has_rental = rent_price is not None and rent_price > 0
+        has_purchase = buy_price is not None and buy_price > 0
+
+        if has_rental:
+            price_points.append(
+                PricePoint(
+                    amount=Decimal(str(rent_price)),
+                    currency=currency,
+                    offer_type=AccessType.TVOD_RENTAL,
+                    rental_duration_hours=_DEFAULT_RENTAL_HOURS,
+                )
+            )
+
+        if has_purchase:
+            price_points.append(
+                PricePoint(
+                    amount=Decimal(str(buy_price)),
+                    currency=currency,
+                    offer_type=AccessType.TVOD_PURCHASE,
+                )
+            )
+
+        if not price_points:
+            return None
+
+        return Pricing(
+            access_type=AccessType.TVOD_RENTAL if has_rental else AccessType.TVOD_PURCHASE,
+            price_points=price_points,
+            rental_duration_hours=_DEFAULT_RENTAL_HOURS if has_rental else None,
         )
 
     # =========================================================================
@@ -1369,6 +1612,10 @@ class VodManager:
         manifest_script is not set here — lane listings do not include
         productInformationLink.  The provider's get_manifest(content_id) must
         fetch VodDetails for the episode to obtain it.
+
+        Pricing is likewise not resolved here for the same reason it's skipped
+        in _map_unstructured_item — lane/season listings can contain many
+        items and pricing is only needed once the user opens the episode.
         """
         content_id: str = ep.get("id", "")
         if not content_id:
@@ -1424,6 +1671,10 @@ class VodManager:
         duration_seconds: Optional[int] = (
             int(info["runtime"]) * 60 if info.get("runtime") else None
         )
+
+        # Resolve pricing from the same VodDetails response.
+        pricing = self._parse_pricing_from_vod_details(data)
+
         product_url: Optional[str] = (
                 content_block.get("productInformationLink") or {}
         ).get("href")
@@ -1431,11 +1682,12 @@ class VodManager:
         # Walk the full playback chain to resolve a real MPX mediaId, just
         # like _fetch_single_item() does for movies.  Without this step the
         # content_id stays as a GN_EP* Gracenote id which the manifest/DRM
-        # layer cannot use.
+        # layer cannot use.  Also picks up buttons.secondary[rel=="trailer"].
         playback_href: Optional[str] = None
         playback_media_id: Optional[str] = None
+        trailer_href: Optional[str] = None
         if product_url:
-            playback_href, playback_media_id = self._resolve_movie_playback_href(
+            playback_href, playback_media_id, trailer_href = self._resolve_movie_playback_href(
                 product_url, self._playback_params()
             )
 
@@ -1487,6 +1739,8 @@ class VodManager:
             series_title=info.get("seriesTitle"),
             manifest_script=manifest_script,
             session_manifest=session_manifest,
+            pricing=pricing,
+            trailer_url=trailer_href,
         )]
 
     def _pick_playback_media_id(self, playback_urls: List[Dict]) -> Optional[str]:
@@ -1540,6 +1794,13 @@ class VodManager:
         real API response only contain Person and recommendation rows — there
         are no playable child items to recurse into.
 
+        Pricing resolution
+        -------------------
+        Resolved from the same VodDetails response via
+        _parse_pricing_from_vod_details(); see that method's docstring for the
+        direct-fields vs partners[] precedence and the parallel rent/buy
+        PricePoint handling.
+
         Playback ID resolution
         ----------------------
         The VodPlayer response (step 3 of the playback chain) exposes
@@ -1547,6 +1808,7 @@ class VodManager:
         and their MPX ``mediaId`` values.  We resolve the best mediaId here
         (using ``_pick_playback_media_id``) so that the provider's
         ``get_manifest`` receives the correct MPX ID, not the raw GN content ID.
+        The same call also resolves buttons.secondary[rel=="trailer"], if present.
 
         The resolved theplatform href is stored as ``manifest_script`` so that
         the existing playback chain in the provider needs no changes.
@@ -1570,6 +1832,9 @@ class VodManager:
         except (ValueError, TypeError):
             release_year_item = None
 
+        # Resolve pricing from the same VodDetails response.
+        pricing = self._parse_pricing_from_vod_details(data)
+
         # ------------------------------------------------------------------
         # Resolve the VodPlayer URL and pick the correct theplatform href.
         #
@@ -1577,6 +1842,8 @@ class VodManager:
         #   productInformationLink → buttons.primary[rel=="player",
         #                            instantUsable==true] → VodPlayer URL
         #   VodPlayer response     → content.playbackUrls  → pick by quality
+        #   productInformation response also carries buttons.secondary
+        #                            [rel=="trailer"] → trailer href
         #
         # When resolved:
         #   content_id      = MPX mediaId (e.g. "QflsaCy6P3Sc")
@@ -1586,6 +1853,7 @@ class VodManager:
         #
         # When resolution fails, fall back to GN content_id + productInformationLink
         # so the existing session-manifest path still has a chance to work.
+        # Trailer resolution is independent of playback resolution succeeding.
         # ------------------------------------------------------------------
         product_url: Optional[str] = (
                 content_block.get("productInformationLink") or {}
@@ -1593,8 +1861,9 @@ class VodManager:
 
         playback_href: Optional[str] = None
         playback_media_id: Optional[str] = None
+        trailer_href: Optional[str] = None
         if product_url:
-            playback_href, playback_media_id = self._resolve_movie_playback_href(
+            playback_href, playback_media_id, trailer_href = self._resolve_movie_playback_href(
                 product_url, params
             )
 
@@ -1641,6 +1910,8 @@ class VodManager:
             rating=info.get("childProtectionId"),
             manifest_script=manifest_script,
             session_manifest=session_manifest,
+            pricing=pricing,
+            trailer_url=trailer_href,
         )]
 
     def _normalise_product_url(self, url: str) -> str:
@@ -1757,16 +2028,24 @@ class VodManager:
             params: Dict,
     ) -> tuple:
         """
-        Walk the playback chain for a movie and return ``(href, media_id)``.
+        Walk the playback chain for a movie/episode and return
+        ``(href, media_id, trailer_href)``.
 
         Steps:
           1. Fetch productInformationLink.
-          2. Pick buttons.primary[] where rel=="player" AND instantUsable==true.
-          3. Fetch the VodPlayer URL ($redirect=false + sid already in params).
-          4. Extract content.playbackUrls, pick by quality preference.
+          2. Extract buttons.secondary[rel=="trailer"] → trailer_href, if
+             present. Captured independently of player-button resolution
+             below, so a trailer can still be returned even when no
+             instantUsable player button exists.
+          3. Pick buttons.primary[] where rel=="player" AND instantUsable==true.
+          4. Fetch the VodPlayer URL ($redirect=false + sid already in params).
+          5. Extract content.playbackUrls, pick by quality preference.
 
         Returns:
-            (theplatform_href, media_id) on success, or (None, None) on any failure.
+            (theplatform_href, media_id, trailer_href).
+            href/media_id are None on any playback-resolution failure;
+            trailer_href is independently None/set based on whether
+            buttons.secondary carried a trailer entry.
         """
         # Preflight: establish instant-usage partner session on the server
         # before the vodproductinformation call.
@@ -1781,10 +2060,20 @@ class VodManager:
 
         prod_data = self._get_auth(url, playback_params)
         if not prod_data:
-            return None, None
+            return None, None, None
+
+        buttons = prod_data.get("buttons") or {}
+
+        # Trailer — extracted up front so it survives even if no
+        # instantUsable player button is found below.
+        trailer_href: Optional[str] = None
+        for btn in buttons.get("secondary", []):
+            if btn.get("rel") == "trailer":
+                trailer_href = btn.get("href")
+                break
 
         # Log all primary buttons so we can diagnose auth / partner issues.
-        primary_buttons = (prod_data.get("buttons") or {}).get("primary", [])
+        primary_buttons = buttons.get("primary", [])
         logger.debug(
             f"{self._provider}: productInformation primary buttons: "
             + str([
@@ -1815,18 +2104,18 @@ class VodManager:
                 f"in productInformation for {product_url}. "
                 f"Buttons present: {[b.get('rel') for b in primary_buttons]}"
             )
-            return None, None
+            return None, None, trailer_href
 
         vod_player_data = self._get_auth(vod_player_url, playback_params)
         if not vod_player_data:
-            return None, None
+            return None, None, trailer_href
 
         playback_urls: List[Dict] = (
                 (vod_player_data.get("content") or {}).get("playbackUrls") or []
         )
         media_id = self._pick_playback_media_id(playback_urls)
         if not media_id:
-            return None, None
+            return None, None, trailer_href
 
         for entry in playback_urls:
             if entry.get("mediaId") == media_id:
@@ -1835,9 +2124,9 @@ class VodManager:
                     f"{self._provider}: Resolved movie playback href "
                     f"(quality={entry.get('quality')}, mediaId={media_id}): {href}"
                 )
-                return href, media_id
+                return href, media_id, trailer_href
 
-        return None, None
+        return None, None, trailer_href
 
     # =========================================================================
     # Utilities
@@ -2206,8 +2495,11 @@ class VodManager:
         Map a Movie search result to a VodItem.
 
         Playback resolution (VodDetails → productInformationLink → VodPlayer)
-        is deferred to get_manifest() — only triggered on play, not at search
-        time. This mirrors the behaviour of _map_unstructured_item for movies.
+        AND pricing resolution are both deferred to when the user opens the
+        detail view / hits play — not resolved here. Firing a VodDetails
+        fetch per search result would multiply request volume for data most
+        results will never need; this mirrors the same laziness convention
+        used by _map_unstructured_item for lane browsing.
 
         Example from logs (movie variant - not in Geissens example but similar to series):
         {
@@ -2262,6 +2554,7 @@ class VodManager:
             genre=item.get("mainGenre"),
             genres=item.get("genres") or None,
             rating=item.get("childProtectionRating"),
+            # No pricing here — resolved lazily, see docstring above.
         )
 
         # Store manifest script for later playback resolution

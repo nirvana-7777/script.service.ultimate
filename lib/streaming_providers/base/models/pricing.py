@@ -24,6 +24,14 @@ class PricePoint:
     """A specific price for a region/quality/time period."""
     amount: Decimal
     currency: str  # ISO 4217
+    # Disambiguates buy vs rent when a single Pricing holds both offers in
+    # parallel (e.g. Content available to both rent and purchase from the
+    # same partner). None = this point follows the parent Pricing.access_type.
+    offer_type: Optional[AccessType] = None
+    # Per-offer rental window override. Only meaningful when offer_type (or
+    # the parent access_type) is TVOD_RENTAL. Falls back to
+    # Pricing.rental_duration_hours when None.
+    rental_duration_hours: Optional[int] = None
     sku: Optional[str] = None  # Billing system ID
     quality: Optional[Quality] = None  # "SD", "HD", "4K"
     region: Optional[str] = None  # "DE", "AT", "CH", etc.
@@ -39,6 +47,21 @@ class PricePoint:
         if self.valid_until and now > self.valid_until:
             return False
         return True
+
+    def effective_offer_type(self, parent_access_type: AccessType) -> AccessType:
+        """The offer type this point actually represents."""
+        return self.offer_type or parent_access_type
+
+    def effective_rental_duration_hours(self, parent_rental_duration_hours: Optional[int]) -> Optional[int]:
+        """
+        The rental duration this point actually represents.
+
+        Returns:
+            The per-offer rental_duration_hours if set, otherwise the parent
+            Pricing.rental_duration_hours. Returns None if neither is set,
+            which typically means the rental duration is unknown or unlimited.
+        """
+        return self.rental_duration_hours if self.rental_duration_hours is not None else parent_rental_duration_hours
 
 
 @dataclass
@@ -111,18 +134,65 @@ class Pricing:
 
     @property
     def primary_price(self) -> Optional[PricePoint]:
-        """Get the first active price point (simplified access)."""
+        """
+        First active price point, regardless of offer type. Only meaningful
+        when this Pricing has a single offer type. For mixed rent/buy
+        pricing, use primary_rental_price / primary_purchase_price instead.
+        """
         active = [p for p in self.price_points if p.is_active()]
         return active[0] if active else None
 
-    def get_price_for_region(self, region: str, quality: Optional[str] = None) -> Optional[PricePoint]:
-        """Get best matching price point for region/quality."""
+    # --- Parallel offer accessors (rent + buy on the same Pricing) ---
+
+    def price_points_for(self, offer_type: AccessType) -> List[PricePoint]:
+        """All active price points matching a specific offer type."""
+        return [
+            p for p in self.price_points
+            if p.is_active() and p.effective_offer_type(self.access_type) == offer_type
+        ]
+
+    @property
+    def rental_price_points(self) -> List[PricePoint]:
+        return self.price_points_for(AccessType.TVOD_RENTAL)
+
+    @property
+    def purchase_price_points(self) -> List[PricePoint]:
+        return self.price_points_for(AccessType.TVOD_PURCHASE)
+
+    @property
+    def primary_rental_price(self) -> Optional[PricePoint]:
+        points = self.rental_price_points
+        return points[0] if points else None
+
+    @property
+    def primary_purchase_price(self) -> Optional[PricePoint]:
+        points = self.purchase_price_points
+        return points[0] if points else None
+
+    @property
+    def can_rent(self) -> bool:
+        return bool(self.rental_price_points)
+
+    @property
+    def can_purchase(self) -> bool:
+        return bool(self.purchase_price_points)
+
+    def get_price_for_region(
+            self, region: str, quality: Optional[str] = None,
+            offer_type: Optional[AccessType] = None,
+    ) -> Optional[PricePoint]:
+        """Get best matching price point for region/quality/offer type."""
         matches = [
             p for p in self.price_points
             if p.is_active() and p.region == region
         ]
         if quality:
             matches = [p for p in matches if p.quality == quality]
+        if offer_type:
+            matches = [
+                p for p in matches
+                if p.effective_offer_type(self.access_type) == offer_type
+            ]
         return matches[0] if matches else None
 
     def to_dict(self) -> Dict:
@@ -130,8 +200,10 @@ class Pricing:
             "access_type": self.access_type.value,
             "price_points": [
                 {
-                    "amount": str(p.amount),  # Decimal → str for JSON
+                    "amount": str(p.amount),
                     "currency": p.currency,
+                    "offer_type": p.offer_type.value if p.offer_type else None,
+                    "rental_duration_hours": p.rental_duration_hours,
                     "sku": p.sku,
                     "quality_label": p.quality,
                     "region": p.region,
@@ -150,7 +222,8 @@ class Pricing:
             "ppv_is_surcharge": self.ppv_is_surcharge,
             "description": self.description,
             "tax_class": self.tax_class,
-            # Derived
+            "can_rent": self.can_rent,
+            "can_purchase": self.can_purchase,
             "is_free_at_point_of_use": self.is_free_at_point_of_use,
             "requires_subscription": self.requires_subscription,
             "requires_transactional_payment": self.requires_transactional_payment,
