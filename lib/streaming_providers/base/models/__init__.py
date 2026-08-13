@@ -1,6 +1,7 @@
 # streaming_providers/base/models/__init__.py
 from .channel import Channel, StreamingChannel
-from .content import Content, ContentType, Quality, StreamingMode
+from .content import Content, ContentType, StreamingMode
+from .quality import Quality
 from .drm import DRMConfig, DRMSystem, LicenseConfig, LicenseUnwrapperParams
 from .event import Event, EventStatus
 from .subscription import SubscriptionPackage, UserSubscription
