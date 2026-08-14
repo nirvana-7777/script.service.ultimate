@@ -38,11 +38,21 @@ class RTLPlusDefaults:
     CLIENT_VERSION_FALLBACK = "2025.6.26.0"
     CLIENT_ID = f"rtlplus-{PLATFORM_DEFAULT}"
     BEDROCK_CLIENT_ID = "bedrock-m6group_web"
+    # Dedicated client for the OAuth2 Device Authorization Grant (RFC 8628).
+    # Must NOT be BEDROCK_CLIENT_ID -- /auth/device only accepts clients
+    # registered for the device-code flow. Confirmed against the working
+    # legacy addon (auth.py: DEVICE_CLIENT_ID = 'bedrock-androidtv').
+    DEVICE_CLIENT_ID = "bedrock-androidtv"
 
     # API endpoints
     AUTH_REALM_BASE = "https://auth.rtl.de/auth/realms/rtlplus"
     AUTH_BASE_URL = f"{AUTH_REALM_BASE}/protocol/openid-connect"
     AUTH_ENDPOINT = f"{AUTH_BASE_URL}/token"
+    # OAuth2 Device Authorization Grant endpoint (RFC 8628). Confirmed
+    # correct against the working legacy addon -- it lives under
+    # AUTH_BASE_URL (.../protocol/openid-connect/auth/device), NOT under
+    # AUTH_REALM_BASE directly.
+    DEVICE_AUTH_ENDPOINT = f"{AUTH_BASE_URL}/auth/device"
     GRAPHQL_ENDPOINT = "https://cdn.gateway.now-plus-prod.aws-cbc.cloud/graphql"
     BASE_WEBSITE = "https://plus.rtl.de/"
     CONFIG_ENDPOINT = "https://plus.rtl.de/assets/config/config.json"

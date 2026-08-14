@@ -64,6 +64,7 @@ class RTLPlusAuthToken(BaseAuthToken):
         refresh_expires_in: int = 0,
         not_before_policy: Optional[int] = None,
         scope: str = "",
+        login_client: Optional[str] = None,
     ):
         super().__init__(
             access_token=access_token,
@@ -76,6 +77,13 @@ class RTLPlusAuthToken(BaseAuthToken):
         self.refresh_expires_in = refresh_expires_in
         self.not_before_policy = not_before_policy
         self.scope = scope
+        # Which OAuth client_id this token (and its refresh_token) was
+        # issued under. RTL+ registers separate clients per flow
+        # (BEDROCK_CLIENT_ID for web login, DEVICE_CLIENT_ID for the
+        # device-code/QR flow) and refresh_token grants must be replayed
+        # against the SAME client_id or the auth server rejects them.
+        # Mirrors the legacy addon's `login_client` tracking.
+        self.login_client = login_client
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert token to dictionary"""
@@ -88,6 +96,7 @@ class RTLPlusAuthToken(BaseAuthToken):
             "refresh_expires_in": self.refresh_expires_in,
             "not_before_policy": self.not_before_policy,
             "scope": self.scope,
+            "login_client": self.login_client,
         }
 
     @classmethod
@@ -102,6 +111,7 @@ class RTLPlusAuthToken(BaseAuthToken):
             refresh_expires_in=data.get("refresh_expires_in", 0),
             not_before_policy=data.get("not-before-policy"),
             scope=data.get("scope", ""),
+            login_client=data.get("login_client"),
         )
 
     def is_valid(self) -> bool:

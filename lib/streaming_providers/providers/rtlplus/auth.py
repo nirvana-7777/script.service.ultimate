@@ -44,7 +44,7 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
             http_manager=http_manager,
         )
 
-        # ✅ AFTER super().__init__ so the base class can't overwrite it
+        # AFTER super().__init__ so the base class can't overwrite it
         self._config = RTLPlusConfig(config_dict)
         self._client_id = None
         self._bedrock_token: Optional[str] = None
@@ -66,7 +66,15 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
 
     @property
     def oauth_client_id(self) -> str:
-        return RTLPlusDefaults.BEDROCK_CLIENT_ID  # "bedrock-m6group_web"
+        # Dynamic: refresh_token grants must be replayed against the same
+        # client_id the token was originally issued under. Web login uses
+        # BEDROCK_CLIENT_ID; the device/QR flow uses DEVICE_CLIENT_ID.
+        # _build_refresh_payload() (base class, base_oauth2_auth.py) reads
+        # this property, so keeping it dynamic is what makes refresh work
+        # for both flows without overriding _build_refresh_payload().
+        current = getattr(self, "_current_token", None)
+        login_client = getattr(current, "login_client", None)
+        return login_client or RTLPlusDefaults.BEDROCK_CLIENT_ID
 
     @property
     def oauth_scope(self) -> str:
@@ -106,6 +114,15 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
         return RTLPlusClientCredentials()
 
     def _create_token_from_response(self, response_data: Dict[str, Any]) -> RTLPlusAuthToken:
+        # Carry forward login_client so refresh keeps using the right
+        # client_id. Normal OAuth token responses never include this key
+        # (it's our own bookkeeping); if absent, fall back to whatever
+        # client issued the token being replaced.
+        login_client = response_data.get("login_client")
+        if not login_client:
+            current = getattr(self, "_current_token", None)
+            login_client = getattr(current, "login_client", None)
+
         return RTLPlusAuthToken(
             access_token=response_data["access_token"],
             token_type=response_data.get("token_type", "Bearer"),
@@ -115,6 +132,7 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
             refresh_expires_in=response_data.get("refresh_expires_in", 0),
             not_before_policy=response_data.get("not-before-policy"),
             scope=response_data.get("scope", ""),
+            login_client=login_client,
         )
 
     def get_current_token_level(self) -> TokenAuthLevel:
@@ -171,9 +189,9 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
             extra_params={
                 "prompt": "login",
                 "nonce": str(uuid.uuid4()),
-                "claim": "sub",  # ← add this
-                "state": '{"redirectUrl":"#"}',  # ← add this
-                "auth_flow_type": "login",  # ← add this
+                "claim": "sub",
+                "state": '{"redirectUrl":"#"}',
+                "auth_flow_type": "login",
             },
             additional_form_data={"credentialId": "", "rememberMe": "on"},
         )
@@ -284,16 +302,9 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
 
         Based on analysis, this appears to be a SHA-1 hash of device_id + timestamp.
         """
-        # Convert timestamp to string
         ts_str = str(timestamp)
-
-        # Try SHA-1 of device_id + timestamp (most likely)
         data = f"{device_id}{ts_str}"
         token = hashlib.sha1(data.encode()).hexdigest()
-
-        # Alternative: Try with colon separator
-        # data = f"{device_id}:{ts_str}"
-        # token = hashlib.sha1(data.encode()).hexdigest()
 
         logger.debug(f"Generated auth token for device {device_id} at {timestamp}: {token}")
         return token
@@ -310,29 +321,24 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
         if not oauth_token:
             raise ValueError("No OAuth token available for Bedrock token request")
 
-        # Get user ID (Gigya UID)
         user_id = self.get_user_id_from_token()
         if not user_id:
             logger.warning("No user ID available for Bedrock token request")
-            # Continue without user_id - might still work for anonymous?
 
-        # Get timestamp and generate auth token
         timestamp = self._get_server_timestamp()
         auth_token = self._generate_auth_token(self.config.device_id, timestamp)
 
         logger.debug(f"Timestamp: {timestamp}, Auth token: {auth_token}")
 
-        # Get profile ID if available
         profile_id = self.get_selected_profile_id()
         logger.debug(f"Using profile_id: {profile_id}")
 
-        # Get headers with profile_id and user_id
         headers = self.config.get_bedrock_token_headers(
             oauth_token=oauth_token,
             auth_token=auth_token,
             timestamp=timestamp,
             profile_id=profile_id,
-            user_id=user_id,  # Add user_id parameter
+            user_id=user_id,
         )
 
         logger.debug(
@@ -363,7 +369,6 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
                         f"Bedrock token obtained with profile: {decoded.get('profileid', 'none')}, expires: {self._bedrock_token_expiry}")
             except Exception as e:
                 logger.debug(f"Could not decode Bedrock token expiry: {e}")
-                # Set default expiry (1 hour)
                 self._bedrock_token_expiry = time.time() + 3600
 
         logger.debug("RTL+ Bedrock token obtained successfully")
@@ -375,10 +380,6 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
 
         The upfront token is used as x-dt-auth-token when requesting
         licenses from DRMToday.
-
-        Args:
-            content_id: DRM content ID (e.g., "dashcenc_rtlde_vox")
-            uid: User ID from OAuth token
         """
         oauth_token = self.get_bearer_token()
         bedrock_token = self.get_bedrock_token()
@@ -406,9 +407,6 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
     def get_user_id_from_token(self) -> Optional[str]:
         """
         Extract user ID (sub claim) from the current OAuth token.
-
-        Returns:
-            User ID string or None if not available
         """
         if self._cached_user_id:
             return self._cached_user_id
@@ -430,11 +428,9 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
             payload_json = base64.b64decode(payload_segment)
             payload = json.loads(payload_json)
 
-            # The user ID is in the 'sub' claim
             # Format: f:83a2e227-f27d-4d33-a811-33ad588170c4:1052940424
             sub = payload.get("sub", "")
 
-            # Extract numeric ID from the end if present
             if ":" in sub:
                 self._cached_user_id = sub.split(":")[-1]
             else:
@@ -465,7 +461,7 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
                 logger.info("RTL+ user credentials saved successfully")
                 self.invalidate_token()
                 self.invalidate_bedrock_token()
-                self._cached_user_id = None  # Clear cached user ID
+                self._cached_user_id = None
             else:
                 logger.error("Failed to save RTL+ user credentials")
 
@@ -540,7 +536,6 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
                 profiles = self.get_user_profiles(user_id)
                 logger.debug(f"Fetched profiles: {profiles}")
 
-                # Select first adult profile (not kid profile)
                 adult_profiles = [p for p in profiles if p.get("profile_type") == "adult"]
                 if not adult_profiles:
                     logger.error("No adult profiles found")
@@ -553,15 +548,12 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
                 logger.error(f"Failed to fetch/select profile: {e}")
                 return False
 
-        # Store the selected profile ID
         self._selected_profile_id = profile_id
 
-        # Save to credentials for persistence
         if hasattr(self.credentials, "profile_id"):
             self.credentials.profile_id = profile_id
             self.save_credentials(self.credentials)
 
-        # Invalidate Bedrock token so it gets re-issued with the profile ID
         self.invalidate_bedrock_token()
 
         logger.info(f"Profile selected successfully: {profile_id}")
@@ -572,7 +564,6 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
         if hasattr(self, "_selected_profile_id") and self._selected_profile_id:
             return self._selected_profile_id
 
-        # Try to load from stored credentials
         if hasattr(self.credentials, "profile_id") and self.credentials.profile_id:
             return self.credentials.profile_id
 
@@ -587,3 +578,41 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
             return self.select_profile()
 
         return False
+
+    # --------------------------------------------------------------------------
+    # Remote Login (Device Code / QR) — overrides base's PKCE remote login,
+    # which uses a different protocol RTL+ does not support for this flow.
+    # See remote_login_handler.py in this package for the implementation.
+    # --------------------------------------------------------------------------
+
+    def _perform_remote_login_flow(self) -> Dict[str, Any]:
+        """
+        Called automatically by the base class's authenticate_with_fallback()
+        when _perform_oauth_authorization_code_flow() raises WafBlockedException.
+
+        RTL+'s remote login is a genuine OAuth2 Device Authorization Grant
+        (RFC 8628) against a dedicated TV/device client, not the PKCE
+        authorization_code + callback flow the base class implements by
+        default (BaseOAuth2Authenticator._perform_remote_login_flow /
+        RemoteLoginManager) — that flow's redirect_uri isn't reachable
+        from a phone completing the login, so it doesn't apply here.
+        """
+        from .remote_login_handler import RTLRemoteLoginHandler
+
+        handler = RTLRemoteLoginHandler(
+            http_manager=self.http_manager,
+            device_client_id=RTLPlusDefaults.DEVICE_CLIENT_ID,
+            device_auth_url=RTLPlusDefaults.DEVICE_AUTH_ENDPOINT,
+            token_endpoint=RTLPlusDefaults.AUTH_ENDPOINT,
+            provider_name="RTL+",
+        )
+
+        token_data = handler.perform_complete_flow()
+
+        if not token_data:
+            raise Exception("RTL+ remote login failed")
+
+        # Tag which client issued this token so oauth_client_id /
+        # _create_token_from_response can route refreshes correctly.
+        token_data.setdefault("login_client", RTLPlusDefaults.DEVICE_CLIENT_ID)
+        return token_data
