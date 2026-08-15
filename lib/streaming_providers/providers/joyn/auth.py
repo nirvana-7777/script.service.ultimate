@@ -21,6 +21,7 @@ from .constants import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_PLATFORM,
     DEVICE_IDS,
+    JOYN_AUTH_ENDPOINTS,
     JOYN_AUTH_HEADERS_BASE,
     JOYN_CLIENT_VERSION,
     JOYN_DOMAINS,
@@ -350,7 +351,31 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                     logger.debug("Anonymous token cannot be refreshed")
                     return None
 
-            return super()._refresh_oauth_token()
+            # Joyn uses a dedicated refresh endpoint, distinct from the
+            # authorization-code redeem-token endpoint (oauth_token_endpoint).
+            # grant_type is the token_type (e.g. "Bearer"), matching the
+            # working reference client, not a standard "refresh_token" value.
+            payload = {
+                "refresh_token": self._current_token.refresh_token,
+                "grant_type": self._current_token.token_type,
+                "client_id": self._device_id,  # Must match the client_id used for login/discovery
+                "client_name": self.platform,
+            }
+
+            response = self.http_manager.post(
+                JOYN_AUTH_ENDPOINTS["REFRESH"],
+                operation="auth",
+                headers=self._get_joyn_auth_headers(),
+                json_data=payload,
+                timeout=getattr(self.config, "timeout", 30),
+            )
+
+            self._check_oauth_error_response(response)
+            token_data = response.json()
+
+            refreshed_token = self._create_token_from_response(token_data)
+            logger.info("Joyn token refresh successful")
+            return refreshed_token
         except Exception as e:
             logger.warning(f"Token refresh failed: {e}")
             return None
@@ -372,7 +397,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             if not self._web_login_url:
                 raise Exception("Failed to get web-login URL from SSO discovery")
 
-            client_id = self._extracted_client_id or self.oauth_client_id
+            client_id = self._extracted_client_id or self._device_id
             cd1 = self._device_id
 
             session = self._create_oauth_session()
@@ -635,8 +660,10 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
         try:
             logger.info(f"Starting client credentials flow")
 
+            # Joyn's anonymous auth expects a client_id and anon_device_id.
+            # We use the persistent device_id for both to maintain consistency.
             payload = {
-                "client_id": self.oauth_client_id,
+                "client_id": self._device_id,
                 "client_name": self.platform,
                 "anon_device_id": self._device_id
             }
