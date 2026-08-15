@@ -14,27 +14,7 @@ JOYN_LOGO = "https://upload.wikimedia.org/wikipedia/de/thumb/7/74/Joyn_%28Stream
 # Authentication - 7pass OIDC
 # ============================================================================
 
-# 7pass base URL (OIDC provider)
 JOYN_7PASS_BASE_URL = "https://auth.7pass.de"
-
-# 7pass OIDC endpoints (discovered via OIDC discovery)
-JOYN_7PASS_ENDPOINTS = {
-    "AUTHORIZE": f"{JOYN_7PASS_BASE_URL}/authz-srv/authz",           # correct path
-    "TOKEN": f"{JOYN_7PASS_BASE_URL}/token",
-    "LOGIN": f"{JOYN_7PASS_BASE_URL}/login-srv/verification/login",  # correct login path
-    "CONSENT_ACCEPT": f"{JOYN_7PASS_BASE_URL}/login-srv/consent/accept",  # correct consent path
-    "PRECHECK_CONTINUE": f"{JOYN_7PASS_BASE_URL}/precheck/continue", # correct precheck path
-    "USER_CHECK_EXISTS": f"{JOYN_7PASS_BASE_URL}/users-srv/user/checkexists",
-    "REGISTRATION_SETUP": f"{JOYN_7PASS_BASE_URL}/registration-setup-srv/public/list",
-    "VERIFICATION_CONFIGURED": f"{JOYN_7PASS_BASE_URL}/verification-srv/v2/setup/public/configured/list",
-    "VERIFICATION_INITIATE": f"{JOYN_7PASS_BASE_URL}/verification-srv/v2/authenticate/initiate/PASSWORD",  # NEW
-    "DEVICE_INFO": f"{JOYN_7PASS_BASE_URL}/device-srv/deviceinfo",  # Required before PASSWORD initiation
-}
-
-# Joyn auth endpoints (non-OIDC)
-JOYN_AUTH_ENDPOINTS = {
-    "REFRESH": "https://auth.joyn.de/auth/refresh",  # Token refresh endpoint
-}
 
 # OAuth2 Configuration
 JOYN_OAUTH_SCOPE = "openid email profile offline_access"
@@ -54,16 +34,14 @@ JOYN_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 
 JOYN_CLIENT_VERSION = "5.1344.1"
 DEFAULT_PLATFORM = "web"
 
-# Base authentication headers (without dynamic values)
 JOYN_AUTH_HEADERS_BASE = {
     "User-Agent": JOYN_USER_AGENT,
     "Accept": "application/json",
     "Content-Type": "application/json",
-    "Origin": "https://www.joyn.de",  # Base origin, overridden per country
+    "Origin": "https://www.joyn.de",
     "joyn-client-version": JOYN_CLIENT_VERSION,
 }
 
-# Base API headers (without auth token)
 JOYN_API_BASE_HEADERS = {
     "Accept": "application/json",
     "Content-Type": "application/json",
@@ -76,19 +54,16 @@ JOYN_API_BASE_HEADERS = {
 
 JOYN_GRAPHQL_BASE_URL = "https://api.joyn.de/graphql"
 
-# GraphQL persisted query hashes
 GRAPHQL_QUERY_HASHES = {
     "LIVE_PLAYER": "52b37a3cf5bc75e56026aed7b0d234874eeabd2eccd369d0cd3d3a6ea15ef566",
     "LIVE_CHANNELS": "b7703103ddd0516be6b49ed66186092a6c6f6d815ccc502a9f50800a8cc18dd2",
 }
 
-# GraphQL endpoints with full URLs
 JOYN_GRAPHQL_ENDPOINTS = {
     "LIVE_PLAYER": f'{JOYN_GRAPHQL_BASE_URL}?operationName=PageLivePlayerClientSide&enable_user_location=true&watch_assistant_variant=true&extensions=%7B%22persistedQuery%22%3A%7B%22version%22%3A1%2C%22sha256Hash%22%3A%22{GRAPHQL_QUERY_HASHES["LIVE_PLAYER"]}%22%7D%7D',
     "LIVE_CHANNELS": f"{JOYN_GRAPHQL_BASE_URL}?operationName=LiveChannelsAndEpg&enable_user_location=true&watch_assistant_variant=true",
 }
 
-# Base GraphQL headers
 JOYN_GRAPHQL_BASE_HEADERS = {
     "X-Api-Key": "4f0fd9f18abbe3cf0e87fdb556bc39c8",
     "Accept": "application/json",
@@ -96,7 +71,6 @@ JOYN_GRAPHQL_BASE_HEADERS = {
     "User-Agent": JOYN_USER_AGENT,
 }
 
-# GraphQL query defaults
 GRAPHQL_PERSISTED_QUERY_VERSION = 1
 GRAPHQL_LIVE_CHANNELS_FILTER = "DEFAULT"
 GRAPHQL_MAX_RESULTS = 5000
@@ -111,7 +85,6 @@ JOYN_STREAMING_ENDPOINTS = {
     "PLAYLIST": "https://api.vod-prd.s.joyn.de/v1/channel/{channel_id}/playlist",
 }
 
-# Default video configuration for playlist requests
 DEFAULT_VIDEO_CONFIG = {
     "enableDolbyAtmos": True,
     "enableSubtitles": True,
@@ -126,7 +99,6 @@ DEFAULT_VIDEO_CONFIG = {
     "maxSecurityLevel": 5,
 }
 
-# Signature secret key (base64 encoded)
 SIGNATURE_SECRET_KEY = "MzU0MzM3MzgzMzM4MzMzNjM1NDMzNzM4MzYzNDM2MzYzNTQzMzczODM2MzYzMzM4MzIzNjM1NDMzNzM4MzMzMDM2MzQzNTM5MzU0MzM3MzgzMzM5MzMzNTMyMzQzNTQzMzczODM2MzUzMzM5MzU0MzM3MzgzMzM4MzMzMjMzNDYzNTQzMzczODM2MzYzMzMzMzM0NDMzNDIzNTQzMzczODMzMzgzNjM2MzMzNQ=="
 
 # ============================================================================
@@ -179,8 +151,7 @@ JOYN_DOMAINS = {
 
 def get_oauth_redirect_uri(country: str) -> str:
     """Get country-specific OAuth redirect URI"""
-    # Joyn uses same redirect URI for all countries
-    return "https://www.joyn.de/oauth"
+    return f"https://www.joyn.{country}/oauth"
 
 # ============================================================================
 # DRM Configuration

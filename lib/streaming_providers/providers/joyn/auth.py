@@ -122,6 +122,8 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
         self._cmp_uc_id = None
         self._cmp_uc_instance = None
         self._auth_base_path = None
+        self._web_login_url = None
+        self._extracted_client_id = None
 
         # Initialize base class
         super().__init__(
@@ -214,12 +216,14 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
         return get_oauth_redirect_uri(self.country)
 
     def _discover_sso_endpoints(self) -> Dict[str, str]:
-        """Discover Joyn's SSO endpoints, but IGNORE any client_id from the response"""
+        """Discover Joyn's SSO endpoints and keep the server-issued web-login URL and client_id as-is."""
         if self._sso_endpoints_cache and self._sso_endpoints_timestamp:
             if (time.time() - self._sso_endpoints_timestamp) < self._sso_cache_ttl:
                 return self._sso_endpoints_cache
 
         try:
+            # Use the locally-generated per-install device id for discovery, matching the
+            # reference client's `client_ids['client_id']` (NOT the fixed DEVICE_IDS constant).
             url = f"https://auth.joyn.de/sso/endpoints?client_id={self._device_id}&client_name={self.platform}"
             headers = self._get_joyn_auth_headers()
 
@@ -233,33 +237,37 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
             endpoints = response.json()
 
-            # Get the full auth endpoint from discovery
+            # Keep the full, unmodified web-login URL. The server embeds its own client_id
+            # and tracking params (cmpUcId, cmpUcInstance) in this URL; the reference client
+            # GETs this URL verbatim rather than reconstructing an authorize URL by hand.
             auth_endpoint_full = endpoints.get("web-login", "")
+            self._web_login_url = auth_endpoint_full
 
-            # CRITICAL: Extract ONLY the base path, ignore all query parameters
             parsed_auth = urlparse(auth_endpoint_full)
             self._auth_base_path = urlunparse((
                 parsed_auth.scheme,
                 parsed_auth.netloc,
                 parsed_auth.path,
-                "",  # params
-                "",  # query - DISCARD any existing query params
-                ""  # fragment
+                "", "", ""
             ))
 
-            # Extract cmpUcId and cmpUcInstance for tracking (but NOT client_id)
+            # Extract the server-issued client_id and tracking params for reuse in
+            # consent-accept and redeem-token calls later in the flow.
             params = parse_qs(parsed_auth.query)
+            self._extracted_client_id = params.get("client_id", [None])[0]
             self._cmp_uc_id = params.get("cmpUcId", [None])[0]
             self._cmp_uc_instance = params.get("cmpUcInstance", [None])[0]
 
             self._sso_endpoints_cache = {
                 "authorization_base_path": self._auth_base_path,
+                "web_login_url": self._web_login_url,
+                "client_id": self._extracted_client_id,
                 "token_endpoint": endpoints.get("redeem-token", "https://auth.joyn.de/auth/7pass/token"),
             }
 
             self._sso_endpoints_timestamp = time.time()
-            logger.debug(f"Discovered auth base path: {self._auth_base_path}")
-            logger.debug(f"cmpUcId: {self._cmp_uc_id}, cmpUcInstance: {self._cmp_uc_instance}")
+            logger.debug(f"Discovered web-login URL: {self._web_login_url}")
+            logger.debug(f"Extracted client_id: {self._extracted_client_id}")
 
             return self._sso_endpoints_cache
 
@@ -348,56 +356,44 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             return None
 
     def _perform_oauth_authorization_code_flow(self, username: str, password: str) -> Dict[str, Any]:
-        """Complete Joyn login flow with CORRECT client_id"""
+        """Complete Joyn login flow matching the exact sequence observed from working traffic.
+
+        Joyn does not implement real PKCE (code_verifier is always sent empty in the
+        redeem-token call) and does not use a verification-srv/initiate + device-fingerprint
+        mechanism. The client_id used for consent-accept and redeem-token is the one the
+        server itself embeds in the web-login redirect URL, not a fixed platform constant.
+        """
         try:
             logger.debug("Starting Joyn login flow")
 
-            # Discover endpoints (to get base path and cmp params)
+            # Discover endpoints - gives us the literal web-login URL and its embedded client_id
             self._discover_sso_endpoints()
 
-            if not self._auth_base_path:
-                raise Exception("Failed to get authorization endpoint")
+            if not self._web_login_url:
+                raise Exception("Failed to get web-login URL from SSO discovery")
 
-            # Generate PKCE codes
-            state = self.generate_oauth_state()
-            code_verifier = self.generate_pkce_verifier()
-            code_challenge = self.generate_pkce_challenge(code_verifier)
-
+            client_id = self._extracted_client_id or self.oauth_client_id
             cd1 = self._device_id
-            cmp_uc_id = self._cmp_uc_id or str(uuid.uuid4())
-            cmp_uc_instance = self._cmp_uc_instance or 'WEB'
-
-            # Build URL with OUR client_id, NOT the one from discovery
-            # cd9 and cd10 are required by the server
-            auth_params = {
-                "response_type": "code",
-                "scope": self.oauth_scope,
-                "view_type": "login",
-                "cd1": cd1,
-                "client_id": self.oauth_client_id,
-                "prompt": "consent",
-                "response_mode": "query",
-                "cmpUcId": cmp_uc_id,
-                "cmpUcInstance": cmp_uc_instance,
-                "redirect_uri": self.oauth_redirect_uri,
-                "state": state,
-                "cd9": "",
-                "cd10": JOYN_DOMAINS.get(self.country, JOYN_DOMAINS["de"]),
-                "code_challenge": code_challenge,
-                "code_challenge_method": "S256",
-            }
-
-            auth_url = f"{self._auth_base_path}?{urlencode(auth_params)}"
-            logger.debug(f"Auth URL built with client_id={self.oauth_client_id}")
 
             session = self._create_oauth_session()
+            # SessionAwareHTTPManager pre-loads Origin/Referer/User-Agent for the Joyn
+            # website and applies them AFTER our per-call headers, silently overriding
+            # them. We set explicit, per-step headers below (different Origin for
+            # auth.7pass.de vs auth.joyn.de), so clear the defaults here.
+            session.headers.clear()
 
             def _request(method, url, **kwargs):
                 headers = kwargs.pop("headers", {}).copy()
-                clean_headers = {
-                    k: v for k, v in headers.items()
-                    if not k.lower().startswith('joyn-')
-                }
+                # joyn-* headers don't belong on calls to the 7pass.de auth domain;
+                # they're only sent on calls to Joyn's own auth.joyn.de endpoints
+                # (SSO discovery, redeem-token), matching the reference client.
+                if "auth.7pass.de" in url:
+                    clean_headers = {
+                        k: v for k, v in headers.items()
+                        if not k.lower().startswith('joyn-')
+                    }
+                else:
+                    clean_headers = dict(headers)
                 clean_headers.setdefault("User-Agent", JOYN_USER_AGENT)
                 clean_headers.setdefault("Accept", "*/*")
                 # Browser-realistic headers to prevent Cloudflare managed challenges.
@@ -438,35 +434,32 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 if "Just a moment" in response.text or "challenge-platform" in response.text:
                     raise WafBlockedException("Cloudflare managed challenge detected")
 
-            response = _request("GET", auth_url, allow_redirects=True)
+            def _raise_if_cf_error(e):
+                """http_manager raises HTTPError before we see the response, so 403/429
+                Cloudflare challenges must be detected from the exception's response body."""
+                resp = getattr(e, "response", None)
+                raw = getattr(resp, "text", str(e))
+                if "Just a moment" in raw or "challenge-platform" in raw or "captcha" in raw.lower():
+                    raise WafBlockedException(f"Cloudflare/CAPTCHA block: {e}")
+                if resp is not None and resp.status_code in (403, 429):
+                    raise WafBlockedException(f"Joyn login blocked by WAF ({resp.status_code}): {e}")
 
-            if response.status_code in (403, 429) or "captcha" in response.text.lower():
-                raise WafBlockedException("Joyn login blocked by WAF/CAPTCHA")
+            # 1. GET the literal web-login URL as issued by the server (do not rebuild it)
+            try:
+                response = _request("GET", self._web_login_url, allow_redirects=True)
+            except WafBlockedException:
+                raise
+            except Exception as e:
+                _raise_if_cf_error(e)
+                raise
             _check_cf(response)
-            response.raise_for_status()
 
             final_url = response.url
-            signin_url = final_url  # signin.7pass.de page — used as Referer for subsequent POSTs
 
             if "error.html" in final_url or "error_code" in final_url:
                 error_match = re.search(r'error_code=(\d+)', final_url)
                 error_code = error_match.group(1) if error_match else "unknown"
-                error_desc = re.search(r'error_description=([^&]+)', final_url)
-                error_desc = error_desc.group(1) if error_desc else "unknown"
-                raise Exception(f"Authorization failed: error_code={error_code}, description={error_desc}")
-
-            if self.oauth_redirect_uri in final_url:
-                parsed = urlparse(final_url)
-                query = parse_qs(parsed.query)
-                auth_code = query.get("code", [None])[0]
-                if auth_code:
-                    logger.info("Already authenticated, extracting code")
-                    return self._exchange_authorization_code_for_token(
-                        authorization_code=auth_code,
-                        code_verifier=code_verifier,
-                        state=state,
-                        cd1=cd1,
-                    )
+                raise Exception(f"Authorization failed: error_code={error_code}")
 
             parsed_url = urlparse(final_url)
             query_params = parse_qs(parsed_url.query)
@@ -482,148 +475,98 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
             logger.debug(f"Extracted request_id: {request_id}")
 
-            # Public endpoint — non-fatal
+            # 2. Language/registration-setup check — non-fatal
             try:
-                _request("GET", f"https://auth.7pass.de/public-srv/public/{request_id}")
+                _request(
+                    "GET",
+                    f"https://auth.7pass.de/registration-setup-srv/public/list?acceptlanguage=undefined&requestId={request_id}",
+                )
             except Exception as e:
-                logger.debug(f"Public endpoint failed (non-fatal): {e}")
+                logger.debug(f"registration-setup failed (non-fatal): {e}")
 
-            # User exists check — non-fatal, requestId in path only
+            # 3. Check whether the email exists — non-fatal
             try:
                 _request(
                     "POST",
                     f"https://auth.7pass.de/users-srv/user/checkexists/{request_id}",
-                    json={"email": username},
+                    json={"email": username, "requestId": request_id},
                     content_type="application/json",
                 )
             except Exception as e:
-                logger.debug(f"User check failed (non-fatal): {e}")
+                logger.debug(f"checkexists failed (non-fatal): {e}")
 
-            # Step 1a: Register device fingerprint — required before PASSWORD initiation
+            # 4. Configured verification methods list — non-fatal
             try:
-                import hashlib
-                _fingerprint_input = f"{request_id}{self._device_id}{JOYN_USER_AGENT}"
-                _fingerprint = hashlib.sha256(_fingerprint_input.encode()).hexdigest()
                 _request(
                     "POST",
-                    "https://auth.7pass.de/device-srv/deviceinfo",
-                    json={
-                        "fingerprint": _fingerprint,
-                        "userAgent": "",
-                    },
+                    "https://auth.7pass.de/verification-srv/v2/setup/public/configured/list",
+                    json={"email": username, "request_id": request_id},
                     content_type="application/json",
-                    headers={
-                        "Referer": signin_url,
-                        "Origin": "https://signin.7pass.de",
-                    },
                 )
             except Exception as e:
-                logger.debug(f"Device info registration failed (non-fatal): {e}")
+                logger.debug(f"verification-srv failed (non-fatal): {e}")
 
-            # Step 1b: Initiate PASSWORD verification
-            # Wrapped in try/except so HTTPError from raise_for_status inside the
-            # HTTP manager doesn't bypass our Cloudflare detection.
-            try:
-                initiate_response = _request(
-                    "POST",
-                    "https://auth.7pass.de/verification-srv/v2/authenticate/initiate/PASSWORD",
-                    json={
-                        "request_id": request_id,
-                        "email": username,
-                        "medium_id": "PASSWORD",
-                        "usage_type": "PASSWORDLESS_AUTHENTICATION",
-                        "type": "PASSWORD",
-                    },
-                    content_type="application/json",
-                    headers={
-                        "Referer": signin_url,
-                        "Origin": "https://signin.7pass.de",
-                    },
-                )
-            except Exception as e:
-                raw = getattr(getattr(e, "response", None), "text", str(e))
-                if "Just a moment" in raw or "challenge-platform" in raw:
-                    raise WafBlockedException("Cloudflare challenge on initiate POST")
-                raise
-
-            _check_cf(initiate_response)
-            initiate_response.raise_for_status()
-            initiate_data = initiate_response.json()
-
-            exchange_id = initiate_data.get("exchange_id")
-            status_id = initiate_data.get("status_id")
-            sub = initiate_data.get("sub", "")
-            if not exchange_id or not status_id:
-                raise Exception(f"Missing exchange_id/status_id from initiate: {initiate_data}")
-
-            logger.debug(f"Initiate successful: exchange_id={exchange_id}, sub={sub}")
-
-            # Step 2: Submit password
+            # 5. Submit username/password directly (form-encoded)
             try:
                 login_response = _request(
                     "POST",
-                    "https://auth.7pass.de/login-srv/verification/login",
+                    "https://auth.7pass.de/login-srv/login",
                     data=urlencode({
-                        "sub": sub,
-                        "status_id": status_id,
-                        "verificationType": "PASSWORD",
-                        "requestId": request_id,
-                        "remember_me": "true",
-                        "exchange_id": exchange_id,
-                        "pass_code": password,
+                        "username": username,
                         "password": password,
+                        "requestId": request_id,
                     }).encode(),
                     content_type="application/x-www-form-urlencoded",
-                    headers={
-                        "Referer": signin_url,
-                        "Origin": "https://signin.7pass.de",
-                    },
                     allow_redirects=True,
                 )
+            except WafBlockedException:
+                raise
             except Exception as e:
-                raw = getattr(getattr(e, "response", None), "text", str(e))
-                if "Just a moment" in raw or "challenge-platform" in raw:
-                    raise WafBlockedException("Cloudflare challenge on login POST")
+                _raise_if_cf_error(e)
                 raise
 
             _check_cf(login_response)
-            login_response.raise_for_status()
             final_url = login_response.url
-
-            if "error.html" in final_url or "error_code" in final_url:
-                error_match = re.search(r'error_code=(\d+)', final_url)
-                error_code = error_match.group(1) if error_match else "unknown"
-                raise Exception(f"Login failed with error_code={error_code}")
-
             parsed = urlparse(final_url)
             params = parse_qs(parsed.query)
 
-            # Handle consent if needed
+            # 6. Handle consent if the server didn't return a code directly
             if params.get("code") is None:
                 sub = params.get("sub", [None])[0]
                 track_id = params.get("track_id", [None])[0]
 
                 if sub and track_id:
                     logger.debug(f"Accepting consent for sub={sub}")
-                    _request(
-                        "POST",
-                        "https://auth.7pass.de/login-srv/consent/accept",
-                        json={
-                            "sub": sub,
-                            "client_id": self.oauth_client_id,
-                            "scopes": [{"offline_access": "denied"}],
-                        },
-                        content_type="application/json",
-                    )
+                    try:
+                        _request(
+                            "POST",
+                            "https://auth.7pass.de/consent-management-srv/consent/scope/accept",
+                            json={
+                                "sub": sub,
+                                "client_id": client_id,
+                                "scopes": [{"offline_access": "denied"}],
+                            },
+                            content_type="application/json",
+                        )
+                    except WafBlockedException:
+                        raise
+                    except Exception as e:
+                        _raise_if_cf_error(e)
+                        raise
 
-                    continue_response = _request(
-                        "POST",
-                        f"https://auth.7pass.de/precheck/continue/{track_id}",
-                        data=b"",
-                        content_type="application/x-www-form-urlencoded",
-                        allow_redirects=True,
-                    )
-                    continue_response.raise_for_status()
+                    try:
+                        continue_response = _request(
+                            "POST",
+                            f"https://auth.7pass.de/login-srv/precheck/continue/{track_id}",
+                            data=b"",
+                            content_type="application/x-www-form-urlencoded",
+                            allow_redirects=True,
+                        )
+                    except WafBlockedException:
+                        raise
+                    except Exception as e:
+                        _raise_if_cf_error(e)
+                        raise
                     final_url = continue_response.url
                     parsed = urlparse(final_url)
                     params = parse_qs(parsed.query)
@@ -634,12 +577,38 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
             logger.debug("Authorization code obtained")
 
-            return self._exchange_authorization_code_for_token(
-                authorization_code=auth_code,
-                code_verifier=code_verifier,
-                state=state,
-                cd1=cd1,
-            )
+            # 7. Redeem the code directly. Joyn does not implement real PKCE — the working
+            # client always sends code_verifier as an empty string here.
+            cd1_value = params.get("cd1", [None])[0] or cd1
+            redeem_data = {
+                "client_id": client_id,
+                "code": auth_code,
+                "code_verifier": "",
+                "redirect_uri": self.oauth_redirect_uri,
+                "tracking_id": cd1_value,
+                "tracking_name": self.platform,
+            }
+
+            try:
+                redeem_response = _request(
+                    "POST",
+                    self.oauth_token_endpoint,
+                    json=redeem_data,
+                    content_type="application/json",
+                    headers=self._get_joyn_auth_headers(),
+                    allow_redirects=False,
+                )
+            except WafBlockedException:
+                raise
+            except Exception as e:
+                _raise_if_cf_error(e)
+                raise
+
+            _check_cf(redeem_response)
+            token_data = redeem_response.json()
+
+            logger.info("Joyn login flow successful")
+            return token_data
 
         except WafBlockedException:
             raise
