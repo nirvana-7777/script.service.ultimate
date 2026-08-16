@@ -43,6 +43,37 @@ def setup_m3u_routes(app, manager, service):
             response.status = 500
             return {"error": f"Internal server error: {str(api_err)}"}
 
+    @app.route("/api/m3u/noproxy")
+    def get_m3u_all_noproxy():
+        """
+        Generates M3U playlist for all configured providers using direct
+        (non-proxied) stream URLs. Forces a redirect to the upstream manifest
+        even if a media proxy is configured. Cached separately from the normal
+        playlist under playlist_noproxy.m3u.
+
+        Example: http://localhost:7777/api/m3u/noproxy
+        """
+        try:
+            cache_file = "playlist_noproxy.m3u"
+
+            cached_content = service.vfs.read_text(cache_file)
+
+            if cached_content:
+                logger.info("Serving cached no-proxy M3U playlist for all providers")
+                response.content_type = "audio/x-mpegurl; charset=utf-8"
+                response.headers["Content-Disposition"] = (
+                    'attachment; filename="playlist_noproxy.m3u8"'
+                )
+                return cached_content
+
+            logger.info("No valid cache found, generating no-proxy M3U playlist for all providers")
+            return service.generate_m3u_all(save_to_cache=True, no_proxy=True)
+
+        except Exception as api_err:
+            logger.error(f"API Error in /api/m3u/noproxy: {str(api_err)}")
+            response.status = 500
+            return {"error": f"Internal server error: {str(api_err)}"}
+
     @app.route("/api/m3u/generate")
     def generate_m3u_all():
         """
@@ -56,6 +87,23 @@ def setup_m3u_routes(app, manager, service):
 
         except Exception as api_err:
             logger.error(f"API Error in /api/m3u/generate: {str(api_err)}")
+            response.status = 500
+            return {"error": f"Internal server error: {str(api_err)}"}
+
+    @app.route("/api/m3u/noproxy/generate")
+    def generate_m3u_all_noproxy():
+        """
+        Forces regeneration of the no-proxy M3U playlist for all providers and
+        saves it to cache under playlist_noproxy.m3u.
+
+        Example: http://localhost:7777/api/m3u/noproxy/generate
+        """
+        try:
+            logger.info("Force generating no-proxy M3U playlist for all providers")
+            return service.generate_m3u_all(save_to_cache=True, no_proxy=True)
+
+        except Exception as api_err:
+            logger.error(f"API Error in /api/m3u/noproxy/generate: {str(api_err)}")
             response.status = 500
             return {"error": f"Internal server error: {str(api_err)}"}
 
@@ -96,6 +144,40 @@ def setup_m3u_routes(app, manager, service):
             response.status = 500
             return {"error": f"Internal server error: {str(api_err)}"}
 
+    @app.route("/api/providers/<provider>/m3u/noproxy")
+    def get_m3u_provider_noproxy(provider):
+        """
+        Generates M3U playlist for a specific provider using direct (non-proxied)
+        stream URLs. Forces a redirect to the upstream manifest even if a media
+        proxy is configured. Cached separately under "{provider}_noproxy.m3u".
+
+        Example: http://localhost:7777/api/providers/rtlplus/m3u/noproxy
+        """
+        try:
+            cache_file = f"{provider}_noproxy.m3u"
+
+            cached_content = service.vfs.read_text(cache_file)
+
+            if cached_content:
+                logger.info(f"Serving cached no-proxy M3U playlist for provider '{provider}'")
+                response.content_type = "audio/x-mpegurl; charset=utf-8"
+                response.headers["Content-Disposition"] = (
+                    f'attachment; filename="{provider}_playlist_noproxy.m3u8"'
+                )
+                return cached_content
+
+            logger.info(f"No valid cache found, generating no-proxy M3U playlist for provider '{provider}'")
+            return service.generate_m3u_provider(provider, save_to_cache=True, no_proxy=True)
+
+        except ValueError as val_err:
+            logger.error(f"API Error in /api/providers/{provider}/m3u/noproxy: {str(val_err)}")
+            response.status = 404
+            return {"error": str(val_err)}
+        except Exception as api_err:
+            logger.error(f"API Error in /api/providers/{provider}/m3u/noproxy: {str(api_err)}")
+            response.status = 500
+            return {"error": f"Internal server error: {str(api_err)}"}
+
     @app.route("/api/providers/<provider>/m3u/generate")
     def generate_m3u_provider(provider):
         """
@@ -116,6 +198,31 @@ def setup_m3u_routes(app, manager, service):
         except Exception as api_err:
             logger.error(
                 f"API Error in /api/providers/{provider}/m3u/generate: {str(api_err)}"
+            )
+            response.status = 500
+            return {"error": f"Internal server error: {str(api_err)}"}
+
+    @app.route("/api/providers/<provider>/m3u/noproxy/generate")
+    def generate_m3u_provider_noproxy(provider):
+        """
+        Forces regeneration of the no-proxy M3U playlist for a specific provider
+        and saves it to cache under "{provider}_noproxy.m3u".
+
+        Example: http://localhost:7777/api/providers/rtlplus/m3u/noproxy/generate
+        """
+        try:
+            logger.info(f"Force generating no-proxy M3U playlist for provider '{provider}'")
+            return service.generate_m3u_provider(provider, save_to_cache=True, no_proxy=True)
+
+        except ValueError as val_err:
+            logger.error(
+                f"API Error in /api/providers/{provider}/m3u/noproxy/generate: {str(val_err)}"
+            )
+            response.status = 404
+            return {"error": str(val_err)}
+        except Exception as api_err:
+            logger.error(
+                f"API Error in /api/providers/{provider}/m3u/noproxy/generate: {str(api_err)}"
             )
             response.status = 500
             return {"error": f"Internal server error: {str(api_err)}"}

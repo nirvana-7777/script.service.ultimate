@@ -697,7 +697,7 @@ class UltimateService:
             return None
         return self.epg_alias_map.get(channel_id)
 
-    def _generate_m3u_channel_entry(self, base_url, provider_name, channel):
+    def _generate_m3u_channel_entry(self, base_url, provider_name, channel, no_proxy=False):
         """
         Generate M3U entry for a single channel.
 
@@ -705,6 +705,10 @@ class UltimateService:
             base_url: Base URL for stream endpoints
             provider_name: Name of the provider
             channel: StreamingChannel object
+            no_proxy: If True, point the stream URL at the /stream/noproxy/index.mpd
+                      variant instead of /stream/index.mpd. Everything else about the
+                      entry (EPG attrs, catchup attrs, DRM KODIPROP directives) is
+                      unchanged — no_proxy only affects transport, not DRM.
 
         Returns:
             M3U entry as string
@@ -721,9 +725,11 @@ class UltimateService:
         epg_id = self._get_epg_id(channel_id)
         epg_id_attr = f' tvg-epgid="{epg_id}"' if epg_id else ""
 
-        # Build stream URL with /index.mpd
+        # Build stream URL. no_proxy points at the sibling route that forces a
+        # redirect to the upstream manifest instead of going through the media proxy.
+        stream_path = "stream/noproxy/index.mpd" if no_proxy else "stream/index.mpd"
         stream_url = (
-            f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/index.mpd"
+            f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/{stream_path}"
         )
 
         # Get provider instance to access provider_label
@@ -1213,7 +1219,7 @@ class UltimateService:
         return m3u_content
 
     def _generate_m3u_content(
-        self, providers=None, save_to_cache=True, cache_filename=None
+        self, providers=None, save_to_cache=True, cache_filename=None, no_proxy=False
     ):
         """
         Internal method to generate M3U content for specified providers.
@@ -1222,6 +1228,9 @@ class UltimateService:
             providers: List of provider names, or None for all providers
             save_to_cache: Whether to save to cache
             cache_filename: Cache filename to use
+            no_proxy: If True, generate entries pointing at the non-proxied stream
+                      routes, and cache under a "_noproxy" suffixed filename so this
+                      never collides with the normal proxied cache file.
 
         Returns:
             M3U content as string
@@ -1244,6 +1253,18 @@ class UltimateService:
             )
             cache_filename = cache_filename or f"{providers_to_process[0]}.m3u"
 
+        # IMPORTANT: apply the no_proxy suffix AFTER cache_filename has been
+        # resolved to its default above. Doing this earlier (before the default
+        # is assigned) means cache_filename is still None here and the suffix
+        # never gets applied — the noproxy playlist then silently caches under
+        # the SAME filename as the proxied playlist, corrupting it.
+        if no_proxy:
+            if "." in cache_filename:
+                base_name, ext = cache_filename.rsplit(".", 1)
+                cache_filename = f"{base_name}_noproxy.{ext}"
+            else:
+                cache_filename = f"{cache_filename}_noproxy"
+
         for provider_name in providers_to_process:
             try:
                 # Get channels for this provider
@@ -1254,7 +1275,7 @@ class UltimateService:
                 # Add each channel to M3U
                 for channel in channels:
                     m3u_content += self._generate_m3u_channel_entry(
-                        base_url, provider_name, channel
+                        base_url, provider_name, channel, no_proxy=no_proxy
                     )
 
             except Exception as provider_err:
@@ -1608,13 +1629,13 @@ class UltimateService:
         """Public wrapper for EPG ID lookup."""
         return self._get_epg_id(channel_id)
 
-    def generate_m3u_all(self, save_to_cache: bool = False) -> str:
+    def generate_m3u_all(self, save_to_cache: bool = False, no_proxy: bool = False) -> str:
         """Public wrapper for full M3U generation."""
-        return self._generate_m3u_all(save_to_cache=save_to_cache)
+        return self._generate_m3u_all(save_to_cache=save_to_cache, no_proxy=no_proxy)
 
-    def generate_m3u_provider(self, provider: str, save_to_cache: bool = False) -> str:
+    def generate_m3u_provider(self, provider: str, save_to_cache: bool = False, no_proxy: bool = False) -> str:
         """Public wrapper for per-provider M3U generation."""
-        return self._generate_m3u_provider(provider, save_to_cache=save_to_cache)
+        return self._generate_m3u_provider(provider, save_to_cache=save_to_cache, no_proxy=no_proxy)
 
     def generate_m3u_decrypted_fast(self, providers=None) -> str:
         """Public wrapper for fast decrypted M3U generation."""
@@ -1684,30 +1705,32 @@ class UltimateService:
             logger.warning(f"Unsupported headers type: {type(req_headers)}")
             return str(req_headers)
 
-    def _generate_m3u_all(self, save_to_cache: bool = False) -> str:
+    def _generate_m3u_all(self, save_to_cache: bool = False, no_proxy: bool = False) -> str:
         """Internal method to generate M3U for all providers."""
-        logger.info("Generating M3U playlist for all providers")
+        logger.info(f"Generating {'no-proxy ' if no_proxy else ''}M3U playlist for all providers")
         m3u_content = self._generate_m3u_content(
-            providers=None, save_to_cache=save_to_cache
+            providers=None, save_to_cache=save_to_cache, no_proxy=no_proxy
         )
 
         # Set appropriate headers for M3U
         response.content_type = "audio/x-mpegurl; charset=utf-8"
-        response.headers["Content-Disposition"] = 'attachment; filename="playlist.m3u8"'
+        filename = "playlist_noproxy.m3u8" if no_proxy else "playlist.m3u8"
+        response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
 
         return m3u_content
 
-    def _generate_m3u_provider(self, provider: str, save_to_cache: bool = False) -> str:
+    def _generate_m3u_provider(self, provider: str, save_to_cache: bool = False, no_proxy: bool = False) -> str:
         """Internal method to generate M3U for a specific provider."""
-        logger.info(f"Generating M3U playlist for provider '{provider}'")
+        logger.info(f"Generating {'no-proxy ' if no_proxy else ''}M3U playlist for provider '{provider}'")
         m3u_content = self._generate_m3u_content(
-            providers=provider, save_to_cache=save_to_cache
+            providers=provider, save_to_cache=save_to_cache, no_proxy=no_proxy
         )
 
         # Set appropriate headers for M3U
         response.content_type = "audio/x-mpegurl; charset=utf-8"
+        filename = f"{provider}_playlist_noproxy.m3u8" if no_proxy else f"{provider}_playlist.m3u8"
         response.headers["Content-Disposition"] = (
-            f'attachment; filename="{provider}_playlist.m3u8"'
+            f'attachment; filename="{filename}"'
         )
 
         return m3u_content

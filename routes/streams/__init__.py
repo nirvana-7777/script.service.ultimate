@@ -421,6 +421,7 @@ def make_helpers(manager, service):
             end_time: int = None,
             epg_id: str = None,
             drm_variant: str = "auto",
+            no_proxy: bool = False,
     ):
         """
         Core stream resolution: attach DRM header, then either redirect to the
@@ -430,6 +431,13 @@ def make_helpers(manager, service):
             drm_variant: 'auto' (provider decides) or 'software' (prefer ClearKey /
                          software-decodable DRM).  Threaded through to all helpers so
                          providers can return the correct manifest URL and DRM configs.
+            no_proxy: If True, force the redirect-to-upstream branch even for
+                      providers that would normally be proxied. This overrides the
+                      manager.needs_proxy(provider) checks below rather than adding
+                      a separate code path, so catchup, DRM header building, and
+                      requires_manifest_context handling all continue to work
+                      exactly as they do for the proxied case — only the
+                      proxy-vs-redirect decision changes.
         """
         # --- DRM header (best-effort, never fatal). Also returns the DRM
         # configs it fetched so the proxy branch below can reuse them instead
@@ -455,7 +463,7 @@ def make_helpers(manager, service):
 
         # --- Catchup path (channel-specific) ---
         if is_catchup:
-            if manager.needs_proxy(provider):
+            if manager.needs_proxy(provider) and not no_proxy:
                 return service.get_proxied_catchup_manifest(
                     provider, content_id, start_time, end_time, epg_id, country
                 )
@@ -478,7 +486,7 @@ def make_helpers(manager, service):
                 redirect(manifest_url)
 
         # --- Live / event / vod path ---
-        if manager.needs_proxy(provider):
+        if manager.needs_proxy(provider) and not no_proxy:
             # Check for ClearKey DRM — if present, rewrite manifest with ClearKey signaling
             # so the receiver can decrypt itself, rather than serving a plain proxy stream
             # with stripped ContentProtection that the player cannot handle.

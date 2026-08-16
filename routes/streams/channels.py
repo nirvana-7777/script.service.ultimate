@@ -22,8 +22,11 @@ def setup_channel_routes(app, manager, service, helpers):
     _resolve_decrypted_stream = helpers["_resolve_decrypted_stream"]
     _get_drm_configs = helpers["_get_drm_configs"]
 
-    def _handle_channel_stream(provider, channel_id, *, drm_variant="auto"):
-        """Shared implementation for /stream/index.mpd and /stream/sw-drm/index.mpd."""
+    def _handle_channel_stream(provider, channel_id, *, drm_variant="auto", no_proxy=False):
+        """Shared implementation for /stream/index.mpd, /stream/sw-drm/index.mpd,
+        and /stream/noproxy/index.mpd. All three variants get the same catchup
+        window validation and int parsing — no_proxy only changes whether
+        _resolve_stream is told to force a redirect past the media proxy."""
         try:
             start_time = request.query.get("start_time")
             end_time = request.query.get("end_time")
@@ -97,17 +100,18 @@ def setup_channel_routes(app, manager, service, helpers):
                 end_time=end_time_int if is_catchup else None,
                 epg_id=epg_id if is_catchup else None,
                 drm_variant=drm_variant,
+                no_proxy=no_proxy,
             )
 
         except HTTPResponse:
             raise
         except ValueError as e:
-            label = "sw-drm " if drm_variant == "software" else ""
+            label = "no-proxy " if no_proxy else ("sw-drm " if drm_variant == "software" else "")
             logger.error(f"{label}stream error for channel {provider}/{channel_id}: {e}")
             response.status = 404
             return {"error": str(e)}
         except Exception as e:
-            label = "sw-drm " if drm_variant == "software" else ""
+            label = "no-proxy " if no_proxy else ("sw-drm " if drm_variant == "software" else "")
             logger.error(f"{label}stream error for channel {provider}/{channel_id}: {e}")
             response.status = 500
             return {"error": f"Internal server error: {str(e)}"}
@@ -142,6 +146,10 @@ def setup_channel_routes(app, manager, service, helpers):
                 f"{base_url}/api/providers/{provider}/channels/{channel_id}"
                 f"/stream/sw-drm/index.mpd{qs}"
             )
+            noproxy_stream_url = (
+                f"{base_url}/api/providers/{provider}/channels/{channel_id}"
+                f"/stream/noproxy/index.mpd{qs}"
+            )
             # Catchup template — callers substitute {start_time}/{end_time} with
             # Unix timestamps.  Matches the query params consumed by _handle_channel_stream.
             catchup_qs_sep = "&" if qs else "?"
@@ -159,6 +167,7 @@ def setup_channel_routes(app, manager, service, helpers):
                 "channel_id": channel_id,
                 "manifest_url": stream_url,
                 "sw_drm_manifest_url": sw_drm_stream_url,
+                "noproxy_manifest_url": noproxy_stream_url,
                 "catchup_stream_url_template": catchup_stream_url_template,
             }
 
@@ -182,6 +191,22 @@ def setup_channel_routes(app, manager, service, helpers):
         """Software-DRM (ClearKey) variant. Identical transport to the standard
         endpoint; passes drm_variant='software' through to _resolve_stream."""
         return _handle_channel_stream(provider, channel_id, drm_variant="software")
+
+    @app.route("/api/providers/<provider>/channels/<channel_id>/stream/noproxy/index.mpd")
+    def get_channel_stream_noproxy(provider, channel_id):
+        """
+        Returns HTTP 302 redirect to the actual manifest, forcing a bypass of any
+        configured media proxy even if the provider would normally be proxied.
+        Supports live and catchup — reuses _handle_channel_stream so it gets the
+        same catchup window validation, timestamp parsing, and error handling as
+        the standard and sw-drm routes.
+
+        Useful when:
+        - Media proxy is misbehaving
+        - You want to test upstream performance directly
+        - Proxy is not needed for a specific provider
+        """
+        return _handle_channel_stream(provider, channel_id, no_proxy=True)
 
     @app.route("/api/providers/<provider>/channels/<channel_id>/stream/decrypted/index.mpd")
     def get_channel_stream_decrypted(provider, channel_id):
