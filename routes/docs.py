@@ -24,6 +24,38 @@ PAGE_TEMPLATE = """
             background: #f5f7fa;
             color: #2d3748;
         }
+        .nav-bar {
+            background: #2d3748;
+            padding: 12px 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .nav-bar a {
+            color: #cbd5e0;
+            text-decoration: none;
+            padding: 6px 16px;
+            border-radius: 4px;
+            transition: all 0.2s;
+            font-size: 14px;
+        }
+        .nav-bar a:hover {
+            background: #4a5568;
+            color: white;
+        }
+        .nav-bar a.active {
+            background: #4299e1;
+            color: white;
+        }
+        .nav-bar .brand {
+            color: white;
+            font-weight: 600;
+            font-size: 16px;
+            margin-right: auto;
+        }
         h1 {
             color: #2d3748;
             border-bottom: 3px solid #4299e1;
@@ -181,15 +213,17 @@ PAGE_TEMPLATE = """
         .no-results.visible {
             display: block;
         }
-        .badge-deprecated {
-            background: #fc8181;
-            color: white;
-            padding: 2px 8px;
-            border-radius: 12px;
-            font-size: 10px;
-            font-weight: 600;
-            text-transform: uppercase;
-            margin-left: 8px;
+        .json-link {
+            background: #edf2f7;
+            padding: 6px 14px;
+            border-radius: 4px;
+            font-size: 13px;
+            color: #4a5568;
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+        .json-link:hover {
+            background: #e2e8f0;
         }
         @media (max-width: 768px) {
             .endpoint {
@@ -207,11 +241,27 @@ PAGE_TEMPLATE = """
             body {
                 padding: 10px;
             }
+            .nav-bar {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 8px;
+            }
+            .nav-bar .brand {
+                margin-right: 0;
+                text-align: center;
+            }
         }
     </style>
 </head>
 <body>
-    <h1>🚀 Ultimate Backend API Documentation</h1>
+    <div class="nav-bar">
+        <span class="brand">🚀 Ultimate Backend</span>
+        <a href="/config">⚙️ Configuration</a>
+        <a href="/api/docs" class="active">📚 API Docs</a>
+        <a href="/api/docs/json" class="json-link">🔗 JSON</a>
+    </div>
+
+    <h1>📚 API Documentation</h1>
     <div class="stats">
         <div class="stat">Total Endpoints: <strong>{{TOTAL}}</strong></div>
         <div class="stat">Categories: <strong>{{CATEGORIES_COUNT}}</strong></div>
@@ -315,22 +365,20 @@ def setup_docs_routes(app, manager=None, service=None):
     # manager and service may be used in future versions for live API testing
     _ = manager, service  # Suppress lint warnings
 
-    @app.route("/")
-    def api_documentation():
+    @app.route("/api/docs")
+    def api_docs_html():
         """
-        Display all available API routes with descriptions
+        Display all available API routes with descriptions (HTML version)
+
+        Example: http://localhost:7777/api/docs
         """
         try:
             # Collect all routes from the Bottle app
             routes = []
 
             for route in app.routes:
-                # Skip internal routes (like /_*, /static, /config)
+                # Skip internal routes
                 if route.rule.startswith('/_') or route.rule.startswith('/static'):
-                    continue
-
-                # Skip the docs route itself to avoid self-reference
-                if route.rule == '/' and route.method == 'GET':
                     continue
 
                 # Skip OPTIONS and HEAD (usually auto-generated)
@@ -490,10 +538,12 @@ def setup_docs_routes(app, manager=None, service=None):
             response.content_type = "application/json"
             return {"error": "Failed to generate API documentation", "message": str(e)}
 
-    @app.route("/api/docs")
+    @app.route("/api/docs/json")
     def api_docs_json():
         """
         Get API documentation as JSON (machine-readable format)
+
+        Example: http://localhost:7777/api/docs/json
         """
         try:
             routes = []
@@ -501,9 +551,6 @@ def setup_docs_routes(app, manager=None, service=None):
             for route in app.routes:
                 # Skip internal routes
                 if route.rule.startswith('/_') or route.rule.startswith('/static'):
-                    continue
-
-                if route.rule == '/' and route.method == 'GET':
                     continue
 
                 if route.method in ('OPTIONS', 'HEAD'):
