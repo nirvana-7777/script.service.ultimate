@@ -21,6 +21,7 @@ from .m3u import setup_m3u_routes
 from .events import setup_events_routes
 from .vod import setup_vod_routes
 from .recordings import setup_recordings_routes
+from .docs import setup_docs_routes
 
 # Now import the route setup functions
 from .providers import setup_provider_routes
@@ -37,4 +38,5 @@ __all__ = [
     "setup_events_routes",
     "setup_vod_routes",
     "setup_recordings_routes",
+    "setup_docs_routes",
 ]
