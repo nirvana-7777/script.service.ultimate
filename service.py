@@ -810,9 +810,9 @@ class UltimateService:
         epg_id = self._get_epg_id(channel_id)
         epg_id_attr = f' tvg-epgid="{epg_id}"' if epg_id else ""
 
-        # Build decrypted stream URL via media proxy with /index.mpd
-        # Format: /api/providers/{provider}/channels/{channel_id}/stream/decrypted/index.mpd
-        stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/decrypted/index.mpd"
+        # Build proxied stream URL via media proxy with /index.mpd
+        # Format: /api/providers/{provider}/channels/{channel_id}/stream/proxied/index.mpd
+        stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/proxied/index.mpd"
 
         # Get catchup information from channel
         catchup_window = getattr(channel, 'catchup_hours', 0)  # in hours
@@ -899,7 +899,7 @@ class UltimateService:
                     epg_id_attr = f' tvg-epgid="{epg_id}"' if epg_id else ""
 
                     # Build decrypted stream URL
-                    stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/decrypted/index.mpd"
+                    stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/proxied/index.mpd"
 
                     # Get catchup information
                     catchup_window = getattr(channel, 'catchup_hours', 0)
@@ -1006,7 +1006,7 @@ class UltimateService:
                     epg_id_attr = f' tvg-epgid="{epg_id}"' if epg_id else ""
 
                     # Build decrypted stream URL (ffmpeg variant with highest quality)
-                    stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/decrypted/ffmpeg/index.mpd"
+                    stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/proxied/ffmpeg/index.mpd"
 
                     # Build ffmpeg pipe command
                     # Map all video (will be just one due to highest_quality_only), all audio, and optional subtitles
