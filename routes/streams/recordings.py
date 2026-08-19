@@ -91,10 +91,10 @@ def setup_recording_routes(app, manager, service, helpers):
             return {"error": f"Internal server error: {str(e)}"}
 
     @app.route(
-        "/api/providers/<provider>/recordings/<recording_id>/stream/decrypted/index.mpd"
+        "/api/providers/<provider>/recordings/<recording_id>/stream/proxied/index.mpd"
     )
     def get_recording_stream_decrypted(provider, recording_id):
-        """Decrypted recording stream — all quality representations."""
+        """Proxied recording stream — all quality representations."""
         return _resolve_decrypted_stream(
             CONTENT_TYPE_RECORDING, provider, recording_id, highest_quality_only=False
         )

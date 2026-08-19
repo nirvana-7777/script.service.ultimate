@@ -72,14 +72,14 @@ def setup_vod_routes(app, manager, service, helpers):
             response.status = 500
             return {"error": f"Internal server error: {str(e)}"}
 
-    @app.route("/api/providers/<provider>/vod/<path:path>/stream/decrypted/index.mpd")
+    @app.route("/api/providers/<provider>/vod/<path:path>/stream/proxied/index.mpd")
     def get_vod_stream_decrypted(provider, path):
         vod_id = path.split("/")[0]
         return _resolve_decrypted_stream(
             CONTENT_TYPE_VOD, provider, vod_id, highest_quality_only=False
         )
 
-    @app.route("/api/providers/<provider>/vod/<path:path>/stream/decrypted/ffmpeg/index.mpd")
+    @app.route("/api/providers/<provider>/vod/<path:path>/stream/proxied/ffmpeg/index.mpd")
     def get_vod_stream_decrypted_ffmpeg(provider, path):
         vod_id = path.split("/")[0]
         return _resolve_decrypted_stream(

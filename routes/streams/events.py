@@ -86,7 +86,7 @@ def setup_event_routes(app, manager, service, helpers):
     @app.route("/api/providers/<provider>/events/<event_id>/stream/sw-drm/index.mpd")
     def get_event_stream_sw_drm(provider, event_id):
         """
-        Software-DRM (ClearKey) event stream endpoint.
+        Software-DRM event stream endpoint.
 
         Identical to the standard event stream endpoint except that
         drm_variant='software' is passed through to the resolution helpers.
@@ -109,19 +109,19 @@ def setup_event_routes(app, manager, service, helpers):
             return {"error": f"Internal server error: {str(e)}"}
 
     @app.route(
-        "/api/providers/<provider>/events/<event_id>/stream/decrypted/index.mpd"
+        "/api/providers/<provider>/events/<event_id>/stream/proxied/index.mpd"
     )
     def get_event_stream_decrypted(provider, event_id):
-        """Decrypted event stream — all quality representations."""
+        """Proxied event stream — all quality representations."""
         return _resolve_decrypted_stream(
             CONTENT_TYPE_EVENT, provider, event_id, highest_quality_only=False
         )
 
     @app.route(
-        "/api/providers/<provider>/events/<event_id>/stream/decrypted/ffmpeg/index.mpd"
+        "/api/providers/<provider>/events/<event_id>/stream/proxied/ffmpeg/index.mpd"
     )
     def get_event_stream_decrypted_ffmpeg(provider, event_id):
-        """Decrypted event stream — highest quality only, optimised for ffmpeg."""
+        """Proxied event stream — highest quality only, optimised for ffmpeg."""
         return _resolve_decrypted_stream(
             CONTENT_TYPE_EVENT, provider, event_id, highest_quality_only=True
         )
