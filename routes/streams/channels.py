@@ -188,7 +188,7 @@ def setup_channel_routes(app, manager, service, helpers):
 
     @app.route("/api/providers/<provider>/channels/<channel_id>/stream/sw-drm/index.mpd")
     def get_channel_stream_sw_drm(provider, channel_id):
-        """Software-DRM (ClearKey) variant. Identical transport to the standard
+        """Software-DRM variant. Identical transport to the standard
         endpoint; passes drm_variant='software' through to _resolve_stream."""
         return _handle_channel_stream(provider, channel_id, drm_variant="software")
 
@@ -208,18 +208,18 @@ def setup_channel_routes(app, manager, service, helpers):
         """
         return _handle_channel_stream(provider, channel_id, no_proxy=True)
 
-    @app.route("/api/providers/<provider>/channels/<channel_id>/stream/decrypted/index.mpd")
+    @app.route("/api/providers/<provider>/channels/<channel_id>/stream/proxied/index.mpd")
     def get_channel_stream_decrypted(provider, channel_id):
-        """Decrypted stream — all quality representations."""
+        """Proxied stream — all quality representations."""
         return _resolve_decrypted_stream(
             CONTENT_TYPE_CHANNEL, provider, channel_id, highest_quality_only=False
         )
 
     @app.route(
-        "/api/providers/<provider>/channels/<channel_id>/stream/decrypted/ffmpeg/index.mpd"
+        "/api/providers/<provider>/channels/<channel_id>/stream/proxied/ffmpeg/index.mpd"
     )
     def get_channel_stream_decrypted_ffmpeg(provider, channel_id):
-        """Decrypted stream — highest quality only, optimised for ffmpeg."""
+        """Proxied stream — highest quality only, optimised for ffmpeg."""
         return _resolve_decrypted_stream(
             CONTENT_TYPE_CHANNEL, provider, channel_id, highest_quality_only=True
         )

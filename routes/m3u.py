@@ -227,155 +227,155 @@ def setup_m3u_routes(app, manager, service):
             response.status = 500
             return {"error": f"Internal server error: {str(api_err)}"}
 
-    @app.route("/api/m3u/decrypted")
+    @app.route("/api/m3u/proxied")
     def get_m3u_decrypted():
         """
-        Generates decrypted M3U playlist for all configured providers.
-        Fast generation - includes ALL channels with decrypted stream URLs.
+        Generates proxied M3U playlist for all configured providers.
+        Fast generation - includes ALL channels with proxied stream URLs.
         No filtering, no caching (very fast).
 
-        Example: http://localhost:7777/api/m3u/decrypted
+        Example: http://localhost:7777/api/m3u/proxied
         """
         try:
-            logger.info("Generating fast decrypted M3U playlist for all providers")
+            logger.info("Generating fast proxied M3U playlist for all providers")
             return service.generate_m3u_decrypted_fast(providers=None)
 
         except Exception as api_err:
-            logger.error(f"API Error in /api/m3u/decrypted: {str(api_err)}")
+            logger.error(f"API Error in /api/m3u/proxied: {str(api_err)}")
             response.status = 500
             return {"error": f"Internal server error: {str(api_err)}"}
 
-    @app.route("/api/m3u/decrypted/filtered")
+    @app.route("/api/m3u/proxied/filtered")
     def get_m3u_decrypted_filtered():
         """
-        Generates filtered decrypted M3U playlist for all configured providers.
+        Generates filtered proxied M3U playlist for all configured providers.
         Only includes channels with ClearKey DRM or unencrypted channels.
         Returns cached version if available, otherwise generates new one.
 
-        Example: http://localhost:7777/api/m3u/decrypted/filtered
+        Example: http://localhost:7777/api/m3u/proxied/filtered
         """
         try:
-            cache_file = "playlist_decrypted_filtered.m3u"
+            cache_file = "playlist_proxied_filtered.m3u"
 
             # Try to read cached file
             cached_content = service.vfs.read_text(cache_file)
 
             if cached_content:
-                logger.info("Serving cached filtered decrypted M3U playlist for all providers")
+                logger.info("Serving cached filtered proxied M3U playlist for all providers")
                 response.content_type = "audio/x-mpegurl; charset=utf-8"
                 response.headers["Content-Disposition"] = (
-                    'attachment; filename="playlist_decrypted_filtered.m3u8"'
+                    'attachment; filename="playlist_proxied_filtered.m3u8"'
                 )
                 return cached_content
 
             # Cache doesn't exist, generate new M3U
             logger.info(
-                "No valid cache found, generating filtered decrypted M3U playlist for all providers"
+                "No valid cache found, generating filtered proxied M3U playlist for all providers"
             )
             return service.generate_m3u_decrypted_filtered_all(save_to_cache=True)
 
         except Exception as api_err:
-            logger.error(f"API Error in /api/m3u/decrypted/filtered: {str(api_err)}")
+            logger.error(f"API Error in /api/m3u/proxied/filtered: {str(api_err)}")
             response.status = 500
             return {"error": f"Internal server error: {str(api_err)}"}
 
-    @app.route("/api/m3u/decrypted/filtered/generate")
+    @app.route("/api/m3u/proxied/filtered/generate")
     def generate_m3u_decrypted_filtered():
         """
-        Forces regeneration of filtered decrypted M3U playlist for all providers and saves to cache.
+        Forces regeneration of filtered proxied M3U playlist for all providers and saves to cache.
 
-        Example: http://localhost:7777/api/m3u/decrypted/filtered/generate
+        Example: http://localhost:7777/api/m3u/proxied/filtered/generate
         """
         try:
-            logger.info("Force generating filtered decrypted M3U playlist for all providers")
+            logger.info("Force generating filtered proxied M3U playlist for all providers")
             return service.generate_m3u_decrypted_filtered_all(save_to_cache=True)
 
         except Exception as api_err:
-            logger.error(f"API Error in /api/m3u/decrypted/filtered/generate: {str(api_err)}")
+            logger.error(f"API Error in /api/m3u/proxied/filtered/generate: {str(api_err)}")
             response.status = 500
             return {"error": f"Internal server error: {str(api_err)}"}
 
-    @app.route("/api/providers/<provider>/m3u/decrypted")
+    @app.route("/api/providers/<provider>/m3u/proxied")
     def get_m3u_decrypted_provider(provider):
         """
-        Generates decrypted M3U playlist for a specific provider.
-        Fast generation - includes ALL channels with decrypted stream URLs.
+        Generates proxied M3U playlist for a specific provider.
+        Fast generation - includes ALL channels with proxied stream URLs.
         No filtering, no caching (very fast).
 
-        Example: http://localhost:7777/api/providers/rtlplus/m3u/decrypted
+        Example: http://localhost:7777/api/providers/rtlplus/m3u/proxied
         """
         try:
-            logger.info(f"Generating fast decrypted M3U playlist for provider '{provider}'")
+            logger.info(f"Generating fast proxied M3U playlist for provider '{provider}'")
             return service.generate_m3u_decrypted_fast(providers=provider)
 
         except ValueError as val_err:
             logger.error(
-                f"API Error in /api/providers/{provider}/m3u/decrypted: {str(val_err)}"
+                f"API Error in /api/providers/{provider}/m3u/proxied: {str(val_err)}"
             )
             response.status = 404
             return {"error": str(val_err)}
         except Exception as api_err:
             logger.error(
-                f"API Error in /api/providers/{provider}/m3u/decrypted: {str(api_err)}"
+                f"API Error in /api/providers/{provider}/m3u/proxied: {str(api_err)}"
             )
             response.status = 500
             return {"error": f"Internal server error: {str(api_err)}"}
 
-    @app.route("/api/providers/<provider>/m3u/decrypted/ffmpeg")
+    @app.route("/api/providers/<provider>/m3u/proxied/ffmpeg")
     def get_m3u_decrypted_ffmpeg_provider(provider):
         """
-        Generates decrypted M3U playlist for a specific provider with ffmpeg piping.
-        Fast generation - includes ALL channels with ffmpeg-piped decrypted stream URLs.
+        Generates proxied M3U playlist for a specific provider with ffmpeg piping.
+        Fast generation - includes ALL channels with ffmpeg-piped proxied stream URLs.
         Streams are highest quality video only with all audio tracks copied.
         No filtering, no caching (very fast).
 
-        Example: http://localhost:7777/api/providers/rtlplus/m3u/decrypted/ffmpeg
+        Example: http://localhost:7777/api/providers/rtlplus/m3u/proxied/ffmpeg
         """
         try:
-            logger.info(f"Generating fast decrypted ffmpeg M3U playlist for provider '{provider}'")
+            logger.info(f"Generating fast proxied ffmpeg M3U playlist for provider '{provider}'")
             return service.generate_m3u_decrypted_ffmpeg_fast(providers=provider)
 
         except ValueError as val_err:
             logger.error(
-                f"API Error in /api/providers/{provider}/m3u/decrypted/ffmpeg: {str(val_err)}"
+                f"API Error in /api/providers/{provider}/m3u/proxied/ffmpeg: {str(val_err)}"
             )
             response.status = 404
             return {"error": str(val_err)}
         except Exception as api_err:
             logger.error(
-                f"API Error in /api/providers/{provider}/m3u/decrypted/ffmpeg: {str(api_err)}"
+                f"API Error in /api/providers/{provider}/m3u/proxied/ffmpeg: {str(api_err)}"
             )
             response.status = 500
             return {"error": f"Internal server error: {str(api_err)}"}
 
-    @app.route("/api/providers/<provider>/m3u/decrypted/filtered")
+    @app.route("/api/providers/<provider>/m3u/proxied/filtered")
     def get_m3u_decrypted_filtered_provider(provider):
         """
-        Generates filtered decrypted M3U playlist for a specific provider.
+        Generates filtered proxied M3U playlist for a specific provider.
         Only includes channels with ClearKey DRM or unencrypted channels.
         Returns cached version if available, otherwise generates new one.
 
-        Example: http://localhost:7777/api/providers/rtlplus/m3u/decrypted/filtered
+        Example: http://localhost:7777/api/providers/rtlplus/m3u/proxied/filtered
         """
         try:
-            cache_file = f"{provider}_decrypted_filtered.m3u"
+            cache_file = f"{provider}_proxied_filtered.m3u"
 
             # Try to read cached file
             cached_content = service.vfs.read_text(cache_file)
 
             if cached_content:
                 logger.info(
-                    f"Serving cached filtered decrypted M3U playlist for provider '{provider}'"
+                    f"Serving cached filtered proxied M3U playlist for provider '{provider}'"
                 )
                 response.content_type = "audio/x-mpegurl; charset=utf-8"
                 response.headers["Content-Disposition"] = (
-                    f'attachment; filename="{provider}_decrypted_filtered_playlist.m3u8"'
+                    f'attachment; filename="{provider}_proxied_filtered_playlist.m3u8"'
                 )
                 return cached_content
 
             # Cache doesn't exist, generate new M3U
             logger.info(
-                f"No valid cache found, generating filtered decrypted M3U playlist for provider '{provider}'"
+                f"No valid cache found, generating filtered proxied M3U playlist for provider '{provider}'"
             )
             return service.generate_m3u_decrypted_filtered_provider(
                 provider, save_to_cache=True
@@ -383,27 +383,27 @@ def setup_m3u_routes(app, manager, service):
 
         except ValueError as val_err:
             logger.error(
-                f"API Error in /api/providers/{provider}/m3u/decrypted/filtered: {str(val_err)}"
+                f"API Error in /api/providers/{provider}/m3u/proxied/filtered: {str(val_err)}"
             )
             response.status = 404
             return {"error": str(val_err)}
         except Exception as api_err:
             logger.error(
-                f"API Error in /api/providers/{provider}/m3u/decrypted/filtered: {str(api_err)}"
+                f"API Error in /api/providers/{provider}/m3u/proxied/filtered: {str(api_err)}"
             )
             response.status = 500
             return {"error": f"Internal server error: {str(api_err)}"}
 
-    @app.route("/api/providers/<provider>/m3u/decrypted/filtered/generate")
+    @app.route("/api/providers/<provider>/m3u/proxied/filtered/generate")
     def generate_m3u_decrypted_filtered_provider(provider):
         """
-        Forces regeneration of filtered decrypted M3U playlist for a specific provider and saves to cache.
+        Forces regeneration of filtered proxied M3U playlist for a specific provider and saves to cache.
 
-        Example: http://localhost:7777/api/providers/rtlplus/m3u/decrypted/filtered/generate
+        Example: http://localhost:7777/api/providers/rtlplus/m3u/proxied/filtered/generate
         """
         try:
             logger.info(
-                f"Force generating filtered decrypted M3U playlist for provider '{provider}'"
+                f"Force generating filtered proxied M3U playlist for provider '{provider}'"
             )
             return service.generate_m3u_decrypted_filtered_provider(
                 provider, save_to_cache=True
@@ -411,13 +411,13 @@ def setup_m3u_routes(app, manager, service):
 
         except ValueError as val_err:
             logger.error(
-                f"API Error in /api/providers/{provider}/m3u/decrypted/filtered/generate: {str(val_err)}"
+                f"API Error in /api/providers/{provider}/m3u/proxied/filtered/generate: {str(val_err)}"
             )
             response.status = 404
             return {"error": str(val_err)}
         except Exception as api_err:
             logger.error(
-                f"API Error in /api/providers/{provider}/m3u/decrypted/filtered/generate: {str(api_err)}"
+                f"API Error in /api/providers/{provider}/m3u/proxied/filtered/generate: {str(api_err)}"
             )
             response.status = 500
             return {"error": f"Internal server error: {str(api_err)}"}
@@ -520,14 +520,14 @@ def setup_m3u_routes(app, manager, service):
             response.status = 500
             return {"error": f"Internal server error: {str(api_err)}"}
 
-    @app.route("/api/m3u/subscribed/decrypted")
+    @app.route("/api/m3u/subscribed/proxied")
     def get_m3u_subscribed_decrypted():
         """
-        Generate decrypted M3U playlist with only subscribed channels.
+        Generate proxied M3U playlist with only subscribed channels.
         Fast generation - no filtering, no caching.
         """
         try:
-            logger.info("Generating fast decrypted M3U playlist for subscribed channels")
+            logger.info("Generating fast proxied M3U playlist for subscribed channels")
 
             # Check if media proxy is configured
             if not service.media_proxy_url:
@@ -565,8 +565,8 @@ def setup_m3u_routes(app, manager, service):
                         epg_id = service.get_epg_id(channel_id)
                         epg_id_attr = f' tvg-epgid="{epg_id}"' if epg_id else ""
 
-                        # Build decrypted stream URL
-                        stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/decrypted/index.mpd"
+                        # Build proxied stream URL
+                        stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/proxied/index.mpd"
 
                         # Add M3U entry
                         m3u_content += f'#EXTINF:-1 tvg-id="{channel_id}"{epg_id_attr}{chno} tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
@@ -581,12 +581,12 @@ def setup_m3u_routes(app, manager, service):
 
             response.content_type = "audio/x-mpegurl; charset=utf-8"
             response.headers["Content-Disposition"] = (
-                'attachment; filename="playlist_subscribed_decrypted.m3u8"'
+                'attachment; filename="playlist_subscribed_proxied.m3u8"'
             )
             return m3u_content
 
         except Exception as api_err:
-            logger.error(f"API Error in /api/m3u/subscribed/decrypted: {str(api_err)}")
+            logger.error(f"API Error in /api/m3u/subscribed/proxied: {str(api_err)}")
             response.status = 500
             return {"error": f"Internal server error: {str(api_err)}"}
 
