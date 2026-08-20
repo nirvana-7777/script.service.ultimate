@@ -774,7 +774,7 @@ class UltimateService:
 
         return entry_content
 
-    def _generate_m3u_decrypted_channel_entry(
+    def _generate_m3u_proxied_channel_entry(
             self,  # Changed from @staticmethod to instance method
             base_url,
             provider_name,
@@ -836,7 +836,7 @@ class UltimateService:
 
         return entry_content
 
-    def _generate_m3u_decrypted_fast(self, providers=None):
+    def _generate_m3u_proxied_fast(self, providers=None):
         """
         Fast generation of decrypted M3U content for specified providers.
         Includes ALL channels with decrypted stream URLs.
@@ -933,17 +933,17 @@ class UltimateService:
         if providers and isinstance(providers, str):
             # Single provider
             response.headers["Content-Disposition"] = (
-                f'attachment; filename="{providers}_decrypted_playlist.m3u8"'
+                f'attachment; filename="{providers}_proxied_playlist.m3u8"'
             )
         else:
             # All providers
             response.headers["Content-Disposition"] = (
-                'attachment; filename="playlist_decrypted.m3u8"'
+                'attachment; filename="playlist_proxied.m3u8"'
             )
 
         return m3u_content
 
-    def _generate_m3u_decrypted_ffmpeg_fast(self, providers=None):
+    def _generate_m3u_proxied_ffmpeg_fast(self, providers=None):
         """
         Fast generation of decrypted M3U content with ffmpeg piping for specified providers.
         Includes ALL channels with highest quality video and ffmpeg-piped stream URLs.
@@ -1050,17 +1050,17 @@ class UltimateService:
         if providers and isinstance(providers, str):
             # Single provider
             response.headers["Content-Disposition"] = (
-                f'attachment; filename="{providers}_decrypted_ffmpeg_playlist.m3u8"'
+                f'attachment; filename="{providers}_proxied_ffmpeg_playlist.m3u8"'
             )
         else:
             # All providers
             response.headers["Content-Disposition"] = (
-                'attachment; filename="playlist_decrypted_ffmpeg.m3u8"'
+                'attachment; filename="playlist_proxied_ffmpeg.m3u8"'
             )
 
         return m3u_content
 
-    def _generate_m3u_decrypted_filtered_content(
+    def _generate_m3u_proxied_filtered_content(
             self, providers=None, save_to_cache=True, cache_filename=None
     ):
         """
@@ -1090,14 +1090,14 @@ class UltimateService:
         if providers is None:
             # All providers
             providers_to_process = self.manager.list_providers()
-            cache_filename = cache_filename or "playlist_decrypted_filtered.m3u"
+            cache_filename = cache_filename or "playlist_proxied_filtered.m3u"
         else:
             # Specific provider(s)
             providers_to_process = (
                 [providers] if isinstance(providers, str) else providers
             )
             cache_filename = (
-                    cache_filename or f"{providers_to_process[0]}_decrypted_filtered.m3u"
+                    cache_filename or f"{providers_to_process[0]}_proxied_filtered.m3u"
             )
 
         channels_included = 0
@@ -1164,7 +1164,7 @@ class UltimateService:
 
                         if has_clearkey and clearkey_data:
                             # Channel has ClearKey - generate decrypted entry
-                            entry_content = self._generate_m3u_decrypted_channel_entry(
+                            entry_content = self._generate_m3u_proxied_channel_entry(
                                 base_url=base_url,
                                 provider_name=provider_name,
                                 provider_label=provider_label,
@@ -1293,10 +1293,10 @@ class UltimateService:
 
         return m3u_content
 
-    def _generate_m3u_decrypted_filtered_all(self, save_to_cache: bool = False) -> str:
+    def _generate_m3u_proxied_filtered_all(self, save_to_cache: bool = False) -> str:
         """Internal method to generate filtered decrypted M3U for all providers."""
         logger.info("Generating filtered decrypted M3U playlist for all providers")
-        m3u_content = self._generate_m3u_decrypted_filtered_content(
+        m3u_content = self._generate_m3u_proxied_filtered_content(
             providers=None, save_to_cache=save_to_cache
         )
 
@@ -1310,17 +1310,17 @@ class UltimateService:
         # Set appropriate headers for M3U
         response.content_type = "audio/x-mpegurl; charset=utf-8"
         response.headers["Content-Disposition"] = (
-            'attachment; filename="playlist_decrypted_filtered.m3u8"'
+            'attachment; filename="playlist_proxied_filtered.m3u8"'
         )
 
         return m3u_content
 
-    def _generate_m3u_decrypted_filtered_provider(
+    def _generate_m3u_proxied_filtered_provider(
             self, provider: str, save_to_cache: bool = False
     ) -> str:
         """Internal method to generate filtered decrypted M3U for a specific provider."""
         logger.info(f"Generating filtered decrypted M3U playlist for provider '{provider}'")
-        m3u_content = self._generate_m3u_decrypted_filtered_content(
+        m3u_content = self._generate_m3u_proxied_filtered_content(
             providers=provider, save_to_cache=save_to_cache
         )
 
@@ -1334,7 +1334,7 @@ class UltimateService:
         # Set appropriate headers for M3U
         response.content_type = "audio/x-mpegurl; charset=utf-8"
         response.headers["Content-Disposition"] = (
-            f'attachment; filename="{provider}_decrypted_filtered_playlist.m3u8"'
+            f'attachment; filename="{provider}_proxied_filtered_playlist.m3u8"'
         )
 
         return m3u_content
@@ -1448,7 +1448,7 @@ class UltimateService:
 
                         if has_clearkey and clearkey_data:
                             # Channel has ClearKey - generate decrypted entry
-                            entry_content = self._generate_m3u_decrypted_channel_entry(
+                            entry_content = self._generate_m3u_proxied_channel_entry(
                                 base_url=base_url,
                                 provider_name=provider_name,
                                 provider_label=provider_label,
@@ -1518,7 +1518,7 @@ class UltimateService:
         # Set appropriate headers for M3U
         response.content_type = "audio/x-mpegurl; charset=utf-8"
         response.headers["Content-Disposition"] = (
-            'attachment; filename="playlist_decrypted.m3u8"'
+            'attachment; filename="playlist_proxied.m3u8"'
         )
 
         return m3u_content
@@ -1542,7 +1542,7 @@ class UltimateService:
         # Set appropriate headers for M3U
         response.content_type = "audio/x-mpegurl; charset=utf-8"
         response.headers["Content-Disposition"] = (
-            f'attachment; filename="{provider}_decrypted_playlist.m3u8"'
+            f'attachment; filename="{provider}_proxied_playlist.m3u8"'
         )
 
         return m3u_content
@@ -1637,21 +1637,21 @@ class UltimateService:
         """Public wrapper for per-provider M3U generation."""
         return self._generate_m3u_provider(provider, save_to_cache=save_to_cache, no_proxy=no_proxy)
 
-    def generate_m3u_decrypted_fast(self, providers=None) -> str:
+    def generate_m3u_proxied_fast(self, providers=None) -> str:
         """Public wrapper for fast decrypted M3U generation."""
-        return self._generate_m3u_decrypted_fast(providers)
+        return self._generate_m3u_proxied_fast(providers)
 
-    def generate_m3u_decrypted_ffmpeg_fast(self, providers=None) -> str:
+    def generate_m3u_proxied_ffmpeg_fast(self, providers=None) -> str:
         """Public wrapper for fast ffmpeg-decrypted M3U generation."""
-        return self._generate_m3u_decrypted_ffmpeg_fast(providers)
+        return self._generate_m3u_proxied_ffmpeg_fast(providers)
 
-    def generate_m3u_decrypted_filtered_all(self, save_to_cache: bool = False) -> str:
+    def generate_m3u_proxied_filtered_all(self, save_to_cache: bool = False) -> str:
         """Public wrapper for filtered decrypted M3U (all providers)."""
-        return self._generate_m3u_decrypted_filtered_all(save_to_cache=save_to_cache)
+        return self._generate_m3u_proxied_filtered_all(save_to_cache=save_to_cache)
 
-    def generate_m3u_decrypted_filtered_provider(self, provider: str, save_to_cache: bool = False) -> str:
+    def generate_m3u_proxied_filtered_provider(self, provider: str, save_to_cache: bool = False) -> str:
         """Public wrapper for filtered decrypted M3U (single provider)."""
-        return self._generate_m3u_decrypted_filtered_provider(provider, save_to_cache=save_to_cache)
+        return self._generate_m3u_proxied_filtered_provider(provider, save_to_cache=save_to_cache)
 
     def generate_drm_directives(self, drm_configs) -> str:
         """Public wrapper for DRM directive generation."""
