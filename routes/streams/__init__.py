@@ -444,7 +444,79 @@ def make_helpers(manager, service):
 
         return None
 
-    def _resolve_stream(
+    def _redirect_or_fetch(content_type: str, provider: str, content_id: str,
+                            country, drm_variant: str):
+        """
+        Shared tail behavior for every "no proxy involved" outcome, across all
+        three modes: check requires_manifest_context and either fetch + inject
+        BaseURL, or do a plain redirect. Extracted so mode="noproxy" (live/vod),
+        mode="auto"'s non-proxied branch, and mode="decrypt"'s unencrypted/
+        no-proxy-needed branch all get identical, correct behavior instead of
+        three independently-maintained copies (previously the decrypt path had
+        none of this at all and always redirected unconditionally).
+        """
+        provider_instance = manager.get_provider(provider)
+
+        if provider_instance is None:
+            logger.warning(
+                f"_redirect_or_fetch: manager.get_provider('{provider}') returned None — "
+                "cannot check requires_manifest_context; falling back to redirect"
+            )
+
+        if provider_instance and getattr(provider_instance, 'requires_manifest_context', False):
+            logger.debug(
+                f"Provider {provider} requires manifest context — fetching manifest directly "
+                f"for {content_type}/{content_id}"
+            )
+            try:
+                manifest_url = _get_manifest_url(
+                    content_type, provider, content_id,
+                    country=country, drm_variant=drm_variant,
+                )
+                if not manifest_url:
+                    response.status = 404
+                    return {
+                        "error": (
+                            f'Manifest not available for {content_type} '
+                            f'"{content_id}" from provider "{provider}"'
+                        )
+                    }
+
+                manifest_text, _, _, _, effective_url = service.fetch_manifest_for_rewriter(
+                    provider, content_id, manifest_url
+                )
+                # Inject the upstream manifest URL as a BaseURL so the player can
+                # resolve relative segment URLs correctly. Without this, segments
+                # resolve against the local server URL and all requests fail.
+                manifest_text = _inject_base_url(manifest_text, effective_url)
+
+                response.content_type = "application/dash+xml; charset=utf-8"
+                return manifest_text
+
+            except Exception as e:
+                logger.error(
+                    f"Failed to fetch manifest for {content_type}/{content_id} "
+                    f"from {provider}: {e}"
+                )
+                response.status = 502
+                return {"error": f"Failed to fetch manifest: {str(e)}"}
+        else:
+            manifest_url = _get_manifest_url(
+                content_type, provider, content_id,
+                country=country, drm_variant=drm_variant,
+            )
+            if not manifest_url:
+                response.status = 404
+                return {
+                    "error": (
+                        f'Manifest not available for {content_type} '
+                        f'"{content_id}" from provider "{provider}"'
+                    )
+                }
+            logger.debug(f"Redirecting to manifest: {manifest_url}")
+            return redirect(manifest_url)
+
+    def _resolve_stream_unified(
             content_type: str,
             provider: str,
             content_id: str,
@@ -455,27 +527,60 @@ def make_helpers(manager, service):
             end_time: int = None,
             epg_id: str = None,
             drm_variant: str = "auto",
-            no_proxy: bool = False,
+            mode: str = "auto",
+            receiver_side: bool = True,
+            highest_quality_only: bool = False,
     ):
         """
-        Core stream resolution: attach DRM header, then either redirect to the
-        upstream manifest or return a proxy-rewritten manifest body.
+        Single resolver for every stream endpoint — replaces the former
+        _resolve_stream / _resolve_decrypted_stream split. Both names still
+        exist below as thin wrappers for existing call sites.
 
         Args:
-            drm_variant: 'auto' (provider decides) or 'software' (prefer ClearKey /
-                         software-decodable DRM).  Threaded through to all helpers so
-                         providers can return the correct manifest URL and DRM configs.
-            no_proxy: If True, force the redirect-to-upstream branch even for
-                      providers that would normally be proxied. This overrides the
-                      manager.needs_proxy(provider) checks below rather than adding
-                      a separate code path, so catchup, DRM header building, and
-                      requires_manifest_context handling all continue to work
-                      exactly as they do for the proxied case — only the
-                      proxy-vs-redirect decision changes.
+            drm_variant: 'auto' (provider decides) or 'software'. This selects
+                         which upstream DRM/quality variant to request (e.g. a
+                         provider's L1 vs L3 Widevine stream) — orthogonal to
+                         `mode`, which governs transport (proxy/decrypt/redirect).
+            mode: "auto"    - proxy if the provider needs it, else redirect/fetch.
+                              ClearKey content is always rewritten receiver-side
+                              (client decrypts) — this is the historical /stream/
+                              contract and is not caller-configurable.
+                  "decrypt" - server-side ClearKey decryption via the media
+                              proxy (receiver_side controls client- vs
+                              server-side decrypt). Requires MEDIA_PROXY_URL.
+                              Unencrypted content falls through to the same
+                              proxy/redirect behavior as mode="auto" — there's
+                              nothing to decrypt but nothing blocking playback
+                              either. Content that's neither ClearKey nor
+                              unencrypted (e.g. Widevine-only) is rejected with
+                              a 400, since decrypt mode can't do anything useful
+                              with it — applies equally to live/VOD and catchup.
+                  "noproxy" - force redirect/fetch even if the provider would
+                              normally be proxied.
+            receiver_side: Only consulted when mode="decrypt". True = client
+                           decrypts (ClearKey signaled in the manifest), False =
+                           server decrypts and serves plaintext segments.
+            highest_quality_only: Honored wherever the underlying service call
+                           supports it (get_proxied_manifest, get_decrypted_manifest,
+                           get_decrypted_catchup_manifest). get_proxied_catchup_manifest
+                           has no such parameter today, so it's a no-op for
+                           mode="auto"/"decrypt" catchup content that turns out
+                           unencrypted. Meaningless for mode="noproxy" (plain
+                           redirect, no rewriter involved).
         """
+        # --- Catchup window validation (channels only), before anything else —
+        # previously duplicated between channels.py (for auto/noproxy) and
+        # _resolve_decrypted_stream (for decrypt); now the single source of truth
+        # for every mode, so channels.py no longer needs its own copy. ---
+        if is_catchup and content_type == CONTENT_TYPE_CHANNEL:
+            window_error = _validate_catchup_window(provider, content_id, start_time)
+            if window_error:
+                response.status = 400
+                return window_error
+
         # --- DRM header (best-effort, never fatal). Also returns the DRM
-        # configs it fetched so the proxy branch below can reuse them instead
-        # of fetching from the provider a second time. ---
+        # configs it fetched so the branches below can reuse them instead of
+        # fetching from the provider a second time. ---
         drm_configs_for_header = _build_drm_header(
             content_type, provider, content_id,
             country=country,
@@ -495,26 +600,69 @@ def make_helpers(manager, service):
             epg_id=epg_id,
         )
 
-        # --- Catchup path (channel-specific) ---
-        if is_catchup:
-            if manager.needs_proxy(provider) and not no_proxy:
-                # Reuse the catchup DRM configs _build_drm_header already fetched
-                # above (it calls manager.get_catchup_drm_configs when is_catchup
-                # is True) rather than fetching a second time — same pattern the
-                # live branch below uses for its own DRM configs.
-                #
-                # Previously this branch always called get_proxied_catchup_manifest
-                # regardless of DRM scheme, unlike the live branch which checks for
-                # ClearKey first. That meant ClearKey-protected catchup content was
-                # served through the plain proxy path with stripped ContentProtection
-                # instead of the receiver-side rewrite the player needs.
-                drm_dict = _serialize_drm_configs(drm_configs_for_header)
-                keyids = (
-                    drm_dict.get("org.w3.clearkey", {})
-                    .get("license", {})
-                    .get("keyids", {})
-                )
+        drm_dict = _serialize_drm_configs(drm_configs_for_header)
+        keyids = (
+            drm_dict.get("org.w3.clearkey", {})
+            .get("license", {})
+            .get("keyids", {})
+        )
+        is_unencrypted = "none" in drm_dict
 
+        # ==================================================================
+        # Catchup path (channel-specific)
+        # ==================================================================
+        if is_catchup:
+            if mode == "noproxy":
+                manifest_url = manager.get_catchup_manifest(
+                    provider_name=provider,
+                    channel_id=content_id,
+                    start_time=start_time,
+                    end_time=end_time,
+                    epg_id=epg_id,
+                    country=country,
+                    drm_variant=drm_variant,
+                )
+                if not manifest_url:
+                    response.status = 404
+                    return {
+                        "error": f'Catchup manifest not available for channel "{content_id}"'
+                    }
+                logger.debug(f"Redirecting to catchup manifest: {manifest_url}")
+                return redirect(manifest_url)
+
+            if mode == "decrypt":
+                if keyids:
+                    if not service.media_proxy_url:
+                        response.status = 503
+                        return {"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"}
+                    return service.get_decrypted_catchup_manifest(
+                        provider, content_id,
+                        start_time=start_time, end_time=end_time,
+                        keyids=keyids, epg_id=epg_id,
+                        receiver_side=receiver_side,
+                        highest_quality_only=highest_quality_only,
+                    )
+                elif is_unencrypted:
+                    # Nothing to decrypt, but nothing blocking playback either —
+                    # same fallback mode="auto" would use for this content.
+                    return service.get_proxied_catchup_manifest(
+                        provider, content_id, start_time, end_time, epg_id, country
+                    )
+                else:
+                    # Encrypted but not ClearKey (e.g. Widevine-only catchup) —
+                    # decrypt mode genuinely can't act on this, matching the
+                    # live/VOD path's rejection below rather than silently
+                    # proxying content the client likely can't play anyway.
+                    response.status = 400
+                    return {
+                        "error": (
+                            f'Catchup content for channel "{content_id}" does not support '
+                            f"decrypted playback (requires ClearKey or unencrypted)"
+                        )
+                    }
+
+            # mode == "auto"
+            if manager.needs_proxy(provider):
                 if keyids:
                     logger.debug(
                         f"ClearKey DRM detected for catchup {provider}/{content_id} — "
@@ -525,8 +673,8 @@ def make_helpers(manager, service):
                         start_time=start_time, end_time=end_time,
                         keyids=keyids, epg_id=epg_id,
                         receiver_side=True,
+                        highest_quality_only=highest_quality_only,
                     )
-
                 return service.get_proxied_catchup_manifest(
                     provider, content_id, start_time, end_time, epg_id, country
                 )
@@ -546,26 +694,56 @@ def make_helpers(manager, service):
                         "error": f'Catchup manifest not available for channel "{content_id}"'
                     }
                 logger.debug(f"Redirecting to catchup manifest: {manifest_url}")
-                redirect(manifest_url)
+                return redirect(manifest_url)
 
-        # --- Live / event / vod path ---
-        if manager.needs_proxy(provider) and not no_proxy:
-            # Check for ClearKey DRM — if present, rewrite manifest with ClearKey signaling
-            # so the receiver can decrypt itself, rather than serving a plain proxy stream
-            # with stripped ContentProtection that the player cannot handle.
-            #
-            # Reuse the configs _build_drm_header already fetched above rather than
-            # calling the provider again. This branch is only reached when
-            # is_catchup is False, so drm_configs_for_header always corresponds to
-            # the non-catchup fetch performed above.
-            drm_dict = _serialize_drm_configs(drm_configs_for_header)
+        # ==================================================================
+        # Live / event / vod / recording path
+        # ==================================================================
+        if mode == "noproxy":
+            return _redirect_or_fetch(content_type, provider, content_id, country, drm_variant)
 
-            keyids = (
-                drm_dict.get("org.w3.clearkey", {})
-                .get("license", {})
-                .get("keyids", {})
-            )
+        if mode == "decrypt":
+            if keyids:
+                if not service.media_proxy_url:
+                    response.status = 503
+                    return {"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"}
+                return service.get_decrypted_manifest(
+                    provider, content_id, keyids,
+                    receiver_side=receiver_side,
+                    drm_variant=drm_variant,
+                    highest_quality_only=highest_quality_only,
+                )
+            elif is_unencrypted:
+                needs_headers = _stream_needs_headers(content_type, provider, content_id, country)
+                needs_proxy = manager.needs_proxy(provider)
 
+                if (needs_headers or needs_proxy) and service.media_proxy_url:
+                    return service.get_proxied_manifest(
+                        provider, content_id,
+                        highest_quality_only=highest_quality_only,
+                    )
+                elif (needs_headers or needs_proxy) and not service.media_proxy_url:
+                    logger.warning(
+                        f"Provider {provider}/{content_id} needs proxy/headers but MEDIA_PROXY_URL is not set; "
+                        "falling back to redirect (playback may fail)"
+                    )
+                    return _redirect_or_fetch(content_type, provider, content_id, country, drm_variant)
+                else:
+                    return _redirect_or_fetch(content_type, provider, content_id, country, drm_variant)
+            else:
+                # Neither ClearKey nor unencrypted (e.g. Widevine-only) — decrypt
+                # mode has nothing useful to do with this, unlike mode="auto"
+                # which would happily proxy it for the client's own DRM stack.
+                response.status = 400
+                return {
+                    "error": (
+                        f'{content_type.capitalize()} "{content_id}" does not support '
+                        f"decrypted playback (requires ClearKey or unencrypted)"
+                    )
+                }
+
+        # mode == "auto"
+        if manager.needs_proxy(provider):
             # When the caller explicitly requested software DRM and we found no
             # ClearKey keys, surface a clear error rather than silently serving a
             # Widevine stream the client cannot decrypt.
@@ -586,72 +764,45 @@ def make_helpers(manager, service):
                     provider, content_id, keyids,
                     receiver_side=True,
                     drm_variant=drm_variant,
+                    highest_quality_only=highest_quality_only,
                 )
             else:
-                return service.get_proxied_manifest(provider, content_id)
+                return service.get_proxied_manifest(
+                    provider, content_id,
+                    highest_quality_only=highest_quality_only,
+                )
         else:
-            # Check if provider requires manifest context (needs HTTP manager to fetch)
-            provider_instance = manager.get_provider(provider)
+            return _redirect_or_fetch(content_type, provider, content_id, country, drm_variant)
 
-            if provider_instance is None:
-                logger.warning(
-                    f"_resolve_stream: manager.get_provider('{provider}') returned None — "
-                    "cannot check requires_manifest_context; falling back to redirect"
-                )
-
-            if provider_instance and getattr(provider_instance, 'requires_manifest_context', False):
-                logger.debug(
-                    f"Provider {provider} requires manifest context — fetching manifest directly "
-                    f"for {content_type}/{content_id}"
-                )
-                try:
-                    manifest_url = _get_manifest_url(
-                        content_type, provider, content_id,
-                        country=country, drm_variant=drm_variant,
-                    )
-                    if not manifest_url:
-                        response.status = 404
-                        return {
-                            "error": (
-                                f'Manifest not available for {content_type} '
-                                f'"{content_id}" from provider "{provider}"'
-                            )
-                        }
-
-                    manifest_text, _, _, _, effective_url = service.fetch_manifest_for_rewriter(
-                        provider, content_id, manifest_url
-                    )
-
-                    # Inject the upstream manifest URL as a BaseURL so the player can
-                    # resolve relative segment URLs correctly. Without this, segments
-                    # resolve against the local server URL and all requests fail.
-                    manifest_text = _inject_base_url(manifest_text, effective_url)
-
-                    response.content_type = "application/dash+xml; charset=utf-8"
-                    return manifest_text
-
-                except Exception as e:
-                    logger.error(
-                        f"Failed to fetch manifest for {content_type}/{content_id} "
-                        f"from {provider}: {e}"
-                    )
-                    response.status = 502
-                    return {"error": f"Failed to fetch manifest: {str(e)}"}
-            else:
-                manifest_url = _get_manifest_url(
-                    content_type, provider, content_id,
-                    country=country, drm_variant=drm_variant,
-                )
-                if not manifest_url:
-                    response.status = 404
-                    return {
-                        "error": (
-                            f'Manifest not available for {content_type} '
-                            f'"{content_id}" from provider "{provider}"'
-                        )
-                    }
-                logger.debug(f"Redirecting to manifest: {manifest_url}")
-                return redirect(manifest_url)
+    def _resolve_stream(
+            content_type: str,
+            provider: str,
+            content_id: str,
+            country=None,
+            is_catchup: bool = False,
+            start_time: int = None,
+            end_time: int = None,
+            epg_id: str = None,
+            drm_variant: str = "auto",
+            no_proxy: bool = False,
+    ):
+        """
+        Deprecated: thin wrapper around _resolve_stream_unified, kept so
+        existing call sites (channels.py, events.py, vod.py, recordings.py)
+        don't need to change. New code should call _resolve_stream_unified
+        directly with an explicit mode.
+        """
+        return _resolve_stream_unified(
+            content_type, provider, content_id,
+            country=country,
+            is_catchup=is_catchup,
+            start_time=start_time,
+            end_time=end_time,
+            epg_id=epg_id,
+            drm_variant=drm_variant,
+            mode="noproxy" if no_proxy else "auto",
+            receiver_side=True,
+        )
 
     def _resolve_decrypted_stream(
             content_type: str,
@@ -660,25 +811,15 @@ def make_helpers(manager, service):
             highest_quality_only: bool = False,
     ):
         """
-        Shared handler for decrypted stream endpoints.
-        Resolves DRM, then returns an appropriately rewritten manifest.
-
-        For channel catchup (start_time + end_time query params present) the
-        handler fetches the catchup DRM configs and catchup manifest URL so that
-        server-side decryption operates on the correct DVR/time-shifted stream
-        rather than the live channel manifest.  receiver_side is always False
-        here — the /decrypted/ endpoint contract is that the server decrypts.
+        Deprecated: thin wrapper around _resolve_stream_unified, kept so
+        existing call sites (channels.py's /stream/proxied/ routes) don't need
+        to change. Reads start_time/end_time/epg_id/country from the request
+        query string itself, matching the original function's contract — those
+        routes never passed catchup args explicitly. New code should call
+        _resolve_stream_unified directly with mode="decrypt".
         """
         try:
             country = request.query.get("country")
-
-            # ------------------------------------------------------------------
-            # Catchup branch — channels only.
-            # When start_time + end_time are present we must use the catchup
-            # DRM configs and catchup manifest URL.  The live path below would
-            # silently fetch the live manifest and encrypt/decrypt against the
-            # wrong stream.
-            # ------------------------------------------------------------------
             start_time = request.query.get("start_time")
             end_time = request.query.get("end_time")
             epg_id = request.query.get("epg_id")
@@ -686,166 +827,23 @@ def make_helpers(manager, service):
 
             if is_catchup:
                 try:
-                    start_time_int = int(start_time)
-                    end_time_int = int(end_time)
+                    start_time = int(start_time)
+                    end_time = int(end_time)
                 except (ValueError, TypeError):
                     response.status = 400
                     return {"error": "Invalid start_time or end_time format"}
 
-                # Same catchup-window check the standard /stream/index.mpd path
-                # applies (channels.py's _handle_channel_stream) — this endpoint
-                # was bypassing it entirely, letting requests outside the
-                # provider's DVR window through where the standard path would
-                # reject them with a 400.
-                if content_type == CONTENT_TYPE_CHANNEL:
-                    window_error = _validate_catchup_window(provider, content_id, start_time_int)
-                    if window_error:
-                        response.status = 400
-                        return window_error
-
-                if not service.media_proxy_url:
-                    response.status = 503
-                    return {"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"}
-
-                catchup_drm_configs = manager.get_catchup_drm_configs(
-                    provider_name=provider,
-                    channel_id=content_id,
-                    start_time=start_time_int,
-                    end_time=end_time_int,
-                    epg_id=epg_id,
-                    country=country,
-                )
-                catchup_drm_dict = _serialize_drm_configs(catchup_drm_configs)
-
-                is_unencrypted = "none" in catchup_drm_dict
-                keyids = (
-                    catchup_drm_dict.get("org.w3.clearkey", {})
-                    .get("license", {})
-                    .get("keyids", {})
-                )
-
-                if is_unencrypted:
-                    return service.get_proxied_catchup_manifest(
-                        provider, content_id, start_time_int, end_time_int, epg_id, country
-                    )
-
-                if not keyids:
-                    response.status = 400
-                    return {"error": "ClearKey DRM not available for this catchup content"}
-
-                return service.get_decrypted_catchup_manifest(
-                    provider, content_id,
-                    start_time=start_time_int,
-                    end_time=end_time_int,
-                    keyids=keyids,
-                    epg_id=epg_id,
-                    highest_quality_only=highest_quality_only,
-                )
-
-            # ------------------------------------------------------------------
-            # Live / VOD / event / recording path
-            # ------------------------------------------------------------------
-            drm_configs = _get_drm_configs(
-                content_type, provider, content_id, country=country
+            return _resolve_stream_unified(
+                content_type, provider, content_id,
+                country=country,
+                is_catchup=is_catchup,
+                start_time=start_time,
+                end_time=end_time,
+                epg_id=epg_id,
+                mode="decrypt",
+                receiver_side=False,
+                highest_quality_only=highest_quality_only,
             )
-
-            drm_dict = _serialize_drm_configs(drm_configs)
-
-            has_clearkey = "org.w3.clearkey" in drm_dict
-            is_unencrypted = "none" in drm_dict
-
-            if has_clearkey:
-                if not service.media_proxy_url:
-                    response.status = 503
-                    return {"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"}
-
-                keyids = (
-                    drm_dict["org.w3.clearkey"]
-                    .get("license", {})
-                    .get("keyids", {})
-                )
-                if not keyids:
-                    response.status = 400
-                    return {"error": "ClearKey DRM found but no key IDs available"}
-
-                return service.get_decrypted_manifest(
-                    provider, content_id, keyids,
-                    highest_quality_only=highest_quality_only,
-                )
-
-            elif is_unencrypted:
-                # Decrypted-stream endpoints do not support catchup — catchup requires a
-                # live DVR manifest URL which must be resolved via _resolve_stream / the
-                # catchup path.  Unencrypted content here is always VOD or live-redirect.
-                needs_headers = _stream_needs_headers(content_type, provider, content_id, country)
-                needs_proxy = manager.needs_proxy(provider)
-
-                if (needs_headers or needs_proxy) and service.media_proxy_url:
-                    return service.get_proxied_manifest(
-                        provider, content_id,
-                        highest_quality_only=highest_quality_only,
-                    )
-                elif (needs_headers or needs_proxy) and not service.media_proxy_url:
-                    logger.warning(
-                        f"Provider {provider}/{content_id} needs proxy/headers but MEDIA_PROXY_URL is not set; "
-                        "falling back to redirect (playback may fail)"
-                    )
-                    manifest_url = _get_manifest_url(content_type, provider, content_id, country=country)
-                    return redirect(manifest_url)
-                else:
-                    # No proxy/headers needed — mirrors _resolve_stream's equivalent
-                    # branch, which checks requires_manifest_context before deciding
-                    # between a fetch-and-inject-BaseURL response and a plain redirect.
-                    # This endpoint previously redirected unconditionally here, which
-                    # breaks for any provider needing manifest context (relative
-                    # segment URLs resolve against the wrong base after a bare 302).
-                    provider_instance = manager.get_provider(provider)
-
-                    if provider_instance is None:
-                        logger.warning(
-                            f"_resolve_decrypted_stream: manager.get_provider('{provider}') "
-                            "returned None — cannot check requires_manifest_context; "
-                            "falling back to redirect"
-                        )
-
-                    if provider_instance and getattr(provider_instance, 'requires_manifest_context', False):
-                        logger.debug(
-                            f"Provider {provider} requires manifest context — fetching manifest "
-                            f"directly for {content_type}/{content_id}"
-                        )
-                        manifest_url = _get_manifest_url(content_type, provider, content_id, country=country)
-                        if not manifest_url:
-                            response.status = 404
-                            return {"error": f'Manifest not available for {content_type} "{content_id}"'}
-                        try:
-                            manifest_text, _, _, _, effective_url = service.fetch_manifest_for_rewriter(
-                                provider, content_id, manifest_url
-                            )
-                            manifest_text = _inject_base_url(manifest_text, effective_url)
-                            response.content_type = "application/dash+xml; charset=utf-8"
-                            return manifest_text
-                        except Exception as e:
-                            logger.error(
-                                f"Failed to fetch manifest for {content_type}/{content_id} "
-                                f"from {provider}: {e}"
-                            )
-                            response.status = 502
-                            return {"error": f"Failed to fetch manifest: {str(e)}"}
-                    else:
-                        manifest_url = _get_manifest_url(content_type, provider, content_id, country=country)
-                        if not manifest_url:
-                            response.status = 404
-                            return {"error": f'Manifest not available for {content_type} "{content_id}"'}
-                        return redirect(manifest_url)
-
-            else:
-                response.status = 400
-                return {
-                    "error": (
-                        f'{content_type.capitalize()} "{content_id}" does not support '
-                        f"decrypted playback (requires ClearKey or unencrypted)"
-                    )
-                }
 
         except HTTPResponse:
             raise
@@ -873,5 +871,6 @@ def make_helpers(manager, service):
         "_validate_catchup_window": _validate_catchup_window,
         "_resolve_stream": _resolve_stream,
         "_resolve_decrypted_stream": _resolve_decrypted_stream,
+        "_resolve_stream_unified": _resolve_stream_unified,
         "_serialize_drm_configs": _serialize_drm_configs,
     }

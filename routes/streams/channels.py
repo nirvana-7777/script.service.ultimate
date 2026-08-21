@@ -7,7 +7,6 @@ stream resolution. This module only defines route decorators and the minimal
 channel-specific catchup handling logic.
 """
 
-import time
 from bottle import HTTPResponse, request, response
 from streaming_providers.base.utils import logger
 
@@ -59,38 +58,11 @@ def setup_channel_routes(app, manager, service, helpers):
                     response.status = 400
                     return {"error": "Invalid start_time or end_time format"}
 
-                channels = manager.get_channels(provider_name=provider, fetch_manifests=False)
-                channel_obj = next((c for c in channels if c.channel_id == channel_id), None)
-                logger.debug(
-                    f"CATCHUP: channel lookup id={channel_id!r} -> "
-                    + (f"found (catchup_hours attr={getattr(channel_obj, 'catchup_hours', 'MISSING')!r}, "
-                       f"catchup_window attr={getattr(channel_obj, 'catchup_window', 'MISSING')!r})"
-                       if channel_obj else "NOT FOUND in channel list")
-                )
-
-                # The model field is catchup_hours (serialises as CatchupHours).
-                # Fall back to catchup_window for providers using the older name.
-                catchup_hours = (
-                        getattr(channel_obj, "catchup_hours", None)
-                        or getattr(channel_obj, "catchup_window", 0)
-                ) if channel_obj else 0
-                logger.debug(f"CATCHUP: resolved catchup_hours={catchup_hours!r}")
-
-                if not catchup_hours:
-                    logger.warning(
-                        f"CATCHUP: rejecting {provider}/{channel_id} — "
-                        f"catchup_hours=0 or attribute not found on channel model"
-                    )
-                    response.status = 400
-                    return {"error": f'Catchup not supported for channel "{channel_id}"'}
-
-                age_seconds = int(time.time()) - start_time_int
-                logger.debug(
-                    f"CATCHUP: window check age={age_seconds}s limit={catchup_hours * 3600}s ({catchup_hours}h)"
-                )
-                if age_seconds > catchup_hours * 3600:
-                    response.status = 400
-                    return {"error": f"Content outside catchup window (max {catchup_hours} hours)"}
+                # Window validation (catchup_hours lookup, age check) now lives
+                # inside _resolve_stream_unified via _validate_catchup_window,
+                # shared across every mode (auto/noproxy/decrypt) instead of
+                # being duplicated here and in the decrypted-stream path
+                # separately. No channel lookup needed here anymore.
 
             return _resolve_stream(
                 CONTENT_TYPE_CHANNEL, provider, channel_id,
