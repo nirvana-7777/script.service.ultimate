@@ -553,6 +553,11 @@ class UltimateService:
                 response.content_type = "application/dash+xml; charset=utf-8"
                 return cached_mpd
 
+        if not self.media_proxy_url:
+            response.status = 503
+            response.content_type = "application/json"
+            return json.dumps({"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"})
+
         logger.info(
             f"Generating {'receiver-side clearkey' if receiver_side else 'decrypted'} manifest "
             f"for {provider}/{channel_id} (highest_quality_only={highest_quality_only}, drm_variant={drm_variant})"
@@ -590,7 +595,8 @@ class UltimateService:
 
     def get_decrypted_catchup_manifest(self, provider: str, channel_id: str, start_time: int, end_time: int,
                                         keyids: dict, epg_id: str = None,
-                                        highest_quality_only: bool = False) -> str:
+                                        highest_quality_only: bool = False,
+                                        receiver_side: bool = False) -> str:
         country = request.query.get("country")
         cache_key = f"{provider}_{channel_id}_catchup_{start_time}_{end_time}_drm"
 
@@ -600,8 +606,14 @@ class UltimateService:
                 response.content_type = "application/dash+xml; charset=utf-8"
                 return cached_mpd
 
+        if not self.media_proxy_url:
+            response.status = 503
+            response.content_type = "application/json"
+            return json.dumps({"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"})
+
         logger.info(
-            f"Generating decrypted catchup manifest for {provider}/{channel_id} "
+            f"Generating {'receiver-side clearkey' if receiver_side else 'decrypted'} catchup manifest "
+            f"for {provider}/{channel_id} "
             f"(start={start_time} end={end_time} highest_quality_only={highest_quality_only})"
         )
 
@@ -621,7 +633,7 @@ class UltimateService:
             )
             rewriter = MPDRewriter(
                 self.media_proxy_url, provider_proxy_url, keyids, highest_quality_only,
-                provider=provider, channel=channel_id, clearkey_receiver_side=False,
+                provider=provider, channel=channel_id, clearkey_receiver_side=receiver_side,
                 segment_headers=segment_headers,
             )
             rewritten_mpd = rewriter.rewrite_mpd(manifest_text, effective_url)

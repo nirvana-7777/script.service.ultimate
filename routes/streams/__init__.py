@@ -30,6 +30,7 @@ helpers:
 import base64
 import json
 import re
+import time
 from urllib.parse import urljoin
 
 from bottle import HTTPResponse, redirect, request, response
@@ -410,6 +411,39 @@ def make_helpers(manager, service):
             count=1,
         )
 
+    def _validate_catchup_window(provider: str, content_id: str, start_time: int):
+        """
+        Checks start_time against the channel's catchup_hours window.
+        Returns an error dict (suitable for a 400 response) if the channel
+        doesn't support catchup or the window has been exceeded; None if valid.
+
+        Extracted from channels.py's _handle_channel_stream so
+        _resolve_decrypted_stream can apply the same check — previously it
+        skipped this validation entirely, letting catchup requests outside the
+        provider's DVR window through to the decrypted-stream path when the
+        standard path would reject them with a 400.
+        """
+        channels = manager.get_channels(provider_name=provider, fetch_manifests=False)
+        channel_obj = next((c for c in channels if c.channel_id == content_id), None)
+
+        catchup_hours = (
+            getattr(channel_obj, "catchup_hours", None)
+            or getattr(channel_obj, "catchup_window", 0)
+        ) if channel_obj else 0
+
+        if not catchup_hours:
+            logger.warning(
+                f"CATCHUP: rejecting {provider}/{content_id} — "
+                f"catchup_hours=0 or attribute not found on channel model"
+            )
+            return {"error": f'Catchup not supported for channel "{content_id}"'}
+
+        age_seconds = int(time.time()) - start_time
+        if age_seconds > catchup_hours * 3600:
+            return {"error": f"Content outside catchup window (max {catchup_hours} hours)"}
+
+        return None
+
     def _resolve_stream(
             content_type: str,
             provider: str,
@@ -464,6 +498,35 @@ def make_helpers(manager, service):
         # --- Catchup path (channel-specific) ---
         if is_catchup:
             if manager.needs_proxy(provider) and not no_proxy:
+                # Reuse the catchup DRM configs _build_drm_header already fetched
+                # above (it calls manager.get_catchup_drm_configs when is_catchup
+                # is True) rather than fetching a second time — same pattern the
+                # live branch below uses for its own DRM configs.
+                #
+                # Previously this branch always called get_proxied_catchup_manifest
+                # regardless of DRM scheme, unlike the live branch which checks for
+                # ClearKey first. That meant ClearKey-protected catchup content was
+                # served through the plain proxy path with stripped ContentProtection
+                # instead of the receiver-side rewrite the player needs.
+                drm_dict = _serialize_drm_configs(drm_configs_for_header)
+                keyids = (
+                    drm_dict.get("org.w3.clearkey", {})
+                    .get("license", {})
+                    .get("keyids", {})
+                )
+
+                if keyids:
+                    logger.debug(
+                        f"ClearKey DRM detected for catchup {provider}/{content_id} — "
+                        "using receiver-side ClearKey rewrite"
+                    )
+                    return service.get_decrypted_catchup_manifest(
+                        provider, content_id,
+                        start_time=start_time, end_time=end_time,
+                        keyids=keyids, epg_id=epg_id,
+                        receiver_side=True,
+                    )
+
                 return service.get_proxied_catchup_manifest(
                     provider, content_id, start_time, end_time, epg_id, country
                 )
@@ -629,6 +692,17 @@ def make_helpers(manager, service):
                     response.status = 400
                     return {"error": "Invalid start_time or end_time format"}
 
+                # Same catchup-window check the standard /stream/index.mpd path
+                # applies (channels.py's _handle_channel_stream) — this endpoint
+                # was bypassing it entirely, letting requests outside the
+                # provider's DVR window through where the standard path would
+                # reject them with a 400.
+                if content_type == CONTENT_TYPE_CHANNEL:
+                    window_error = _validate_catchup_window(provider, content_id, start_time_int)
+                    if window_error:
+                        response.status = 400
+                        return window_error
+
                 if not service.media_proxy_url:
                     response.status = 503
                     return {"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"}
@@ -719,11 +793,50 @@ def make_helpers(manager, service):
                     manifest_url = _get_manifest_url(content_type, provider, content_id, country=country)
                     return redirect(manifest_url)
                 else:
-                    manifest_url = _get_manifest_url(content_type, provider, content_id, country=country)
-                    if not manifest_url:
-                        response.status = 404
-                        return {"error": f'Manifest not available for {content_type} "{content_id}"'}
-                    return redirect(manifest_url)
+                    # No proxy/headers needed — mirrors _resolve_stream's equivalent
+                    # branch, which checks requires_manifest_context before deciding
+                    # between a fetch-and-inject-BaseURL response and a plain redirect.
+                    # This endpoint previously redirected unconditionally here, which
+                    # breaks for any provider needing manifest context (relative
+                    # segment URLs resolve against the wrong base after a bare 302).
+                    provider_instance = manager.get_provider(provider)
+
+                    if provider_instance is None:
+                        logger.warning(
+                            f"_resolve_decrypted_stream: manager.get_provider('{provider}') "
+                            "returned None — cannot check requires_manifest_context; "
+                            "falling back to redirect"
+                        )
+
+                    if provider_instance and getattr(provider_instance, 'requires_manifest_context', False):
+                        logger.debug(
+                            f"Provider {provider} requires manifest context — fetching manifest "
+                            f"directly for {content_type}/{content_id}"
+                        )
+                        manifest_url = _get_manifest_url(content_type, provider, content_id, country=country)
+                        if not manifest_url:
+                            response.status = 404
+                            return {"error": f'Manifest not available for {content_type} "{content_id}"'}
+                        try:
+                            manifest_text, _, _, _, effective_url = service.fetch_manifest_for_rewriter(
+                                provider, content_id, manifest_url
+                            )
+                            manifest_text = _inject_base_url(manifest_text, effective_url)
+                            response.content_type = "application/dash+xml; charset=utf-8"
+                            return manifest_text
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to fetch manifest for {content_type}/{content_id} "
+                                f"from {provider}: {e}"
+                            )
+                            response.status = 502
+                            return {"error": f"Failed to fetch manifest: {str(e)}"}
+                    else:
+                        manifest_url = _get_manifest_url(content_type, provider, content_id, country=country)
+                        if not manifest_url:
+                            response.status = 404
+                            return {"error": f'Manifest not available for {content_type} "{content_id}"'}
+                        return redirect(manifest_url)
 
             else:
                 response.status = 400
@@ -757,6 +870,7 @@ def make_helpers(manager, service):
         "_build_stream_headers": _build_stream_headers,
         "_stream_needs_headers": _stream_needs_headers,
         "_inject_base_url": _inject_base_url,
+        "_validate_catchup_window": _validate_catchup_window,
         "_resolve_stream": _resolve_stream,
         "_resolve_decrypted_stream": _resolve_decrypted_stream,
         "_serialize_drm_configs": _serialize_drm_configs,
