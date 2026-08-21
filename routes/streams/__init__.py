@@ -450,7 +450,7 @@ def make_helpers(manager, service):
         Shared tail behavior for every "no proxy involved" outcome, across all
         three modes: check requires_manifest_context and either fetch + inject
         BaseURL, or do a plain redirect. Extracted so mode="noproxy" (live/vod),
-        mode="auto"'s non-proxied branch, and mode="decrypt"'s unencrypted/
+        mode="auto"'s non-proxied branch, and mode="playable"'s unencrypted/
         no-proxy-needed branch all get identical, correct behavior instead of
         three independently-maintained copies (previously the decrypt path had
         none of this at all and always redirected unconditionally).
@@ -540,31 +540,39 @@ def make_helpers(manager, service):
             drm_variant: 'auto' (provider decides) or 'software'. This selects
                          which upstream DRM/quality variant to request (e.g. a
                          provider's L1 vs L3 Widevine stream) — orthogonal to
-                         `mode`, which governs transport (proxy/decrypt/redirect).
+                         `mode`, which governs transport (proxy/playable/redirect).
             mode: "auto"    - proxy if the provider needs it, else redirect/fetch.
                               ClearKey content is always rewritten receiver-side
                               (client decrypts) — this is the historical /stream/
                               contract and is not caller-configurable.
-                  "decrypt" - server-side ClearKey decryption via the media
-                              proxy (receiver_side controls client- vs
-                              server-side decrypt). Requires MEDIA_PROXY_URL.
-                              Unencrypted content falls through to the same
-                              proxy/redirect behavior as mode="auto" — there's
-                              nothing to decrypt but nothing blocking playback
-                              either. Content that's neither ClearKey nor
-                              unencrypted (e.g. Widevine-only) is rejected with
-                              a 400, since decrypt mode can't do anything useful
-                              with it — applies equally to live/VOD and catchup.
+                  "playable" - guarantees the client gets a manifest it can
+                              actually play without doing its own key
+                              exchange, or an honest error — never a manifest
+                              it can't handle. ClearKey content is rewritten
+                              via the media proxy (receiver_side controls
+                              client- vs server-side decrypt); requires
+                              MEDIA_PROXY_URL. Unencrypted content falls
+                              through to the same proxy/redirect behavior as
+                              mode="auto" — nothing to decrypt but nothing
+                              blocking playback either. Content that's
+                              neither ClearKey nor unencrypted (e.g.
+                              Widevine-only) is rejected with a 400, since
+                              this mode can't hand such a client anything
+                              playable — applies equally to live/VOD and
+                              catchup. (Named for the contract it guarantees,
+                              not the ClearKey mechanism it mostly relies on
+                              — the old /stream/proxied/ endpoints this mode
+                              backs are exactly this "simple client" case.)
                   "noproxy" - force redirect/fetch even if the provider would
                               normally be proxied.
-            receiver_side: Only consulted when mode="decrypt". True = client
+            receiver_side: Only consulted when mode="playable". True = client
                            decrypts (ClearKey signaled in the manifest), False =
                            server decrypts and serves plaintext segments.
             highest_quality_only: Honored wherever the underlying service call
                            supports it (get_proxied_manifest, get_decrypted_manifest,
                            get_decrypted_catchup_manifest). get_proxied_catchup_manifest
                            has no such parameter today, so it's a no-op for
-                           mode="auto"/"decrypt" catchup content that turns out
+                           mode="auto"/"playable" catchup content that turns out
                            unencrypted. Meaningless for mode="noproxy" (plain
                            redirect, no rewriter involved).
         """
@@ -630,7 +638,7 @@ def make_helpers(manager, service):
                 logger.debug(f"Redirecting to catchup manifest: {manifest_url}")
                 return redirect(manifest_url)
 
-            if mode == "decrypt":
+            if mode == "playable":
                 if keyids:
                     if not service.media_proxy_url:
                         response.status = 503
@@ -650,7 +658,7 @@ def make_helpers(manager, service):
                     )
                 else:
                     # Encrypted but not ClearKey (e.g. Widevine-only catchup) —
-                    # decrypt mode genuinely can't act on this, matching the
+                    # playable mode genuinely can't act on this, matching the
                     # live/VOD path's rejection below rather than silently
                     # proxying content the client likely can't play anyway.
                     response.status = 400
@@ -702,7 +710,7 @@ def make_helpers(manager, service):
         if mode == "noproxy":
             return _redirect_or_fetch(content_type, provider, content_id, country, drm_variant)
 
-        if mode == "decrypt":
+        if mode == "playable":
             if keyids:
                 if not service.media_proxy_url:
                     response.status = 503
@@ -816,7 +824,7 @@ def make_helpers(manager, service):
         to change. Reads start_time/end_time/epg_id/country from the request
         query string itself, matching the original function's contract — those
         routes never passed catchup args explicitly. New code should call
-        _resolve_stream_unified directly with mode="decrypt".
+        _resolve_stream_unified directly with mode="playable".
         """
         try:
             country = request.query.get("country")
@@ -840,7 +848,7 @@ def make_helpers(manager, service):
                 start_time=start_time,
                 end_time=end_time,
                 epg_id=epg_id,
-                mode="decrypt",
+                mode="playable",
                 receiver_side=False,
                 highest_quality_only=highest_quality_only,
             )
