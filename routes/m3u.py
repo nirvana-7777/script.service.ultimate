@@ -212,12 +212,19 @@ def setup_m3u_routes(app, manager, service):
         )
 
     # ── Subscribed-channel playlists ──────────────────────────────────────
-    # get_m3u_subscribed / get_m3u_subscribed_proxied still build their
-    # own M3U content directly (they were never moved into service.py),
-    # so they keep their bespoke bodies below - only the boilerplate
-    # around them is shared via the same helpers used everywhere else.
+    # get_m3u_subscribed / get_m3u_subscribed_proxied still build their own
+    # M3U content directly (they were never moved into service.py) - only the
+    # boilerplate around them is shared via the same helpers used everywhere
+    # else. The two bodies used to be ~90% duplicated hand-written copies of
+    # each other, differing only in stream URL path, whether DRM directives
+    # are looked up per-channel vs a fixed KODIPROP line, and whether the
+    # result gets cached — now unified into one function with a `proxied` flag.
 
-    def _generate_m3u_subscribed():
+    def _generate_m3u_subscribed(proxied: bool = False):
+        if proxied and not service.media_proxy_url:
+            response.status = 503
+            return {"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"}
+
         base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
         m3u_content = "#EXTM3U\n"
 
@@ -246,19 +253,25 @@ def setup_m3u_routes(app, manager, service):
                     )
                     epg_id = service.get_epg_id(channel_id)
                     epg_id_attr = f' tvg-epgid="{epg_id}"' if epg_id else ""
-                    stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/index.mpd"
+                    stream_path = "stream/proxied/index.mpd" if proxied else "stream/index.mpd"
+                    stream_url = (
+                        f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/{stream_path}"
+                    )
 
                     m3u_content += (
                         f'#EXTINF:-1 tvg-id="{channel_id}"{epg_id_attr}{chno} '
                         f'tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
                     )
 
-                    try:
-                        drm_configs = manager.get_channel_drm_configs(provider_name, channel_id)
-                        if drm_configs:
-                            m3u_content += service.generate_drm_directives(drm_configs)
-                    except Exception as drm_err:
-                        logger.debug(f"Could not get DRM for {provider_name}/{channel_id}: {drm_err}")
+                    if proxied:
+                        m3u_content += "#KODIPROP:inputstream=inputstream.adaptive\n"
+                    else:
+                        try:
+                            drm_configs = manager.get_channel_drm_configs(provider_name, channel_id)
+                            if drm_configs:
+                                m3u_content += service.generate_drm_directives(drm_configs)
+                        except Exception as drm_err:
+                            logger.debug(f"Could not get DRM for {provider_name}/{channel_id}: {drm_err}")
 
                     m3u_content += f"{stream_url}\n"
 
@@ -268,18 +281,24 @@ def setup_m3u_routes(app, manager, service):
                 )
                 continue
 
-        if service.vfs.write_text("playlist_subscribed.m3u", m3u_content):
-            logger.info("Subscribed M3U playlist cached to playlist_subscribed.m3u")
+        filename = "playlist_subscribed_proxied.m3u8" if proxied else "playlist_subscribed.m3u8"
+
+        # Proxied variant is deliberately uncached — proxy/DRM session state
+        # can shift between requests, same rationale as the "fast" proxied
+        # playlists above.
+        if not proxied:
+            if service.vfs.write_text("playlist_subscribed.m3u", m3u_content):
+                logger.info("Subscribed M3U playlist cached to playlist_subscribed.m3u")
 
         response.content_type = "audio/x-mpegurl; charset=utf-8"
-        response.headers["Content-Disposition"] = 'attachment; filename="playlist_subscribed.m3u8"'
+        response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
         return m3u_content
 
     @app.route("/api/m3u/subscribed")
     def get_m3u_subscribed():
         """Generate M3U playlist with only subscribed channels."""
         return _handle_m3u_route(
-            _generate_m3u_subscribed,
+            lambda: _generate_m3u_subscribed(proxied=False),
             log_ctx="/api/m3u/subscribed",
             cache_key="playlist_subscribed.m3u",
             filename="playlist_subscribed.m3u8",
@@ -290,66 +309,14 @@ def setup_m3u_routes(app, manager, service):
         """Force regenerate subscribed M3U playlist."""
         return _force_regenerate(
             "playlist_subscribed.m3u",
-            _generate_m3u_subscribed,
+            lambda: _generate_m3u_subscribed(proxied=False),
             log_ctx="/api/m3u/subscribed/generate",
         )
 
     @app.route("/api/m3u/subscribed/proxied")
     def get_m3u_subscribed_proxied():
         """Generate proxied M3U playlist with only subscribed channels. No caching."""
-
-        def _generate():
-            if not service.media_proxy_url:
-                response.status = 503
-                return {"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"}
-
-            base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
-            m3u_content = "#EXTM3U\n"
-
-            for provider_name in manager.list_providers():
-                try:
-                    channels = sorted(
-                        manager.get_subscribed_channels(provider_name),
-                        key=lambda ch: (ch.channel_number is None, ch.channel_number or 0),
-                    )
-
-                    try:
-                        provider_label = getattr(
-                            manager.get_provider(provider_name), "provider_label", provider_name
-                        )
-                    except Exception:
-                        provider_label = provider_name
-
-                    for channel in channels:
-                        channel_id = channel.channel_id
-                        channel_name = channel.name
-                        channel_logo = channel.logo_url or ""
-                        chno = (
-                            f' tvg-chno="{channel.channel_number}" ch-number="{channel.channel_number}"'
-                            if getattr(channel, "channel_number", None) is not None
-                            else ""
-                        )
-                        epg_id = service.get_epg_id(channel_id)
-                        epg_id_attr = f' tvg-epgid="{epg_id}"' if epg_id else ""
-                        stream_url = (
-                            f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/proxied/index.mpd"
-                        )
-
-                        m3u_content += (
-                            f'#EXTINF:-1 tvg-id="{channel_id}"{epg_id_attr}{chno} '
-                            f'tvg-logo="{channel_logo}" group-title="{provider_label}",{channel_name}\n'
-                        )
-                        m3u_content += "#KODIPROP:inputstream=inputstream.adaptive\n"
-                        m3u_content += f"{stream_url}\n"
-
-                except Exception as provider_err:
-                    logger.warning(
-                        f"Failed to process subscribed channels for '{provider_name}': {provider_err}"
-                    )
-                    continue
-
-            response.content_type = "audio/x-mpegurl; charset=utf-8"
-            response.headers["Content-Disposition"] = 'attachment; filename="playlist_subscribed_proxied.m3u8"'
-            return m3u_content
-
-        return _handle_m3u_route(_generate, log_ctx="/api/m3u/subscribed/proxied")
+        return _handle_m3u_route(
+            lambda: _generate_m3u_subscribed(proxied=True),
+            log_ctx="/api/m3u/subscribed/proxied",
+        )
