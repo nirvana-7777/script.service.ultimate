@@ -17,15 +17,18 @@ def setup_channel_routes(app, manager, service, helpers):
     CONTENT_TYPE_CHANNEL = helpers["CONTENT_TYPE_CHANNEL"]
     _build_drm_header = helpers["_build_drm_header"]
     _build_stream_headers = helpers["_build_stream_headers"]
-    _resolve_stream = helpers["_resolve_stream"]
-    _resolve_decrypted_stream = helpers["_resolve_decrypted_stream"]
+    _resolve_stream_unified = helpers["_resolve_stream_unified"]
     _get_drm_configs = helpers["_get_drm_configs"]
 
-    def _handle_channel_stream(provider, channel_id, *, drm_variant="auto", no_proxy=False):
-        """Shared implementation for /stream/index.mpd, /stream/sw-drm/index.mpd,
-        and /stream/noproxy/index.mpd. All three variants get the same catchup
-        window validation and int parsing — no_proxy only changes whether
-        _resolve_stream is told to force a redirect past the media proxy."""
+    def _handle_channel_stream(provider, channel_id):
+        """Single implementation backing /stream/index.mpd — the only channel
+        stream route. Replaces the former /stream/sw-drm/, /stream/noproxy/,
+        /stream/proxied/, and /stream/proxied/ffmpeg/ routes, each of which
+        used to hardcode one fixed combination of drm_variant/receiver_side/
+        no_proxy/highest_quality_only. Those axes are independent, so folding
+        them into query params makes every combination reachable — including
+        ones no route could express before (e.g. client-side decrypt +
+        highest_quality_only)."""
         try:
             start_time = request.query.get("start_time")
             end_time = request.query.get("end_time")
@@ -33,16 +36,25 @@ def setup_channel_routes(app, manager, service, helpers):
             country = request.query.get("country")
             is_catchup = bool(start_time and end_time)
 
+            drm_variant = request.query.get("drm_variant", "auto")
+            no_proxy = request.query.get("no_proxy", "false").lower() == "true"
+            # client_drm is the public query-param name (self-explanatory in a
+            # URL); receiver_side is what _resolve_stream_unified calls the
+            # same axis internally — translated here at the route boundary.
+            client_drm = request.query.get("client_drm", "false").lower() == "true"
+            highest_quality_only = request.query.get("highest_quality_only", "false").lower() == "true"
+
             logger.debug(
                 f"_handle_channel_stream: provider={provider} channel={channel_id} "
                 f"start_time={start_time!r} end_time={end_time!r} "
                 f"epg_id={epg_id!r} country={country!r} is_catchup={is_catchup} "
-                f"drm_variant={drm_variant}"
+                f"drm_variant={drm_variant} client_drm={client_drm} "
+                f"no_proxy={no_proxy} highest_quality_only={highest_quality_only}"
             )
 
-            # Always defined so the _resolve_stream call below is unconditionally safe,
-            # even though the ternary guards already prevent None from being passed when
-            # is_catchup is False.
+            # Always defined so the _resolve_stream_unified call below is
+            # unconditionally safe, even though the ternary guards already
+            # prevent None from being passed when is_catchup is False.
             start_time_int: int | None = None
             end_time_int: int | None = None
 
@@ -58,13 +70,10 @@ def setup_channel_routes(app, manager, service, helpers):
                     response.status = 400
                     return {"error": "Invalid start_time or end_time format"}
 
-                # Window validation (catchup_hours lookup, age check) now lives
-                # inside _resolve_stream_unified via _validate_catchup_window,
-                # shared across every mode (auto/noproxy/decrypt) instead of
-                # being duplicated here and in the decrypted-stream path
-                # separately. No channel lookup needed here anymore.
+                # Window validation (catchup_hours lookup, age check) lives
+                # inside _resolve_stream_unified via _validate_catchup_window.
 
-            return _resolve_stream(
+            return _resolve_stream_unified(
                 CONTENT_TYPE_CHANNEL, provider, channel_id,
                 country=country,
                 is_catchup=is_catchup,
@@ -72,19 +81,19 @@ def setup_channel_routes(app, manager, service, helpers):
                 end_time=end_time_int if is_catchup else None,
                 epg_id=epg_id if is_catchup else None,
                 drm_variant=drm_variant,
+                receiver_side=client_drm,
                 no_proxy=no_proxy,
+                highest_quality_only=highest_quality_only,
             )
 
         except HTTPResponse:
             raise
         except ValueError as e:
-            label = "no-proxy " if no_proxy else ("sw-drm " if drm_variant == "software" else "")
-            logger.error(f"{label}stream error for channel {provider}/{channel_id}: {e}")
+            logger.error(f"stream error for channel {provider}/{channel_id}: {e}")
             response.status = 404
             return {"error": str(e)}
         except Exception as e:
-            label = "no-proxy " if no_proxy else ("sw-drm " if drm_variant == "software" else "")
-            logger.error(f"{label}stream error for channel {provider}/{channel_id}: {e}")
+            logger.error(f"stream error for channel {provider}/{channel_id}: {e}")
             response.status = 500
             return {"error": f"Internal server error: {str(e)}"}
 
@@ -95,16 +104,15 @@ def setup_channel_routes(app, manager, service, helpers):
     @app.route("/api/providers/<provider>/channels/<channel_id>/manifest")
     def get_channel_manifest(provider, channel_id):
         """
-        Returns JSON with a manifest_url pointing to the stream endpoint.
-        Attaches x-kodi-drm-configs header.
+        Returns JSON with a manifest_url pointing to the single stream
+        endpoint. Attaches x-kodi-drm-configs header.
 
-        Response includes both stream_url (auto DRM) and sw_drm_stream_url
-        (software / ClearKey DRM) so callers can pick the appropriate variant
-        without a second round-trip.
-
-        Also includes catchup_stream_url_template — a URL with {start_time} and
-        {end_time} placeholders (Unix timestamps) that callers can expand for
-        DVR/catchup playback, avoiding the need to construct the URL manually.
+        As of the query-param consolidation, there's one stream_url rather
+        than a separate URL per DRM/proxy/quality combination — the caller
+        appends whatever combination of client_drm/drm_variant/no_proxy/
+        highest_quality_only query params it needs (see get_channel_stream's
+        docstring for the full list). catchup_stream_url_template still
+        carries {start_time}/{end_time} placeholders for DVR/catchup playback.
         """
         try:
             country = request.query.get("country")
@@ -113,14 +121,6 @@ def setup_channel_routes(app, manager, service, helpers):
             stream_url = (
                 f"{base_url}/api/providers/{provider}/channels/{channel_id}"
                 f"/stream/index.mpd{qs}"
-            )
-            sw_drm_stream_url = (
-                f"{base_url}/api/providers/{provider}/channels/{channel_id}"
-                f"/stream/sw-drm/index.mpd{qs}"
-            )
-            noproxy_stream_url = (
-                f"{base_url}/api/providers/{provider}/channels/{channel_id}"
-                f"/stream/noproxy/index.mpd{qs}"
             )
             # Catchup template — callers substitute {start_time}/{end_time} with
             # Unix timestamps.  Matches the query params consumed by _handle_channel_stream.
@@ -138,8 +138,6 @@ def setup_channel_routes(app, manager, service, helpers):
                 "provider": provider,
                 "channel_id": channel_id,
                 "manifest_url": stream_url,
-                "sw_drm_manifest_url": sw_drm_stream_url,
-                "noproxy_manifest_url": noproxy_stream_url,
                 "catchup_stream_url_template": catchup_stream_url_template,
             }
 
@@ -154,47 +152,35 @@ def setup_channel_routes(app, manager, service, helpers):
 
     @app.route("/api/providers/<provider>/channels/<channel_id>/stream/index.mpd")
     def get_channel_stream(provider, channel_id):
-        """Returns HTTP 302 redirect to the actual manifest, or a rewritten
-        manifest body when media proxy is active.  Supports live and catchup."""
+        """
+        Single stream endpoint for all channel playback — live and catchup.
+        Replaces the former /stream/sw-drm/, /stream/noproxy/, /stream/proxied/,
+        and /stream/proxied/ffmpeg/ routes, which are removed. Every
+        combination those routes used to hardcode (and some that were
+        previously unreachable through any route) is now expressed via
+        independent, freely-combinable query params:
+
+          client_drm=true|false            client decrypts ClearKey itself
+                                            (receiver-side rewrite) if true;
+                                            server decrypts to plaintext
+                                            segments if false. Default false.
+          drm_variant=auto|software        which upstream DRM/quality variant
+                                            to request (e.g. Widevine L1 vs
+                                            L3). Default auto.
+          no_proxy=true|false               force redirect/fetch even if the
+                                            content would normally be proxied.
+                                            Default false.
+          highest_quality_only=true|false  collapse to a single
+                                            highest-quality representation
+                                            (e.g. for ffmpeg piping). Default
+                                            false.
+          start_time / end_time / epg_id / country - catchup + context, as
+                                            before.
+
+        Returns an HTTP 302 redirect to the upstream manifest, or a rewritten
+        manifest body when the media proxy is involved.
+        """
         return _handle_channel_stream(provider, channel_id)
-
-    @app.route("/api/providers/<provider>/channels/<channel_id>/stream/sw-drm/index.mpd")
-    def get_channel_stream_sw_drm(provider, channel_id):
-        """Software-DRM variant. Identical transport to the standard
-        endpoint; passes drm_variant='software' through to _resolve_stream."""
-        return _handle_channel_stream(provider, channel_id, drm_variant="software")
-
-    @app.route("/api/providers/<provider>/channels/<channel_id>/stream/noproxy/index.mpd")
-    def get_channel_stream_noproxy(provider, channel_id):
-        """
-        Returns HTTP 302 redirect to the actual manifest, forcing a bypass of any
-        configured media proxy even if the provider would normally be proxied.
-        Supports live and catchup — reuses _handle_channel_stream so it gets the
-        same catchup window validation, timestamp parsing, and error handling as
-        the standard and sw-drm routes.
-
-        Useful when:
-        - Media proxy is misbehaving
-        - You want to test upstream performance directly
-        - Proxy is not needed for a specific provider
-        """
-        return _handle_channel_stream(provider, channel_id, no_proxy=True)
-
-    @app.route("/api/providers/<provider>/channels/<channel_id>/stream/proxied/index.mpd")
-    def get_channel_stream_decrypted(provider, channel_id):
-        """Proxied stream — all quality representations."""
-        return _resolve_decrypted_stream(
-            CONTENT_TYPE_CHANNEL, provider, channel_id, highest_quality_only=False
-        )
-
-    @app.route(
-        "/api/providers/<provider>/channels/<channel_id>/stream/proxied/ffmpeg/index.mpd"
-    )
-    def get_channel_stream_decrypted_ffmpeg(provider, channel_id):
-        """Proxied stream — highest quality only, optimised for ffmpeg."""
-        return _resolve_decrypted_stream(
-            CONTENT_TYPE_CHANNEL, provider, channel_id, highest_quality_only=True
-        )
 
     @app.route("/api/providers/<provider>/channels/<channel_id>/drm")
     def get_channel_drm(provider, channel_id):

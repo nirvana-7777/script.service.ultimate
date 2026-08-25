@@ -253,7 +253,19 @@ def setup_m3u_routes(app, manager, service):
                     )
                     epg_id = service.get_epg_id(channel_id)
                     epg_id_attr = f' tvg-epgid="{epg_id}"' if epg_id else ""
-                    stream_path = "stream/proxied/index.mpd" if proxied else "stream/index.mpd"
+                    # /stream/proxied/ no longer exists as a separate route —
+                    # folded into client_drm on the single /stream/index.mpd
+                    # endpoint. client_drm=false for proxied (matches the
+                    # static KODIPROP line below, server decrypts);
+                    # client_drm=true otherwise (matches the dynamic
+                    # per-channel DRM lookup below, client decrypts) — it
+                    # now defaults to false, so this must be explicit or the
+                    # non-proxied branch's entries would mismatch their own
+                    # KODIPROP directives.
+                    stream_path = (
+                        "stream/index.mpd?client_drm=false" if proxied
+                        else "stream/index.mpd?client_drm=true"
+                    )
                     stream_url = (
                         f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/{stream_path}"
                     )
@@ -264,7 +276,9 @@ def setup_m3u_routes(app, manager, service):
                     )
 
                     if proxied:
-                        m3u_content += "#KODIPROP:inputstream=inputstream.adaptive\n"
+                        # No KODIPROP line — client_drm=false, client doesn't
+                        # use inputstream.adaptive when the server decrypts.
+                        pass
                     else:
                         try:
                             drm_configs = manager.get_channel_drm_configs(provider_name, channel_id)

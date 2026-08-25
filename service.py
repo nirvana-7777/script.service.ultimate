@@ -817,10 +817,14 @@ class UltimateService:
         this just appends the stream URL built from stream_path.
 
         Args:
-            stream_path: Relative path after .../channels/{channel_id}/, e.g.
-                         "stream/index.mpd", "stream/noproxy/index.mpd",
-                         "stream/proxied/index.mpd". The caller decides
-                         transport; this function only describes the channel.
+            stream_path: Relative path (optionally with a query string) after
+                         .../channels/{channel_id}/. There's only one real
+                         channel stream route now — "stream/index.mpd" — so
+                         callers select behavior via query params on it, e.g.
+                         "stream/index.mpd?client_drm=true" or
+                         "stream/index.mpd?client_drm=false&highest_quality_only=true".
+                         This function doesn't parse or validate stream_path;
+                         it's appended as-is.
         """
         channel_id = channel.channel_id
         header = self._build_m3u_entry_header(
@@ -888,9 +892,13 @@ class UltimateService:
                 for channel in channels:
                     m3u_content += self._generate_m3u_entry(
                         base_url, provider_name, channel,
-                        stream_path="stream/proxied/index.mpd",
+                        # client_drm=false (explicit, though it's the default).
+                        # No KODIPROP line needed — the client doesn't use
+                        # inputstream.adaptive at all when the server does the
+                        # decrypting.
+                        stream_path="stream/index.mpd?client_drm=false",
                         provider_label=provider_label,
-                        drm_directives="#KODIPROP:inputstream=inputstream.adaptive\n",
+                        drm_directives="",
                     )
                     channels_included += 1
 
@@ -975,7 +983,10 @@ class UltimateService:
                     channel_name = channel.name
 
                     # Build decrypted stream URL (ffmpeg variant with highest quality)
-                    stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/proxied/ffmpeg/index.mpd"
+                    # client_drm=false matches this playlist's static KODIPROP
+                    # line below (server decrypts); highest_quality_only=true
+                    # replaces the old dedicated /stream/proxied/ffmpeg/ path.
+                    stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/index.mpd?client_drm=false&highest_quality_only=true"
 
                     # Build ffmpeg pipe command
                     # Map all video (will be just one due to highest_quality_only), all audio, and optional subtitles
@@ -1002,10 +1013,13 @@ class UltimateService:
                     # intentionally live-only, so include_catchup=False
                     # preserves its existing behavior of never emitting
                     # catchup attributes, even for channels that support it.
+                    # No KODIPROP line — client_drm=false here too (server
+                    # decrypts), and the stream target is a pipe://ffmpeg
+                    # command anyway, which inputstream.adaptive never touches.
                     m3u_content += self._build_m3u_entry_header(
                         provider_name, channel,
                         provider_label=provider_label,
-                        drm_directives="#KODIPROP:inputstream=inputstream.adaptive\n",
+                        drm_directives="",
                         include_catchup=False,
                     )
                     m3u_content += f"{ffmpeg_cmd}\n"
@@ -1114,11 +1128,13 @@ class UltimateService:
                             # pre-consolidation behavior (the old
                             # _generate_m3u_proxied_channel_entry always
                             # included catchup tags when available).
+                            # No KODIPROP line — client_drm=false, client
+                            # doesn't use inputstream.adaptive.
                             m3u_content += self._generate_m3u_entry(
                                 base_url, provider_name, channel,
-                                stream_path="stream/proxied/index.mpd",
+                                stream_path="stream/index.mpd?client_drm=false",
                                 provider_label=provider_label,
-                                drm_directives="#KODIPROP:inputstream=inputstream.adaptive\n",
+                                drm_directives="",
                                 include_catchup=True,
                             )
                             channels_included += 1
@@ -1220,7 +1236,15 @@ class UltimateService:
             else:
                 cache_filename = f"{cache_filename}_noproxy"
 
-        stream_path = "stream/noproxy/index.mpd" if no_proxy else "stream/index.mpd"
+        # /stream/noproxy/ and /stream/sw-drm/ no longer exist as separate
+        # routes — folded into query params on the single /stream/index.mpd
+        # endpoint. client_drm=true because this playlist's KODIPROP
+        # directives come from a dynamic per-channel DRM lookup (see the
+        # drm_directives=None call below / _build_m3u_entry_header), which
+        # only makes sense if the client is the one doing the decrypting —
+        # client_drm now defaults to false, so this has to be explicit or
+        # every entry here would silently mismatch its own KODIPROP directives.
+        stream_path = "stream/index.mpd?client_drm=true&no_proxy=true" if no_proxy else "stream/index.mpd?client_drm=true"
 
         for provider_name in providers_to_process:
             try:
