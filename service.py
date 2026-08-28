@@ -989,25 +989,7 @@ class UltimateService:
                     stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/index.mpd?client_drm=false&highest_quality_only=true"
 
                     # Build ffmpeg pipe command
-                    # Map all video (will be just one due to highest_quality_only), all audio, and optional subtitles
-                    ffmpeg_cmd = (
-                        f'pipe://ffmpeg -loglevel fatal '
-                        f'-fflags +genpts+igndts+discardcorrupt '
-                        f'-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 '
-                        f'-thread_queue_size 2048 '  # Kept large to handle demuxing all 4 audio tracks smoothly
-                        f'-re '
-                        f'-i "{stream_url}" '
-                        f'-map 0:v:0 '  # Maps the 1080p video stream
-                        f'-map 0:a? '  # Maps ALL available audio tracks (German/English AAC + AC-3)
-                        f'-c copy '
-                        f'-max_muxing_queue_size 8192 '  # Kept high to safely interleave the multi-audio timescales
-                        f'-f mpegts '
-                        f'-muxdelay 0 -muxpreload 0 '
-                        f'-mpegts_flags resend_headers '
-                        f'-metadata service_name="{channel_name}" '
-                        f'-flush_packets 1 '
-                        f'pipe:1'
-                    )
+                    ffmpeg_cmd = self._build_ffmpeg_pipe_command(stream_url, channel_name)
 
                     # Header only (EXTINF + KODIPROP) — this variant is
                     # intentionally live-only, so include_catchup=False
@@ -1329,6 +1311,44 @@ class UltimateService:
         )
 
         return m3u_content
+
+    @staticmethod
+    def _build_ffmpeg_pipe_command(stream_url: str, channel_name: str) -> str:
+        """
+        Build the ffmpeg pipe:// command used by the ffmpeg-piped M3U variant.
+
+        Extracted from _generate_m3u_proxied_ffmpeg_fast, which was the only
+        caller and still is — pulled out unchanged so it's reusable/testable
+        on its own, not because behavior needed to change.
+
+        - -thread_queue_size 2048: kept large to handle demuxing multiple
+          audio tracks smoothly.
+        - -map 0:v:0: maps the single video stream (only one exists, since
+          the upstream URL is requested with highest_quality_only=true).
+        - -map 0:a?: maps all available audio tracks (channels commonly
+          carry multiple, e.g. German/English AAC + AC-3); "?" makes the
+          map optional so this doesn't fail if a channel has none.
+        - -max_muxing_queue_size 8192: kept high to safely interleave
+          multi-audio timescales.
+        """
+        return (
+            f'pipe://ffmpeg -loglevel fatal '
+            f'-fflags +genpts+igndts+discardcorrupt '
+            f'-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 '
+            f'-thread_queue_size 2048 '
+            f'-re '
+            f'-i "{stream_url}" '
+            f'-map 0:v:0 '
+            f'-map 0:a? '
+            f'-c copy '
+            f'-max_muxing_queue_size 8192 '
+            f'-f mpegts '
+            f'-muxdelay 0 -muxpreload 0 '
+            f'-mpegts_flags resend_headers '
+            f'-metadata service_name="{channel_name}" '
+            f'-flush_packets 1 '
+            f'pipe:1'
+        )
 
     @staticmethod
     def _chno_attr(channel) -> str:
