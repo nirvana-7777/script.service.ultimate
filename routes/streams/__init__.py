@@ -19,12 +19,11 @@ helpers:
       Returns the fetched DRMConfig list (or [] on failure) so callers that
       also need the configs don't have to fetch them a second time.
 
-  _resolve_stream(content_type, provider, content_id, ...)
+  _resolve_stream_unified(content_type, provider, content_id, ...)
       The single place that understands how to turn (type, provider, id) into a
       manifest response — redirect, proxied rewrite, or decrypted rewrite.
-
-  _resolve_decrypted_stream(content_type, provider, content_id, ...)
-      Returns a manifest with server-side decryption (ClearKey keys injected).
+      receiver_side selects who decrypts (client vs. server); every content
+      type's route handler calls this directly with an explicit value.
 """
 
 import base64
@@ -33,7 +32,7 @@ import re
 import time
 from urllib.parse import urljoin
 
-from bottle import HTTPResponse, redirect, request, response
+from bottle import redirect, request, response
 from streaming_providers.base.utils import logger
 from streaming_providers.base.utils.manifest_utils import ManifestUtils
 
@@ -252,8 +251,8 @@ def make_helpers(manager, service):
 
         Returns:
             The list of DRMConfig objects that were fetched (or [] on failure).
-            Callers that also need the raw configs (e.g. _resolve_stream) can
-            reuse this instead of fetching them again.
+            Callers that also need the raw configs (e.g. _resolve_stream_unified)
+            can reuse this instead of fetching them again.
         """
         try:
             if is_catchup and content_type == CONTENT_TYPE_CHANNEL:
@@ -418,10 +417,11 @@ def make_helpers(manager, service):
         doesn't support catchup or the window has been exceeded; None if valid.
 
         Extracted from channels.py's _handle_channel_stream so
-        _resolve_decrypted_stream can apply the same check — previously it
-        skipped this validation entirely, letting catchup requests outside the
-        provider's DVR window through to the decrypted-stream path when the
-        standard path would reject them with a 400.
+        _resolve_stream_unified can apply the same check for every
+        receiver_side value — previously the decrypted-stream path skipped
+        this validation entirely, letting catchup requests outside the
+        provider's DVR window through when the standard path would reject
+        them with a 400.
         """
         channels = manager.get_channels(provider_name=provider, fetch_manifests=False)
         channel_obj = next((c for c in channels if c.channel_id == content_id), None)
@@ -534,8 +534,10 @@ def make_helpers(manager, service):
         """
         Single resolver for every stream endpoint — replaces the former
         _resolve_stream / _resolve_decrypted_stream split (and the later
-        mode="auto"/"playable" split). Both wrapper names still exist below
-        for existing call sites.
+        mode="auto"/"playable" split before that). Every content type's
+        route handler (channels.py, events.py, vod.py, recordings.py) calls
+        this directly with an explicit receiver_side; the two wrapper
+        functions this replaced have been removed.
 
         Routing is entirely data-driven: whenever content has ClearKey DRM and
         a media proxy is configured, the proxy is used to inject correct
@@ -857,87 +859,6 @@ def make_helpers(manager, service):
                     )
                 }
 
-    def _resolve_stream(
-            content_type: str,
-            provider: str,
-            content_id: str,
-            country=None,
-            is_catchup: bool = False,
-            start_time: int = None,
-            end_time: int = None,
-            epg_id: str = None,
-            drm_variant: str = "auto",
-            no_proxy: bool = False,
-    ):
-        """
-        Deprecated: thin wrapper around _resolve_stream_unified, kept so
-        existing call sites (channels.py, events.py, vod.py, recordings.py)
-        don't need to change. New code should call _resolve_stream_unified
-        directly with an explicit receiver_side.
-        """
-        return _resolve_stream_unified(
-            content_type, provider, content_id,
-            country=country,
-            is_catchup=is_catchup,
-            start_time=start_time,
-            end_time=end_time,
-            epg_id=epg_id,
-            drm_variant=drm_variant,
-            receiver_side=True,
-            no_proxy=no_proxy,
-        )
-
-    def _resolve_decrypted_stream(
-            content_type: str,
-            provider: str,
-            content_id: str,
-            highest_quality_only: bool = False,
-    ):
-        """
-        Deprecated: thin wrapper around _resolve_stream_unified, kept so
-        existing call sites (channels.py's /stream/proxied/ routes) don't need
-        to change. Reads start_time/end_time/epg_id/country from the request
-        query string itself, matching the original function's contract — those
-        routes never passed catchup args explicitly. New code should call
-        _resolve_stream_unified directly with receiver_side=False.
-        """
-        try:
-            country = request.query.get("country")
-            start_time = request.query.get("start_time")
-            end_time = request.query.get("end_time")
-            epg_id = request.query.get("epg_id")
-            is_catchup = bool(start_time and end_time and content_type == CONTENT_TYPE_CHANNEL)
-
-            if is_catchup:
-                try:
-                    start_time = int(start_time)
-                    end_time = int(end_time)
-                except (ValueError, TypeError):
-                    response.status = 400
-                    return {"error": "Invalid start_time or end_time format"}
-
-            return _resolve_stream_unified(
-                content_type, provider, content_id,
-                country=country,
-                is_catchup=is_catchup,
-                start_time=start_time,
-                end_time=end_time,
-                epg_id=epg_id,
-                receiver_side=False,
-                highest_quality_only=highest_quality_only,
-            )
-
-        except HTTPResponse:
-            raise
-        except ValueError as e:
-            logger.error(f"API Error in decrypted {content_type} stream: {e}")
-            response.status = 404
-            return {"error": str(e)}
-        except Exception as e:
-            logger.error(f"API Error in decrypted {content_type} stream: {e}")
-            response.status = 500
-            return {"error": f"Internal server error: {str(e)}"}
-
     # Return all helpers as a dict for submodules to use
     return {
         "CONTENT_TYPE_CHANNEL": CONTENT_TYPE_CHANNEL,
@@ -951,8 +872,6 @@ def make_helpers(manager, service):
         "_stream_needs_headers": _stream_needs_headers,
         "_inject_base_url": _inject_base_url,
         "_validate_catchup_window": _validate_catchup_window,
-        "_resolve_stream": _resolve_stream,
-        "_resolve_decrypted_stream": _resolve_decrypted_stream,
         "_resolve_stream_unified": _resolve_stream_unified,
         "_serialize_drm_configs": _serialize_drm_configs,
     }

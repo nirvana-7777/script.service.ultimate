@@ -836,6 +836,42 @@ class UltimateService:
         stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/{stream_path}"
         return header + f"{stream_url}\n"
 
+    def _iter_m3u_provider_channels(self, providers_to_process):
+        """
+        Yield (provider_name, provider_label, channels) for each provider in
+        providers_to_process — sorted channels, with provider_label resolved
+        (falling back to provider_name on lookup failure).
+
+        Extracted from the four _generate_m3u_* generators, which duplicated
+        this exact prefix. Structurally identical to what each of them did
+        inline: channels-fetch and provider_label lookup share one
+        try/except Exception (log-and-skip-this-provider), with the label
+        lookup nested inside on its own narrower
+        (AttributeError, KeyError, ValueError) fallback — same nesting as
+        before, just here once instead of four times. Each caller still
+        wraps its own per-channel body in its own try/except Exception,
+        log-and-continue-to-next-provider, exactly as it did before this
+        was split out — this generator doesn't change where or how
+        failures are caught, only removes the duplicated lookup code ahead
+        of that point.
+        """
+        for provider_name in providers_to_process:
+            try:
+                channels = self._sort_channels(
+                    self.manager.get_channels(provider_name=provider_name, fetch_manifests=False)
+                )
+                try:
+                    provider_instance = self.manager.get_provider(provider_name)
+                    provider_label = provider_instance.provider_label
+                except (AttributeError, KeyError, ValueError):
+                    provider_label = provider_name
+            except Exception as provider_err:
+                logger.warning(
+                    f"Failed to process provider '{provider_name}': {str(provider_err)}"
+                )
+                continue
+            yield provider_name, provider_label, channels
+
     def _generate_m3u_proxied_fast(self, providers=None):
         """
         Fast generation of decrypted M3U content for specified providers.
@@ -873,20 +909,8 @@ class UltimateService:
 
         channels_included = 0
 
-        for provider_name in providers_to_process:
+        for provider_name, provider_label, channels in self._iter_m3u_provider_channels(providers_to_process):
             try:
-                # Get channels for this provider
-                channels = self._sort_channels(
-                    self.manager.get_channels(provider_name=provider_name, fetch_manifests=False)
-                )
-
-                # Get provider label
-                try:
-                    provider_instance = self.manager.get_provider(provider_name)
-                    provider_label = provider_instance.provider_label
-                except (AttributeError, KeyError, ValueError):
-                    provider_label = provider_name
-
                 # Process each channel - no DRM checks (all channels are
                 # already routed through the media proxy at playback time)
                 for channel in channels:
@@ -963,20 +987,8 @@ class UltimateService:
 
         channels_included = 0
 
-        for provider_name in providers_to_process:
+        for provider_name, provider_label, channels in self._iter_m3u_provider_channels(providers_to_process):
             try:
-                # Get channels for this provider
-                channels = self._sort_channels(
-                    self.manager.get_channels(provider_name=provider_name, fetch_manifests=False)
-                )
-
-                # Get provider label
-                try:
-                    provider_instance = self.manager.get_provider(provider_name)
-                    provider_label = provider_instance.provider_label
-                except (AttributeError, KeyError, ValueError):
-                    provider_label = provider_name
-
                 # Process each channel - no DRM checks
                 for channel in channels:
                     channel_id = channel.channel_id
@@ -1075,20 +1087,8 @@ class UltimateService:
         channels_included = 0
         channels_skipped = 0
 
-        for provider_name in providers_to_process:
+        for provider_name, provider_label, channels in self._iter_m3u_provider_channels(providers_to_process):
             try:
-                # Get channels for this provider
-                channels = self._sort_channels(
-                    self.manager.get_channels(provider_name=provider_name, fetch_manifests=False)
-                )
-
-                # Get provider instance for label
-                try:
-                    provider_instance = self.manager.get_provider(provider_name)
-                    provider_label = provider_instance.provider_label
-                except (AttributeError, KeyError, ValueError):
-                    provider_label = provider_name
-
                 # Process each channel
                 for channel in channels:
                     channel_id = channel.channel_id
@@ -1228,21 +1228,8 @@ class UltimateService:
         # every entry here would silently mismatch its own KODIPROP directives.
         stream_path = "stream/index.mpd?client_drm=true&no_proxy=true" if no_proxy else "stream/index.mpd?client_drm=true"
 
-        for provider_name in providers_to_process:
+        for provider_name, provider_label, channels in self._iter_m3u_provider_channels(providers_to_process):
             try:
-                # Get channels for this provider
-                channels = self._sort_channels(
-                    self.manager.get_channels(provider_name=provider_name, fetch_manifests=False)
-                )
-
-                # Resolve provider_label once per provider instead of once per
-                # channel (previously done inside _generate_m3u_channel_entry
-                # on every call — same result, redundant lookups).
-                try:
-                    provider_label = self.manager.get_provider(provider_name).provider_label
-                except (AttributeError, KeyError, ValueError):
-                    provider_label = provider_name
-
                 # Add each channel to M3U
                 for channel in channels:
                     m3u_content += self._generate_m3u_entry(
@@ -1253,7 +1240,7 @@ class UltimateService:
 
             except Exception as provider_err:
                 logger.warning(
-                    f"Failed to get channels for provider '{provider_name}': {str(provider_err)}"
+                    f"Failed to process provider '{provider_name}': {str(provider_err)}"
                 )
                 continue
 
