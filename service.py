@@ -560,7 +560,7 @@ class UltimateService:
             return json.dumps({"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"})
 
         logger.info(
-            f"Generating {'receiver-side clearkey' if receiver_side else 'decrypted'} manifest "
+            f"Generating {'receiver' if receiver_side else 'server'}-side clearkey manifest "
             f"for {provider}/{channel_id} (highest_quality_only={highest_quality_only}, drm_variant={drm_variant})"
         )
 
@@ -613,7 +613,7 @@ class UltimateService:
             return json.dumps({"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"})
 
         logger.info(
-            f"Generating {'receiver-side clearkey' if receiver_side else 'decrypted'} catchup manifest "
+            f"Generating {'receiver' if receiver_side else 'server'}-side clearkey catchup manifest "
             f"for {provider}/{channel_id} "
             f"(start={start_time} end={end_time} highest_quality_only={highest_quality_only})"
         )
@@ -886,7 +886,7 @@ class UltimateService:
         """
         # Check if media proxy is configured
         if not self.media_proxy_url:
-            logger.error("Cannot generate decrypted M3U: MEDIA_PROXY_URL not set")
+            logger.error("Cannot generate proxied M3U: MEDIA_PROXY_URL not set")
             response.status = 503
             response.content_type = "application/json"
             return json.dumps(
