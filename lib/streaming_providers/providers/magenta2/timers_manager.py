@@ -62,6 +62,7 @@ broadcast window passes the backend transitions them to RECORDING → GENERATED,
 at which point RecordingsManager takes ownership of the object.
 """
 
+import re
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
@@ -79,6 +80,14 @@ from .constants import (
 )
 from .pvr_helpers import PvrHelpers, PvrHttpMixin
 
+# TODO: move into constants.py alongside PVR_RECORDINGS_PATH once confirmed stable.
+# Confirmed via live network capture (2026-09-03): the Audience nPVR API schedules
+# a new timer via this path + the listing GUID, NOT via POST {base}/recordings.
+PVR_SCHEDULE_RECORDING_PATH = "/schedule-recording-for-listing"
+
+# Listing GUIDs are formed as "{stationReference}_{8-hex-char program id}",
+# e.g. "das_erste_hd_031eace5" -> stationReference "das_erste_hd".
+_LISTING_GUID_STATION_RE = re.compile(r"^(?P<station_ref>.+)_[0-9a-f]{8}$")
 
 
 class TimersManager(PvrHttpMixin):
@@ -221,7 +230,7 @@ class TimersManager(PvrHttpMixin):
             )
 
         pvr_base_url = self._get_pvr_base_url()
-        url = f"{pvr_base_url}{PVR_RECORDINGS_PATH}"
+        url = f"{pvr_base_url}{PVR_SCHEDULE_RECORDING_PATH}/{timer.epg_event_id}"
 
         payload = self._build_create_payload(timer)
         data = self._post(url, payload)
@@ -266,7 +275,7 @@ class TimersManager(PvrHttpMixin):
         pvr_base_url = self._get_pvr_base_url()
         url = f"{pvr_base_url}{PVR_RECORDINGS_PATH}/{timer.client_index}"
 
-        payload = self._build_create_payload(timer)
+        payload = self._build_update_payload(timer)  # UNCONFIRMED, see docstring
         data = self._put(url, payload)
 
         if not data:
@@ -321,19 +330,35 @@ class TimersManager(PvrHttpMixin):
     # =========================================================================
 
     @staticmethod
-    def _build_create_payload(timer: Timer) -> Dict:
+    def _station_reference_from_listing_guid(listing_guid: str) -> str:
         """
-        Build the POST/PUT request body for the nPVR recordings endpoint.
+        Derive the ``stationReferences`` value the nPVR API expects from a
+        listing GUID, e.g. ``"das_erste_hd_031eace5"`` -> ``"das_erste_hd"``.
 
-        The Magenta2 nPVR API expects the listing GUID (timer.epg_event_id)
-        as ``listingId``, plus optional pre/post padding offsets in seconds.
+        Confirmed via live network capture (2026-09-03). If a proper station
+        reference is already cached elsewhere on the channel model, prefer
+        that over this regex-derived value — it's inferred from sample data,
+        not documented.
+        """
+        match = _LISTING_GUID_STATION_RE.match(listing_guid or "")
+        return match.group("station_ref") if match else listing_guid
 
-        NOTE: Confirm the exact field names against the live API spec.
-              ``startOffsetSeconds`` / ``endOffsetSeconds`` are inferred from
-              the sample JSON data (recordings carry these fields).
+    @classmethod
+    def _build_create_payload(cls, timer: Timer) -> Dict:
+        """
+        Build the POST body for ``schedule-recording-for-listing/{guid}``.
+
+        Confirmed via live network capture (2026-09-03):
+            {"stationReferences": ["<station_ref>"],
+             "startOffsetSeconds": N, "endOffsetSeconds": N}
+
+        The listing GUID itself goes in the URL path, not the body — do not
+        add "listingId" here.
         """
         payload: Dict = {
-            "listingId": timer.epg_event_id,
+            "stationReferences": [
+                cls._station_reference_from_listing_guid(timer.epg_event_id)
+            ],
         }
 
         # Pre/post padding — convert from minutes (Timer model) to seconds (API)
@@ -342,6 +367,25 @@ class TimersManager(PvrHttpMixin):
         if timer.margin_end:
             payload["endOffsetSeconds"] = timer.margin_end * 60
 
+        return payload
+
+    @staticmethod
+    def _build_update_payload(timer: Timer) -> Dict:
+        """
+        Build the PUT body for updating an existing timer.
+
+        UNCONFIRMED — no live capture of an update call yet. This mirrors the
+        old (wrong) create-payload guess and likely needs the same kind of
+        fix once real PUT traffic is captured. Treat update_timer() as
+        untested until then.
+        """
+        payload: Dict = {
+            "listingId": timer.epg_event_id,
+        }
+        if timer.margin_start:
+            payload["startOffsetSeconds"] = timer.margin_start * 60
+        if timer.margin_end:
+            payload["endOffsetSeconds"] = timer.margin_end * 60
         return payload
 
     # =========================================================================
