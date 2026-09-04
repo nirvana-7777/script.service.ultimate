@@ -26,6 +26,7 @@ from ...base.network import HTTPManagerFactory, ProxyConfigManager
 from ...base.provider import StreamingProvider
 from ...base.utils.logger import logger
 from .recordings_manager import RecordingsManager
+from .timers_manager import TimersManager
 from .smil_manager import SmilManager
 from .vod_manager import VodManager
 from .auth import Magenta2Authenticator, Magenta2Credentials, Magenta2UserCredentials
@@ -54,6 +55,7 @@ from .auth_bridge import AuthBridge
 class Magenta2Provider(StreamingProvider):
     PROVIDER_LABEL: ClassVar[str] = "Magenta TV 2.0"
     PROVIDER_LOGO: ClassVar[str] = MAGENTA2_LOGO
+    implements_timers: ClassVar[bool] = True
     """
     Magenta2 streaming provider implementation with enhanced dynamic discovery.
     """
@@ -184,6 +186,7 @@ class Magenta2Provider(StreamingProvider):
         # ── Domain managers ──────────────────────────────────────────────────
         self._vod_manager: Optional[VodManager] = None
         self._recordings_manager: Optional[RecordingsManager] = None
+        self._timers_manager: Optional[TimersManager] = None
         self._smil_manager: Optional[SmilManager] = None
         self._epg_manager: Optional[Magenta2EpgManager] = None
 
@@ -205,6 +208,14 @@ class Magenta2Provider(StreamingProvider):
             auth_headers_callback=self._pvr_auth_headers,
         )
         logger.info("✓ RecordingsManager initialized")
+
+        self._timers_manager = TimersManager(
+            http_manager=self.http_manager,
+            provider_name=self.provider_name,
+            provider_config=self.endpoint_manager.config,
+            auth_headers_callback=self._pvr_auth_headers,
+        )
+        logger.info("✓ TimersManager initialized")
 
         self._smil_manager = SmilManager(
             http_manager=self.http_manager,
@@ -775,6 +786,52 @@ class Magenta2Provider(StreamingProvider):
         if not self._recordings_manager:
             return None
         return self._recordings_manager.get_recording_manifest(recording_id)
+
+    # ------------------------------------------------------------------ #
+    # Timers (nPVR scheduled recordings — delegates to TimersManager)     #
+    # ------------------------------------------------------------------ #
+
+    def get_timer_types(self, **kwargs: Any) -> Any:
+        """Return the timer types this provider supports."""
+        if not self._timers_manager:
+            raise RuntimeError(
+                "TimersManager not available — configuration discovery may have failed"
+            )
+        return self._timers_manager.get_timer_types()
+
+    def get_timers(self, **kwargs: Any) -> Any:
+        """Return the list of currently scheduled timers."""
+        if not self._timers_manager:
+            raise RuntimeError(
+                "TimersManager not available — configuration discovery may have failed"
+            )
+        return self._timers_manager.get_timers(**kwargs)
+
+    def add_timer(self, timer: Any, **kwargs: Any) -> Any:
+        """Schedule a new timer. Delegates to TimersManager.add_timer()."""
+        if not self._timers_manager:
+            raise RuntimeError(
+                "TimersManager not available — configuration discovery may have failed"
+            )
+        return self._timers_manager.add_timer(timer)
+
+    def update_timer(self, timer: Any, **kwargs: Any) -> Any:
+        """Update an existing timer. Delegates to TimersManager.update_timer()."""
+        if not self._timers_manager:
+            raise RuntimeError(
+                "TimersManager not available — configuration discovery may have failed"
+            )
+        return self._timers_manager.update_timer(timer)
+
+    def delete_timer(
+        self, client_index: int, force_delete: bool = False, **kwargs: Any
+    ) -> None:
+        """Delete/cancel a timer. Delegates to TimersManager.delete_timer()."""
+        if not self._timers_manager:
+            raise RuntimeError(
+                "TimersManager not available — configuration discovery may have failed"
+            )
+        self._timers_manager.delete_timer(client_index, force_delete=force_delete)
 
     def get_epg(
         self,
