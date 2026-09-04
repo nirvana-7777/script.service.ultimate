@@ -337,13 +337,15 @@ def setup_timers_routes(app, manager, service):
             # we can't tell what actually arrived. Read + log it manually first.
             content_type = request.get_header("Content-Type", "")
             content_length = request.get_header("Content-Length", "")
+            request_id = request.get_header("X-Request-Id", "")
             raw_body = request.body.read()
             logger.info(
-                f"add_provider_timer[{provider}]: Content-Type={content_type!r} "
-                f"Content-Length header={content_length!r} actual bytes={len(raw_body)}"
+                f"add_provider_timer[{provider}] reqid={request_id!r}: "
+                f"Content-Type={content_type!r} Content-Length header={content_length!r} "
+                f"actual bytes={len(raw_body)}"
             )
             logger.info(
-                f"add_provider_timer[{provider}]: raw body (repr, truncated to 2000 chars)="
+                f"add_provider_timer[{provider}] reqid={request_id!r}: raw body (repr, truncated to 2000 chars)="
                 f"{raw_body[:2000]!r}"
             )
 
@@ -351,7 +353,7 @@ def setup_timers_routes(app, manager, service):
                 body = json.loads(raw_body.decode("utf-8"))
             except UnicodeDecodeError as e:
                 logger.error(
-                    f"add_provider_timer[{provider}]: body is not valid UTF-8 — "
+                    f"add_provider_timer[{provider}] reqid={request_id!r}: body is not valid UTF-8 — "
                     f"{e} — first 100 bytes hex: {raw_body[:100].hex()}"
                 )
                 response.status = 400
@@ -362,7 +364,7 @@ def setup_timers_routes(app, manager, service):
                 }
             except json.JSONDecodeError as e:
                 logger.error(
-                    f"add_provider_timer[{provider}]: JSON decode failed at "
+                    f"add_provider_timer[{provider}] reqid={request_id!r}: JSON decode failed at "
                     f"line {e.lineno} col {e.colno} (char {e.pos}): {e.msg} — "
                     f"context: {raw_body[max(0, e.pos - 30):e.pos + 30]!r}"
                 )
