@@ -408,6 +408,7 @@ def setup_timers_routes(app, manager, service):
                     "provider": provider,
                 }
             except RuntimeError as e:
+                logger.error(f"Provider '{provider}' rejected add_timer: {e}")
                 response.status = 409
                 return {
                     "error": "Timer rejected by provider",
