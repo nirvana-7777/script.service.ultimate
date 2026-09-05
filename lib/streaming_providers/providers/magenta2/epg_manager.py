@@ -613,6 +613,10 @@ class Magenta2EpgManager:
             program: Dict[str, Any],
     ) -> Optional[EPGEntry]:
         program_guid = program.get("guid", "")
+        # The listing's OWN guid - distinct from program_guid above. This is
+        # what the nPVR API needs to schedule a recording for this specific
+        # broadcast slot (see EPGEntry.epg_event_id docstring).
+        listing_guid = item.get("guid") or None
         title = program.get("title", "Unknown")
 
         broadcast_id = EPGEntry.encode_broadcast_id("magenta2", channel_id, start)
@@ -664,6 +668,7 @@ class Magenta2EpgManager:
             start=start,
             end=end,
             program_id=program_guid,
+            epg_event_id=listing_guid,
             description=description,
             plot_outline=None,
             episode_name=episode_name,

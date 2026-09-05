@@ -140,6 +140,23 @@ class EPGEntry:
 
     program_id: Optional[str] = None
 
+    epg_event_id: Optional[str] = None
+    """
+    Provider-native LISTING guid (e.g. "das_erste_hd_031eace5" for Magenta2) —
+    distinct from program_id, which holds the PROGRAM guid (e.g.
+    "telekom.de-031eace5"). These are two different identifiers on the
+    upstream API: the listing guid identifies a specific broadcast slot on a
+    specific channel/time, while the program guid identifies the underlying
+    content regardless of when/where it airs.
+
+    This is the identifier required to schedule an nPVR recording (passed to
+    the client as part of the EPG entry, cached client-side against
+    broadcast_id, and sent back as "epg_event_id" when the user creates a
+    timer for this broadcast). Populate it whenever the upstream provider
+    exposes a listing-level guid separate from the program guid; leave as
+    None for providers where no such distinction exists.
+    """
+
     # Optional fields - Program Information
     description: Optional[str] = None
     """Full program description/plot. C++ expects 'description' key."""
