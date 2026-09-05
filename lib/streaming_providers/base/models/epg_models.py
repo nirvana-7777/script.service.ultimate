@@ -287,9 +287,10 @@ class EPGEntry:
         - Web UI / API endpoints
         - Other frontend clients
 
-        Note: The dict includes both broadcast_id (for Kodi) and program_id
-        (for provider-specific operations). Frontends that only need the
-        integer ID can ignore program_id.
+        Note: The dict includes broadcast_id (for Kodi), program_id (for
+        provider-specific operations), and epg_event_id when available (the
+        native listing guid needed to schedule an nPVR timer for this
+        broadcast). Frontends that only need the integer ID can ignore both.
         """
         result = {
             "broadcast_id": self.broadcast_id,
@@ -301,6 +302,11 @@ class EPGEntry:
         # Include program_id if available (multi-platform support)
         if self.program_id is not None:
             result["program_id"] = self.program_id
+
+        # Include epg_event_id if available - the listing guid Kodi needs to
+        # cache client-side so it can be sent back when scheduling a timer.
+        if self.epg_event_id is not None:
+            result["epg_event_id"] = self.epg_event_id
 
         # Add all optional fields
         optional_fields = [
