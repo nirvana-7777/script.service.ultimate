@@ -10,7 +10,7 @@ from typing import ClassVar, Dict, List, Optional, Tuple, Union
 from datetime import datetime
 import dataclasses
 
-from ...base.models import DRMConfig, StreamingChannel, Event
+from ...base.models import DRMConfig, StreamingChannel, Event, ContentType
 from ...base.models.proxy_models import ProxyConfig
 from ...base.provider import StreamingProvider
 from ...base.utils.logger import logger
@@ -20,7 +20,6 @@ from .vod_manager import JoynVodManager
 from .epg_manager import JoynEpgManager
 from .catchup_manager import JoynCatchupManager
 from .constants import (
-    CONTENT_TYPE_LIVE,
     DEFAULT_PLATFORM,
     DEFAULT_REQUEST_TIMEOUT,
     DEFAULT_MAX_RETRIES,
@@ -229,7 +228,7 @@ class JoynProvider(StreamingProvider):
     def get_manifest(
             self,
             content_id: str,
-            content_type: str = CONTENT_TYPE_LIVE,
+            content_type: str = ContentType.LIVE,
             video_config: Optional[Dict] = None,
             **kwargs,
     ) -> Optional[str]:
@@ -237,8 +236,7 @@ class JoynProvider(StreamingProvider):
         Get manifest URL - routes to VOD or Channel manager based on content_id.
         Joyn VOD IDs contain an underscore (e.g., d_p203osk1gxp), Live IDs do not (e.g., sat1-de).
         """
-        # Smart routing: if ID has an underscore, it's VOD.
-        if "_" in content_id or content_type == CONTENT_TYPE_VOD:
+        if "_" in content_id or content_type == ContentType.VOD:
             return self.vod_manager.get_vod_manifest(content_id, video_config, **kwargs)
 
         return self.channel_manager.get_manifest(
@@ -255,15 +253,14 @@ class JoynProvider(StreamingProvider):
     def get_drm(
             self,
             content_id: str,
-            content_type: str = CONTENT_TYPE_LIVE,
+            content_type: str = ContentType.LIVE,
             video_config: Optional[Dict] = None,
             **kwargs,
     ) -> List[DRMConfig]:
         """
         Get DRM configurations - routes to VOD or Channel manager based on content_id.
         """
-        # Smart routing: if ID has an underscore, it's VOD.
-        if "_" in content_id or content_type == CONTENT_TYPE_VOD:
+        if "_" in content_id or content_type == ContentType.VOD:
             return self.vod_manager.get_vod_drm(content_id, video_config, **kwargs)
 
         return self.channel_manager.get_drm(
