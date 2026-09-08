@@ -882,6 +882,12 @@ class JoynVodManager:
                 response.raise_for_status()
                 playlist_data = response.json()
 
+                # --- LOG THE JSON RESPONSE ---
+                logger.info(f"=== VOD PLAYLIST API RESPONSE for {video_id} ===")
+                logger.info(json.dumps(playlist_data, indent=2))
+                logger.info(f"=============================================")
+                # -----------------------------
+
                 manifest_url = playlist_data.get("manifestUrl")
                 if not manifest_url:
                     continue
