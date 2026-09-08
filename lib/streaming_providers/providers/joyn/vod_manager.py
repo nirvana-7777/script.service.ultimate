@@ -295,7 +295,12 @@ class JoynVodManager:
             season_ids = set(matches)
 
             if not season_ids:
-                logger.warning(f"No season IDs found in HTML for {path}")
+                next_data = re.search(r'"seasonId"\s*:\s*"([^"]+)"', html)
+                logger.warning(
+                    f"No season IDs found in HTML for {path} "
+                    f"(html_len={len(html)}, has_c_substr={'c_' in html}, "
+                    f"has_next_data_seasonId={bool(next_data)})"
+                )
                 return []
 
             seasons_meta = []
