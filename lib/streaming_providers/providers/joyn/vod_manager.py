@@ -275,9 +275,25 @@ class JoynVodManager:
     # SERIES / MOVIE DETAIL PAGE (HTML FALLBACK)
     # ========================================================================
 
+    def _extract_page_json(self, html: str) -> Optional[Dict[str, Any]]:
+        """Extract the Next.js RSC page payload (initialData) embedded in series/movie detail HTML."""
+        match = re.search(
+            r'self\.__next_f\.push\(\[1,\s*"a:(\[.*?\])\\n"\]\)', html, re.DOTALL
+        )
+        if not match:
+            return None
+        try:
+            raw = match.group(1).encode().decode("unicode_escape")
+            data = json.loads(raw)
+            # data[3] is the props dict; ["initialData"]["page"] holds the series/movie object
+            return data[3]["initialData"]["page"]
+        except (json.JSONDecodeError, UnicodeDecodeError, IndexError, KeyError, TypeError) as e:
+            logger.warning(f"Failed to parse embedded page JSON: {e}")
+            return None
+
     def _get_series_items_fallback(self, path: str, authenticated: bool = True, **kwargs) -> List[
         Union[VodCategory, VodItem]]:
-        """Fallback for series detail pages by fetching HTML and extracting season IDs."""
+        """Series detail pages: parse the season/episode data Next.js already embeds server-side."""
         url = f"https://www.joyn.de{path}"
         headers = {
             "User-Agent": JOYN_USER_AGENT,
@@ -290,55 +306,41 @@ class JoynVodManager:
             response.raise_for_status()
             html = response.text
 
-            # Extract all season IDs (c_...)
-            matches = re.findall(r'["\'](c_[a-z0-9]+)["\']', html)
-            season_ids = set(matches)
-
-            if not season_ids:
-                next_data = re.search(r'"seasonId"\s*:\s*"([^"]+)"', html)
-                logger.warning(
-                    f"No season IDs found in HTML for {path} "
-                    f"(html_len={len(html)}, has_c_substr={'c_' in html}, "
-                    f"has_next_data_seasonId={bool(next_data)})"
-                )
+            page = self._extract_page_json(html)
+            if not page:
+                logger.warning(f"No embedded page JSON found for {path} (html_len={len(html)})")
                 return []
 
-            seasons_meta = []
-            for season_id in season_ids:
-                # Fetch season metadata to get the number
-                # We use first=1 to be lightweight, we just need the number
-                season_data = self.get_season_episodes(season_id, first=1, license_filter="FREE",
-                                                       authenticated=authenticated)
-                if not season_data:
-                    season_data = self.get_season_episodes(season_id, first=1, license_filter="SVOD",
-                                                           authenticated=authenticated)
+            series = page.get("series", {})
+            all_seasons = series.get("allSeasons") or series.get("freeSeasons") or []
 
-                if season_data:
-                    seasons_meta.append({
-                        "id": season_id,
-                        "number": season_data.get("number"),
-                    })
+            if not all_seasons:
+                logger.warning(f"No seasons in embedded data for {path}")
+                return []
 
-            # Sort by season number
-            seasons_meta.sort(key=lambda s: s["number"] or 9999)
+            all_seasons = sorted(all_seasons, key=lambda s: s.get("number") or 9999)
 
-            # If only one season, return episodes directly
-            if len(seasons_meta) == 1:
-                return self._get_season_items(seasons_meta[0]["id"], authenticated)
+            if len(all_seasons) == 1:
+                items = []
+                for ep in all_seasons[0].get("episodes", []):
+                    item = self._parse_episode_asset(ep)
+                    if item:
+                        items.append(item)
+                items.sort(key=lambda x: (x.episode_number or 9999))
+                return items
 
-            # Otherwise, return seasons as categories
             items = []
-            for s in seasons_meta:
+            for s in all_seasons:
                 items.append(VodCategory(
                     content_id=s["id"],
-                    name=f"Staffel {s['number']}",
+                    name=f"Staffel {s.get('number', '')}".strip(),
                     provider="joyn",
                     fetch_url=s["id"],
                 ))
             return items
 
         except Exception as e:
-            logger.error(f"Error fetching series HTML fallback for {path}: {e}")
+            logger.error(f"Error fetching series HTML for {path}: {e}")
             return []
 
     def _get_movie_items_fallback(self, path: str, authenticated: bool = True, **kwargs) -> List[VodItem]:
