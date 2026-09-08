@@ -39,6 +39,7 @@ VOD_GRAPHQL_HASHES = {
     "PAGE_OVERVIEW_GENRE": "37ba6d0dde470df3f8999d49bcd24bc5c72b8e7192768026d82447c664c6ab7f",
     "SEASON": "ee2396bb1b7c9f800e5cefd0b341271b7213fceb4ebe18d5a30dab41d703009f",
     "MOVIE_DETAIL": "9ae6bcd8c45a5e350438d1cc415a022fe053e938c93438509f60ae3abb425fa7",
+    "PLAYABLE_ASSET": "e2db6e6f9090f14848d3989920a1342f6813099c65ee7faef1e334f23e390970",
     "SEARCH": "",
 }
 
@@ -53,6 +54,7 @@ GRAPHQL_OPERATIONS = {
     "PAGE_OVERVIEW_GENRE": "PageOverviewGenre",
     "SEASON": "Season",
     "MOVIE_DETAIL": "PageMovieDetailStatic",
+    "PLAYABLE_ASSET": "PlayableAssetWithToken",
     "SEARCH": "Search",
 }
 
@@ -753,18 +755,64 @@ class JoynVodManager:
             return result["manifest_url"], headers
         return None, {}
 
+    def get_playable_asset(self, asset_id: str, authenticated: bool = True) -> Dict[str, Any]:
+        """
+        Fetch a single playable asset (Movie/Episode) by its b_/c_/d_ id.
+        Returns the `asset` object including its `video.id` (a_…) which is
+        required for the vod-prd playlist endpoint.
+        """
+        try:
+            url = self._build_graphql_url(
+                operation_name=self._operations["PLAYABLE_ASSET"],
+                query_hash=self._query_hashes["PLAYABLE_ASSET"],
+                variables={"id": asset_id},
+            )
+            headers = self._get_graphql_headers(authenticated=authenticated)
+            response = self.http_manager.get(
+                url, operation="vod_playable_asset", headers=headers,
+                timeout=DEFAULT_REQUEST_TIMEOUT,
+            )
+            response.raise_for_status()
+            data = response.json()
+            if "errors" in data:
+                logger.warning(f"GraphQL errors in PlayableAssetWithToken for {asset_id}: {data['errors']}")
+                return {}
+            return (data.get("data") or {}).get("asset", {}) or {}
+        except Exception as e:
+            logger.error(f"Error fetching playable asset {asset_id}: {e}")
+            return {}
+
     def _resolve_video_id(self, content_id: str) -> Optional[str]:
+        # Already a video id
         if content_id.startswith("a_"):
             return content_id
+
+        # Catalog asset id (movie/episode) -> resolve via PlayableAssetWithToken
         if content_id.startswith(("b_", "c_", "d_")):
-            logger.error(f"Cannot resolve '{content_id}' to a video ID. Pass an episode's video ID (a_…) instead.")
-            return None
-        logger.error(f"Cannot resolve '{content_id}' to a video ID.")
+            cache_key = f"video_id::{content_id}"
+            cached = self._cache.get(cache_key)
+            if cached and (time.time() - cached["timestamp"] < self._cache_ttl):
+                return cached["data"]
+
+            asset = self.get_playable_asset(content_id, authenticated=True)
+            video_id = (asset.get("video") or {}).get("id")
+            if not video_id:
+                logger.error(
+                    f"Cannot resolve '{content_id}' to a video ID "
+                    f"(PlayableAssetWithToken returned no video.id)."
+                )
+                return None
+
+            self._cache[cache_key] = {"timestamp": time.time(), "data": video_id}
+            logger.debug(f"Resolved {content_id} -> {video_id}")
+            return video_id
+
+        logger.error(f"Cannot resolve '{content_id}' to a video ID (unknown prefix).")
         return None
 
     def _get_vod_manifest_and_drm(self, content_id: str, video_config: Optional[Dict] = None,
                                   max_retries: int = DEFAULT_MAX_RETRIES) -> Optional[Dict[str, Any]]:
-        video_id = content_id
+        video_id = self._resolve_video_id(content_id)
         if not video_id:
             return None
 
