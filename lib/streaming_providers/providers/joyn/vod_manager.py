@@ -764,7 +764,7 @@ class JoynVodManager:
 
     def _get_vod_manifest_and_drm(self, content_id: str, video_config: Optional[Dict] = None,
                                   max_retries: int = DEFAULT_MAX_RETRIES) -> Optional[Dict[str, Any]]:
-        video_id = self._resolve_video_id(content_id)
+        video_id = content_id
         if not video_id:
             return None
 
