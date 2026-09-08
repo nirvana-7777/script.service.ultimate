@@ -38,6 +38,7 @@ VOD_GRAPHQL_HASHES = {
     "COLLECTION_QUERY": "bdf4e08de65351750eefb2165a58af50c9e4b3526b78cd75e2066df2bc7ec8d8",
     "PAGE_OVERVIEW_GENRE": "37ba6d0dde470df3f8999d49bcd24bc5c72b8e7192768026d82447c664c6ab7f",
     "SEASON": "ee2396bb1b7c9f800e5cefd0b341271b7213fceb4ebe18d5a30dab41d703009f",
+    "MOVIE_DETAIL": "9ae6bcd8c45a5e350438d1cc415a022fe053e938c93438509f60ae3abb425fa7",
     "SEARCH": "",
 }
 
@@ -51,6 +52,7 @@ GRAPHQL_OPERATIONS = {
     "COLLECTION_QUERY": "PageOverviewCollectionQuery",
     "PAGE_OVERVIEW_GENRE": "PageOverviewGenre",
     "SEASON": "Season",
+    "MOVIE_DETAIL": "PageMovieDetailStatic",
     "SEARCH": "Search",
 }
 
@@ -343,39 +345,37 @@ class JoynVodManager:
             logger.error(f"Error fetching series HTML for {path}: {e}")
             return []
 
-    def _get_movie_items_fallback(self, path: str, authenticated: bool = True, **kwargs) -> List[VodItem]:
-        """Fallback for movie detail pages by fetching HTML and extracting video ID."""
-        url = f"https://www.joyn.de{path}"
-        headers = {
-            "User-Agent": JOYN_USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        }
+    def get_movie_detail(self, path: str, authenticated: bool = True) -> Dict[str, Any]:
         try:
-            response = self.http_manager.get(
-                url, operation="vod_movie_html", headers=headers, timeout=DEFAULT_REQUEST_TIMEOUT
+            if not path.startswith("/"):
+                path = f"/{path}"
+            variables = {"path": path}
+            url = self._build_graphql_url(
+                operation_name=self._operations["MOVIE_DETAIL"],
+                query_hash=self._query_hashes["MOVIE_DETAIL"],
+                variables=variables,
             )
+            headers = self._get_graphql_headers(authenticated=authenticated)
+            response = self.http_manager.get(url, operation="vod_movie_detail", headers=headers,
+                                             timeout=DEFAULT_REQUEST_TIMEOUT)
             response.raise_for_status()
-            html = response.text
-
-            # Extract video ID (a_...)
-            matches = re.findall(r'["\'](a_[a-z0-9]+)["\']', html)
-            video_ids = list(set(matches))
-
-            if not video_ids:
-                return []
-
-            # Return the first video ID as a VodItem
-            return [VodItem(
-                name=path.split("/")[-1].replace("-", " ").title(),
-                content_id=video_ids[0],
-                provider="joyn",
-                mode=StreamingMode.VOD,
-                content_type=ContentType.MOVIE,
-                country=self.country,
-            )]
+            data = response.json()
+            if "errors" in data:
+                logger.warning(f"GraphQL errors in movie detail: {data['errors']}")
+                return {}
+            return (data.get("data") or {}).get("page", {}).get("movie", {})
         except Exception as e:
-            logger.error(f"Error fetching movie HTML fallback for {path}: {e}")
+            logger.error(f"Error fetching movie detail {path}: {e}")
+            return {}
+
+    def _get_movie_items_fallback(self, path: str, authenticated: bool = True, **kwargs) -> List[VodItem]:
+        """Movie detail pages, via GraphQL — no HTML scraping needed."""
+        movie = self.get_movie_detail(path, authenticated=authenticated)
+        if not movie:
+            logger.warning(f"No movie data found for {path}")
             return []
+        item = self._parse_content_asset(movie)
+        return [item] if item else []
 
     # ========================================================================
     # SEASON EPISODES
