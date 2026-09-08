@@ -222,6 +222,10 @@ class JoynProvider(StreamingProvider):
     def get_program_details(self, program_id: str, **kwargs) -> Optional[Dict]:
         return self.epg_manager.get_program_details(program_id, **kwargs)
 
+    # ============================================================================
+    # MANIFEST/PLAYBACK METHODS
+    # ============================================================================
+
     def get_manifest(
             self,
             content_id: str,
@@ -229,6 +233,14 @@ class JoynProvider(StreamingProvider):
             video_config: Optional[Dict] = None,
             **kwargs,
     ) -> Optional[str]:
+        """
+        Get manifest URL - routes to VOD or Channel manager based on content_id.
+        Joyn VOD IDs contain an underscore (e.g., d_p203osk1gxp), Live IDs do not (e.g., sat1-de).
+        """
+        # Smart routing: if ID has an underscore, it's VOD.
+        if "_" in content_id or content_type == CONTENT_TYPE_VOD:
+            return self.vod_manager.get_vod_manifest(content_id, video_config, **kwargs)
+
         return self.channel_manager.get_manifest(
             content_id=content_id,
             content_type=content_type,
@@ -237,6 +249,7 @@ class JoynProvider(StreamingProvider):
         )
 
     def get_manifest_headers(self, content_id: str, **kwargs) -> Dict[str, str]:
+        """Get manifest headers"""
         return self.channel_manager.get_manifest_headers(content_id, **kwargs)
 
     def get_drm(
@@ -246,6 +259,13 @@ class JoynProvider(StreamingProvider):
             video_config: Optional[Dict] = None,
             **kwargs,
     ) -> List[DRMConfig]:
+        """
+        Get DRM configurations - routes to VOD or Channel manager based on content_id.
+        """
+        # Smart routing: if ID has an underscore, it's VOD.
+        if "_" in content_id or content_type == CONTENT_TYPE_VOD:
+            return self.vod_manager.get_vod_drm(content_id, video_config, **kwargs)
+
         return self.channel_manager.get_drm(
             content_id=content_id,
             content_type=content_type,
