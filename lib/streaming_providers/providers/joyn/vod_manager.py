@@ -7,6 +7,7 @@ Supports deep navigation and authenticated requests
 
 import hashlib
 import json
+import re
 import time
 import urllib.parse
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
@@ -35,12 +36,9 @@ VOD_GRAPHQL_HASHES = {
     "LIVE_LANE": "51659c62d4e4a6628d1e512190a3b0659486478b12be494875bef5a83dcb79ed",
     "HERO_RESUME": "d3b7e480f593ba4866598f8cfe95185b3e400fcff112c026dc4e1b5ad4b0d537",
     "COLLECTION_QUERY": "bdf4e08de65351750eefb2165a58af50c9e4b3526b78cd75e2066df2bc7ec8d8",
-    # --- NEW: captured from browser network tab ---
     "PAGE_OVERVIEW_GENRE": "37ba6d0dde470df3f8999d49bcd24bc5c72b8e7192768026d82447c664c6ab7f",
     "SEASON": "ee2396bb1b7c9f800e5cefd0b341271b7213fceb4ebe18d5a30dab41d703009f",
-    # TODO: Capture these hashes from network tab to enable Search and Details
     "SEARCH": "",
-    "CONTENT_DETAILS": "",
 }
 
 GRAPHQL_OPERATIONS = {
@@ -51,11 +49,9 @@ GRAPHQL_OPERATIONS = {
     "LIVE_LANE": "LiveLane",
     "HERO_RESUME": "HeroLandingResumePositionsWithToken",
     "COLLECTION_QUERY": "PageOverviewCollectionQuery",
-    # --- NEW ---
     "PAGE_OVERVIEW_GENRE": "PageOverviewGenre",
     "SEASON": "Season",
     "SEARCH": "Search",
-    "CONTENT_DETAILS": "PageDetail",
 }
 
 
@@ -163,7 +159,6 @@ class JoynVodManager:
 
     @staticmethod
     def _is_season_id(content_id: str) -> bool:
-        """Season IDs start with c_ (e.g. c_p0f8glcsxkb)."""
         return content_id.startswith("c_")
 
     @staticmethod
@@ -235,36 +230,11 @@ class JoynVodManager:
                 ))
         return categories
 
-    def get_mediatheken_brands(self) -> List[VodCategory]:
-        try:
-            nav = self.get_navigation()
-            mediatheken_data = nav.get("mediatheken", {}).get("blocks", [])
-            categories = []
-            for block in mediatheken_data:
-                for asset in block.get("assets", []):
-                    if asset.get("__typename") == "Brand":
-                        categories.append(VodCategory(
-                            content_id=asset.get("id", ""),
-                            name=asset.get("title", "Unknown"),
-                            logo_url=asset.get("logo", {}).get("url"),
-                            description=f"{asset.get('title')} Mediathek",
-                            provider="joyn",
-                            fetch_url=asset.get("path"),
-                            details_url=asset.get("path"),
-                        ))
-            return categories
-        except Exception as e:
-            logger.error(f"Error fetching mediatheken: {e}")
-            return []
-
     # ========================================================================
-    # GENRE PAGE  (NEW — uses PageOverviewGenre, not LandingPageClient)
+    # GENRE PAGE
     # ========================================================================
 
-    def get_genre_page(
-            self, path: str, first: int = 32, offset: int = 0, authenticated: bool = True
-    ) -> Dict[str, Any]:
-        """Fetch a genre overview page using the PageOverviewGenre operation."""
+    def get_genre_page(self, path: str, first: int = 32, offset: int = 0, authenticated: bool = True) -> Dict[str, Any]:
         try:
             if not path.startswith("/"):
                 path = f"/{path}"
@@ -290,15 +260,9 @@ class JoynVodManager:
             logger.error(f"Error fetching genre page {path}: {e}")
             return {}
 
-    def _get_genre_items(
-            self, path: str, authenticated: bool = True, **kwargs
-    ) -> List[Union[VodCategory, VodItem]]:
-        page = self.get_genre_page(
-            path=path,
-            authenticated=authenticated,
-            first=kwargs.get("first", 32),
-            offset=kwargs.get("offset", 0),
-        )
+    def _get_genre_items(self, path: str, authenticated: bool = True, **kwargs) -> List[Union[VodCategory, VodItem]]:
+        page = self.get_genre_page(path=path, authenticated=authenticated, first=kwargs.get("first", 32),
+                                   offset=kwargs.get("offset", 0))
         items: List[Union[VodCategory, VodItem]] = []
         for block in page.get("blocks", []):
             for asset in block.get("assets", []):
@@ -308,25 +272,112 @@ class JoynVodManager:
         return items
 
     # ========================================================================
-    # SEASON EPISODES  (NEW — uses Season operation)
+    # SERIES / MOVIE DETAIL PAGE (HTML FALLBACK)
     # ========================================================================
 
-    def get_season_episodes(
-            self,
-            season_id: str,
-            first: int = 20,
-            offset: int = 0,
-            license_filter: str = "FREE",
-            authenticated: bool = True,
-    ) -> Dict[str, Any]:
-        """Fetch episodes for a season using the Season operation."""
+    def _get_series_items_fallback(self, path: str, authenticated: bool = True, **kwargs) -> List[
+        Union[VodCategory, VodItem]]:
+        """Fallback for series detail pages by fetching HTML and extracting season IDs."""
+        url = f"https://www.joyn.de{path}"
+        headers = {
+            "User-Agent": JOYN_USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        }
         try:
-            variables = {
-                "id": season_id,
-                "first": first,
-                "licenseFilter": license_filter,
-                "offset": offset,
-            }
+            response = self.http_manager.get(
+                url, operation="vod_series_html", headers=headers, timeout=DEFAULT_REQUEST_TIMEOUT
+            )
+            response.raise_for_status()
+            html = response.text
+
+            # Extract all season IDs (c_...)
+            matches = re.findall(r'["\'](c_[a-z0-9]+)["\']', html)
+            season_ids = set(matches)
+
+            if not season_ids:
+                logger.warning(f"No season IDs found in HTML for {path}")
+                return []
+
+            seasons_meta = []
+            for season_id in season_ids:
+                # Fetch season metadata to get the number
+                # We use first=1 to be lightweight, we just need the number
+                season_data = self.get_season_episodes(season_id, first=1, license_filter="FREE",
+                                                       authenticated=authenticated)
+                if not season_data:
+                    season_data = self.get_season_episodes(season_id, first=1, license_filter="SVOD",
+                                                           authenticated=authenticated)
+
+                if season_data:
+                    seasons_meta.append({
+                        "id": season_id,
+                        "number": season_data.get("number"),
+                    })
+
+            # Sort by season number
+            seasons_meta.sort(key=lambda s: s["number"] or 9999)
+
+            # If only one season, return episodes directly
+            if len(seasons_meta) == 1:
+                return self._get_season_items(seasons_meta[0]["id"], authenticated)
+
+            # Otherwise, return seasons as categories
+            items = []
+            for s in seasons_meta:
+                items.append(VodCategory(
+                    content_id=s["id"],
+                    name=f"Staffel {s['number']}",
+                    provider="joyn",
+                    fetch_url=s["id"],
+                ))
+            return items
+
+        except Exception as e:
+            logger.error(f"Error fetching series HTML fallback for {path}: {e}")
+            return []
+
+    def _get_movie_items_fallback(self, path: str, authenticated: bool = True, **kwargs) -> List[VodItem]:
+        """Fallback for movie detail pages by fetching HTML and extracting video ID."""
+        url = f"https://www.joyn.de{path}"
+        headers = {
+            "User-Agent": JOYN_USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        }
+        try:
+            response = self.http_manager.get(
+                url, operation="vod_movie_html", headers=headers, timeout=DEFAULT_REQUEST_TIMEOUT
+            )
+            response.raise_for_status()
+            html = response.text
+
+            # Extract video ID (a_...)
+            matches = re.findall(r'["\'](a_[a-z0-9]+)["\']', html)
+            video_ids = list(set(matches))
+
+            if not video_ids:
+                return []
+
+            # Return the first video ID as a VodItem
+            return [VodItem(
+                name=path.split("/")[-1].replace("-", " ").title(),
+                content_id=video_ids[0],
+                provider="joyn",
+                mode=StreamingMode.VOD,
+                content_type=ContentType.MOVIE,
+                country=self.country,
+            )]
+        except Exception as e:
+            logger.error(f"Error fetching movie HTML fallback for {path}: {e}")
+            return []
+
+    # ========================================================================
+    # SEASON EPISODES
+    # ========================================================================
+
+    def get_season_episodes(self, season_id: str, first: int = 20, offset: int = 0, license_filter: str = "FREE",
+                            authenticated: bool = True) -> Dict[str, Any]:
+        try:
+            variables = {"id": season_id, "first": first, "licenseFilter": license_filter, "offset": offset}
             url = self._build_graphql_url(
                 operation_name=self._operations["SEASON"],
                 query_hash=self._query_hashes["SEASON"],
@@ -347,10 +398,8 @@ class JoynVodManager:
             logger.error(f"Error fetching season {season_id}: {e}")
             return {}
 
-    def _get_season_items(
-            self, season_id: str, authenticated: bool = True, **kwargs
-    ) -> List[Union[VodCategory, VodItem]]:
-        """Browse episodes of a season. Fetches both FREE and SVOD, deduplicates."""
+    def _get_season_items(self, season_id: str, authenticated: bool = True, **kwargs) -> List[
+        Union[VodCategory, VodItem]]:
         all_episodes: List[VodItem] = []
         seen_ids: set = set()
 
@@ -370,7 +419,6 @@ class JoynVodManager:
                     if item:
                         all_episodes.append(item)
 
-        # Sort by episode number
         all_episodes.sort(key=lambda x: (x.episode_number or 9999))
         return all_episodes
 
@@ -446,22 +494,33 @@ class JoynVodManager:
             logger.error(f"Error fetching landing page {path}: {e}")
             return {}
 
-    def get_landing_blocks(self, block_ids: List[str], authenticated: bool = True) -> Dict[str, Any]:
-        try:
-            variables = {"ids": block_ids}
-            url = self._build_graphql_url(
-                operation_name=self._operations["LANDING_BLOCKS"],
-                query_hash=self._query_hashes["LANDING_BLOCKS"],
-                variables=variables,
-            )
-            headers = self._get_graphql_headers(authenticated=authenticated)
-            response = self.http_manager.get(url, operation="vod_blocks", headers=headers,
-                                             timeout=DEFAULT_REQUEST_TIMEOUT)
-            response.raise_for_status()
-            return response.json().get("data", {})
-        except Exception as e:
-            logger.error(f"Error fetching landing blocks: {e}")
-            return {}
+    def _get_page_items(self, path: str, authenticated: bool = True, **kwargs) -> List[Union[VodCategory, VodItem]]:
+        page = self.get_landing_page(path=path, authenticated=authenticated)
+        items: List[Union[VodCategory, VodItem]] = []
+
+        for block in page.get("blocks", []):
+            block_type = block.get("__typename")
+            block_id = block.get("id")
+
+            if block_type == "StandardLane" and block_id:
+                if kwargs.get("fetch_more", False):
+                    items.extend(self.get_collection_items(
+                        block_id=block_id, first=kwargs.get("first", 32), offset=kwargs.get("offset", 0),
+                        authenticated=authenticated,
+                    ))
+                else:
+                    for asset in block.get("assets", []):
+                        item = self._parse_asset(asset)
+                        if item:
+                            items.append(item)
+
+            elif block_type in ["HeroLane", "FeaturedLane", "GenreLane"] or not block_type:
+                for asset in block.get("assets", []):
+                    item = self._parse_asset(asset)
+                    if item:
+                        items.append(item)
+
+        return items
 
     # ========================================================================
     # USER STATE
@@ -499,106 +558,38 @@ class JoynVodManager:
         self.get_user_state()
         return self._has_plus
 
-    def get_user_state_code(self) -> str:
-        state = self.get_user_state()
-        return state.get("state", "code=R_A")
-
     # ========================================================================
-    # VOD CATEGORY — MAIN ENTRY POINT  (FIXED ROUTING)
+    # VOD CATEGORY — MAIN ENTRY POINT
     # ========================================================================
 
-    def get_vod_category(
-            self, content_id: str = "", authenticated: bool = True, **kwargs
-    ) -> List[Union[VodCategory, VodItem]]:
+    def get_vod_category(self, content_id: str = "", authenticated: bool = True, **kwargs) -> List[
+        Union[VodCategory, VodItem]]:
         try:
-            # --- Root: show navigation categories ---
             if not content_id or content_id == "/":
                 return self.get_navigation_categories()
 
-            # --- Block ID (paginated collection) ---
             if self._is_block_id(content_id):
-                return self.get_collection_items(
-                    block_id=content_id,
-                    first=kwargs.get("first", 32),
-                    offset=kwargs.get("offset", 0),
-                    authenticated=authenticated,
-                )
+                return self.get_collection_items(block_id=content_id, first=kwargs.get("first", 32),
+                                                 offset=kwargs.get("offset", 0), authenticated=authenticated)
 
-            # --- Season ID (starts with c_) → fetch episodes ---
             if self._is_season_id(content_id):
                 return self._get_season_items(content_id, authenticated, **kwargs)
 
-            # --- Normalize path ---
             path = content_id if content_id.startswith("/") else f"/{content_id}"
 
-            # --- Genre page (uses PageOverviewGenre, NOT LandingPageClient) ---
             if self._is_genre_path(path):
                 return self._get_genre_items(path, authenticated, **kwargs)
 
-            # --- Series / Movie / Collection landing page ---
+            if self._is_series_path(path):
+                return self._get_series_items_fallback(path, authenticated, **kwargs)
+
+            if self._is_movie_path(path):
+                return self._get_movie_items_fallback(path, authenticated, **kwargs)
+
             return self._get_page_items(path, authenticated, **kwargs)
         except Exception as e:
             logger.error(f"Error getting VOD category: {e}")
             return []
-
-    # ========================================================================
-    # PAGE ITEMS PARSER  (FIXED — handles blocks without __typename)
-    # ========================================================================
-
-    def _get_page_items(
-            self, path: str, authenticated: bool = True, **kwargs
-    ) -> List[Union[VodCategory, VodItem]]:
-        if not path.startswith("/"):
-            path = f"/{path}"
-
-        page = self.get_landing_page(path=path, authenticated=authenticated)
-        items: List[Union[VodCategory, VodItem]] = []
-
-        for block in page.get("blocks", []):
-            block_type = block.get("__typename")
-            block_id = block.get("id")
-
-            if block_type == "StandardLane" and block_id:
-                if kwargs.get("fetch_more", False):
-                    items.extend(self.get_collection_items(
-                        block_id=block_id,
-                        first=kwargs.get("first", 32),
-                        offset=kwargs.get("offset", 0),
-                        authenticated=authenticated,
-                    ))
-                else:
-                    for asset in block.get("assets", []):
-                        item = self._parse_asset(asset)
-                        if item:
-                            items.append(item)
-
-            elif block_type in ["HeroLane", "FeaturedLane"]:
-                for asset in block.get("assets", []):
-                    item = self._parse_asset(asset)
-                    if item:
-                        items.append(item)
-
-            elif block_type == "GenreLane":
-                for asset in block.get("assets", []):
-                    if asset.get("__typename") == "GenreItem":
-                        items.append(VodCategory(
-                            content_id=asset.get("path", asset.get("id", "")),
-                            name=asset.get("title", ""),
-                            logo_url=asset.get("genreImage", {}).get("url"),
-                            description=f"Genre: {asset.get('title', '')}",
-                            provider="joyn",
-                            fetch_url=asset.get("path"),
-                        ))
-
-            # --- NEW: handle blocks WITHOUT __typename (genre overview pages,
-            #     series detail pages, etc.) — just parse assets directly ---
-            elif not block_type and block.get("assets"):
-                for asset in block.get("assets", []):
-                    item = self._parse_asset(asset)
-                    if item:
-                        items.append(item)
-
-        return items
 
     # ========================================================================
     # ASSET PARSING
@@ -614,12 +605,13 @@ class JoynVodManager:
         elif typename == "Episode":
             return self._parse_episode_asset(asset)
         elif typename == "Season":
-            # --- NEW: parse Season as a browseable category ---
+            season_num = asset.get("number", "")
+            name = f"Staffel {season_num}".strip() if season_num else title
             return VodCategory(
                 content_id=asset_id,
-                name=f"Staffel {asset.get('number', '')}".strip(),
+                name=name,
                 logo_url=asset.get("primaryImage", {}).get("url") or asset.get("iconicImage", {}).get("url"),
-                description=asset.get("title", title),
+                description=title,
                 provider="joyn",
                 fetch_url=asset_id,
             )
@@ -637,17 +629,7 @@ class JoynVodManager:
                 description=f"Genre: {title}", provider="joyn",
                 fetch_url=asset.get("path"),
             )
-        elif "watchNext" in asset:
-            watch_next = asset.get("watchNext", {})
-            if watch_next:
-                asset_data = watch_next.get("asset", {})
-                if asset_data:
-                    return self._parse_asset(asset_data)
         return None
-
-    # ========================================================================
-    # CONTENT ASSET PARSER  (FIXED — series use path, movies use video ID)
-    # ========================================================================
 
     def _parse_content_asset(self, asset: Dict[str, Any]) -> Optional[VodItem]:
         typename = asset.get("__typename", "")
@@ -655,25 +637,17 @@ class JoynVodManager:
         title = asset.get("title", "Unknown")
         path = asset.get("path", "")
 
-        primary_image = asset.get("primaryImage", {})
-        hero_portrait = asset.get("heroPortrait", {})
-        iconic_image = asset.get("iconicImage", {})
-        image_url = primary_image.get("url") or hero_portrait.get("url") or iconic_image.get("url")
-
+        image_url = asset.get("primaryImage", {}).get("url") or asset.get("heroPortrait", {}).get("url") or asset.get(
+            "iconicImage", {}).get("url")
         genres = [g.get("name", "") for g in asset.get("genres", []) if g.get("name")]
         min_age = asset.get("ageRating", {}).get("minAge")
-
         license_types = asset.get("licenseTypes", [])
         is_free = "AVOD" in license_types or "FREE" in license_types
         is_premium = "SVOD" in license_types or "PLUS" in license_types
 
-        # --- FIX: For Series, use the path as content_id so the user can
-        #     browse into it (get_vod_category receives the path).
-        #     For Movies, use the video ID if available (for direct playback).
         if typename == "Series":
             content_id = path or asset_id
         else:
-            # Movie — prefer video ID for direct playback
             video_id = asset.get("video", {}).get("id")
             content_id = video_id or asset_id
 
@@ -700,10 +674,6 @@ class JoynVodManager:
 
         return item
 
-    # ========================================================================
-    # EPISODE ASSET PARSER  (FIXED — correct field names, video ID as content_id)
-    # ========================================================================
-
     def _parse_episode_asset(self, asset: Dict[str, Any]) -> Optional[VodItem]:
         episode_id = asset.get("id", "")
         title = asset.get("title", "Unknown Episode")
@@ -711,8 +681,6 @@ class JoynVodManager:
         season_data = asset.get("season", {})
         video_data = asset.get("video", {})
 
-        # --- FIX: Use video ID (a_…) as content_id for playback.
-        #     The entitlement API requires a video/asset ID, not an episode ID.
         video_id = video_data.get("id", "")
         content_id = video_id or episode_id
 
@@ -721,13 +689,10 @@ class JoynVodManager:
         is_free = "AVOD" in license_types or "FREE" in license_types
         is_premium = "SVOD" in license_types or "PLUS" in license_types
 
-        # --- FIX: field is "number", not "episodeNumber" ---
         ep_number = asset.get("number")
         season_number = season_data.get("seasonNumber")
 
-        description = ""
-        if series_data.get("title"):
-            description = f"Staffel {season_number}, Episode {ep_number} – {title}"
+        description = f"Staffel {season_number}, Episode {ep_number} – {title}" if series_data.get("title") else ""
 
         item = VodItem(
             name=title,
@@ -755,39 +720,23 @@ class JoynVodManager:
         return item
 
     # ========================================================================
-    # SEARCH & DETAILS (stubs)
-    # ========================================================================
-
-    def search(self, query: str, cursor: Optional[str] = None, page_size: int = 24, **kwargs) -> Dict[str, Any]:
-        logger.warning("Search GraphQL hash not configured. Search is currently disabled.")
-        return {"items": [], "next_cursor": None, "total": 0}
-
-    def get_content_details(self, content_id: str, authenticated: bool = True) -> Optional[Dict[str, Any]]:
-        logger.warning("Content Details GraphQL hash not configured. Details fetching is currently disabled.")
-        return None
-
-    # ========================================================================
-    # VOD PLAYBACK  (FIXED — validates content_id is a video ID)
+    # VOD PLAYBACK
     # ========================================================================
 
     def get_vod_manifest(self, content_id: str, video_config: Optional[Dict] = None, **kwargs) -> Optional[str]:
-        result = self._get_vod_manifest_and_drm(
-            content_id, video_config, max_retries=kwargs.get("max_retries", DEFAULT_MAX_RETRIES)
-        )
+        result = self._get_vod_manifest_and_drm(content_id, video_config,
+                                                max_retries=kwargs.get("max_retries", DEFAULT_MAX_RETRIES))
         return result.get("manifest_url") if result else None
 
     def get_vod_drm(self, content_id: str, video_config: Optional[Dict] = None, **kwargs) -> List[Any]:
-        result = self._get_vod_manifest_and_drm(
-            content_id, video_config, max_retries=kwargs.get("max_retries", DEFAULT_MAX_RETRIES)
-        )
+        result = self._get_vod_manifest_and_drm(content_id, video_config,
+                                                max_retries=kwargs.get("max_retries", DEFAULT_MAX_RETRIES))
         return result.get("drm_configs", []) if result else []
 
-    def get_vod_manifest_with_headers(
-            self, content_id: str, video_config: Optional[Dict] = None, **kwargs
-    ) -> Tuple[Optional[str], Dict[str, str]]:
-        result = self._get_vod_manifest_and_drm(
-            content_id, video_config, max_retries=kwargs.get("max_retries", DEFAULT_MAX_RETRIES)
-        )
+    def get_vod_manifest_with_headers(self, content_id: str, video_config: Optional[Dict] = None, **kwargs) -> Tuple[
+        Optional[str], Dict[str, str]]:
+        result = self._get_vod_manifest_and_drm(content_id, video_config,
+                                                max_retries=kwargs.get("max_retries", DEFAULT_MAX_RETRIES))
         if result and result.get("manifest_url"):
             headers = {
                 "Authorization": f"Bearer {result.get('entitlement_token', '')}",
@@ -798,66 +747,18 @@ class JoynVodManager:
         return None, {}
 
     def _resolve_video_id(self, content_id: str) -> Optional[str]:
-        """
-        Resolve any content ID to a video/asset ID (a_…) for playback.
-
-        ID prefix convention (Joyn):
-          a_ = video / asset  (what the entitlement API expects)
-          b_ = episode
-          c_ = season
-          d_ = series
-        """
         if content_id.startswith("a_"):
             return content_id
-
-        if content_id.startswith("b_"):
-            # Episode ID — would need an episode detail query to resolve.
-            # In practice, _parse_episode_asset already stores the video ID (a_)
-            # as content_id, so this path should not be hit.
-            logger.error(
-                f"Episode ID '{content_id}' passed to manifest. "
-                "The episode parser should have used the video ID instead."
-            )
+        if content_id.startswith(("b_", "c_", "d_")):
+            logger.error(f"Cannot resolve '{content_id}' to a video ID. Pass an episode's video ID (a_…) instead.")
             return None
-
-        if content_id.startswith("d_"):
-            logger.error(
-                f"Series ID '{content_id}' passed to manifest. "
-                "Series are not directly playable — browse to an episode first."
-            )
-            return None
-
-        if content_id.startswith("c_"):
-            logger.error(
-                f"Season ID '{content_id}' passed to manifest. "
-                "Seasons are not directly playable — browse to an episode first."
-            )
-            return None
-
-        # Paths or unknown formats
         logger.error(f"Cannot resolve '{content_id}' to a video ID.")
         return None
 
-    def _get_vod_manifest_and_drm(
-            self,
-            content_id: str,
-            video_config: Optional[Dict] = None,
-            max_retries: int = DEFAULT_MAX_RETRIES,
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Fetch manifest and DRM config.
-
-        CRITICAL: content_id must be a video/asset ID (starts with a_).
-        Series IDs (d_), season IDs (c_), and episode IDs (b_) are NOT accepted
-        by the entitlement API and will cause 'ENT_ASSET_NOT_AVAILABLE' errors.
-        """
-        # --- FIX: Resolve to video ID before anything else ---
+    def _get_vod_manifest_and_drm(self, content_id: str, video_config: Optional[Dict] = None,
+                                  max_retries: int = DEFAULT_MAX_RETRIES) -> Optional[Dict[str, Any]]:
         video_id = self._resolve_video_id(content_id)
         if not video_id:
-            logger.error(
-                f"VOD manifest aborted for '{content_id}': not a valid video ID. "
-                "Pass an episode's video ID (a_…) instead."
-            )
             return None
 
         cache_key = f"vod_playlist_{video_id}_{self._video_config_fingerprint(video_config)}"
@@ -871,9 +772,8 @@ class JoynVodManager:
 
         for attempt in range(max_retries):
             try:
-                entitlement_token = self.provider.channel_manager.get_entitlement_token(
-                    content_id=video_id, content_type="VOD"
-                )
+                entitlement_token = self.provider.channel_manager.get_entitlement_token(content_id=video_id,
+                                                                                        content_type="VOD")
                 video_payload = create_video_payload(video_config)
                 signature = build_signature(entitlement_token, video_payload)
 
@@ -885,10 +785,8 @@ class JoynVodManager:
                     "User-Agent": JOYN_USER_AGENT,
                 }
 
-                response = self.http_manager.post(
-                    url, operation="vod_playlist", headers=headers,
-                    data=video_payload, timeout=DEFAULT_REQUEST_TIMEOUT,
-                )
+                response = self.http_manager.post(url, operation="vod_playlist", headers=headers, data=video_payload,
+                                                  timeout=DEFAULT_REQUEST_TIMEOUT)
                 response.raise_for_status()
                 playlist_data = response.json()
 
