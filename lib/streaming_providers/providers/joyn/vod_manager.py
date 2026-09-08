@@ -480,7 +480,7 @@ class JoynVodManager:
     # ========================================================================
 
     def get_landing_page(self, path: str = "/neu-beliebt", variation: str = "Default", authenticated: bool = True) -> \
-    Dict[str, Any]:
+            Dict[str, Any]:
         try:
             if not path.startswith("/"):
                 path = f"/{path}"
@@ -608,40 +608,80 @@ class JoynVodManager:
         typename = asset.get("__typename")
         asset_id = asset.get("id", "")
         title = asset.get("title", "Unknown")
+        path = asset.get("path", "")
 
-        if typename in ["Series", "Movie"]:
-            return self._parse_content_asset(asset)
+        # SERIES = Category (not playable)
+        if typename == "Series":
+            return VodCategory(
+                content_id=path or asset_id,  # Use path for navigation
+                name=title,
+                logo_url=asset.get("primaryImage", {}).get("url") or asset.get("iconicImage", {}).get("url"),
+                description=asset.get("description", ""),
+                provider="joyn",
+                fetch_url=path or asset_id,  # This will be used to fetch seasons
+                child_count=None,
+                details_url=path,
+            )
+
+        # MOVIE = Playable item (VodItem)
+        elif typename == "Movie":
+            video_id = asset.get("video", {}).get("id")
+            content_id = video_id or asset_id
+            item = self._parse_content_asset(asset)
+            if item:
+                item.content_id = content_id  # Ensure we use the video ID for manifest
+            return item
+
+        # EPISODE = Playable item (VodItem)
         elif typename == "Episode":
             return self._parse_episode_asset(asset)
+
+        # SEASON = Category (not playable)
         elif typename == "Season":
             season_num = asset.get("number", "")
             name = f"Staffel {season_num}".strip() if season_num else title
             return VodCategory(
-                content_id=asset_id,
+                content_id=asset_id,  # Season ID (e.g., c_piuczpyg0ld)
                 name=name,
                 logo_url=asset.get("primaryImage", {}).get("url") or asset.get("iconicImage", {}).get("url"),
                 description=title,
                 provider="joyn",
-                fetch_url=asset_id,
+                fetch_url=asset_id,  # This will be used to fetch episodes
+                child_count=None,
+                details_url=None,
             )
+
+        # Other types...
         elif typename == "Brand":
             return VodCategory(
-                content_id=asset_id, name=title,
+                content_id=asset_id,
+                name=title,
                 logo_url=asset.get("logo", {}).get("url"),
-                description=f"{title} Mediathek", provider="joyn",
+                description=f"{title} Mediathek",
+                provider="joyn",
                 fetch_url=asset.get("path"),
             )
+
         elif typename == "GenreItem":
             return VodCategory(
-                content_id=asset.get("path", asset_id), name=title,
+                content_id=asset.get("path", asset_id),
+                name=title,
                 logo_url=asset.get("genreImage", {}).get("url"),
-                description=f"Genre: {title}", provider="joyn",
+                description=f"Genre: {title}",
+                provider="joyn",
                 fetch_url=asset.get("path"),
             )
+
         return None
 
     def _parse_content_asset(self, asset: Dict[str, Any]) -> Optional[VodItem]:
+        """Parse movie/playable content into VodItem"""
         typename = asset.get("__typename", "")
+
+        # Only handle Movies here, Series should be handled by _parse_asset as VodCategory
+        if typename != "Movie":
+            return None
+
         asset_id = asset.get("id", "")
         title = asset.get("title", "Unknown")
         path = asset.get("path", "")
@@ -654,11 +694,8 @@ class JoynVodManager:
         is_free = "AVOD" in license_types or "FREE" in license_types
         is_premium = "SVOD" in license_types or "PLUS" in license_types
 
-        if typename == "Series":
-            content_id = path or asset_id
-        else:
-            video_id = asset.get("video", {}).get("id")
-            content_id = video_id or asset_id
+        video_id = asset.get("video", {}).get("id")
+        content_id = video_id or asset_id
 
         item = VodItem(
             name=title,
@@ -666,13 +703,12 @@ class JoynVodManager:
             provider="joyn",
             logo_url=image_url,
             mode=StreamingMode.VOD,
-            content_type=ContentType.SERIES if typename == "Series" else ContentType.MOVIE,
+            content_type=ContentType.MOVIE,
             description=asset.get("description", ""),
             country=self.country,
             duration_seconds=asset.get("duration") or asset.get("video", {}).get("duration"),
             genres=genres or None,
             genre=genres[0] if genres else None,
-            series_title=title if typename == "Series" else None,
             rating=f"FSK {min_age}" if min_age is not None else None,
         )
 
@@ -684,14 +720,15 @@ class JoynVodManager:
         return item
 
     def _parse_episode_asset(self, asset: Dict[str, Any]) -> Optional[VodItem]:
-        episode_id = asset.get("id", "")
+        asset_id = asset.get("id", "")
         title = asset.get("title", "Unknown Episode")
         series_data = asset.get("series", {})
         season_data = asset.get("season", {})
         video_data = asset.get("video", {})
 
+        # Use the video ID (a_xxxxx) as content_id for manifest requests
         video_id = video_data.get("id", "")
-        content_id = video_id or episode_id
+        content_id = video_id or asset_id
 
         genres = [g.get("name", "") for g in asset.get("genres", []) if g.get("name")]
         license_types = asset.get("licenseTypes", [])
