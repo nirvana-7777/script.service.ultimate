@@ -194,7 +194,8 @@ class JoynVodManager:
                 url, operation="vod_navigation", headers=headers, timeout=DEFAULT_REQUEST_TIMEOUT
             )
             response.raise_for_status()
-            return response.json().get("data", {})
+            # FIX: Use `or {}` to handle {"data": null} safely
+            return response.json().get("data") or {}
 
         except Exception as e:
             logger.error(f"Error fetching navigation: {e}")
@@ -290,7 +291,8 @@ class JoynVodManager:
                 logger.warning(f"GraphQL errors in collection query: {data['errors']}")
                 return {"assets": [], "total": 0}
 
-            block = data.get("data", {}).get("block", {})
+            # FIX: Use `or {}` to handle {"data": null} safely
+            block = (data.get("data") or {}).get("block", {})
             return {
                 "assets": block.get("assets", []),
                 "headline": block.get("headline", ""),
@@ -318,9 +320,13 @@ class JoynVodManager:
     # ============================================================================
 
     def get_landing_page(
-        self, path: str = "/neu-beliebt", variation: str = "Default", authenticated: bool = True
+            self, path: str = "/neu-beliebt", variation: str = "Default", authenticated: bool = True
     ) -> Dict[str, Any]:
         try:
+            # FIX: Ensure path starts with '/'
+            if not path.startswith("/"):
+                path = f"/{path}"
+
             variables = {"path": path, "variation": variation}
             url = self._build_graphql_url(
                 operation_name=self._operations["LANDING_PAGE"],
@@ -333,7 +339,14 @@ class JoynVodManager:
                 url, operation="vod_landing_page", headers=headers, timeout=DEFAULT_REQUEST_TIMEOUT
             )
             response.raise_for_status()
-            return response.json().get("data", {}).get("page", {})
+            data = response.json()
+
+            if "errors" in data:
+                logger.warning(f"GraphQL errors in landing page: {data['errors']}")
+                return {}
+
+            # FIX: Use `or {}` to handle {"data": null} safely
+            return (data.get("data") or {}).get("page", {})
         except Exception as e:
             logger.error(f"Error fetching landing page {path}: {e}")
             return {}
@@ -363,6 +376,7 @@ class JoynVodManager:
 
     def get_user_state(self, force_refresh: bool = False) -> Dict[str, Any]:
         """Get user state including subscription status, utilizing TTL cache."""
+
         def fetch_state():
             try:
                 url = self._build_graphql_url(
@@ -376,7 +390,13 @@ class JoynVodManager:
                 )
                 response.raise_for_status()
                 data = response.json()
-                state = data.get("data", {}).get("me", {})
+
+                if "errors" in data:
+                    logger.warning(f"GraphQL errors in user state: {data['errors']}")
+                    return {}
+
+                # FIX: Use `or {}` to handle {"data": null} safely
+                state = (data.get("data") or {}).get("me", {})
 
                 subs = state.get("subscriptionsData", {})
                 config = subs.get("config", {})
@@ -427,8 +447,12 @@ class JoynVodManager:
         return ":" in content_id or content_id.startswith("block-")
 
     def _get_page_items(
-        self, path: str, authenticated: bool = True, **kwargs
+            self, path: str, authenticated: bool = True, **kwargs
     ) -> List[Union[VodCategory, VodItem]]:
+        # FIX: Normalize path to start with '/' as Joyn's GraphQL router requires it
+        if not path.startswith("/"):
+            path = f"/{path}"
+
         page = self.get_landing_page(path=path, authenticated=authenticated)
         items = []
 
