@@ -784,7 +784,7 @@ class JoynVodManager:
                 video_payload = create_video_payload(video_config)
                 signature = build_signature(entitlement_token, video_payload)
 
-                url = f"https://api.vod-prd.s.joyn.de/v1/vod/{video_id}/playlist?signature={signature}"
+                url = f"https://api.vod-prd.s.joyn.de/v1/asset/{video_id}/playlist?signature={signature}"
                 headers = {
                     "Authorization": f"Bearer {entitlement_token}",
                     "Accept": "application/json",
