@@ -12,17 +12,21 @@ import time
 import urllib.parse
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+from ...base.models import DRMConfig, DRMSystem, LicenseConfig
 from ...base.models.content import ContentType, StreamingMode
 from ...base.models.vod import VodCategory, VodItem
 from ...base.utils.logger import logger
+from .channel_manager import build_signature, create_video_payload
 from .constants import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_REQUEST_TIMEOUT,
+    DRM_REQUEST_HEADERS,
     JOYN_CLIENT_VERSION,
     JOYN_GRAPHQL_BASE_HEADERS,
+    JOYN_GRAPHQL_BASE_URL,
     JOYN_USER_AGENT,
 )
-from .models import PlaybackRestrictedException
+from .models import PlaybackRestrictedException, SubscriptionRequiredException
 
 # ============================================================================
 # GraphQL Query Hashes for VOD
@@ -140,7 +144,7 @@ class JoynVodManager:
 
     @staticmethod
     def _build_graphql_url(operation_name: str, query_hash: str, variables: Optional[Dict] = None) -> str:
-        base_url = "https://api.joyn.de/graphql"
+        base_url = JOYN_GRAPHQL_BASE_URL
         params = {
             "operationName": operation_name,
             "enable_user_location": "true",
@@ -645,6 +649,70 @@ class JoynVodManager:
             return []
 
     # ========================================================================
+    # SEARCH
+    # ========================================================================
+
+    def search(self, query: str, cursor: Optional[str] = None, page_size: int = 24, authenticated: bool = True,
+               **kwargs) -> Dict[str, Any]:
+        """
+        Search the VOD catalogue. This is what provider.search_vod() calls — it
+        was missing entirely before, which meant that provider method raised
+        AttributeError on every call.
+
+        NOTE: VOD_GRAPHQL_HASHES["SEARCH"] is an empty placeholder — unlike every
+        other hash in this file, it was never captured from real Joyn traffic. The
+        variable shape (`query`/`first`/cursor field) and response shape
+        (`data.search.assets` vs `.results`, cursor field name) below are a
+        best-effort guess from the sibling queries, not verified against a real
+        request. Capture an actual `Search` request from the Joyn web client
+        (same way the other persisted-query hashes in this file were captured)
+        before relying on this in production. Until then this fails loudly
+        instead of silently sending a request that can't work.
+        """
+        query_hash = self._query_hashes.get("SEARCH", "")
+        if not query_hash:
+            logger.error("Joyn SEARCH persisted query hash is not configured; refusing to send a broken request.")
+            return {"items": [], "cursor": None, "total": 0}
+
+        try:
+            variables: Dict[str, Any] = {"query": query, "first": page_size}
+            if cursor:
+                variables["offset"] = cursor
+
+            url = self._build_graphql_url(
+                operation_name=self._operations["SEARCH"],
+                query_hash=query_hash,
+                variables=variables,
+            )
+            headers = self._get_graphql_headers(authenticated=authenticated)
+            response = self.http_manager.get(url, operation="vod_search", headers=headers,
+                                             timeout=DEFAULT_REQUEST_TIMEOUT)
+            response.raise_for_status()
+            data = response.json()
+
+            if "errors" in data:
+                logger.warning(f"GraphQL errors in search for query='{query}': {data['errors']}")
+                return {"items": [], "cursor": None, "total": 0}
+
+            result = (data.get("data") or {}).get("search", {}) or {}
+            assets = result.get("assets") or result.get("results") or []
+
+            items: List[Union[VodCategory, VodItem]] = []
+            for asset in assets:
+                item = self._parse_asset(asset)
+                if item:
+                    items.append(item)
+
+            return {
+                "items": items,
+                "cursor": result.get("nextCursor") or result.get("cursor"),
+                "total": result.get("total", len(items)),
+            }
+        except Exception as e:
+            logger.error(f"Error searching VOD for query='{query}': {e}")
+            return {"items": [], "cursor": None, "total": 0}
+
+    # ========================================================================
     # ASSET PARSING
     # ========================================================================
 
@@ -863,6 +931,31 @@ class JoynVodManager:
             logger.error(f"Error fetching playable asset {asset_id}: {e}")
             return {}
 
+    def get_content_details(self, content_id: str, authenticated: bool = True, **kwargs) -> Optional[VodItem]:
+        """
+        Fetch full details for a single playable item (movie or episode) by its
+        b_/c_/d_/a_ id. This is what provider.get_vod_item_details() calls — it
+        was missing entirely before, which meant that provider method raised
+        AttributeError on every call.
+
+        NOTE: provider.get_vod_item_details() calls `.to_vod_item(provider_name,
+        country)` on whatever this returns. I don't have base/models/vod.py in
+        front of me, so I can't confirm VodItem exposes that method — this builds
+        a VodItem the same way _parse_content_asset/_parse_episode_asset already
+        do elsewhere in this file. If VodItem doesn't implement `.to_vod_item()`,
+        that call in provider.py will still raise — worth checking the base model
+        before shipping.
+        """
+        asset = self.get_playable_asset(content_id, authenticated=authenticated)
+        if not asset:
+            logger.warning(f"No asset data found for content_id={content_id}")
+            return None
+
+        typename = asset.get("__typename")
+        if typename == "Episode":
+            return self._parse_episode_asset(asset)
+        return self._parse_content_asset(asset)
+
     def _resolve_video_id(self, content_id: str) -> Optional[str]:
         # Already a video id
         if content_id.startswith("a_"):
@@ -872,7 +965,7 @@ class JoynVodManager:
         # Catalog asset id (movie/episode) -> resolve via PlayableAssetWithToken
         if content_id.startswith(("b_", "c_", "d_")):
             logger.debug("resolving via PlayableAssetWithToken")
-            cache_key = f"video_id::{content_id}"
+            cache_key = f"video_id:{content_id}"
             cached = self._cache.get(cache_key)
             if cached and (time.time() - cached["timestamp"] < self._cache_ttl):
                 return cached["data"]
@@ -899,15 +992,10 @@ class JoynVodManager:
         if not video_id:
             return None
 
-        cache_key = f"vod_playlist_{video_id}_{self._video_config_fingerprint(video_config)}"
+        cache_key = f"vod_playlist:{video_id}:{self._video_config_fingerprint(video_config)}"
         cached = self._cache.get(cache_key)
         if cached and (time.time() - cached["timestamp"] < self._cache_ttl):
             return cached["data"]
-
-        from .channel_manager import create_video_payload, build_signature
-        from .models import SubscriptionRequiredException
-        from ...base.models import DRMConfig, DRMSystem, LicenseConfig
-        from .constants import DRM_REQUEST_HEADERS
 
         for attempt in range(max_retries):
             try:
@@ -929,12 +1017,17 @@ class JoynVodManager:
                 response.raise_for_status()
                 playlist_data = response.json()
 
-                logger.info(f"=== VOD PLAYLIST API RESPONSE for {video_id} ===")
-                logger.info(json.dumps(playlist_data, indent=2))
-                logger.info(f"=============================================")
+                logger.debug(
+                    f"VOD playlist response for {video_id}: {json.dumps(playlist_data, separators=(',', ':'))}"
+                )
 
                 manifest_url = playlist_data.get("manifestUrl")
                 if not manifest_url:
+                    logger.warning(
+                        f"VOD attempt {attempt + 1}/{max_retries} for {video_id}: no manifestUrl in response"
+                    )
+                    if attempt < max_retries - 1:
+                        time.sleep(1)
                     continue
 
                 result = {
