@@ -211,19 +211,8 @@ class JoynVodManager:
             if parent_title and title != parent_title:
                 continue
 
-            if items:
-                for sub_item in items:
-                    sub_title = sub_item.get("title", "")
-                    sub_url = sub_item.get("url", "")
-                    categories.append(VodCategory(
-                        content_id=sub_url or sub_title,
-                        name=sub_title,
-                        description=f"{title} - {sub_title}",
-                        provider="joyn",
-                        fetch_url=sub_url,
-                        details_url=sub_url,
-                    ))
-            elif url:
+            # 1. Always add the parent category if it has a valid URL (fixes missing /sport and /news)
+            if url and url != "/":
                 categories.append(VodCategory(
                     content_id=url,
                     name=title,
@@ -232,6 +221,25 @@ class JoynVodManager:
                     fetch_url=url,
                     details_url=url,
                 ))
+
+            # 2. Add sub-items if they exist
+            if items:
+                for sub_item in items:
+                    sub_title = sub_item.get("title", "")
+                    sub_url = sub_item.get("url", "")
+
+                    # Skip if sub_item URL is the same as parent URL (avoids duplicate "Alle Serien")
+                    if not sub_url or sub_url == url:
+                        continue
+
+                    categories.append(VodCategory(
+                        content_id=sub_url,
+                        name=sub_title,
+                        description=f"{title} - {sub_title}",
+                        provider="joyn",
+                        fetch_url=sub_url,
+                        details_url=sub_url,
+                    ))
         return categories
 
     # ========================================================================
@@ -507,27 +515,37 @@ class JoynVodManager:
         page = self.get_landing_page(path=path, authenticated=authenticated)
         items: List[Union[VodCategory, VodItem]] = []
 
-        for block in page.get("blocks", []):
+        # Helper function to parse blocks (reduces code duplication)
+        def parse_block(block: Dict[str, Any]):
             block_type = block.get("__typename")
             block_id = block.get("id")
 
             if block_type == "StandardLane" and block_id:
-                if kwargs.get("fetch_more", False):
-                    items.extend(self.get_collection_items(
-                        block_id=block_id, first=kwargs.get("first", 32), offset=kwargs.get("offset", 0),
-                        authenticated=authenticated,
-                    ))
-                else:
+                # If the block has inline assets, parse them
+                if block.get("assets"):
                     for asset in block.get("assets", []):
                         item = self._parse_asset(asset)
                         if item:
                             items.append(item)
-
-            elif block_type in ["HeroLane", "FeaturedLane", "GenreLane"] or not block_type:
+                # Otherwise, fetch the collection
+                elif kwargs.get("fetch_more", False):
+                    items.extend(self.get_collection_items(
+                        block_id=block_id, first=kwargs.get("first", 32), offset=kwargs.get("offset", 0),
+                        authenticated=authenticated,
+                    ))
+            elif block_type in ["HeroLane", "FeaturedLane", "GenreLane", "LiveLane", "ChannelLane", "BigTeaserLane"] or not block_type:
                 for asset in block.get("assets", []):
                     item = self._parse_asset(asset)
                     if item:
                         items.append(item)
+
+        # Process initial blocks
+        for block in page.get("blocks", []):
+            parse_block(block)
+
+        # Process lazy blocks (these are fetched on scroll on the website, but often contain inline assets in the GraphQL response)
+        for block in page.get("lazyBlocks", []):
+            parse_block(block)
 
         return items
 
