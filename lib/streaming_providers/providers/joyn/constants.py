@@ -150,6 +150,7 @@ MODE_VOD = "vod"
 
 ERROR_CODES = {
     "PLAYBACK_RESTRICTED": "ENT_RVOD_Playback_Restricted",
+    "BUSINESS_MODEL_NOT_SUITABLE": "ENT_BUSINESS_MODEL_NOT_SUITABLE",
     "UNAUTHORIZED": "ENT_Unauthorized",
     "NOT_FOUND": "ENT_Not_Found",
     "GEOBLOCKED": "ENT_Geoblocked",

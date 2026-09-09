@@ -28,6 +28,10 @@ class PlaybackRestrictedException(JoynEntitlementError):
     """
     pass
 
+class SubscriptionRequiredException(JoynEntitlementError):
+    """Raised when content requires a subscription tier (e.g. PLUS) the account doesn't hold."""
+    pass
+
 
 @dataclass
 class JoynChannel:

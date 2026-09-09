@@ -861,6 +861,7 @@ class JoynVodManager:
             return cached["data"]
 
         from .channel_manager import create_video_payload, build_signature
+        from .models import SubscriptionRequiredException
         from ...base.models import DRMConfig, DRMSystem, LicenseConfig
         from .constants import DRM_REQUEST_HEADERS
 
@@ -884,11 +885,9 @@ class JoynVodManager:
                 response.raise_for_status()
                 playlist_data = response.json()
 
-                # --- LOG THE JSON RESPONSE ---
                 logger.info(f"=== VOD PLAYLIST API RESPONSE for {video_id} ===")
                 logger.info(json.dumps(playlist_data, indent=2))
                 logger.info(f"=============================================")
-                # -----------------------------
 
                 manifest_url = playlist_data.get("manifestUrl")
                 if not manifest_url:
@@ -926,6 +925,13 @@ class JoynVodManager:
             except PlaybackRestrictedException as e:
                 logger.warning(f"VOD playback restricted for {video_id}: {e}")
                 return None
+            except SubscriptionRequiredException as e:
+                has_plus = self.has_plus_subscription()
+                logger.warning(
+                    f"VOD {video_id} requires a subscription this account doesn't hold "
+                    f"(hasActivePlus={has_plus}), not retrying: {e}"
+                )
+                return None  # permanent, per-account failure — retrying gains nothing
             except Exception as e:
                 logger.warning(f"VOD attempt {attempt + 1}/{max_retries} failed: {e}")
                 if attempt < max_retries - 1:

@@ -41,7 +41,7 @@ from .constants import (
     MODE_VOD,
     SIGNATURE_SECRET_KEY,
 )
-from .models import JoynChannel, JoynError, JoynEntitlementError, PlaybackRestrictedException
+from .models import JoynChannel, JoynError, JoynEntitlementError, PlaybackRestrictedException, SubscriptionRequiredException
 
 
 def create_video_payload(config: Optional[Dict] = None, compact: bool = True) -> str:
@@ -257,6 +257,9 @@ class JoynChannelManager:
                         msg = error.get("msg", "No error message provided")
                         if code == ERROR_CODES["PLAYBACK_RESTRICTED"]:
                             raise PlaybackRestrictedException(f"Playback restricted for {content_id}: {msg}")
+                        elif code == ERROR_CODES["BUSINESS_MODEL_NOT_SUITABLE"]:
+                            raise SubscriptionRequiredException(
+                                f"Subscription required for {content_id} ({code}): {msg}")
                         else:
                             raise JoynEntitlementError(f"Entitlement error for {content_id} ({code}): {msg}")
                 except (json.JSONDecodeError, KeyError, IndexError) as e:
