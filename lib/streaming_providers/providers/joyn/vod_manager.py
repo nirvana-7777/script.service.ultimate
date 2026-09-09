@@ -203,6 +203,28 @@ class JoynVodManager:
         nav_items = self.get_navigation_tree()
         categories = []
 
+        # 1. Always guarantee the main top-level CMS pages exist (because the API omits /sport and /news)
+        standard_pages = [
+            {"url": "/neu-beliebt", "title": "Neu & Beliebt"},
+            {"url": "/serien", "title": "Serien"},
+            {"url": "/filme", "title": "Filme"},
+            {"url": "/sport", "title": "Sport"},
+            {"url": "/news", "title": "News & Doku"},
+            {"url": "/mediatheken", "title": "Mediatheken"},
+        ]
+
+        if not parent_title:
+            for page in standard_pages:
+                categories.append(VodCategory(
+                    content_id=page["url"],
+                    name=page["title"],
+                    description=page["title"],
+                    provider="joyn",
+                    fetch_url=page["url"],
+                    details_url=page["url"],
+                ))
+
+        # 2. Process GraphQL navigation items (sub-categories and collections)
         for nav_item in nav_items:
             title = nav_item.get("title", "")
             url = nav_item.get("url")
@@ -211,24 +233,21 @@ class JoynVodManager:
             if parent_title and title != parent_title:
                 continue
 
-            # 1. Always add the parent category if it has a valid URL (fixes missing /sport and /news)
             if url and url != "/":
-                categories.append(VodCategory(
-                    content_id=url,
-                    name=title,
-                    description=title,
-                    provider="joyn",
-                    fetch_url=url,
-                    details_url=url,
-                ))
+                if not any(c.content_id == url for c in categories):
+                    categories.append(VodCategory(
+                        content_id=url,
+                        name=title,
+                        description=title,
+                        provider="joyn",
+                        fetch_url=url,
+                        details_url=url,
+                    ))
 
-            # 2. Add sub-items if they exist
             if items:
                 for sub_item in items:
                     sub_title = sub_item.get("title", "")
                     sub_url = sub_item.get("url", "")
-
-                    # Skip if sub_item URL is the same as parent URL (avoids duplicate "Alle Serien")
                     if not sub_url or sub_url == url:
                         continue
 
@@ -240,6 +259,33 @@ class JoynVodManager:
                         fetch_url=sub_url,
                         details_url=sub_url,
                     ))
+
+        # 3. Add Genres directly from the Navigation response
+        if not parent_title:
+            genres = self.get_genres_from_navigation()
+            categories.extend(genres)
+
+        return categories
+
+    def get_genres_from_navigation(self) -> List[VodCategory]:
+        """Parse seriesGenre and movieGenre from the Navigation API response."""
+        nav_data = self.get_navigation()
+        categories = []
+
+        for media_type in ["seriesGenre", "movieGenre"]:
+            genre_data = nav_data.get(media_type, {})
+            for block in genre_data.get("blocks", []):
+                for asset in block.get("assets", []):
+                    if asset.get("__typename") == "GenreItem":
+                        categories.append(VodCategory(
+                            content_id=asset.get("path", asset.get("id")),
+                            name=asset.get("title", ""),
+                            logo_url=asset.get("genreImage", {}).get("url"),
+                            description=f"Genre: {asset.get('title')}",
+                            provider="joyn",
+                            fetch_url=asset.get("path"),
+                            details_url=asset.get("path"),
+                        ))
         return categories
 
     # ========================================================================
@@ -515,25 +561,29 @@ class JoynVodManager:
         page = self.get_landing_page(path=path, authenticated=authenticated)
         items: List[Union[VodCategory, VodItem]] = []
 
-        # Helper function to parse blocks (reduces code duplication)
-        def parse_block(block: Dict[str, Any]):
+        def process_block(block: Dict[str, Any]):
             block_type = block.get("__typename")
             block_id = block.get("id")
 
             if block_type == "StandardLane" and block_id:
-                # If the block has inline assets, parse them
+                # If assets are present inline, parse them
                 if block.get("assets"):
                     for asset in block.get("assets", []):
                         item = self._parse_asset(asset)
                         if item:
                             items.append(item)
-                # Otherwise, fetch the collection
-                elif kwargs.get("fetch_more", False):
+                # If no assets, it's a lazyBlock and we must fetch the collection
+                else:
                     items.extend(self.get_collection_items(
-                        block_id=block_id, first=kwargs.get("first", 32), offset=kwargs.get("offset", 0),
+                        block_id=block_id,
+                        first=kwargs.get("first", 32),
+                        offset=kwargs.get("offset", 0),
                         authenticated=authenticated,
                     ))
-            elif block_type in ["HeroLane", "FeaturedLane", "GenreLane", "LiveLane", "ChannelLane", "BigTeaserLane"] or not block_type:
+
+            # Parse other lane types that contain inline assets
+            elif block_type in ["HeroLane", "FeaturedLane", "GenreLane", "LiveLane", "ChannelLane", "BigTeaserLane",
+                                "RecoForYouLane"] or not block_type:
                 for asset in block.get("assets", []):
                     item = self._parse_asset(asset)
                     if item:
@@ -541,11 +591,11 @@ class JoynVodManager:
 
         # Process initial blocks
         for block in page.get("blocks", []):
-            parse_block(block)
+            process_block(block)
 
-        # Process lazy blocks (these are fetched on scroll on the website, but often contain inline assets in the GraphQL response)
+        # Process lazy blocks (these require fetching via process_block -> get_collection_items)
         for block in page.get("lazyBlocks", []):
-            parse_block(block)
+            process_block(block)
 
         return items
 
