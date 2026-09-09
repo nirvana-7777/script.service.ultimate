@@ -822,10 +822,12 @@ class JoynVodManager:
     def _resolve_video_id(self, content_id: str) -> Optional[str]:
         # Already a video id
         if content_id.startswith("a_"):
+            logger.debug("fast-path a_ id")
             return content_id
 
         # Catalog asset id (movie/episode) -> resolve via PlayableAssetWithToken
         if content_id.startswith(("b_", "c_", "d_")):
+            logger.debug("resolving via PlayableAssetWithToken")
             cache_key = f"video_id::{content_id}"
             cached = self._cache.get(cache_key)
             if cached and (time.time() - cached["timestamp"] < self._cache_ttl):
