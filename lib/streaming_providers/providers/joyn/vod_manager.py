@@ -200,10 +200,9 @@ class JoynVodManager:
         return self.get_navigation().get("navigation", [])
 
     def get_navigation_categories(self, parent_title: Optional[str] = None) -> List[VodCategory]:
-        nav_items = self.get_navigation_tree()
-        categories = []
-
-        # 1. Always guarantee the main top-level CMS pages exist (because the API omits /sport and /news)
+        # We hardcode a clean, user-friendly VOD root menu.
+        # This excludes Live TV (handled by channel_manager), removes duplicates,
+        # and groups Genres into their own clickable directories.
         standard_pages = [
             {"url": "/neu-beliebt", "title": "Neu & Beliebt"},
             {"url": "/serien", "title": "Serien"},
@@ -211,69 +210,32 @@ class JoynVodManager:
             {"url": "/sport", "title": "Sport"},
             {"url": "/news", "title": "News & Doku"},
             {"url": "/mediatheken", "title": "Mediatheken"},
+            {"url": "/collections/sendung-im-tv-verpasst", "title": "Sendung im TV verpasst?"},
+            {"url": "/serien/genre", "title": "Serien Genres"},
+            {"url": "/filme/genre", "title": "Filme Genres"},
         ]
 
-        if not parent_title:
-            for page in standard_pages:
-                categories.append(VodCategory(
-                    content_id=page["url"],
-                    name=page["title"],
-                    description=page["title"],
-                    provider="joyn",
-                    fetch_url=page["url"],
-                    details_url=page["url"],
-                ))
-
-        # 2. Process GraphQL navigation items (sub-categories and collections)
-        for nav_item in nav_items:
-            title = nav_item.get("title", "")
-            url = nav_item.get("url")
-            items = nav_item.get("items", [])
-
-            if parent_title and title != parent_title:
-                continue
-
-            if url and url != "/":
-                if not any(c.content_id == url for c in categories):
-                    categories.append(VodCategory(
-                        content_id=url,
-                        name=title,
-                        description=title,
-                        provider="joyn",
-                        fetch_url=url,
-                        details_url=url,
-                    ))
-
-            if items:
-                for sub_item in items:
-                    sub_title = sub_item.get("title", "")
-                    sub_url = sub_item.get("url", "")
-                    if not sub_url or sub_url == url:
-                        continue
-
-                    categories.append(VodCategory(
-                        content_id=sub_url,
-                        name=sub_title,
-                        description=f"{title} - {sub_title}",
-                        provider="joyn",
-                        fetch_url=sub_url,
-                        details_url=sub_url,
-                    ))
-
-        # 3. Add Genres directly from the Navigation response
-        if not parent_title:
-            genres = self.get_genres_from_navigation()
-            categories.extend(genres)
-
+        categories = []
+        for page in standard_pages:
+            categories.append(VodCategory(
+                content_id=page["url"],
+                name=page["title"],
+                description=page["title"],
+                provider="joyn",
+                fetch_url=page["url"],
+                details_url=page["url"],
+            ))
         return categories
 
-    def get_genres_from_navigation(self) -> List[VodCategory]:
+    def get_genres_from_navigation(self, media_type: str = None) -> List[VodCategory]:
         """Parse seriesGenre and movieGenre from the Navigation API response."""
         nav_data = self.get_navigation()
         categories = []
 
-        for media_type in ["seriesGenre", "movieGenre"]:
-            genre_data = nav_data.get(media_type, {})
+        types_to_fetch = [media_type] if media_type else ["seriesGenre", "movieGenre"]
+
+        for mt in types_to_fetch:
+            genre_data = nav_data.get(mt, {})
             for block in genre_data.get("blocks", []):
                 for asset in block.get("assets", []):
                     if asset.get("__typename") == "GenreItem":
@@ -645,25 +607,39 @@ class JoynVodManager:
             if not content_id or content_id == "/":
                 return self.get_navigation_categories()
 
+            # 1. Handle Genre directories explicitly
+            if content_id in ["/serien/genre", "/filme/genre"]:
+                media_type = "seriesGenre" if "serien" in content_id else "movieGenre"
+                return self.get_genres_from_navigation(media_type=media_type)
+
+            # 2. Handle Block IDs (lazyBlocks)
             if self._is_block_id(content_id):
                 return self.get_collection_items(block_id=content_id, first=kwargs.get("first", 32),
                                                  offset=kwargs.get("offset", 0), authenticated=authenticated)
 
+            # 3. Handle Season IDs
             if self._is_season_id(content_id):
                 return self._get_season_items(content_id, authenticated, **kwargs)
 
             path = content_id if content_id.startswith("/") else f"/{content_id}"
 
+            # 4. Handle Specific Genre Paths (e.g. /serien/genre/comedy)
             if self._is_genre_path(path):
                 return self._get_genre_items(path, authenticated, **kwargs)
 
+            # 5. Handle Specific Series Paths (e.g. /serien/tv-total)
+            # Note: _is_series_path checks for startswith("/serien/") so it won't catch just "/serien"
             if self._is_series_path(path):
                 return self._get_series_items_fallback(path, authenticated, **kwargs)
 
+            # 6. Handle Specific Movie Paths (e.g. /filme/the-dark-knight)
             if self._is_movie_path(path):
                 return self._get_movie_items_fallback(path, authenticated, **kwargs)
 
+            # 7. Fallback to standard landing page parsing
+            # This correctly handles /serien, /filme, /sport, /mediatheken, /neu-beliebt, etc.
             return self._get_page_items(path, authenticated, **kwargs)
+
         except Exception as e:
             logger.error(f"Error getting VOD category: {e}")
             return []
