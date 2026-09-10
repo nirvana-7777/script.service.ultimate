@@ -304,6 +304,12 @@ class JoynChannelManager:
             response.raise_for_status()
             return response.json()
         except Exception as e:
+            # Let our custom entitlement exceptions bubble up untouched so callers
+            # (and the UI layer) can distinguish "needs subscription" / "not allowed
+            # here" from a generic network failure instead of seeing everything as
+            # a flat JoynError.
+            if isinstance(e, (PlaybackRestrictedException, SubscriptionRequiredException, JoynEntitlementError)):
+                raise
             raise JoynError(f"Error getting playlist for {channel_id}: {e}")
 
     def get_manifest(
@@ -324,6 +330,34 @@ class JoynChannelManager:
     def get_manifest_headers(self, content_id: str, **kwargs) -> Dict[str, str]:
         return self.get_api_headers()
 
+    def _build_drm_config(self, playlist_data: Dict) -> Optional[DRMConfig]:
+        """Build a DRMConfig object from a playlist response.
+
+        The license endpoint authenticates via the token embedded in the URL's
+        signature query param — no Authorization header is sent. We include
+        Origin and User-Agent to satisfy Cloudflare WAF requirements, matching
+        captured browser traffic.
+        """
+        license_url = playlist_data.get("licenseUrl")
+        if not license_url:
+            return None
+
+        return DRMConfig(
+            system=DRMSystem.WIDEVINE,
+            priority=1,
+            license=LicenseConfig(
+                server_url=license_url,
+                server_certificate=playlist_data.get("certificateUrl"),
+                req_headers=json.dumps({
+                    "User-Agent": JOYN_USER_AGENT,
+                    "Origin": JOYN_DOMAINS.get(self.country, JOYN_DOMAINS["de"]),
+                    "Content-Type": DRM_REQUEST_HEADERS["Content-Type"],
+                }),
+                req_data="{CHA-RAW}",
+                use_http_get_request=False,
+            ),
+        )
+
     def get_drm(
         self,
         content_id: str,
@@ -335,26 +369,8 @@ class JoynChannelManager:
             entitlement_token = self.get_entitlement_token(content_id=content_id, content_type=content_type)
             playlist_data = self.get_channel_playlist(content_id, entitlement_token, video_config)
 
-            license_url = playlist_data.get("licenseUrl")
-            if not license_url:
-                return []
-
-            drm_config = DRMConfig(
-                system=DRMSystem.WIDEVINE,
-                priority=1,
-                license=LicenseConfig.create_with_req_data(
-                    req_data_template="{CHA-RAW}",
-                    server_url=license_url,
-                    server_certificate=playlist_data.get("certificateUrl"),
-                    req_headers=json.dumps({
-                        "Authorization": f"Bearer {self.provider.bearer_token}",
-                        "Content-Type": DRM_REQUEST_HEADERS["Content-Type"],
-                        "User-Agent": JOYN_USER_AGENT,
-                    }),
-                    use_http_get_request=False,
-                ),
-            )
-            return [drm_config]
+            drm_config = self._build_drm_config(playlist_data)
+            return [drm_config] if drm_config else []
         except Exception as e:
             logger.error(f"Error getting DRM configs for channel {content_id}: {e}")
             return []
@@ -377,22 +393,8 @@ class JoynChannelManager:
             channel.manifest = manifest_url
             channel.streaming_format = playlist_data.get("streamingFormat", "dash")
 
-            license_url = playlist_data.get("licenseUrl")
-            if license_url:
-                drm_config = DRMConfig(
-                    system=DRMSystem.WIDEVINE,
-                    priority=1,
-                    license=LicenseConfig(
-                        server_url=license_url,
-                        server_certificate=playlist_data.get("certificateUrl"),
-                        req_headers=json.dumps({
-                            "User-Agent": JOYN_USER_AGENT,
-                            "Content-Type": DRM_REQUEST_HEADERS["Content-Type"],
-                        }),
-                        req_data="{CHA-RAW}",
-                        use_http_get_request=False,
-                    ),
-                )
+            drm_config = self._build_drm_config(playlist_data)
+            if drm_config:
                 channel.drm_config = drm_config
                 channel.cdm_type = DRM_SYSTEM_WIDEVINE
                 channel.cdm = f"pid={channel.channel_id}"

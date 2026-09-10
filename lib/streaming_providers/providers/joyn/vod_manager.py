@@ -5,12 +5,13 @@ Joyn VOD Manager - Handles VOD catalogue operations via GraphQL
 Supports deep navigation and authenticated requests
 """
 
+import functools
 import hashlib
 import json
 import re
 import time
 import urllib.parse
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from ...base.models import DRMConfig, DRMSystem, LicenseConfig
 from ...base.models.content import ContentType, StreamingMode
@@ -44,7 +45,10 @@ VOD_GRAPHQL_HASHES = {
     "SEASON": "ee2396bb1b7c9f800e5cefd0b341271b7213fceb4ebe18d5a30dab41d703009f",
     "MOVIE_DETAIL": "9ae6bcd8c45a5e350438d1cc415a022fe053e938c93438509f60ae3abb425fa7",
     "PLAYABLE_ASSET": "e2db6e6f9090f14848d3989920a1342f6813099c65ee7faef1e334f23e390970",
-    "SEARCH": "",
+    # Recovered from the legacy addon's const.py (SEARCH.HASH) — not captured
+    # independently from live traffic like the hashes above, so keep an eye on
+    # this if Joyn ever rotates persisted-query hashes.
+    "SEARCH": "bb2bab6cbe17321d7eddd5006e7f40765faedd79790b193a59d83f4640694856",
 }
 
 GRAPHQL_OPERATIONS = {
@@ -59,8 +63,46 @@ GRAPHQL_OPERATIONS = {
     "SEASON": "Season",
     "MOVIE_DETAIL": "PageMovieDetailStatic",
     "PLAYABLE_ASSET": "PlayableAssetWithToken",
-    "SEARCH": "Search",
+    # Legacy const.py names this operation "SearchQ", not "Search".
+    "SEARCH": "SearchQ",
 }
+
+
+def ttl_cache(ttl_seconds: int = 300):
+    """
+    Simple TTL cache decorator for methods.
+
+    Cache storage lives PER INSTANCE (in self.__dict__), not in the decorator's
+    closure. A closure-level cache dict would be shared across every
+    JoynVodManager instance (one per country/account), which would leak one
+    account's cached state into another's, and would also keep every instance
+    alive forever since the dict holds a strong reference to `self` as part of
+    the cache key.
+
+    A `force_refresh=True` kwarg bypasses the cached value for that call and
+    repopulates the cache, mirroring what the old `_get_cached_data` helper did.
+    """
+    def decorator(func):
+        cache_attr = f"_ttl_cache_{func.__name__}"
+
+        @functools.wraps(func)
+        def wrapper(self, *args, **kwargs):
+            force_refresh = kwargs.pop("force_refresh", False)
+            cache: Dict[Any, Dict[str, Any]] = self.__dict__.setdefault(cache_attr, {})
+            key = (args, frozenset(kwargs.items()))
+
+            if not force_refresh:
+                cached = cache.get(key)
+                if cached and (time.time() - cached["timestamp"] < ttl_seconds):
+                    return cached["data"]
+
+            data = func(self, *args, **kwargs)
+            cache[key] = {"timestamp": time.time(), "data": data}
+            return data
+
+        wrapper.cache_attr = cache_attr
+        return wrapper
+    return decorator
 
 
 class JoynVodManager:
@@ -108,15 +150,6 @@ class JoynVodManager:
     # ========================================================================
     # CACHING
     # ========================================================================
-
-    def _get_cached_data(self, key: str, fetch_func: Callable, force_refresh: bool = False) -> Any:
-        if not force_refresh:
-            cached = self._cache.get(key)
-            if cached and (time.time() - cached["timestamp"] < self._cache_ttl):
-                return cached["data"]
-        data = fetch_func()
-        self._cache[key] = {"timestamp": time.time(), "data": data}
-        return data
 
     @staticmethod
     def _video_config_fingerprint(video_config: Optional[Dict]) -> str:
@@ -203,32 +236,82 @@ class JoynVodManager:
     def get_navigation_tree(self) -> List[Dict[str, Any]]:
         return self.get_navigation().get("navigation", [])
 
-    def get_navigation_categories(self, parent_title: Optional[str] = None) -> List[VodCategory]:
-        # We hardcode a clean, user-friendly VOD root menu.
-        # This excludes Live TV (handled by channel_manager), removes duplicates,
-        # and groups Genres into their own clickable directories.
-        standard_pages = [
-            {"url": "/neu-beliebt", "title": "Neu & Beliebt"},
-            {"url": "/serien", "title": "Serien"},
-            {"url": "/filme", "title": "Filme"},
-            {"url": "/sport", "title": "Sport"},
-            {"url": "/news", "title": "News & Doku"},
-            {"url": "/mediatheken", "title": "Mediatheken"},
-            {"url": "/collections/sendung-im-tv-verpasst", "title": "Sendung im TV verpasst?"},
-            {"url": "/serien/genre", "title": "Serien Genres"},
-            {"url": "/filme/genre", "title": "Filme Genres"},
-        ]
+    # Whitelist of root-menu paths we're willing to surface from the live
+    # Navigation API. Keeps Live TV (handled by channel_manager) and any
+    # unrelated blocks out of the VOD root menu, while picking up anything
+    # Joyn adds under these paths without a code change.
+    ALLOWED_NAV_PATHS = {
+        "/neu-beliebt", "/serien", "/filme", "/sport", "/news",
+        "/mediatheken", "/collections/sendung-im-tv-verpasst",
+    }
 
-        categories = []
-        for page in standard_pages:
-            categories.append(VodCategory(
-                content_id=page["url"],
-                name=page["title"],
-                description=page["title"],
-                provider="joyn",
-                fetch_url=page["url"],
-                details_url=page["url"],
-            ))
+    # Fallback used if the live Navigation response is empty or doesn't match
+    # the shape we expect (path/title on each entry). The exact shape of the
+    # top-level "navigation" list — unlike NAVIGATION's seriesGenre/movieGenre
+    # blocks, which get_genres_from_navigation() already parses from real
+    # traffic — hasn't been captured/verified here, so we fail open to this
+    # known-good static menu rather than risk an empty VOD root menu in
+    # production.
+    _STATIC_NAV_FALLBACK = [
+        {"url": "/neu-beliebt", "title": "Neu & Beliebt"},
+        {"url": "/serien", "title": "Serien"},
+        {"url": "/filme", "title": "Filme"},
+        {"url": "/sport", "title": "Sport"},
+        {"url": "/news", "title": "News & Doku"},
+        {"url": "/mediatheken", "title": "Mediatheken"},
+        {"url": "/collections/sendung-im-tv-verpasst", "title": "Sendung im TV verpasst?"},
+    ]
+
+    def get_navigation_categories(self, parent_title: Optional[str] = None) -> List[VodCategory]:
+        categories: List[VodCategory] = []
+
+        nav_data = self.get_navigation()
+        nav_entries = nav_data.get("navigation", []) if isinstance(nav_data, dict) else []
+
+        for block in nav_entries:
+            if not isinstance(block, dict):
+                continue
+            path = block.get("path")
+            title = block.get("title", "")
+            if path in self.ALLOWED_NAV_PATHS:
+                categories.append(VodCategory(
+                    content_id=path,
+                    name=title or path,
+                    description=title or path,
+                    provider="joyn",
+                    fetch_url=path,
+                    details_url=path,
+                ))
+
+        if not categories:
+            # Live response didn't match the expected shape (or the call
+            # failed upstream and returned {}) — fail open to the static menu
+            # instead of shipping an empty VOD root.
+            logger.warning(
+                "Joyn navigation response didn't yield any whitelisted categories; "
+                "falling back to the static VOD root menu"
+            )
+            for page in self._STATIC_NAV_FALLBACK:
+                categories.append(VodCategory(
+                    content_id=page["url"],
+                    name=page["title"],
+                    description=page["title"],
+                    provider="joyn",
+                    fetch_url=page["url"],
+                    details_url=page["url"],
+                ))
+
+        # Genre directories are synthetic — Joyn's Navigation API doesn't list
+        # them as their own entries — so they're always appended.
+        categories.append(VodCategory(
+            content_id="/serien/genre", name="Serien Genres", description="Serien Genres",
+            provider="joyn", fetch_url="/serien/genre", details_url="/serien/genre",
+        ))
+        categories.append(VodCategory(
+            content_id="/filme/genre", name="Filme Genres", description="Filme Genres",
+            provider="joyn", fetch_url="/filme/genre", details_url="/filme/genre",
+        ))
+
         return categories
 
     def get_genres_from_navigation(self, media_type: str = None) -> List[VodCategory]:
@@ -569,33 +652,33 @@ class JoynVodManager:
     # USER STATE
     # ========================================================================
 
-    def get_user_state(self, force_refresh: bool = False) -> Dict[str, Any]:
-        def fetch_state():
-            try:
-                url = self._build_graphql_url(
-                    operation_name=self._operations["GET_ME_STATE"],
-                    query_hash=self._query_hashes["GET_ME_STATE"],
-                    variables={},
-                )
-                headers = self._get_graphql_headers(authenticated=True)
-                response = self.http_manager.get(url, operation="vod_user_state", headers=headers,
-                                                 timeout=DEFAULT_REQUEST_TIMEOUT)
-                response.raise_for_status()
-                data = response.json()
-                if "errors" in data:
-                    logger.warning(f"GraphQL errors in user state: {data['errors']}")
-                    return {}
-                state = (data.get("data") or {}).get("me", {})
-                subs = state.get("subscriptionsData", {})
-                config = subs.get("config", {})
-                self._has_plus = config.get("hasActivePlus", False)
-                return state
-            except Exception as e:
-                logger.error(f"Error fetching user state: {e}")
+    @ttl_cache(ttl_seconds=300)
+    def get_user_state(self) -> Dict[str, Any]:
+        # Pass force_refresh=True to bypass the cache for one call; the decorator
+        # strips that kwarg before it reaches this function.
+        try:
+            url = self._build_graphql_url(
+                operation_name=self._operations["GET_ME_STATE"],
+                query_hash=self._query_hashes["GET_ME_STATE"],
+                variables={},
+            )
+            headers = self._get_graphql_headers(authenticated=True)
+            response = self.http_manager.get(url, operation="vod_user_state", headers=headers,
+                                             timeout=DEFAULT_REQUEST_TIMEOUT)
+            response.raise_for_status()
+            data = response.json()
+            if "errors" in data:
+                logger.warning(f"GraphQL errors in user state: {data['errors']}")
                 return {}
-
-        self._user_state = self._get_cached_data("user_state", fetch_state, force_refresh)
-        return self._user_state
+            state = (data.get("data") or {}).get("me", {})
+            subs = state.get("subscriptionsData", {})
+            config = subs.get("config", {})
+            self._has_plus = config.get("hasActivePlus", False)
+            self._user_state = state
+            return state
+        except Exception as e:
+            logger.error(f"Error fetching user state: {e}")
+            return {}
 
     def has_plus_subscription(self) -> bool:
         self.get_user_state()
@@ -655,29 +738,29 @@ class JoynVodManager:
     def search(self, query: str, cursor: Optional[str] = None, page_size: int = 24, authenticated: bool = True,
                **kwargs) -> Dict[str, Any]:
         """
-        Search the VOD catalogue. This is what provider.search_vod() calls — it
-        was missing entirely before, which meant that provider method raised
-        AttributeError on every call.
+        Search the VOD catalogue. This is what provider.search_vod() calls.
 
-        NOTE: VOD_GRAPHQL_HASHES["SEARCH"] is an empty placeholder — unlike every
-        other hash in this file, it was never captured from real Joyn traffic. The
-        variable shape (`query`/`first`/cursor field) and response shape
-        (`data.search.assets` vs `.results`, cursor field name) below are a
-        best-effort guess from the sibling queries, not verified against a real
-        request. Capture an actual `Search` request from the Joyn web client
-        (same way the other persisted-query hashes in this file were captured)
-        before relying on this in production. Until then this fails loudly
-        instead of silently sending a request that can't work.
+        Query hash, operation name ("SearchQ"), and variable names (`text` /
+        `first` / `offset`, offset as an int) come from the legacy addon's
+        const.py, not from a captured live request against this GraphQL
+        endpoint — the original modern implementation guessed `query` instead
+        of `text`, which is why search failed outright. If Joyn changes this
+        endpoint's shape, this is the first place to check.
         """
         query_hash = self._query_hashes.get("SEARCH", "")
         if not query_hash:
-            logger.error("Joyn SEARCH persisted query hash is not configured; refusing to send a broken request.")
-            return {"items": [], "cursor": None, "total": 0}
+            # Should not happen with the hash above in place; kept as a safe
+            # fallback so a future accidental removal fails loudly instead of
+            # sending a request that can't work.
+            raise NotImplementedError("Joyn SEARCH persisted query hash is not configured.")
 
         try:
-            variables: Dict[str, Any] = {"query": query, "first": page_size}
-            if cursor:
-                variables["offset"] = cursor
+            offset = int(cursor) if cursor else 0
+            variables: Dict[str, Any] = {
+                "text": query,
+                "first": page_size,
+                "offset": offset,
+            }
 
             url = self._build_graphql_url(
                 operation_name=self._operations["SEARCH"],
@@ -703,11 +786,18 @@ class JoynVodManager:
                 if item:
                     items.append(item)
 
+            # Joyn's search endpoint appears to page by numeric offset rather
+            # than returning its own cursor token; if we got a full page back,
+            # assume there may be more and advance by what we consumed.
+            next_cursor = str(offset + len(assets)) if len(assets) == page_size else None
+
             return {
                 "items": items,
-                "cursor": result.get("nextCursor") or result.get("cursor"),
+                "cursor": next_cursor,
                 "total": result.get("total", len(items)),
             }
+        except NotImplementedError:
+            raise
         except Exception as e:
             logger.error(f"Error searching VOD for query='{query}': {e}")
             return {"items": [], "cursor": None, "total": 0}
@@ -933,19 +1023,18 @@ class JoynVodManager:
 
     def get_content_details(self, content_id: str, authenticated: bool = True, **kwargs) -> Optional[VodItem]:
         """
-        Fetch full details for a single playable item (movie or episode) by its
-        b_/c_/d_/a_ id. This is what provider.get_vod_item_details() calls — it
-        was missing entirely before, which meant that provider method raised
-        AttributeError on every call.
-
-        NOTE: provider.get_vod_item_details() calls `.to_vod_item(provider_name,
-        country)` on whatever this returns. I don't have base/models/vod.py in
-        front of me, so I can't confirm VodItem exposes that method — this builds
-        a VodItem the same way _parse_content_asset/_parse_episode_asset already
-        do elsewhere in this file. If VodItem doesn't implement `.to_vod_item()`,
-        that call in provider.py will still raise — worth checking the base model
-        before shipping.
+        Fetch full details for a single playable item by its b_/c_/d_ id.
+        This is what provider.get_vod_item_details() calls — that provider
+        method uses VodItem.to_dict() (inherited from Content) on whatever
+        this returns, since VodItem has no separate to_vod_item() method.
         """
+        # PlayableAssetWithToken expects a catalog ID (b_, c_, d_). It returns
+        # an empty asset for a video ID (a_), which would otherwise surface as
+        # a misleading "No asset data found" warning below.
+        if content_id.startswith("a_"):
+            logger.debug(f"Skipping PlayableAssetWithToken for video ID {content_id}")
+            return None
+
         asset = self.get_playable_asset(content_id, authenticated=authenticated)
         if not asset:
             logger.warning(f"No asset data found for content_id={content_id}")
@@ -1079,5 +1168,6 @@ class JoynVodManager:
 
     def clear_cache(self):
         self._cache.clear()
+        self.__dict__.pop(type(self).get_user_state.cache_attr, None)
         self._user_state = None
         logger.debug("VOD cache cleared")

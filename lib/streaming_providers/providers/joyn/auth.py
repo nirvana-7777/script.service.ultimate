@@ -5,6 +5,8 @@ import json
 import re
 import time
 import uuid
+
+import requests
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
@@ -648,12 +650,16 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             logger.warning(f"{self.provider_name}: WAF block detected ({e}), trying remote login")
             try:
                 return self._perform_remote_login_flow()
-            except Exception as remote_err:
+            except (WafBlockedException, ConnectionError, TimeoutError) as remote_err:
                 logger.warning(
                     f"{self.provider_name}: Remote login failed ({remote_err}), falling back to client credentials")
                 return self._perform_oauth_client_credentials_flow()
-        except Exception as e:
-            logger.warning(f"{self.provider_name}: Login failed ({e}), falling back to client credentials")
+        except (ConnectionError, TimeoutError, requests.exceptions.HTTPError) as e:
+            # Only fall back to anonymous on actual network/API errors, not code bugs.
+            # Standard 'Exception' is intentionally omitted here so a TypeError/KeyError
+            # in the OAuth flow crashes loudly instead of silently downgrading a user
+            # who thinks they're logged in to an anonymous session.
+            logger.warning(f"{self.provider_name}: Network login failed ({e}), falling back to client credentials")
             return self._perform_oauth_client_credentials_flow()
 
     def _perform_oauth_client_credentials_flow(self) -> Dict[str, Any]:
@@ -711,11 +717,17 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
         return self.credentials.to_auth_payload()
 
     def _create_token_from_response(self, response_data: Dict[str, Any]) -> BaseAuthToken:
+        # Subtract 1800s (30 min) safety buffer so we refresh proactively before
+        # actual expiry, matching the legacy addon's behavior — prevents streams
+        # cutting off mid-playback while a refresh is still in flight.
+        raw_expires_in = response_data.get("expires_in", 86400)
+        safe_expires_in = max(60, raw_expires_in - 1800)  # never go below 60s
+
         token = JoynAuthToken(
             access_token=response_data["access_token"],
             refresh_token=response_data.get("refresh_token", ""),
             token_type=response_data.get("token_type", "Bearer"),
-            expires_in=response_data.get("expires_in", 86400),
+            expires_in=safe_expires_in,
             issued_at=response_data.get("issued_at", time.time()),
         )
         token.auth_level = self._classify_token(token)

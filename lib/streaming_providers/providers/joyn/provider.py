@@ -8,7 +8,6 @@ Wires together authentication, channel, and VOD managers
 from dataclasses import dataclass
 from typing import ClassVar, Dict, List, Optional, Tuple, Union
 from datetime import datetime
-import dataclasses
 
 from ...base.models import DRMConfig, StreamingChannel, Event, ContentType
 from ...base.models.proxy_models import ProxyConfig
@@ -222,6 +221,29 @@ class JoynProvider(StreamingProvider):
         return self.epg_manager.get_program_details(program_id, **kwargs)
 
     # ============================================================================
+    # ROUTING HELPER
+    # ============================================================================
+
+    def _is_vod_content(self, content_id: str, content_type: str = ContentType.LIVE) -> bool:
+        """
+        Route to the VOD manager if content_id matches VOD patterns, rather than
+        guessing off a bare "_" in content_id (which breaks the moment a live
+        channel slug picks up an underscore).
+
+        VOD IDs: a_/b_/c_/d_ prefixed asset ids, "block-" lazy-block ids, or
+        browsable paths (contain "/") and block ids (contain ":") as used by
+        JoynVodManager._is_block_id / get_vod_category.
+        Live channel IDs are plain slugs, e.g. "sat1-de".
+        """
+        if content_type == ContentType.VOD:
+            return True
+        return (
+            content_id.startswith(("a_", "b_", "c_", "d_", "block-")) or
+            "/" in content_id or
+            ":" in content_id
+        )
+
+    # ============================================================================
     # MANIFEST/PLAYBACK METHODS
     # ============================================================================
 
@@ -234,9 +256,8 @@ class JoynProvider(StreamingProvider):
     ) -> Optional[str]:
         """
         Get manifest URL - routes to VOD or Channel manager based on content_id.
-        Joyn VOD IDs contain an underscore (e.g., d_p203osk1gxp), Live IDs do not (e.g., sat1-de).
         """
-        if "_" in content_id or content_type == ContentType.VOD:
+        if self._is_vod_content(content_id, content_type):
             return self.vod_manager.get_vod_manifest(content_id, video_config, **kwargs)
 
         return self.channel_manager.get_manifest(
@@ -260,7 +281,7 @@ class JoynProvider(StreamingProvider):
         """
         Get DRM configurations - routes to VOD or Channel manager based on content_id.
         """
-        if "_" in content_id or content_type == ContentType.VOD:
+        if self._is_vod_content(content_id, content_type):
             return self.vod_manager.get_vod_drm(content_id, video_config, **kwargs)
 
         return self.channel_manager.get_drm(
@@ -302,9 +323,12 @@ class JoynProvider(StreamingProvider):
         return self.vod_manager.search(query, cursor, page_size, **kwargs)
 
     def get_vod_item_details(self, content_id: str, **kwargs) -> Optional[Dict]:
+        # VodItem inherits from Content, which provides to_dict() — there is no
+        # to_vod_item() method, so the previous dataclasses.asdict(item.to_vod_item(...))
+        # call raised AttributeError on every invocation.
         item = self.vod_manager.get_content_details(content_id, **kwargs)
         if item:
-            return dataclasses.asdict(item.to_vod_item(self.provider_name, self.config.country))
+            return item.to_dict()
         return None
 
     def get_vod_manifest(
