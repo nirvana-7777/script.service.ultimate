@@ -217,8 +217,8 @@ class RTLPlusAuthenticator(BaseOAuth2Authenticator):
         headers = self._get_auth_headers()
         headers.update({
             "Content-Type": "application/x-www-form-urlencoded",
-            "Origin": "https://base.plus.rtl.de",
-            "Referer": "https://base.plus.rtl.de/",
+            "Origin": RTLPlusDefaults.BASE_WEBSITE.rstrip("/"),  # "https://plus.rtl.de"
+            "Referer": RTLPlusDefaults.BASE_WEBSITE,  # "https://plus.rtl.de/"
         })
         return headers
 
