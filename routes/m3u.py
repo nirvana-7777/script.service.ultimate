@@ -30,9 +30,9 @@ def setup_m3u_routes(app, manager, service):
         proxy-gated "fast" endpoints, for their own 503 handling.
 
         cache_key: pass None for routes that must always regenerate live
-        (the uncached "fast" proxied/ffmpeg endpoints, and the force
-        /generate endpoints, which never checked cache in the original
-        code either).
+        (the uncached clientdrm endpoints and the ffmpeg endpoint, plus the
+        force /generate endpoints, which never checked cache in the
+        original code either).
         """
         try:
             if cache_key:
@@ -61,102 +61,119 @@ def setup_m3u_routes(app, manager, service):
             pass  # cache file may not exist yet - fine
         return _handle_m3u_route(generate_fn, log_ctx)
 
-    # ── Normal / no-proxy playlists (cached) ──────────────────────────────
+    # ── Plain playlists (cached) ──────────────────────────────────────────
+    # Server-side decrypt, bare stream URLs (no "?client_drm=false" — that's
+    # the route's own default). Nothing per-channel here is request-time-
+    # volatile (no DRM/key lookups happen at generation time), so caching is
+    # safe and this is now the default "/api/m3u" behavior.
 
     @app.route("/api/m3u")
     def get_m3u_all():
         """Generates M3U playlist for all configured providers."""
         return _handle_m3u_route(
-            lambda: service.generate_m3u_all(save_to_cache=True),
+            lambda: service.generate_m3u_plain_all(save_to_cache=True),
             log_ctx="/api/m3u",
             cache_key="playlist.m3u",
             filename="playlist.m3u8",
-        )
-
-    @app.route("/api/m3u/noproxy")
-    def get_m3u_all_noproxy():
-        """Generates M3U playlist using direct (non-proxied) stream URLs."""
-        return _handle_m3u_route(
-            lambda: service.generate_m3u_all(save_to_cache=True, no_proxy=True),
-            log_ctx="/api/m3u/noproxy",
-            cache_key="playlist_noproxy.m3u",
-            filename="playlist_noproxy.m3u8",
         )
 
     @app.route("/api/m3u/generate")
     def generate_m3u_all():
         """Force regeneration of M3U playlist for all providers."""
         return _handle_m3u_route(
-            lambda: service.generate_m3u_all(save_to_cache=True),
+            lambda: service.generate_m3u_plain_all(save_to_cache=True),
             log_ctx="/api/m3u/generate",
-        )
-
-    @app.route("/api/m3u/noproxy/generate")
-    def generate_m3u_all_noproxy():
-        """Force regeneration of the no-proxy M3U playlist."""
-        return _handle_m3u_route(
-            lambda: service.generate_m3u_all(save_to_cache=True, no_proxy=True),
-            log_ctx="/api/m3u/noproxy/generate",
         )
 
     @app.route("/api/providers/<provider>/m3u")
     def get_m3u_provider(provider):
         """Generates M3U playlist for a specific provider."""
         return _handle_m3u_route(
-            lambda: service.generate_m3u_provider(provider, save_to_cache=True),
+            lambda: service.generate_m3u_plain_provider(provider, save_to_cache=True),
             log_ctx=f"/api/providers/{provider}/m3u",
             cache_key=f"{provider}.m3u",
             filename=f"{provider}_playlist.m3u8",
-        )
-
-    @app.route("/api/providers/<provider>/m3u/noproxy")
-    def get_m3u_provider_noproxy(provider):
-        """Generates no-proxy M3U playlist for a specific provider."""
-        return _handle_m3u_route(
-            lambda: service.generate_m3u_provider(provider, save_to_cache=True, no_proxy=True),
-            log_ctx=f"/api/providers/{provider}/m3u/noproxy",
-            cache_key=f"{provider}_noproxy.m3u",
-            filename=f"{provider}_playlist_noproxy.m3u8",
         )
 
     @app.route("/api/providers/<provider>/m3u/generate")
     def generate_m3u_provider(provider):
         """Force regeneration of M3U playlist for a specific provider."""
         return _handle_m3u_route(
-            lambda: service.generate_m3u_provider(provider, save_to_cache=True),
+            lambda: service.generate_m3u_plain_provider(provider, save_to_cache=True),
             log_ctx=f"/api/providers/{provider}/m3u/generate",
+        )
+
+    # ── Client-side-decrypt playlists (deliberately UNCACHED) ─────────────
+    # Dynamic per-channel ClearKey lookup, key/kid pairs baked into KODIPROP
+    # directives. Uncached on purpose: upstream keys can rotate, and a
+    # cached playlist would silently serve a stale key until someone
+    # force-regenerated it. Fresh generation per request avoids that
+    # failure mode; revisit with a short TTL if per-request DRM lookups
+    # turn out to be too frequent/expensive.
+
+    @app.route("/api/m3u/clientdrm")
+    def get_m3u_clientdrm():
+        """Generates client-side-decrypt M3U playlist for all providers. No caching."""
+        return _handle_m3u_route(
+            lambda: service.generate_m3u_clientdrm_all(),
+            log_ctx="/api/m3u/clientdrm",
+        )
+
+    @app.route("/api/providers/<provider>/m3u/clientdrm")
+    def get_m3u_clientdrm_provider(provider):
+        """Generates client-side-decrypt M3U playlist for a specific provider. No caching."""
+        return _handle_m3u_route(
+            lambda: service.generate_m3u_clientdrm_provider(provider),
+            log_ctx=f"/api/providers/{provider}/m3u/clientdrm",
+        )
+
+    # ── No-proxy playlists (cached) ────────────────────────────────────────
+    # Unrelated to the plain/clientdrm split above — "no_proxy" here means
+    # bypassing the media proxy at the stream-route level, independent of
+    # who does the decrypting. Still client-side-decrypt underneath
+    # (client_drm=true&no_proxy=true), same as before this change; only the
+    # service method name changed (generate_m3u_all -> generate_m3u_noproxy_all),
+    # since generate_m3u_all now refers to the plain playlist above.
+
+    @app.route("/api/m3u/noproxy")
+    def get_m3u_all_noproxy():
+        """Generates M3U playlist using direct (non-proxied) stream URLs."""
+        return _handle_m3u_route(
+            lambda: service.generate_m3u_noproxy_all(save_to_cache=True),
+            log_ctx="/api/m3u/noproxy",
+            cache_key="playlist_noproxy.m3u",
+            filename="playlist_noproxy.m3u8",
+        )
+
+    @app.route("/api/m3u/noproxy/generate")
+    def generate_m3u_all_noproxy():
+        """Force regeneration of the no-proxy M3U playlist."""
+        return _handle_m3u_route(
+            lambda: service.generate_m3u_noproxy_all(save_to_cache=True),
+            log_ctx="/api/m3u/noproxy/generate",
+        )
+
+    @app.route("/api/providers/<provider>/m3u/noproxy")
+    def get_m3u_provider_noproxy(provider):
+        """Generates no-proxy M3U playlist for a specific provider."""
+        return _handle_m3u_route(
+            lambda: service.generate_m3u_noproxy_provider(provider, save_to_cache=True),
+            log_ctx=f"/api/providers/{provider}/m3u/noproxy",
+            cache_key=f"{provider}_noproxy.m3u",
+            filename=f"{provider}_playlist_noproxy.m3u8",
         )
 
     @app.route("/api/providers/<provider>/m3u/noproxy/generate")
     def generate_m3u_provider_noproxy(provider):
         """Force regeneration of no-proxy M3U playlist for a specific provider."""
         return _handle_m3u_route(
-            lambda: service.generate_m3u_provider(provider, save_to_cache=True, no_proxy=True),
+            lambda: service.generate_m3u_noproxy_provider(provider, save_to_cache=True),
             log_ctx=f"/api/providers/{provider}/m3u/noproxy/generate",
         )
 
-    # ── Proxied / decrypted "fast" playlists (deliberately UNCACHED) ─────
-    # These intentionally skip the cache layer - proxy/DRM session state
-    # can shift between requests, and service.generate_m3u_proxied_fast /
-    # generate_m3u_decrypted_ffmpeg_fast already own the 503 "media proxy
-    # not configured" guard and their own response headers. Do not give
-    # these a cache_key.
-
-    @app.route("/api/m3u/proxied")
-    def get_m3u_proxied():
-        """Generates proxied M3U playlist for all providers. No caching."""
-        return _handle_m3u_route(
-            lambda: service.generate_m3u_proxied_fast(providers=None),
-            log_ctx="/api/m3u/proxied",
-        )
-
-    @app.route("/api/providers/<provider>/m3u/proxied")
-    def get_m3u_proxied_provider(provider):
-        """Generates proxied M3U playlist for a specific provider. No caching."""
-        return _handle_m3u_route(
-            lambda: service.generate_m3u_proxied_fast(providers=provider),
-            log_ctx=f"/api/providers/{provider}/m3u/proxied",
-        )
+    # ── ffmpeg-piped playlist (deliberately UNCACHED) ─────────────────────
+    # Unchanged by this turn's split — left as-is per your call to leave
+    # ffmpeg/filtered/subscribed alone for now.
 
     @app.route("/api/providers/<provider>/m3u/proxied/ffmpeg")
     def get_m3u_proxied_ffmpeg_provider(provider):
@@ -167,8 +184,9 @@ def setup_m3u_routes(app, manager, service):
         )
 
     # ── Filtered proxied playlists (cached; ClearKey or unencrypted only) ─
-    # NOTE: cache filenames below match what
-    # _generate_m3u_proxied_filtered_content() actually writes
+    # Unchanged by this turn's split — left as-is per your call to leave
+    # ffmpeg/filtered/subscribed alone for now. NOTE: cache filenames below
+    # match what _generate_m3u_proxied_filtered_content() actually writes
     # ("*_proxied_filtered.m3u"), fixing a pre-existing mismatch where
     # this route checked "*_proxied_filtered.m3u" - a file the service
     # never wrote - so the cache never hit.
@@ -212,13 +230,11 @@ def setup_m3u_routes(app, manager, service):
         )
 
     # ── Subscribed-channel playlists ──────────────────────────────────────
-    # get_m3u_subscribed / get_m3u_subscribed_proxied still build their own
-    # M3U content directly (they were never moved into service.py) - only the
-    # boilerplate around them is shared via the same helpers used everywhere
-    # else. The two bodies used to be ~90% duplicated hand-written copies of
-    # each other, differing only in stream URL path, whether DRM directives
-    # are looked up per-channel vs a fixed KODIPROP line, and whether the
-    # result gets cached — now unified into one function with a `proxied` flag.
+    # Unchanged by this turn's split — left as-is per your call to leave
+    # ffmpeg/filtered/subscribed alone for now. get_m3u_subscribed /
+    # get_m3u_subscribed_proxied still build their own M3U content directly
+    # (they were never moved into service.py) - only the boilerplate around
+    # them is shared via the same helpers used everywhere else.
 
     def _generate_m3u_subscribed(proxied: bool = False):
         if proxied and not service.media_proxy_url:

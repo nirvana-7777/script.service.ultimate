@@ -872,21 +872,35 @@ class UltimateService:
                 continue
             yield provider_name, provider_label, channels
 
-    def _generate_m3u_proxied_fast(self, providers=None):
+    def _generate_m3u_plain_content(self, providers=None, save_to_cache=True, cache_filename=None):
         """
-        Fast generation of decrypted M3U content for specified providers.
-        Includes ALL channels with decrypted stream URLs.
-        No DRM filtering, no caching - maximum speed.
+        Generate M3U content for the default, server-side-decrypt stream
+        route — bare "stream/index.mpd", no query string at all (client_drm
+        defaults to false at the route level in channels.py, so this is
+        equivalent to the old explicit "?client_drm=false", just without
+        writing out a param that only restates the default).
+
+        This is what "/api/m3u" and "/api/providers/<provider>/m3u" serve.
+        It replaces the old uncached "/m3u/proxied" fast-path — same DRM
+        handling (drm_directives="", nothing embedded, server does the
+        decrypting) — but adds caching back, because nothing on this path
+        is request-time-volatile: there's no per-channel DRM/key lookup
+        happening at generation time, unlike the dynamic-DRM "clientdrm"
+        variant below.
 
         Args:
             providers: List of provider names, or None for all providers
+            save_to_cache: Whether to save to cache
+            cache_filename: Cache filename to use
 
         Returns:
             M3U content as string
         """
-        # Check if media proxy is configured
+        # Check if media proxy is configured — the bare stream route still
+        # depends on it at playback time, so fail the playlist build fast
+        # rather than handing out URLs that won't resolve.
         if not self.media_proxy_url:
-            logger.error("Cannot generate proxied M3U: MEDIA_PROXY_URL not set")
+            logger.error("Cannot generate M3U: MEDIA_PROXY_URL not set")
             response.status = 503
             response.content_type = "application/json"
             return json.dumps(
@@ -902,25 +916,25 @@ class UltimateService:
         # Determine which providers to process
         if providers is None:
             providers_to_process = self.manager.list_providers()
+            cache_filename = cache_filename or "playlist.m3u"
         else:
             providers_to_process = (
                 [providers] if isinstance(providers, str) else providers
             )
+            cache_filename = cache_filename or f"{providers_to_process[0]}.m3u"
 
         channels_included = 0
 
         for provider_name, provider_label, channels in self._iter_m3u_provider_channels(providers_to_process):
             try:
-                # Process each channel - no DRM checks (all channels are
-                # already routed through the media proxy at playback time)
                 for channel in channels:
                     m3u_content += self._generate_m3u_entry(
                         base_url, provider_name, channel,
-                        # client_drm=false (explicit, though it's the default).
-                        # No KODIPROP line needed — the client doesn't use
-                        # inputstream.adaptive at all when the server does the
-                        # decrypting.
-                        stream_path="stream/index.mpd?client_drm=false",
+                        # Bare path — no ?client_drm=false, since that's the
+                        # route's own default. No KODIPROP line needed either
+                        # (drm_directives="") — the client never uses
+                        # inputstream.adaptive when the server decrypts.
+                        stream_path="stream/index.mpd",
                         provider_label=provider_label,
                         drm_directives="",
                     )
@@ -932,21 +946,15 @@ class UltimateService:
                 )
                 continue
 
-        logger.info(f"Fast decrypted M3U: included {channels_included} channels")
+        logger.info(f"Plain M3U: included {channels_included} channels")
 
-        # Set appropriate headers
-        response.content_type = "audio/x-mpegurl; charset=utf-8"
-
-        if providers and isinstance(providers, str):
-            # Single provider
-            response.headers["Content-Disposition"] = (
-                f'attachment; filename="{providers}_proxied_playlist.m3u8"'
-            )
-        else:
-            # All providers
-            response.headers["Content-Disposition"] = (
-                'attachment; filename="playlist_proxied.m3u8"'
-            )
+        # Save to cache if requested — safe here (see docstring: nothing on
+        # this path is request-time-volatile).
+        if save_to_cache and cache_filename:
+            if self.vfs.write_text(cache_filename, m3u_content):
+                logger.info(f"M3U playlist cached to {cache_filename}")
+            else:
+                logger.warning(f"Failed to cache M3U playlist to {cache_filename}")
 
         return m3u_content
 
@@ -1175,7 +1183,14 @@ class UltimateService:
         self, providers=None, save_to_cache=True, cache_filename=None, no_proxy=False
     ):
         """
-        Internal method to generate M3U content for specified providers.
+        Internal method to generate M3U content for specified providers, on
+        the client-side-decrypt route (client_drm=true — dynamic per-channel
+        DRM/ClearKey lookup, key material embedded as KODIPROP directives).
+
+        This backs the "clientdrm" playlists (generate_m3u_clientdrm_all/
+        _provider, always save_to_cache=False — see those wrappers for why)
+        and the pre-existing "/m3u/noproxy" playlists, which combine
+        client-side decrypt with a forced non-proxied stream route.
 
         Args:
             providers: List of provider names, or None for all providers
@@ -1435,17 +1450,85 @@ class UltimateService:
         """Public wrapper for EPG ID lookup."""
         return self._get_epg_id(channel_id)
 
-    def generate_m3u_all(self, save_to_cache: bool = False, no_proxy: bool = False) -> str:
-        """Public wrapper for full M3U generation."""
-        return self._generate_m3u_all(save_to_cache=save_to_cache, no_proxy=no_proxy)
+    def generate_m3u_plain_all(self, save_to_cache: bool = False) -> str:
+        """
+        Public wrapper: server-side-decrypt M3U for all providers (bare
+        stream URLs, no query string). This is "/api/m3u" — cached by
+        default when called from the route (save_to_cache=True there).
+        """
+        logger.info("Generating M3U playlist for all providers")
+        m3u_content = self._generate_m3u_plain_content(providers=None, save_to_cache=save_to_cache)
 
-    def generate_m3u_provider(self, provider: str, save_to_cache: bool = False, no_proxy: bool = False) -> str:
-        """Public wrapper for per-provider M3U generation."""
-        return self._generate_m3u_provider(provider, save_to_cache=save_to_cache, no_proxy=no_proxy)
+        response.content_type = "audio/x-mpegurl; charset=utf-8"
+        response.headers["Content-Disposition"] = 'attachment; filename="playlist.m3u8"'
 
-    def generate_m3u_proxied_fast(self, providers=None) -> str:
-        """Public wrapper for fast decrypted M3U generation."""
-        return self._generate_m3u_proxied_fast(providers)
+        return m3u_content
+
+    def generate_m3u_plain_provider(self, provider: str, save_to_cache: bool = False) -> str:
+        """Public wrapper: server-side-decrypt M3U for a specific provider."""
+        logger.info(f"Generating M3U playlist for provider '{provider}'")
+        m3u_content = self._generate_m3u_plain_content(providers=provider, save_to_cache=save_to_cache)
+
+        response.content_type = "audio/x-mpegurl; charset=utf-8"
+        response.headers["Content-Disposition"] = f'attachment; filename="{provider}_playlist.m3u8"'
+
+        return m3u_content
+
+    def generate_m3u_clientdrm_all(self) -> str:
+        """
+        Public wrapper: client-side-decrypt M3U for all providers
+        (dynamic per-channel ClearKey lookup, key/kid pairs embedded as
+        KODIPROP directives). Deliberately UNCACHED, unlike the plain
+        playlist above — upstream keys can rotate, and a cached playlist
+        would silently serve a stale key until someone force-regenerates
+        it. Generating fresh per request avoids that failure mode
+        entirely; add a short TTL later if per-request DRM-config lookups
+        turn out to be too frequent/expensive in practice.
+        """
+        logger.info("Generating clientdrm M3U playlist for all providers")
+        m3u_content = self._generate_m3u_content(providers=None, save_to_cache=False)
+
+        response.content_type = "audio/x-mpegurl; charset=utf-8"
+        response.headers["Content-Disposition"] = 'attachment; filename="playlist_clientdrm.m3u8"'
+
+        return m3u_content
+
+    def generate_m3u_clientdrm_provider(self, provider: str) -> str:
+        """Public wrapper: client-side-decrypt M3U for a specific provider. Uncached — see generate_m3u_clientdrm_all."""
+        logger.info(f"Generating clientdrm M3U playlist for provider '{provider}'")
+        m3u_content = self._generate_m3u_content(providers=provider, save_to_cache=False)
+
+        response.content_type = "audio/x-mpegurl; charset=utf-8"
+        response.headers["Content-Disposition"] = f'attachment; filename="{provider}_playlist_clientdrm.m3u8"'
+
+        return m3u_content
+
+    def generate_m3u_noproxy_all(self, save_to_cache: bool = False) -> str:
+        """
+        Public wrapper: client-side-decrypt M3U for all providers, forced
+        onto the non-proxied stream route (client_drm=true&no_proxy=true).
+        Backs "/api/m3u/noproxy" — unrelated to this turn's plain/clientdrm
+        split, kept exactly as it behaved before (cached, via
+        _generate_m3u_content). Renamed from the old generate_m3u_all only
+        because that name now belongs to the plain-playlist wrapper above.
+        """
+        logger.info("Generating no-proxy M3U playlist for all providers")
+        m3u_content = self._generate_m3u_content(providers=None, save_to_cache=save_to_cache, no_proxy=True)
+
+        response.content_type = "audio/x-mpegurl; charset=utf-8"
+        response.headers["Content-Disposition"] = 'attachment; filename="playlist_noproxy.m3u8"'
+
+        return m3u_content
+
+    def generate_m3u_noproxy_provider(self, provider: str, save_to_cache: bool = False) -> str:
+        """Public wrapper: no-proxy M3U for a specific provider. See generate_m3u_noproxy_all."""
+        logger.info(f"Generating no-proxy M3U playlist for provider '{provider}'")
+        m3u_content = self._generate_m3u_content(providers=provider, save_to_cache=save_to_cache, no_proxy=True)
+
+        response.content_type = "audio/x-mpegurl; charset=utf-8"
+        response.headers["Content-Disposition"] = f'attachment; filename="{provider}_playlist_noproxy.m3u8"'
+
+        return m3u_content
 
     def generate_m3u_proxied_ffmpeg_fast(self, providers=None) -> str:
         """Public wrapper for fast ffmpeg-decrypted M3U generation."""
@@ -1510,36 +1593,6 @@ class UltimateService:
         else:
             logger.warning(f"Unsupported headers type: {type(req_headers)}")
             return str(req_headers)
-
-    def _generate_m3u_all(self, save_to_cache: bool = False, no_proxy: bool = False) -> str:
-        """Internal method to generate M3U for all providers."""
-        logger.info(f"Generating {'no-proxy ' if no_proxy else ''}M3U playlist for all providers")
-        m3u_content = self._generate_m3u_content(
-            providers=None, save_to_cache=save_to_cache, no_proxy=no_proxy
-        )
-
-        # Set appropriate headers for M3U
-        response.content_type = "audio/x-mpegurl; charset=utf-8"
-        filename = "playlist_noproxy.m3u8" if no_proxy else "playlist.m3u8"
-        response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
-
-        return m3u_content
-
-    def _generate_m3u_provider(self, provider: str, save_to_cache: bool = False, no_proxy: bool = False) -> str:
-        """Internal method to generate M3U for a specific provider."""
-        logger.info(f"Generating {'no-proxy ' if no_proxy else ''}M3U playlist for provider '{provider}'")
-        m3u_content = self._generate_m3u_content(
-            providers=provider, save_to_cache=save_to_cache, no_proxy=no_proxy
-        )
-
-        # Set appropriate headers for M3U
-        response.content_type = "audio/x-mpegurl; charset=utf-8"
-        filename = f"{provider}_playlist_noproxy.m3u8" if no_proxy else f"{provider}_playlist.m3u8"
-        response.headers["Content-Disposition"] = (
-            f'attachment; filename="{filename}"'
-        )
-
-        return m3u_content
 
     @staticmethod
     def get_settings_manager():
