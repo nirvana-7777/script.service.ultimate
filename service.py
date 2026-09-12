@@ -1185,7 +1185,11 @@ class UltimateService:
         """
         Internal method to generate M3U content for specified providers, on
         the client-side-decrypt route (client_drm=true — dynamic per-channel
-        DRM/ClearKey lookup, key material embedded as KODIPROP directives).
+        DRM lookup via _generate_drm_directives, which embeds whatever the
+        channel's DRM system needs: ClearKey key/kid pairs inlined directly,
+        or a Widevine/PlayReady license server URL (+ headers) for the
+        client's inputstream.adaptive to negotiate against at playback
+        time. Not limited to ClearKey channels.
 
         This backs the "clientdrm" playlists (generate_m3u_clientdrm_all/
         _provider, always save_to_cache=False — see those wrappers for why)
@@ -1476,14 +1480,17 @@ class UltimateService:
 
     def generate_m3u_clientdrm_all(self) -> str:
         """
-        Public wrapper: client-side-decrypt M3U for all providers
-        (dynamic per-channel ClearKey lookup, key/kid pairs embedded as
-        KODIPROP directives). Deliberately UNCACHED, unlike the plain
-        playlist above — upstream keys can rotate, and a cached playlist
-        would silently serve a stale key until someone force-regenerates
-        it. Generating fresh per request avoids that failure mode
-        entirely; add a short TTL later if per-request DRM-config lookups
-        turn out to be too frequent/expensive in practice.
+        Public wrapper: client-side-decrypt M3U for all providers (dynamic
+        per-channel DRM lookup — ClearKey key/kid pairs inlined directly,
+        or a Widevine/PlayReady license server URL + headers, whichever
+        the channel actually uses; not limited to ClearKey providers).
+        Deliberately UNCACHED, unlike the plain playlist above — the
+        embedded DRM config (keys, or license URLs/tokens) can rotate
+        upstream, and a cached playlist would silently serve stale
+        credentials until someone force-regenerates it. Generating fresh
+        per request avoids that failure mode entirely; add a short TTL
+        later if per-request DRM-config lookups turn out to be too
+        frequent/expensive in practice.
         """
         logger.info("Generating clientdrm M3U playlist for all providers")
         m3u_content = self._generate_m3u_content(providers=None, save_to_cache=False)

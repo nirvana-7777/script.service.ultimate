@@ -3,15 +3,64 @@
 M3U playlist route handlers
 """
 
+import time
+
 from bottle import request, response
 from streaming_providers.base.utils import logger
+
+# TTL for the plain M3U cache ("/api/m3u", "/api/providers/<provider>/m3u")
+# only. Nothing embedded there goes stale from a security standpoint
+# (drm_directives="" — no keys/license URLs baked in), but the channel
+# LINEUP can change upstream (providers add/remove channels), and without
+# an expiry the cache would otherwise only ever refresh via a manual
+# /generate call. 24h bounds how long a new channel can be missing from
+# the served playlist. clientdrm is unaffected — it's already uncached
+# (see generate_m3u_clientdrm_all), so it never goes stale in the first
+# place, for lineup or DRM credentials.
+PLAIN_M3U_TTL_SECONDS = 24 * 60 * 60
 
 
 def setup_m3u_routes(app, manager, service):
     """Setup M3U playlist-related routes"""
 
-    def _serve_cached(cache_key: str, filename: str):
-        """Return cached M3U content with headers set, or None if not cached."""
+    def _cache_meta_key(cache_key: str) -> str:
+        return f"{cache_key}.meta.json"
+
+    def _touch_cache_meta(cache_key: str) -> None:
+        """
+        Record the write time for a cached M3U file, used by the TTL check
+        in _serve_cached. Stored as a small JSON sidecar via
+        vfs.write_json/read_json rather than filesystem mtime — VFS
+        abstracts over an xbmcvfs (Kodi special:// paths) backend as well
+        as a plain filesystem one, and os.path.getmtime doesn't work
+        against the former.
+        """
+        service.vfs.write_json(_cache_meta_key(cache_key), {"cached_at": time.time()})
+
+    def _serve_cached(cache_key: str, filename: str, ttl_seconds: int = None):
+        """
+        Return cached M3U content with headers set, or None if not cached
+        (or, when ttl_seconds is given, if the sidecar meta file shows the
+        cache is older than that — triggering a regeneration the same as
+        a cold cache would).
+        """
+        if ttl_seconds is not None:
+            meta = service.vfs.read_json(_cache_meta_key(cache_key))
+            cached_at = meta.get("cached_at") if meta else None
+            if cached_at is None:
+                # No meta yet — e.g. a cache file written before this TTL
+                # logic existed, or the meta write previously failed.
+                # Treat as expired so it regenerates (and gets a meta file
+                # going forward) rather than serving an unbounded-age file.
+                logger.info(f"No cache-age metadata for {cache_key} — treating as expired")
+                return None
+            age = time.time() - cached_at
+            if age > ttl_seconds:
+                logger.info(
+                    f"Cache expired for {cache_key} (age {age:.0f}s > TTL {ttl_seconds}s)"
+                )
+                return None
+
         cached = service.vfs.read_text(cache_key)
         if not cached:
             return None
@@ -20,7 +69,8 @@ def setup_m3u_routes(app, manager, service):
         response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
         return cached
 
-    def _handle_m3u_route(generate_fn, log_ctx, cache_key=None, filename=None):
+    def _handle_m3u_route(generate_fn, log_ctx, cache_key=None, filename=None,
+                           ttl_seconds=None, force=False):
         """
         Shared cache-check / error-handling wrapper for M3U routes.
 
@@ -30,18 +80,36 @@ def setup_m3u_routes(app, manager, service):
         proxy-gated "fast" endpoints, for their own 503 handling.
 
         cache_key: pass None for routes that must always regenerate live
-        (the uncached clientdrm endpoints and the ffmpeg endpoint, plus the
-        force /generate endpoints, which never checked cache in the
-        original code either).
+        (the uncached clientdrm endpoints and the ffmpeg endpoint) and
+        never touch the TTL meta either. Pass it (with force=False) for a
+        normal cache-first read, or (with force=True) to skip the read but
+        still refresh the TTL meta after a forced regeneration — see the
+        /generate routes below.
+
+        ttl_seconds: pass None (default) to keep the existing "cache
+        forever until /generate is called" behavior, with no meta file
+        written. Currently only the plain M3U routes pass
+        PLAIN_M3U_TTL_SECONDS — noproxy/filtered/subscribed keep the old
+        no-expiry behavior unless you want that extended too.
         """
         try:
-            if cache_key:
-                cached = _serve_cached(cache_key, filename)
+            if cache_key and not force:
+                cached = _serve_cached(cache_key, filename, ttl_seconds=ttl_seconds)
                 if cached is not None:
                     return cached
                 logger.info(f"No valid cache found, generating M3U: {log_ctx}")
 
-            return generate_fn()
+            result = generate_fn()
+
+            # Refresh the TTL clock whenever this route actually writes to
+            # the cache (cache miss above, or a forced /generate) — a
+            # forced regen with no meta refresh would leave the TTL check
+            # comparing against a stale timestamp forever, defeating the
+            # point of the TTL.
+            if cache_key and ttl_seconds is not None and isinstance(result, str):
+                _touch_cache_meta(cache_key)
+
+            return result
 
         except ValueError as val_err:
             logger.error(f"API Error in {log_ctx}: {val_err}")
@@ -61,20 +129,24 @@ def setup_m3u_routes(app, manager, service):
             pass  # cache file may not exist yet - fine
         return _handle_m3u_route(generate_fn, log_ctx)
 
-    # ── Plain playlists (cached) ──────────────────────────────────────────
+    # ── Plain playlists (cached, 24h TTL) ──────────────────────────────────
     # Server-side decrypt, bare stream URLs (no "?client_drm=false" — that's
     # the route's own default). Nothing per-channel here is request-time-
-    # volatile (no DRM/key lookups happen at generation time), so caching is
-    # safe and this is now the default "/api/m3u" behavior.
+    # volatile from a DRM standpoint (no key/license lookups happen at
+    # generation time), so caching is safe. The 24h TTL exists for a
+    # different reason: the channel LINEUP itself can change upstream, and
+    # without an expiry this would otherwise only refresh via a manual
+    # /generate call.
 
     @app.route("/api/m3u")
     def get_m3u_all():
-        """Generates M3U playlist for all configured providers."""
+        """Generates M3U playlist for all configured providers. Cache expires after 24h."""
         return _handle_m3u_route(
             lambda: service.generate_m3u_plain_all(save_to_cache=True),
             log_ctx="/api/m3u",
             cache_key="playlist.m3u",
             filename="playlist.m3u8",
+            ttl_seconds=PLAIN_M3U_TTL_SECONDS,
         )
 
     @app.route("/api/m3u/generate")
@@ -83,16 +155,21 @@ def setup_m3u_routes(app, manager, service):
         return _handle_m3u_route(
             lambda: service.generate_m3u_plain_all(save_to_cache=True),
             log_ctx="/api/m3u/generate",
+            cache_key="playlist.m3u",
+            filename="playlist.m3u8",
+            ttl_seconds=PLAIN_M3U_TTL_SECONDS,
+            force=True,
         )
 
     @app.route("/api/providers/<provider>/m3u")
     def get_m3u_provider(provider):
-        """Generates M3U playlist for a specific provider."""
+        """Generates M3U playlist for a specific provider. Cache expires after 24h."""
         return _handle_m3u_route(
             lambda: service.generate_m3u_plain_provider(provider, save_to_cache=True),
             log_ctx=f"/api/providers/{provider}/m3u",
             cache_key=f"{provider}.m3u",
             filename=f"{provider}_playlist.m3u8",
+            ttl_seconds=PLAIN_M3U_TTL_SECONDS,
         )
 
     @app.route("/api/providers/<provider>/m3u/generate")
@@ -101,6 +178,10 @@ def setup_m3u_routes(app, manager, service):
         return _handle_m3u_route(
             lambda: service.generate_m3u_plain_provider(provider, save_to_cache=True),
             log_ctx=f"/api/providers/{provider}/m3u/generate",
+            cache_key=f"{provider}.m3u",
+            filename=f"{provider}_playlist.m3u8",
+            ttl_seconds=PLAIN_M3U_TTL_SECONDS,
+            force=True,
         )
 
     # ── Client-side-decrypt playlists (deliberately UNCACHED) ─────────────
