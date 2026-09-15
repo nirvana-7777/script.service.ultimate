@@ -6,6 +6,7 @@ Provides transparent file operations for both Kodi and regular Python environmen
 
 import json
 import os
+import threading
 from typing import Any, Dict, List, Optional, Tuple
 
 # Import centralized environment manager
@@ -65,7 +66,9 @@ class VFS:
 
                 logger.info(f"Base path from environment: {self._base_path}")
 
-            # Ensure base directory exists
+            # Ensure base directory exists. self._base_path is already assigned
+            # above, so the join_path() call inside mkdirs() will not recurse
+            # back into this property.
             self.mkdirs("")
 
         return self._base_path
@@ -346,7 +349,7 @@ class VFS:
             pattern: File pattern filter (basic glob patterns)
 
         Returns:
-            List of filenames
+            List of filenames (basenames only, files only — not subdirectories)
         """
         try:
             if not dirpath:
@@ -383,6 +386,26 @@ class VFS:
         except Exception as e:
             logger.error(f"Error listing files in {dirpath}: {e}")
             return []
+
+    def listdir(self, dirpath: str = "") -> List[str]:
+        """
+        Alias for list_files(dirpath) with the default "*" pattern.
+
+        Several call sites (e.g. MPDCacheManager.clear_all /
+        clear_expired) call self.vfs.listdir() rather than
+        self.vfs.list_files() — this previously did not exist on VFS at
+        all and raised AttributeError on every call, which was silently
+        swallowed by those callers' broad except blocks. Kept as an
+        explicit method (not just a `listdir = list_files` assignment)
+        so it shows up in stack traces under its own name.
+
+        Args:
+            dirpath: Directory path to list (relative to base_path)
+
+        Returns:
+            List of filenames (basenames only, files only)
+        """
+        return self.list_files(dirpath)
 
     def get_size(self, filepath: str) -> Optional[int]:
         """
@@ -471,8 +494,14 @@ class VFS:
         return info
 
 
-# Cache for VFS instances with different configurations
+# Cache for VFS instances with different configurations.
+# Guarded by a lock: this backend runs multi-threaded (Bottle), and without
+# it two threads racing on the same not-yet-cached key could each construct
+# and briefly use their own VFS instance for the same directory. Functionally
+# harmless (both point at the same base_path), but it defeats the point of
+# caching and is cheap to close off properly.
 _vfs_cache: Dict[Tuple[Optional[str], str], "VFS"] = {}
+_vfs_cache_lock = threading.Lock()
 
 
 def get_vfs(config_dir: Optional[str] = None, addon_subdir: str = "") -> "VFS":
@@ -488,14 +517,21 @@ def get_vfs(config_dir: Optional[str] = None, addon_subdir: str = "") -> "VFS":
     Returns:
         VFS instance
     """
-    global _vfs_cache
-
     cache_key = (config_dir, addon_subdir)
 
-    if cache_key not in _vfs_cache:
-        _vfs_cache[cache_key] = VFS(config_dir, addon_subdir)
+    # Fast path without the lock for the common case (already cached).
+    vfs = _vfs_cache.get(cache_key)
+    if vfs is not None:
+        return vfs
 
-    return _vfs_cache[cache_key]
+    with _vfs_cache_lock:
+        # Re-check inside the lock in case another thread created it while
+        # we were waiting.
+        vfs = _vfs_cache.get(cache_key)
+        if vfs is None:
+            vfs = VFS(config_dir, addon_subdir)
+            _vfs_cache[cache_key] = vfs
+        return vfs
 
 
 # For backward compatibility with existing code

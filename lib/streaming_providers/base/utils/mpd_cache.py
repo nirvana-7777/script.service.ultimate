@@ -76,8 +76,17 @@ class MPDCacheManager:
                 logger.debug(
                     f"Cache expired for {cache_key} (expired {staleness}s ago)"
                 )
-                self.vfs.delete(manifest_file)
-                self.vfs.delete(meta_file)
+                # Deliberately NOT deleting the expired files here. This get()
+                # call may have been made with the default max_stale=0 (a
+                # normal cache lookup), but a *different* caller further down
+                # the request chain may retry with max_stale>0 as a
+                # last-resort fallback after a live refetch fails. If we
+                # delete on every plain expiry check, that fallback caller
+                # always finds nothing — the fallback only ever worked when
+                # it happened to be the first caller to see the expired
+                # entry. Expired entries are reaped on their own schedule by
+                # clear_expired() instead, so both call patterns keep working
+                # regardless of ordering.
                 return None
 
             manifest_content = self.vfs.read_text(manifest_file)

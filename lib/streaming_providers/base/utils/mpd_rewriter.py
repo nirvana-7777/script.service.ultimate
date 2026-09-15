@@ -7,6 +7,7 @@ Handles URL proxying, DRM key injection, quality filtering, and representation b
 import base64
 import struct
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from typing import Optional, Tuple, Set, Dict
 from urllib.parse import urljoin, quote, urlencode
 from datetime import datetime, timezone
@@ -18,6 +19,31 @@ from .drm_key_manager import KeyConfiguration
 from .representation_blocklist import RepresentationBlocklist
 from .video_quality import VideoQualityFilter, VideoRepresentation
 from .time_utils import parse_iso_duration
+
+
+@dataclass
+class _RewriteState:
+    """
+    Per-node traversal state for MPDRewriter._rewrite_node.
+
+    This used to be five separate positional parameters threaded through
+    every recursive call by hand. That's how the $RepresentationID$
+    substitution bug happened: current_rep_id was tracked as a local
+    variable in _rewrite_node but never added to the recursive call's
+    argument list, so it silently reset to None on every recursion step —
+    meaning it only ever "worked" for attributes living directly on the
+    <Representation> element itself, never for the <SegmentTemplate> child
+    where media/initialization templates actually live in practice.
+
+    Bundling the state into one object closes off that whole class of bug:
+    a recursive call either forwards the state object or it doesn't compile
+    (there's no way to forward "most of" a dataclass instance by accident).
+    """
+    base_url: str
+    period_id: str = ""
+    encrypted: bool = False
+    kid: Optional[str] = None
+    rep_id: Optional[str] = None
 from ..models.drm.constants import DRM_SYSTEM_NAMES
 
 
@@ -188,8 +214,9 @@ class MPDRewriter:
                 raise ValueError("No AdaptationSets remain after key filtering - manifest would be empty")
 
             # Rewrite URLs with appropriate keys and context-aware base URLs
-            self._rewrite_node(root, mpd_base_url, encrypted_ids, as_id_to_kid, base_url_map,
-                               False, None, "", best_video_info)
+            self._rewrite_node(
+                root, _RewriteState(base_url=mpd_base_url), encrypted_ids, as_id_to_kid, base_url_map
+            )
 
             rewritten = ET.tostring(root, encoding="unicode", method="xml")
             if not rewritten.startswith("<?xml"):
@@ -536,46 +563,52 @@ class MPDRewriter:
     def _rewrite_node(
             self,
             element: ET.Element,
-            base_url: str,
+            state: _RewriteState,
             encrypted_ids: Set[str],
             as_id_to_kid: Dict[str, str],
             base_url_map: Dict[str, str],
-            current_encrypted: bool,
-            current_kid: Optional[str] = None,
-            current_period_id: str = "",
-            best_video_info: Optional[VideoRepresentation] = None,
     ):
         """Recursive node rewriter with KID-aware key selection and context-aware base URLs."""
         # Track period ID as we traverse
         if element.tag.endswith("Period"):
-            current_period_id = element.get("id", "")
+            period_id = element.get("id", "")
+            base_url = state.base_url
 
             # When entering a new period, check if we have a period-level base URL stored
-            period_key = f"period_{current_period_id}" if current_period_id else "period_root"
+            period_key = f"period_{period_id}" if period_id else "period_root"
             if period_key in base_url_map:
                 # Update base_url to the period-specific base URL
                 base_url = base_url_map[period_key]
-#                logger.debug(f"Period {current_period_id} using stored base URL: {base_url}")
+#                logger.debug(f"Period {period_id} using stored base URL: {base_url}")
+
+            child_state = _RewriteState(
+                base_url=base_url,
+                period_id=period_id,
+                encrypted=state.encrypted,
+                kid=state.kid,
+                rep_id=state.rep_id,
+            )
 
             # Process all children of this period
             for child in list(element):
-                self._rewrite_node(
-                    child, base_url, encrypted_ids, as_id_to_kid, base_url_map,
-                    current_encrypted, current_kid, current_period_id, best_video_info
-                )
+                self._rewrite_node(child, child_state, encrypted_ids, as_id_to_kid, base_url_map)
             return  # Don't process further - we've handled all children
 
         # Track representation ID for template substitution
-        current_rep_id = None
+        rep_id = state.rep_id
         if element.tag.endswith("Representation"):
-            current_rep_id = element.get("id", "")
+            rep_id = element.get("id", "")
+
+        base_url = state.base_url
+        encrypted = state.encrypted
+        kid = state.kid
 
         # Update state when entering an AdaptationSet
         if element.tag.endswith("AdaptationSet"):
             as_id = element.get("id", str(id(element)))
             # Use same unique ID logic as _prepare_tree_and_extract_kids
-            unique_id = f"{current_period_id}_{as_id}" if current_period_id else as_id
-            current_encrypted = unique_id in encrypted_ids
+            unique_id = f"{state.period_id}_{as_id}" if state.period_id else as_id
+            encrypted = unique_id in encrypted_ids
 
             # Update base_url to the AdaptationSet-specific base URL
             if unique_id in base_url_map:
@@ -583,22 +616,33 @@ class MPDRewriter:
 #                logger.debug(f"AdaptationSet {unique_id} using stored base URL: {base_url}")
 
             # Get specific KID for this AdaptationSet (multi-key mode only)
-            if current_encrypted and not self.key_config.single_key_mode:
-                current_kid = as_id_to_kid.get(unique_id)
+            if encrypted and not self.key_config.single_key_mode:
+                kid = as_id_to_kid.get(unique_id)
+
+        # This is the state that applies to *this* element and everything
+        # below it — including rep_id, which is the piece that previously
+        # got dropped on recursion (see _RewriteState docstring).
+        current_state = _RewriteState(
+            base_url=base_url,
+            period_id=state.period_id,
+            encrypted=encrypted,
+            kid=kid,
+            rep_id=rep_id,
+        )
 
         # Handle BaseURL elements - THESE MUST BE REWRITTEN TO PROXY URLS
         if element.tag.endswith("BaseURL") and element.text:
             raw_url = element.text.strip()
             if raw_url:
                 # Resolve the relative BaseURL against the current base
-                resolved_cdn_url = self._urljoin_preserve_query(base_url, raw_url)
+                resolved_cdn_url = self._urljoin_preserve_query(current_state.base_url, raw_url)
 
                 # Rewrite the BaseURL text to a proxy URL
                 # In receiver-side clearkey mode, this will use /api/proxy/
                 element.text = self.build_proxy_url(
                     resolved_cdn_url, None, None,
-                    current_encrypted, current_kid,
-                    representation_id=current_rep_id
+                    current_state.encrypted, current_state.kid,
+                    representation_id=current_state.rep_id
                 )
 
         # ------------------------------------------------------------------
@@ -618,39 +662,36 @@ class MPDRewriter:
                 if not val:
                     continue
 
-                resolved = self._urljoin_preserve_query(base_url, val)
+                resolved = self._urljoin_preserve_query(current_state.base_url, val)
                 if "$" in resolved:
                     # Use shared utility for splitting template URLs
                     path, pattern = URLResolver.split_template_url(resolved)
                     element.attrib[attr] = self.build_proxy_url(
-                        path, pattern, seg_type, current_encrypted, current_kid,
-                        representation_id=current_rep_id
+                        path, pattern, seg_type, current_state.encrypted, current_state.kid,
+                        representation_id=current_state.rep_id
                     )
                 else:
                     element.attrib[attr] = self.build_proxy_url(
-                        resolved, None, seg_type, current_encrypted, current_kid,
-                        representation_id=current_rep_id
+                        resolved, None, seg_type, current_state.encrypted, current_state.kid,
+                        representation_id=current_state.rep_id
                     )
 
         # Handle SegmentURL (always 'media' type)
         if element.tag.endswith("SegmentURL") and "media" in element.attrib:
-            resolved = self._urljoin_preserve_query(base_url, element.attrib["media"])
+            resolved = self._urljoin_preserve_query(current_state.base_url, element.attrib["media"])
             path, pattern = (
                 URLResolver.split_template_url(resolved)
                 if "$" in resolved
                 else (resolved, None)
             )
             element.attrib["media"] = self.build_proxy_url(
-                path, pattern, "media", current_encrypted, current_kid,
-                representation_id=current_rep_id
+                path, pattern, "media", current_state.encrypted, current_state.kid,
+                representation_id=current_state.rep_id
             )
 
-        # Recurse to children
+        # Recurse to children, forwarding the full state (including rep_id)
         for child in element:
-            self._rewrite_node(
-                child, base_url, encrypted_ids, as_id_to_kid, base_url_map,
-                current_encrypted, current_kid, current_period_id, best_video_info
-            )
+            self._rewrite_node(child, current_state, encrypted_ids, as_id_to_kid, base_url_map)
 
     @staticmethod
     def _urljoin_preserve_query(base: str, url: str) -> str:
