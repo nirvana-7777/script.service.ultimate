@@ -15,7 +15,7 @@ class Channel(Content):
 
     channel_number: Optional[int] = None
     is_radio: bool = False
-    catchup_hours: Optional[int] = None
+    catchup_hours: Optional[int] = 0
 
     def __post_init__(self):
         self._validate_fields()
