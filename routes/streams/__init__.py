@@ -724,40 +724,31 @@ def make_helpers(manager, service):
                 return redirect(manifest_url)
 
             else:
-                # Encrypted but not ClearKey (e.g. Widevine-only catchup).
-                if receiver_side:
-                    # Client handles its own DRM — same proxy-if-needed/redirect
-                    # passthrough as the unencrypted case above.
-                    if manager.needs_proxy(provider):
-                        return service.get_proxied_catchup_manifest(
-                            provider, content_id, start_time, end_time, epg_id, country
-                        )
-                    manifest_url = manager.get_catchup_manifest(
-                        provider_name=provider,
-                        channel_id=content_id,
-                        start_time=start_time,
-                        end_time=end_time,
-                        epg_id=epg_id,
-                        country=country,
-                        drm_variant=drm_variant,
+                # Encrypted, not ClearKey (Widevine / PlayReady / other).
+                # Same reasoning as the live path: the server cannot decrypt
+                # these schemes, receiver_side carries no information, and the
+                # client negotiates the license via the x-kodi-drm-configs
+                # header. Both receiver_side values take the same path.
+                if manager.needs_proxy(provider):
+                    return service.get_proxied_catchup_manifest(
+                        provider, content_id, start_time, end_time, epg_id, country
                     )
-                    if not manifest_url:
-                        response.status = 404
-                        return {
-                            "error": f'Catchup manifest not available for channel "{content_id}"'
-                        }
-                    return redirect(manifest_url)
-                else:
-                    # Server can't decrypt non-ClearKey schemes — honest error
-                    # rather than silently proxying content the client likely
-                    # can't play anyway.
-                    response.status = 400
+                manifest_url = manager.get_catchup_manifest(
+                    provider_name=provider,
+                    channel_id=content_id,
+                    start_time=start_time,
+                    end_time=end_time,
+                    epg_id=epg_id,
+                    country=country,
+                    drm_variant=drm_variant,
+                )
+                if not manifest_url:
+                    response.status = 404
                     return {
-                        "error": (
-                            f'Catchup content for channel "{content_id}" does not support '
-                            f"decrypted playback (requires ClearKey or unencrypted)"
-                        )
+                        "error": f'Catchup manifest not available for channel "{content_id}"'
                     }
+                logger.debug(f"Redirecting to catchup manifest: {manifest_url}")
+                return redirect(manifest_url)
 
         # ==================================================================
         # Live / event / vod / recording path
@@ -826,38 +817,35 @@ def make_helpers(manager, service):
                 return _redirect_or_fetch(content_type, provider, content_id, country, drm_variant)
 
         else:
-            # Encrypted but not ClearKey (e.g. Widevine-only).
-            if receiver_side:
-                # When the caller explicitly requested software DRM and we found
-                # no ClearKey keys, surface a clear error rather than silently
-                # serving a Widevine stream the client cannot decrypt.
-                if drm_variant == "software":
-                    logger.warning(
-                        f"Software DRM requested but no ClearKey keys found for "
-                        f"{provider}/{content_id}"
-                    )
-                    response.status = 400
-                    return {"error": "Software DRM not available for this content"}
-
-                # Client handles its own DRM — same proxy-if-needed/redirect
-                # passthrough as the unencrypted case above.
-                if manager.needs_proxy(provider):
-                    return service.get_proxied_manifest(
-                        provider, content_id,
-                        highest_quality_only=highest_quality_only,
-                    )
-                return _redirect_or_fetch(content_type, provider, content_id, country, drm_variant)
-            else:
-                # Server can't decrypt non-ClearKey schemes — honest error
-                # rather than silently proxying content the client likely
-                # can't play anyway.
+            # Encrypted, not ClearKey (Widevine / PlayReady / other non-ClearKey).
+            #
+            # The server has no CDM and cannot decrypt these schemes, so
+            # client_drm / receiver_side carries no information here — there is
+            # no server-side option to prefer. The client consumes the DRM
+            # config from the x-kodi-drm-configs response header (populated by
+            # _build_drm_header above) and negotiates the license itself.
+            # Therefore both receiver_side values take the same path: hand the
+            # client a playable manifest, proxy if the provider needs it,
+            # redirect/fetch otherwise.
+            #
+            # The one exception is drm_variant=software combined with
+            # receiver_side=True: that combination explicitly asked for
+            # server-decryptable content, and none exists for this channel.
+            # An honest 400 is correct there.
+            if receiver_side and drm_variant == "software":
+                logger.warning(
+                    f"Software DRM requested but no ClearKey keys found for "
+                    f"{provider}/{content_id}"
+                )
                 response.status = 400
-                return {
-                    "error": (
-                        f'{content_type.capitalize()} "{content_id}" does not support '
-                        f"decrypted playback (requires ClearKey or unencrypted)"
-                    )
-                }
+                return {"error": "Software DRM not available for this content"}
+
+            if manager.needs_proxy(provider):
+                return service.get_proxied_manifest(
+                    provider, content_id,
+                    highest_quality_only=highest_quality_only,
+                )
+            return _redirect_or_fetch(content_type, provider, content_id, country, drm_variant)
 
     # Return all helpers as a dict for submodules to use
     return {

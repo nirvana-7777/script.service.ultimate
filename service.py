@@ -769,6 +769,11 @@ class UltimateService:
 
         entry_content = ""
         catchup_window = getattr(channel, 'catchup_hours', 0) if include_catchup else 0
+        # getattr's default only applies when the attribute is absent — Channel
+        # always defines catchup_hours, and providers that don't populate it
+        # leave it as None. Normalise None to 0 so the comparison below is
+        # type-safe.
+        catchup_window = catchup_window or 0
         if catchup_window > 0:
             catchup_type = getattr(channel, 'catchup_type', 'append')
             catchup_source = getattr(channel, 'catchup_source', '?start_time={utc}&end_time={utcend}')
