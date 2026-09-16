@@ -139,7 +139,10 @@ class MagentaEUProvider(StreamingProvider):
 
     @property
     def catchup_window(self) -> int:
-        # This provider offers 168 hours (7 days) of catchup
+        # Most MagentaEU natcos offer 168h (7 days) of catchup.
+        # HR (Max TV) and ME offer 336h (14 days).
+        if self.country.lower() in ("hr", "me"):
+            return 336
         return 168
 
     @property
