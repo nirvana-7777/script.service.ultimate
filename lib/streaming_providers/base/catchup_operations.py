@@ -77,6 +77,7 @@ class CatchupOperations:
                 end_time=end_time,
                 epg_id=epg_id,
                 country=country,
+                drm_variant=drm_variant,
             )
         except NotImplementedError:
             logger.error(f"Provider '{provider_name}' hasn't implemented catchup manifest resolution")
