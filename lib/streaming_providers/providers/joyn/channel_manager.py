@@ -328,7 +328,18 @@ class JoynChannelManager:
             return None
 
     def get_manifest_headers(self, content_id: str, **kwargs) -> Dict[str, str]:
-        return self.get_api_headers()
+        # The CDN-served manifest URL is self-authorizing; sending the Joyn
+        # provider bearer token to the CDN causes:
+        #   400 InvalidArgument: Unsupported Authorization Type
+        # so we deliberately omit Authorization here.
+        return self.provider._build_provider_headers(
+            base_headers={},
+            auth_type=AuthType.NONE,
+            provider_headers={
+                "User-Agent": JOYN_USER_AGENT,
+                "Origin": JOYN_DOMAINS.get(self.country, JOYN_DOMAINS["de"]),
+            },
+        )
 
     def _build_drm_config(self, playlist_data: Dict) -> Optional[DRMConfig]:
         """Build a DRMConfig object from a playlist response.
