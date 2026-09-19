@@ -49,8 +49,8 @@ DEVICE_IDS = {
 # HTTP Headers & User Agent
 # ============================================================================
 
-JOYN_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
-JOYN_CLIENT_VERSION = "5.1582.1"
+JOYN_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36"
+JOYN_CLIENT_VERSION = "5.1587.0"
 DEFAULT_PLATFORM = "web"
 
 # Base authentication headers (without dynamic values)

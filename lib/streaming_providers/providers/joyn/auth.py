@@ -298,7 +298,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
         headers.update({
             "Origin": JOYN_DOMAINS.get(self.country, JOYN_DOMAINS["de"]),
             "joyn-country": self.country.upper(),
-            "joyn-distribution-tenant": f"JOYN_{self.country.upper()}",
+            "joyn-distribution-tenant": COUNTRY_TENANT_MAPPING.get(self.country, "JOYN"),
             "joyn-platform": self.platform,
             "joyn-request-id": str(uuid.uuid4()),
             "Content-Type": "application/json",
@@ -382,6 +382,14 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             logger.warning(f"Token refresh failed: {e}")
             return None
 
+    def _sec_fetch_site_for(self, url: str) -> str:
+        def registrable(netloc: str) -> str:
+            return ".".join(netloc.split(".")[-2:])
+
+        target = registrable(urlparse(url).netloc)
+        origin = registrable(urlparse(JOYN_DOMAINS.get(self.country, JOYN_DOMAINS["de"])).netloc)
+        return "same-site" if target == origin else "cross-site"
+
     def _perform_oauth_authorization_code_flow(self, username: str, password: str) -> Dict[str, Any]:
         """Complete Joyn login flow matching the exact sequence observed from working traffic.
 
@@ -429,18 +437,12 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 clean_headers.setdefault("Accept-Encoding", "gzip, deflate, br")
                 clean_headers.setdefault("Cache-Control", "no-cache")
                 clean_headers.setdefault("Pragma", "no-cache")
-                clean_headers.setdefault("sec-ch-ua", '"Not A(Brand";v="99", "Google Chrome";v="121", "Chromium";v="121"')
                 clean_headers.setdefault("sec-ch-ua-mobile", "?0")
-                clean_headers.setdefault("sec-ch-ua-platform", '"Windows"')
-                if method.upper() == "POST":
-                    clean_headers.setdefault("Sec-Fetch-Site", "same-site")
-                    clean_headers.setdefault("Sec-Fetch-Mode", "cors")
-                    clean_headers.setdefault("Sec-Fetch-Dest", "empty")
-                else:
-                    clean_headers.setdefault("Sec-Fetch-Site", "none")
-                    clean_headers.setdefault("Sec-Fetch-Mode", "navigate")
-                    clean_headers.setdefault("Sec-Fetch-Dest", "document")
-                    clean_headers.setdefault("Sec-Fetch-User", "?1")
+                clean_headers.setdefault("sec-ch-ua", '"Google Chrome";v="153", "Not_A Brand";v="8", "Chromium";v="153"')
+                clean_headers.setdefault("sec-ch-ua-platform", '"macOS"')
+                clean_headers.setdefault("Sec-Fetch-Site", self._sec_fetch_site_for(url))
+                clean_headers.setdefault("Sec-Fetch-Mode", "cors")
+                clean_headers.setdefault("Sec-Fetch-Dest", "empty")
 
                 content_type = kwargs.pop("content_type", None)
                 if content_type:
