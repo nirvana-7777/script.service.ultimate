@@ -504,55 +504,70 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
             logger.debug(f"Extracted request_id: {request_id}")
 
-            # 2. Language/registration-setup check — non-fatal
+            # 2. Language/registration-setup check
             try:
-                _request(
+                r = _request(
                     "GET",
                     f"https://auth.7pass.de/registration-setup-srv/public/list?acceptlanguage=undefined&requestId={request_id}",
                 )
+                try:
+                    logger.debug(f"[probe] registration-setup response: {r.json()}")
+                except Exception:
+                    logger.debug(f"[probe] registration-setup (non-JSON): {r.text[:400]}")
             except Exception as e:
                 logger.debug(f"registration-setup failed (non-fatal): {e}")
 
-            # 3. Check whether the email exists — non-fatal
+            # 3. Check whether the email exists — capture body
             try:
-                _request(
+                r = _request(
                     "POST",
                     f"https://auth.7pass.de/users-srv/user/checkexists/{request_id}",
                     json={"email": username, "requestId": request_id},
                     content_type="application/json",
                 )
+                try:
+                    logger.debug(f"[probe] checkexists response: {r.json()}")
+                except Exception:
+                    logger.debug(f"[probe] checkexists (non-JSON): {r.text[:400]}")
             except Exception as e:
                 logger.debug(f"checkexists failed (non-fatal): {e}")
 
-            # 4. Configured verification methods list — non-fatal
+            # 4. Configured verification methods list — THIS IS THE LIKELY SOURCE
             try:
-                _request(
+                r = _request(
                     "POST",
                     "https://auth.7pass.de/verification-srv/v2/setup/public/configured/list",
                     json={"email": username, "request_id": request_id},
                     content_type="application/json",
                 )
+                try:
+                    cfg = r.json()
+                    logger.debug(f"[probe] configured/list response: {cfg}")
+                    # If it contains a status_id, remember it
+                    probe_status_id = (
+                            cfg.get("status_id") or cfg.get("statusId")
+                            or (cfg.get("data") or {}).get("status_id")
+                            or (cfg.get("data") or {}).get("statusId")
+                    )
+                    if probe_status_id:
+                        logger.info(f"[probe] FOUND status_id in configured/list: {probe_status_id}")
+                except Exception:
+                    logger.debug(f"[probe] configured/list (non-JSON): {r.text[:400]}")
             except Exception as e:
                 logger.debug(f"verification-srv failed (non-fatal): {e}")
 
             # 5. Submit username/password directly (form-encoded)
-            try:
-                login_response = _request(
-                    "POST",
-                    "https://auth.7pass.de/login-srv/login",
-                    data=urlencode({
-                        "username": username,
-                        "password": password,
-                        "requestId": request_id,
-                    }).encode(),
-                    content_type="application/x-www-form-urlencoded",
-                    allow_redirects=True,
-                )
-            except WafBlockedException:
-                raise
-            except Exception as e:
-                _raise_if_cf_error(e)
-                raise
+            login_response = _request(
+                "POST",
+                "https://auth.7pass.de/login-srv/login",
+                data=urlencode({
+                    "username": username,
+                    "password": password,
+                    "requestId": request_id,
+                }).encode(),
+                content_type="application/x-www-form-urlencoded",
+                allow_redirects=True,
+            )
 
             _check_cf(login_response)
             final_url = login_response.url
@@ -564,77 +579,71 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 sub = params.get("sub", [None])[0]
                 track_id = params.get("track_id", [None])[0]
 
-                logger.debug(f"login redirect params: {params}")
-
                 if sub and track_id:
                     logger.debug(f"Accepting consent for sub={sub}")
-                    try:
-                        consent_response = _request(
-                            "POST",
-                            "https://auth.7pass.de/consent-management-srv/consent/scope/accept",
-                            json={"sub": sub, "client_id": client_id,
-                                  "scopes": [{"offline_access": "denied"}]},
-                            content_type="application/json",
-                        )
-                        try:
-                            logger.debug(f"consent response body: {consent_response.json()}")
-                        except Exception as e:
-                            logger.debug(f"consent response not JSON: {e}")
-                    except WafBlockedException:
-                        raise
-                    except Exception as e:
-                        _raise_if_cf_error(e)
-                        raise
+                    _request(
+                        "POST",
+                        "https://auth.7pass.de/consent-management-srv/consent/scope/accept",
+                        json={
+                            "sub": sub,
+                            "client_id": client_id,
+                            "scopes": [{"offline_access": "denied"}],
+                        },
+                        content_type="application/json",
+                    )
 
-                    # ---- DIAGNOSTIC: probe the missing precheck step ----
-                    candidates = [
-                        ("GET", f"https://auth.7pass.de/login-srv/precheck/{track_id}"),
-                        ("POST", f"https://auth.7pass.de/login-srv/precheck/{track_id}"),
-                        ("GET", f"https://auth.7pass.de/login-srv/precheck/initiate/{track_id}"),
-                        ("POST", f"https://auth.7pass.de/login-srv/precheck/initiate/{track_id}"),
-                        ("GET", f"https://auth.7pass.de/login-srv/precheck/start/{track_id}"),
-                        ("POST", f"https://auth.7pass.de/login-srv/precheck/start/{track_id}"),
-                        ("GET", f"https://auth.7pass.de/login-srv/status/{track_id}"),
-                        ("POST", f"https://auth.7pass.de/login-srv/status/{track_id}"),
+                    # ================================================================
+                    # >>> INSERT THE PROBE BLOCK HERE <<<
+                    #     Right after consent succeeds, before precheck/continue.
+                    # ================================================================
+                    probe_status_id = None
+                    probe_urls = [
+                        ("POST", "https://auth.7pass.de/verification-srv/v2/setup/public/initiate"),
+                        ("POST", "https://auth.7pass.de/verification-srv/v2/setup/public/status"),
+                        ("GET", f"https://auth.7pass.de/verification-srv/v2/setup/public/status/{request_id}"),
+                        ("POST", "https://auth.7pass.de/verification-srv/v2/status"),
+                        ("GET", f"https://auth.7pass.de/users-srv/user/status/{request_id}"),
+                        ("GET", f"https://auth.7pass.de/users-srv/user/{request_id}"),
+                        ("POST", "https://auth.7pass.de/users-srv/user/status"),
                     ]
-                    status_id = None
-                    for method, url in candidates:
+                    for m, u in probe_urls:
                         try:
-                            if method == "GET":
-                                r = _request("GET", url, allow_redirects=False)
+                            if m == "GET":
+                                r = _request("GET", u, allow_redirects=False)
                             else:
-                                r = _request("POST", url, data=b"",
-                                             content_type="application/x-www-form-urlencoded",
-                                             allow_redirects=False)
-                            logger.debug(f"[probe] {method} {url} -> {r.status_code} {r.text[:400]}")
+                                r = _request(
+                                    "POST", u,
+                                    json={"email": username, "requestId": request_id,
+                                          "request_id": request_id, "track_id": track_id},
+                                    content_type="application/json",
+                                    allow_redirects=False,
+                                )
+                            logger.debug(f"[probe] {m} {u} -> {r.status_code} {r.text[:400]}")
                             if r.status_code == 200:
                                 try:
                                     j = r.json()
-                                    logger.debug(f"[probe]   json: {j}")
-                                    sid = j.get("status_id") or j.get("statusId") \
-                                          or (j.get("data") or {}).get("status_id")
+                                    sid = (
+                                            j.get("status_id") or j.get("statusId")
+                                            or (j.get("data") or {}).get("status_id")
+                                            or (j.get("data") or {}).get("statusId")
+                                    )
                                     if sid:
-                                        status_id = sid
-                                        logger.info(f"[probe] FOUND status_id={sid} via {method} {url}")
+                                        logger.info(f"[probe] FOUND status_id={sid} via {m} {u}")
+                                        probe_status_id = sid
                                         break
                                 except Exception:
                                     pass
-                        except WafBlockedException:
-                            raise
                         except Exception as e:
-                            logger.debug(f"[probe] {method} {url} failed: {e}")
-
-                    if status_id:
-                        continue_body = urlencode({"status_id": status_id}).encode()
-                    else:
-                        logger.warning("No status_id found by probing — dumping redirect params for diagnosis.")
-                        continue_body = b""
+                            logger.debug(f"[probe] {m} {u} failed: {e}")
+                    # ================================================================
+                    # >>> END PROBE BLOCK <<<
+                    # ================================================================
 
                     try:
                         continue_response = _request(
                             "POST",
                             f"https://auth.7pass.de/login-srv/precheck/continue/{track_id}",
-                            data=continue_body,
+                            data=b"",
                             content_type="application/x-www-form-urlencoded",
                             allow_redirects=True,
                         )
