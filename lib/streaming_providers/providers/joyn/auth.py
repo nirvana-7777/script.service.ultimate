@@ -564,10 +564,16 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 sub = params.get("sub", [None])[0]
                 track_id = params.get("track_id", [None])[0]
 
+                # NEW: capture any status_id the server may have handed us in the
+                # login redirect URL. Also log the whole parsed query so we can see
+                # every parameter the server sent (temporary debug aid).
+                status_id = params.get("status_id", [None])[0]
+                logger.debug(f"login redirect params: {params}")
+
                 if sub and track_id:
                     logger.debug(f"Accepting consent for sub={sub}")
                     try:
-                        _request(
+                        consent_response = _request(
                             "POST",
                             "https://auth.7pass.de/consent-management-srv/consent/scope/accept",
                             json={
@@ -583,11 +589,46 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                         _raise_if_cf_error(e)
                         raise
 
+                    # NEW: if status_id wasn't in the login redirect, try the consent
+                    # response body and then the session cookies.
+                    if not status_id:
+                        try:
+                            consent_json = consent_response.json()
+                            logger.debug(f"consent response body: {consent_json}")
+                            status_id = (
+                                    consent_json.get("status_id")
+                                    or consent_json.get("statusId")
+                                    or (consent_json.get("data") or {}).get("status_id")
+                            )
+                        except Exception as e:
+                            logger.debug(f"consent response not JSON: {e}")
+
+                    if not status_id:
+                        # Cookie fallback — 7pass sometimes drops the status token as a
+                        # cookie on the consent call.
+                        for c in session.cookies:
+                            if c.name.lower() in ("status_id", "statusid", "status-id"):
+                                status_id = c.value
+                                break
+                        logger.debug(f"status_id from cookies: {status_id}")
+
+                    # NEW: send status_id in the body. If we still don't have one,
+                    # log loudly so we know this is the exact failure point.
+                    if status_id:
+                        continue_body = urlencode({"status_id": status_id}).encode()
+                    else:
+                        logger.warning(
+                            "No status_id available for precheck/continue — server will likely "
+                            "reject with 24005 'status_id must not be empty'. Dumping full "
+                            "redirect params for diagnosis."
+                        )
+                        continue_body = b""
+
                     try:
                         continue_response = _request(
                             "POST",
                             f"https://auth.7pass.de/login-srv/precheck/continue/{track_id}",
-                            data=b"",
+                            data=continue_body,
                             content_type="application/x-www-form-urlencoded",
                             allow_redirects=True,
                         )
@@ -596,6 +637,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                     except Exception as e:
                         _raise_if_cf_error(e)
                         raise
+
                     final_url = continue_response.url
                     parsed = urlparse(final_url)
                     params = parse_qs(parsed.query)
