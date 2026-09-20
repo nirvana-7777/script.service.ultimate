@@ -517,7 +517,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             except Exception as e:
                 logger.debug(f"registration-setup failed (non-fatal): {e}")
 
-            # 3. Check whether the email exists — capture body
+            # 3. Check whether the email exists — capture and log the body
             try:
                 r = _request(
                     "POST",
@@ -528,11 +528,11 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 try:
                     logger.debug(f"[probe] checkexists response: {r.json()}")
                 except Exception:
-                    logger.debug(f"[probe] checkexists (non-JSON): {r.text[:400]}")
+                    logger.debug(f"[probe] checkexists (non-JSON): {r.text[:600]}")
             except Exception as e:
                 logger.debug(f"checkexists failed (non-fatal): {e}")
 
-            # 4. Configured verification methods list — THIS IS THE LIKELY SOURCE
+            # 4. Configured verification methods list — capture and log the body
             try:
                 r = _request(
                     "POST",
@@ -541,18 +541,9 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                     content_type="application/json",
                 )
                 try:
-                    cfg = r.json()
-                    logger.debug(f"[probe] configured/list response: {cfg}")
-                    # If it contains a status_id, remember it
-                    probe_status_id = (
-                            cfg.get("status_id") or cfg.get("statusId")
-                            or (cfg.get("data") or {}).get("status_id")
-                            or (cfg.get("data") or {}).get("statusId")
-                    )
-                    if probe_status_id:
-                        logger.info(f"[probe] FOUND status_id in configured/list: {probe_status_id}")
+                    logger.debug(f"[probe] configured/list response: {r.json()}")
                 except Exception:
-                    logger.debug(f"[probe] configured/list (non-JSON): {r.text[:400]}")
+                    logger.debug(f"[probe] configured/list (non-JSON): {r.text[:600]}")
             except Exception as e:
                 logger.debug(f"verification-srv failed (non-fatal): {e}")
 
