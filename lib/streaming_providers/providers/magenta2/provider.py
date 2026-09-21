@@ -718,6 +718,7 @@ class Magenta2Provider(StreamingProvider):
     def get_catchup_manifest(
         self, content_id: str, start_time: int, end_time: int, drm_variant: Optional[str] = "auto", **kwargs: Any
     ) -> Optional[str]:
+        content_id = self._get_playback_id(content_id)
         return self._playback_manager.get_catchup_manifest(
             content_id, start_time, end_time, drm_variant, **kwargs
         )
