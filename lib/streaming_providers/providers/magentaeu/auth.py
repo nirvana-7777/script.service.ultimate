@@ -1,11 +1,13 @@
 # streaming_providers/providers/magentaeu/auth.py
 # -*- coding: utf-8 -*-
+from __future__ import annotations
+
 import base64
 import json
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 # Updated imports for pycryptodome
 try:
@@ -52,9 +54,12 @@ from .constants import (
 )
 
 
+# ---------------------------------------------------------------------------
+# JWT helpers
+# ---------------------------------------------------------------------------
+
 class InvalidTokenError(Exception):
     """Exception for invalid JWT tokens"""
-
     pass
 
 
@@ -65,7 +70,9 @@ def base64url_decode(input_str: str) -> bytes:
 
 
 def decode_jwt(token: str, verify: bool = True) -> Dict[str, Any]:
-    """Decode JWT token"""
+    """
+    Decode a JWT payload. If verify=True, raise InvalidTokenError on expiry.
+    """
     try:
         header_b64, payload_b64, signature = token.split(".")
         payload_json = base64url_decode(payload_b64).decode("utf-8")
@@ -73,23 +80,36 @@ def decode_jwt(token: str, verify: bool = True) -> Dict[str, Any]:
 
         if verify and "exp" in payload:
             if payload["exp"] < time.time():
-                raise InvalidTokenError("Token has expired")
+                raise InvalidTokenError(
+                    f"Token expired at {payload['exp']} (now {int(time.time())})"
+                )
 
         return payload
-    except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
-        raise InvalidTokenError("Invalid token format")
+    except InvalidTokenError:
+        raise
+    except (ValueError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise InvalidTokenError(f"Invalid token format: {exc}")
 
 
 def is_token_valid(token: str) -> bool:
-    """Check if token is valid"""
+    """
+    Check if token is valid. Logs the specific rejection reason, since a
+    silent False is undiagnosable in the field.
+    """
     if not token:
+        logger.debug("is_token_valid: empty token")
         return False
     try:
-        decode_jwt(token)
+        decode_jwt(token, verify=True)
         return True
-    except InvalidTokenError:
+    except InvalidTokenError as exc:
+        logger.debug(f"is_token_valid: rejected -- {exc}")
         return False
 
+
+# ---------------------------------------------------------------------------
+# Token
+# ---------------------------------------------------------------------------
 
 @dataclass
 class MagentaAuthToken(BaseAuthToken):
@@ -99,14 +119,27 @@ class MagentaAuthToken(BaseAuthToken):
     device_id: Optional[str] = field(default="")
     session_id: Optional[str] = field(default="")
     channel_map_id: Optional[str] = field(default="")
+
     # Epoch time device_id/session_id were last confirmed via real cookies
     # from the startup page. 0 means "never validated" -- treated as stale
     # regardless of GUEST_SESSION_TTL_SECONDS.
     session_id_updated_at: float = field(default=0.0)
 
+    # Access-token lifetime is on BaseAuthToken.expires_in. The refresh-token
+    # lifetime is surfaced separately here because the HR login response
+    # reports `refreshExpiresIn` (camelCase) and the base class's
+    # needs_refresh() consults it -- so it must never be None. See
+    # _create_token_from_response for the coercion.
+    refresh_expires_in: int = field(default=0)
+
+    # --- /user/account payload, cached so VOD + entitlement checks don't
+    # each re-fetch it. Populated lazily by get_user_account(). ---
+    account_info: Optional[Dict[str, Any]] = field(default=None)
+    account_info_fetched_at: float = field(default=0.0)
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert token to dictionary"""
-        data = {
+        data: Dict[str, Any] = {
             "access_token": self.access_token,
             "refresh_token": self.refresh_token or "",
             "token_type": self.token_type,
@@ -117,7 +150,6 @@ class MagentaAuthToken(BaseAuthToken):
             ),
             "credential_type": self.credential_type or "",
         }
-        # Include session data
         if self.device_id:
             data["device_id"] = self.device_id
         if self.session_id:
@@ -126,18 +158,133 @@ class MagentaAuthToken(BaseAuthToken):
             data["channel_map_id"] = self.channel_map_id
         if self.session_id_updated_at:
             data["session_id_updated_at"] = self.session_id_updated_at
+        if self.refresh_expires_in:
+            data["refresh_expires_in"] = self.refresh_expires_in
+        if self.account_info is not None:
+            data["account_info"] = self.account_info
+            data["account_info_fetched_at"] = self.account_info_fetched_at
         return data
 
     def get_jwt_claims(self) -> Optional[Dict[str, Any]]:
-        """Extract JWT claims from access token"""
+        """Extract JWT claims from access token (no expiry verification)."""
         try:
             if not self.access_token:
                 return None
             return decode_jwt(self.access_token, verify=False)
-        except Exception as e:
-            logger.debug(f"Failed to extract JWT claims: {e}")
+        except Exception as exc:
+            logger.debug(f"Failed to extract JWT claims: {exc}")
             return None
 
+    # ------------------------------------------------------------------
+    # Composite-JWT claim accessors.
+    #
+    # The HR bifrost `accessToken` is a composite JWT. Its payload embeds
+    # the HAL / CTS / Persona tokens that theplatform-side services
+    # (licence server, concurrency service) require:
+    #
+    #   dc_cts_accountId      -> CTS (theplatform) account number
+    #   dc_cts_personaToken   -> RS512 JWT used as Widevine Basic-auth password
+    #   dc_cts_personaId      -> persona uuid (also inside personaToken.sub)
+    #   dc_tvAccountId        -> operator-side account number (e.g. HR
+    #                            6000014999), distinct from dc_cts_accountId
+    #
+    # account_url / account_identifier come from /user/account, not the JWT.
+    # ------------------------------------------------------------------
+
+    @property
+    def tv_account_id(self) -> Optional[str]:
+        c = self.get_jwt_claims() or {}
+        return c.get("dc_tvAccountId")
+
+    @property
+    def cts_account_id(self) -> Optional[str]:
+        c = self.get_jwt_claims() or {}
+        return c.get("dc_cts_accountId")
+
+    @property
+    def persona_id(self) -> Optional[str]:
+        c = self.get_jwt_claims() or {}
+        return c.get("dc_cts_personaId")
+
+    @property
+    def persona_jwt(self) -> Optional[str]:
+        """Raw RS512 persona token (Widevine Basic-auth password)."""
+        c = self.get_jwt_claims() or {}
+        return c.get("dc_cts_personaToken")
+
+    @property
+    def account_uri(self) -> Optional[str]:
+        """
+        MPX account URI, e.g.
+        http://access.auth.theplatform.com/data/Account/2709375564
+
+        Prefers the /user/account value (`account_url`); falls back to a
+        reconstruction from dc_cts_accountId. The reconstruction matches
+        the shape the live web app uses, but /user/account is authoritative.
+        """
+        if self.account_info and self.account_info.get("account_url"):
+            return self.account_info["account_url"]
+        acct = self.cts_account_id
+        if not acct:
+            return None
+        return f"http://access.auth.theplatform.com/data/Account/{acct}"
+
+    @property
+    def account_identifier(self) -> Optional[str]:
+        """Bare account uuid from /user/account (`account_identifier`)."""
+        if self.account_info:
+            return self.account_info.get("account_identifier")
+        return None
+
+    # ------------------------------------------------------------------
+    # VOD entitlement
+    # ------------------------------------------------------------------
+
+    @property
+    def vod_enabled(self) -> Optional[bool]:
+        """
+        Whether this account is allowed to play VOD at all.
+
+        Returns None when account_info has not been fetched yet -- callers
+        MUST distinguish "unknown" from "disabled", because acting on the
+        wrong one produces a false negative. The authoritative switch is
+        `managed_settings["TVSOA-setting-VodEnabled"]`; individual titles
+        have their own entitlement (HBO, Nova Plus, ...) which is separate.
+        """
+        if not self.account_info:
+            return None
+        ms = self.account_info.get("managed_settings") or {}
+        return str(ms.get("TVSOA-setting-VodEnabled", "")).lower() == "true"
+
+    @property
+    def vod_enabled_raw(self) -> Optional[str]:
+        """Raw value of the VOD-enabled managed setting, for diagnostics."""
+        if not self.account_info:
+            return None
+        ms = self.account_info.get("managed_settings") or {}
+        return ms.get("TVSOA-setting-VodEnabled")
+
+    @property
+    def entitlement_bouquets(self) -> list:
+        """
+        Managed-setting keys whose value is "true" and that look like
+        package entitlements (e.g. "HR-package-basic-ftv"). Used by the
+        provider when the actions API reports `subscribe` rather than
+        `watch`, to decide whether a specific premium title is playable
+        for this subscriber.
+        """
+        if not self.account_info:
+            return []
+        ms = self.account_info.get("managed_settings") or {}
+        return sorted(
+            k for k, v in ms.items()
+            if str(v).lower() == "true" and "package" in k.lower()
+        )
+
+
+# ---------------------------------------------------------------------------
+# Auth config
+# ---------------------------------------------------------------------------
 
 class MagentaAuthConfig:
     """Configuration for Magenta TV authentication"""
@@ -147,7 +294,6 @@ class MagentaAuthConfig:
         self.http_manager = http_manager
         self.country_config = COUNTRY_CONFIG[country]
 
-        # Application configuration
         self.app_version = APP_VERSION
         self.device_name = DEVICE_NAME
         self.user_agent = USER_AGENT
@@ -159,10 +305,10 @@ class MagentaAuthConfig:
         call_type: str = CALL_TYPES["GUEST_USER"],
         flow: str = AUTH_FLOWS["START_UP"],
         step: str = AUTH_STEPS["GET_ACCESS_TOKEN"],
-        device_id: str = None,
-        session_id: str = None,
-        tracking_id: str = None,
-        call_time: str = None,
+        device_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        tracking_id: Optional[str] = None,
+        call_time: Optional[str] = None,
     ) -> Dict[str, str]:
         """Get authentication headers, including x-txn-id"""
         return build_auth_headers(
@@ -177,24 +323,41 @@ class MagentaAuthConfig:
         )
 
     def encrypt_password(self, password: str) -> str:
-        """Encrypt password using RSA public key"""
-        try:
-            rsa_key = self.country_config["rsa_key"]
-            if not rsa_key:
-                logger.error(f"No RSA public key configured for country: {self.country}")
-                return password
+        """
+        Encrypt password using RSA public key.
 
+        Raises rather than returning the plaintext on failure. Sending a
+        plaintext credential in a login payload -- even over HTTPS -- is a
+        worse outcome than failing loudly.
+        """
+        rsa_key = self.country_config["rsa_key"]
+        if not rsa_key:
+            raise RuntimeError(
+                f"No RSA public key configured for country: {self.country} -- "
+                f"refusing to send plaintext credentials"
+            )
+        try:
             key = RSA.import_key(rsa_key)
             cipher = PKCS1_OAEP.new(key)
             ciphertext = cipher.encrypt(password.encode("utf-8"))
             return base64.b64encode(ciphertext).decode()
-        except Exception as e:
-            logger.error(f"Error encrypting password: {e}")
-            return password
+        except Exception as exc:
+            raise RuntimeError(f"Failed to encrypt password: {exc}") from exc
 
+
+# ---------------------------------------------------------------------------
+# Authenticator
+# ---------------------------------------------------------------------------
 
 class MagentaAuthenticator(BaseAuthenticator):
     """Magenta TV authenticator - directly extends BaseAuthenticator"""
+
+    # How long a /user/account response is reused before re-fetching. Long
+    # enough that the VOD manager and entitlement checks within one session
+    # hit the network at most once, short enough that a mid-session
+    # entitlement change (package added/removed) is picked up before the
+    # next playback attempt.
+    ACCOUNT_INFO_TTL_SECONDS = 15 * 60  # 15 minutes
 
     def __init__(
         self,
@@ -204,10 +367,9 @@ class MagentaAuthenticator(BaseAuthenticator):
         config_dir: Optional[str] = None,
         http_manager=None,
         proxy_config: Optional[ProxyConfig] = None,
-        device_id: Optional[str] = None,  # New parameter
+        device_id: Optional[str] = None,
         session_id: Optional[str] = None,
-    ):  # New parameter
-
+    ):
         logger.info(f"=== MagentaAuthenticator.__init__ START ===")
 
         if country not in SUPPORTED_COUNTRIES:
@@ -222,11 +384,8 @@ class MagentaAuthenticator(BaseAuthenticator):
         self._http_manager = http_manager
         self._proxy_config = proxy_config
 
-        # Setup config
         self._config = MagentaAuthConfig(self.country, self._http_manager)
 
-        # Call parent init (this will load existing session if available)
-        # Call parent init (this will load existing session if available)
         super().__init__(
             provider_name="magentaeu",
             settings_manager=settings_manager,
@@ -238,13 +397,8 @@ class MagentaAuthenticator(BaseAuthenticator):
 
         logger.info(f"=== MagentaAuthenticator.__init__ AFTER super().__init__ ===")
 
-        # device_id/session_id are no longer decided once here and then
-        # trusted for the token's entire lifetime -- a persisted pair could
-        # be months old with no way to know it ever went invalid server-side.
-        # We just make sure a token object exists to read/write into; actual
-        # validation and refresh happens lazily in get_guest_session_ids(),
-        # called uniformly by every guest-flow call site (channel list, EPG,
-        # etc), independent of whether the user is authenticated.
+        # device_id/session_id are validated lazily by get_guest_session_ids();
+        # we only make sure a token object exists to read/write into.
         if not self._current_token or not isinstance(self._current_token, MagentaAuthToken):
             self._current_token = MagentaAuthToken(
                 access_token="",
@@ -254,10 +408,10 @@ class MagentaAuthenticator(BaseAuthenticator):
                 issued_at=time.time(),
             )
 
-        # Explicit device_id/session_id constructor args (if the caller
-        # already knows good values) still take precedence, but they don't
-        # get treated as pre-validated -- session_id_updated_at is left at
-        # 0 so the first get_guest_session_ids() call still checks them.
+        # Explicit constructor args (if the caller already knows good values)
+        # take precedence, but they don't get treated as pre-validated --
+        # session_id_updated_at stays at 0 so the first guest request still
+        # checks them.
         if device_id:
             self._current_token.device_id = device_id
         if session_id:
@@ -267,6 +421,10 @@ class MagentaAuthenticator(BaseAuthenticator):
             f"=== MagentaAuthenticator.__init__ COMPLETE - device_id/session_id "
             f"will be validated on first guest request ==="
         )
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
 
     @property
     def auth_endpoint(self) -> str:
@@ -283,31 +441,29 @@ class MagentaAuthenticator(BaseAuthenticator):
             return self._current_token.channel_map_id
         return ""
 
+    @property
+    def http_manager(self):
+        """Public access to HTTP manager"""
+        return self._http_manager
+
     def get_auth_headers(self, call_type: str, flow: str, step: str) -> Dict[str, str]:
         return self._config.get_auth_headers(call_type, flow, step)
 
     def get_epg_headers(self) -> Dict[str, str]:
         return self.get_auth_headers("GUEST_USER", "START_UP", "EPG_CHANNEL")
 
-    @property
-    def http_manager(self):
-        """Public access to HTTP manager"""
-        return self._http_manager
+    # ------------------------------------------------------------------
+    # Guest session
+    # ------------------------------------------------------------------
 
-    def _initialize_guest_session(self) -> tuple[str, str, bool]:
+    def _initialize_guest_session(self) -> Tuple[str, str, bool]:
         """
         Visit the provider's startup page to obtain a real deviceId/sessionId
         pair from Set-Cookie, the same way a browser would.
 
-        Uses API_ENDPOINTS["STARTUP_PAGE"] rather than a hardcoded "/epg"
-        path, since not every MagentaEU natco is guaranteed to serve the
-        startup page at that path -- a country override only needs to change
-        constants.py, not this method.
-
         Returns (device_id, session_id, obtained) where obtained=False means
         we had to fall back to random UUIDs. Callers must NOT treat an
-        obtained=False result as a validated, cacheable session -- that's
-        exactly how a permanently-invalid session got persisted before.
+        obtained=False result as a validated, cacheable session.
         """
         try:
             startup_url = API_ENDPOINTS["STARTUP_PAGE"].format(
@@ -322,6 +478,7 @@ class MagentaAuthenticator(BaseAuthenticator):
                 timeout=DEFAULT_REQUEST_TIMEOUT,
             )
 
+            status = getattr(response, "status_code", None)
             device_id = ""
             session_id = ""
 
@@ -332,34 +489,28 @@ class MagentaAuthenticator(BaseAuthenticator):
 
             if device_id and session_id:
                 logger.debug(
-                    f"[{self.country}] Guest session established from cookies - "
-                    f"device_id: {device_id}, session_id: {session_id}"
+                    f"[{self.country}] Guest session established from cookies "
+                    f"(status={status}) - device_id: {device_id}, session_id: {session_id}"
                 )
                 return device_id, session_id, True
 
             logger.warning(
-                f"[{self.country}] Startup page returned no deviceId/sessionId "
-                f"cookies; using unverified random fallback"
+                f"[{self.country}] Startup page (status={status}) returned no "
+                f"deviceId/sessionId cookies; using unverified random fallback"
             )
             return str(uuid.uuid4()), str(uuid.uuid4()), False
 
-        except Exception as e:
-            logger.warning(f"[{self.country}] Guest session initialization failed: {e}")
+        except Exception as exc:
+            logger.warning(f"[{self.country}] Guest session initialization failed: {exc}")
             return str(uuid.uuid4()), str(uuid.uuid4()), False
 
-    def get_guest_session_ids(self, force_refresh: bool = False) -> tuple[str, str]:
+    def get_guest_session_ids(self, force_refresh: bool = False) -> Tuple[str, str]:
         """
         Return (device_id, session_id) for guest-flow requests (channel
-        list, EPG, etc). This is the single source of truth for every guest
-        call site -- previously each call site (get_channels(), the EPG
-        manager) read current_token.device_id/session_id directly, which
-        were set once at first-ever init and never re-validated, so a pair
-        that went stale server-side stayed stale forever.
+        list, EPG, etc). Single source of truth for every guest call site.
 
         Values are re-validated whenever older than GUEST_SESSION_TTL_SECONDS
-        (or never validated at all -- session_id_updated_at == 0), regardless
-        of whether the user is authenticated; the bearer-token lifecycle
-        (_refresh_token) is separate from this guest session.
+        (or never validated at all -- session_id_updated_at == 0).
         """
         token = self._current_token
         device_id = ""
@@ -400,10 +551,6 @@ class MagentaAuthenticator(BaseAuthenticator):
             self._current_token.session_id_updated_at = time.time()
             self._save_session()
         else:
-            # Don't stamp session_id_updated_at -- an unverified fallback
-            # must not be cached as if it were a real, validated session.
-            # The next call will retry instead of trusting a guess for
-            # GUEST_SESSION_TTL_SECONDS.
             logger.warning(
                 f"[{self.country}] Guest session unverified; will retry on "
                 f"next call rather than caching this pair"
@@ -411,12 +558,15 @@ class MagentaAuthenticator(BaseAuthenticator):
 
         return device_id, session_id
 
+    # ------------------------------------------------------------------
+    # Header / payload builders
+    # ------------------------------------------------------------------
+
     def _get_auth_headers(self) -> Dict[str, str]:
         """Get headers for authentication request - required by BaseAuthenticator"""
         device_id = ""
         session_id = ""
 
-        # Get session data from current token if available
         if self._current_token and isinstance(self._current_token, MagentaAuthToken):
             device_id = self._current_token.device_id or ""
             session_id = self._current_token.session_id or ""
@@ -441,16 +591,13 @@ class MagentaAuthenticator(BaseAuthenticator):
         if not self.credentials or not isinstance(self.credentials, UserPasswordCredentials):
             raise Exception("No valid credentials available")
 
-        # Enhanced validation
         if not self.credentials.username or not self.credentials.password:
             raise Exception("Username and password cannot be empty")
 
-        # Get device_id from current token or expect it to be provided via other means
         device_id = ""
         if self._current_token and isinstance(self._current_token, MagentaAuthToken):
             device_id = self._current_token.device_id or ""
 
-        # If no device_id, we need to get it from the provider
         if not device_id:
             device_id = str(uuid.uuid4())
 
@@ -477,68 +624,142 @@ class MagentaAuthenticator(BaseAuthenticator):
                 "broadcastingStreamLimitationApplies": BROADCASTING_STREAM_LIMITATION_APPLIES,
             },
             "telekomLogin": {
-                "username": self.credentials.username,  # Works for both types!
-                "password": encrypted_password,  # Works for both types!
+                "username": self.credentials.username,
+                "password": encrypted_password,
             },
         }
 
+    # ------------------------------------------------------------------
+    # Token construction
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _read_token_field(
+        data: Dict[str, Any],
+        camel: str,
+        snake: str,
+        default: Any = None,
+    ) -> Any:
+        """
+        Read a field that may appear in either camelCase (login/refresh
+        bodies) or snake_case (stored session format). is-not-None checks
+        rather than truthiness so a legitimate 0 is not treated as missing.
+        """
+        if camel in data and data[camel] is not None:
+            return data[camel]
+        if snake in data and data[snake] is not None:
+            return data[snake]
+        return default
+
     def _create_token_from_response(self, response_data: Dict[str, Any]) -> BaseAuthToken:
         """Create token from API response - required by BaseAuthenticator"""
-        # PRESERVE the existing session IDs (which follow the correct priority)
+
+        # --- Preserve existing session data ---------------------------------
         device_id = ""
         session_id = ""
         channel_map_id = ""
         session_id_updated_at = 0.0
+        existing_account_info: Optional[Dict[str, Any]] = None
+        existing_account_info_fetched_at = 0.0
 
-        # Try to get session IDs from multiple sources in priority order:
-
-        # 1. First from the response_data itself (when loading from stored session)
+        # Priority 1: fields stored directly on the token blob (restored
+        # sessions come through this path -- _load_session() calls
+        # _create_token_from_response with the persisted dict).
         if "device_id" in response_data:
-            device_id = response_data.get("device_id", "")
+            device_id = response_data.get("device_id", "") or ""
         if "session_id" in response_data:
-            session_id = response_data.get("session_id", "")
+            session_id = response_data.get("session_id", "") or ""
         if "session_id_updated_at" in response_data:
             session_id_updated_at = response_data.get("session_id_updated_at", 0.0) or 0.0
 
-        # 2. Then from current token (for new authentications)
-        if (
-            (not device_id or not session_id)
-            and self._current_token
-            and isinstance(self._current_token, MagentaAuthToken)
-        ):
-            device_id = self._current_token.device_id or ""
-            session_id = self._current_token.session_id or ""
-            channel_map_id = self._current_token.channel_map_id or ""
-            session_id_updated_at = self._current_token.session_id_updated_at or 0.0
+        # account_info restore -- TTL-checked. A stale snapshot must not
+        # override a real entitlement change that happened while the app
+        # was closed.
+        if "account_info" in response_data and response_data["account_info"] is not None:
+            fetched_at = response_data.get("account_info_fetched_at", 0.0) or 0.0
+            age = time.time() - fetched_at
+            if age < self.ACCOUNT_INFO_TTL_SECONDS:
+                existing_account_info = response_data["account_info"]
+                existing_account_info_fetched_at = fetched_at
+                logger.debug(
+                    f"Restored persisted account_info (age={age:.0f}s)"
+                )
+            else:
+                logger.debug(
+                    f"Dropping persisted account_info: age {age:.0f}s "
+                    f"exceeds TTL {self.ACCOUNT_INFO_TTL_SECONDS}s"
+                )
 
-        # 3. If we found session IDs, log it
+        # Priority 2: carry forward from the current token (refresh / upgrade
+        # paths -- same user, so the entitlements remain valid).
+        if (not device_id or not session_id) and isinstance(
+            self._current_token, MagentaAuthToken
+        ):
+            device_id = device_id or (self._current_token.device_id or "")
+            session_id = session_id or (self._current_token.session_id or "")
+            channel_map_id = self._current_token.channel_map_id or ""
+            session_id_updated_at = (
+                session_id_updated_at
+                or self._current_token.session_id_updated_at
+                or 0.0
+            )
+            if existing_account_info is None:
+                existing_account_info = self._current_token.account_info
+                existing_account_info_fetched_at = (
+                    self._current_token.account_info_fetched_at or 0.0
+                )
+
         if device_id and session_id:
             logger.debug(
-                f"Creating new token with session IDs - device_id: {device_id}, session_id: {session_id}"
+                f"Creating new token with session IDs - device_id: {device_id}, "
+                f"session_id: {session_id}"
             )
         else:
             logger.warning(
-                f"No session IDs found in response_data or current_token during token creation"
+                "No session IDs found in response_data or current_token during "
+                "token creation"
             )
 
-        # DUAL KEY SUPPORT: Handle both camelCase (API responses) and snake_case (stored sessions)
-        # Access token
-        access_token = response_data.get("accessToken") or response_data.get("access_token")
+        # --- Access token (required) ----------------------------------------
+        access_token = self._read_token_field(
+            response_data, "accessToken", "access_token"
+        )
         if not access_token:
-            logger.error(f"CRITICAL: No access token found in response data")
+            logger.error("CRITICAL: No access token found in response data")
             logger.error(f"Available keys: {list(response_data.keys())}")
             raise Exception("No access token found in response data")
 
-        # Refresh token
-        refresh_token = response_data.get("refreshToken") or response_data.get("refresh_token", "")
+        # --- Refresh token --------------------------------------------------
+        refresh_token = self._read_token_field(
+            response_data, "refreshToken", "refresh_token", ""
+        )
 
-        # Expires in
-        expires_in = response_data.get("expiresIn") or response_data.get("expires_in", 3600)
+        # --- Expiries -------------------------------------------------------
+        # The HR login response field is `accessExpiresIn`, NOT `expiresIn`.
+        # Reading the wrong key previously caused a fallback to 3600s and a
+        # refresh attempt every hour against 7-day access tokens.
+        expires_in_raw = self._read_token_field(
+            response_data, "accessExpiresIn", "expires_in", None
+        )
+        if expires_in_raw is None:
+            # Older / other natco variants may use `expiresIn`.
+            expires_in_raw = self._read_token_field(
+                response_data, "expiresIn", "expires_in", 3600
+            )
+        expires_in = int(expires_in_raw)
 
-        # Token type
-        token_type = response_data.get("tokenType") or response_data.get("token_type", "Bearer")
+        # refresh_expires_in must never be None -- BaseAuthToken.needs_refresh
+        # does `if self.refresh_expires_in > 0:` and would raise TypeError.
+        refresh_expires_in_raw = self._read_token_field(
+            response_data, "refreshExpiresIn", "refresh_expires_in", None
+        )
+        refresh_expires_in = (
+            int(refresh_expires_in_raw) if refresh_expires_in_raw is not None else 0
+        )
 
-        # For stored sessions, issued_at might be in the data, otherwise use current time
+        token_type = self._read_token_field(
+            response_data, "tokenType", "token_type", "Bearer"
+        )
         issued_at = response_data.get("issued_at", time.time())
 
         token = MagentaAuthToken(
@@ -551,12 +772,17 @@ class MagentaAuthenticator(BaseAuthenticator):
             session_id=session_id,
             channel_map_id=channel_map_id,
             session_id_updated_at=session_id_updated_at,
+            refresh_expires_in=refresh_expires_in,
+            account_info=existing_account_info,
+            account_info_fetched_at=existing_account_info_fetched_at,
         )
 
-        # Classify token
         token.auth_level = self._classify_token(token)
-        logger.debug(f"Token created successfully from {len(response_data)} data fields")
 
+        logger.info(
+            f"Token created: access_expires_in={expires_in}s, "
+            f"refresh_expires_in={refresh_expires_in}s"
+        )
         return token
 
     def get_fallback_credentials(self):
@@ -565,32 +791,46 @@ class MagentaAuthenticator(BaseAuthenticator):
 
         return UserPasswordCredentials(username="", password="")
 
+    # ------------------------------------------------------------------
+    # Authentication
+    # ------------------------------------------------------------------
+
     def _perform_authentication(self) -> BaseAuthToken:
         """Perform Magenta TV authentication - required by BaseAuthenticator"""
-        # Enhanced credential validation - FIXED VERSION
         if not self.credentials:
             raise Exception("No credentials available for authentication")
 
-        # Accept both MagentaCredentials AND base UserPasswordCredentials
         from ...base.auth.credentials import UserPasswordCredentials
 
         if not isinstance(self.credentials, UserPasswordCredentials):
             raise Exception(
-                f"Invalid credential type: {type(self.credentials)}. Expected UserPasswordCredentials or MagentaCredentials"
+                f"Invalid credential type: {type(self.credentials)}. "
+                f"Expected UserPasswordCredentials or MagentaCredentials"
             )
 
-        # Validate credential content
         if not self.credentials.username or not self.credentials.password:
             raise Exception("Username and password are required for authentication")
 
         logger.info(f"Performing Magenta TV authentication for country: {self.country}")
 
+        # Clear any previously cached /user/account data before logging in.
+        # A full login may be for a *different* user than the token we
+        # currently hold -- carrying the old account_info forward would
+        # serve the previous user's vod_enabled/entitlement_bouquets for up
+        # to ACCOUNT_INFO_TTL_SECONDS. Refresh/upgrade paths (which reuse
+        # _create_token_from_response without going through this method)
+        # deliberately do NOT clear it, since those are same-user.
+        if isinstance(self._current_token, MagentaAuthToken):
+            self._current_token.account_info = None
+            self._current_token.account_info_fetched_at = 0.0
+
         try:
-            # Perform login
             headers = self._get_auth_headers()
             payload = self._build_auth_payload()
 
-            logger.debug(f"Authentication payload prepared for user: {self.credentials.username}")
+            logger.debug(
+                f"Authentication payload prepared for user: {self.credentials.username}"
+            )
 
             response = self._http_manager.post(
                 self.auth_endpoint,
@@ -603,15 +843,16 @@ class MagentaAuthenticator(BaseAuthenticator):
             response.raise_for_status()
             token_data = response.json()
 
-            # Handle device limit exceeded
             if token_data.get("deviceLimitExceed", False):
                 logger.info("Device limit exceeded, attempting token upgrade")
                 token_data = self._upgrade_token(token_data["refreshToken"])
 
             return self._create_token_from_response(token_data)
 
-        except Exception as e:
-            logger.error(f"Authentication failed for user {self.credentials.username}: {e}")
+        except Exception as exc:
+            logger.error(
+                f"Authentication failed for user {self.credentials.username}: {exc}"
+            )
             raise
 
     def _upgrade_token(self, refresh_token: str) -> Dict[str, Any]:
@@ -647,7 +888,7 @@ class MagentaAuthenticator(BaseAuthenticator):
         response.raise_for_status()
         return response.json()
 
-    def _get_session_data(self) -> tuple[str, str, str, float]:
+    def _get_session_data(self) -> Tuple[str, str, str, float]:
         """Safely get session data from current token"""
         if isinstance(self._current_token, MagentaAuthToken):
             return (
@@ -659,7 +900,13 @@ class MagentaAuthenticator(BaseAuthenticator):
         return "", "", "", 0.0
 
     def _refresh_token(self) -> Optional[BaseAuthToken]:
-        """Refresh Magenta TV token - override base method"""
+        """
+        Refresh Magenta TV token - override base method.
+
+        Routes the response through _create_token_from_response() so the
+        camelCase/snake_case handling, the accessExpiresIn/refreshExpiresIn
+        reading, and the account-info carry-forward are done in one place.
+        """
         if not self._current_token or not self._current_token.refresh_token:
             logger.debug("No valid refresh token available")
             return None
@@ -669,12 +916,11 @@ class MagentaAuthenticator(BaseAuthenticator):
 
             refresh_url = API_ENDPOINTS["REFRESH_TOKEN"].format(natco=self.country)
 
-            device_id, session_id, channel_map_id, session_id_updated_at = self._get_session_data()
+            device_id, session_id, _, _ = self._get_session_data()
 
             tracking_id = str(uuid.uuid4())
             call_time = str(int(time.time() * 1000))
 
-            # Build headers according to your working example
             headers = self._config.get_auth_headers(
                 call_type=CALL_TYPES["AUTH_USER"],
                 flow=AUTH_FLOWS["START_UP"],
@@ -685,7 +931,6 @@ class MagentaAuthenticator(BaseAuthenticator):
                 call_time=call_time,
             )
 
-            # Add the specific headers from your working example
             headers.update(
                 {
                     "Refresh_token": self._current_token.refresh_token,
@@ -693,18 +938,13 @@ class MagentaAuthenticator(BaseAuthenticator):
                 }
             )
 
-            # Build payload matching your working example
             payload = {
-                "clientVersion": APP_VERSION,  # Use current APP_VERSION
+                "clientVersion": APP_VERSION,
                 "deviceId": device_id,
                 "concurrencyLimitParam": DEVICE_CONCURRENCY_PARAM,
             }
 
             logger.debug(f"Refresh request - URL: {refresh_url}")
-            logger.debug(
-                f"Refresh request - Headers: { {k: v for k, v in headers.items() if k not in ['Authorization', 'Refresh_token']} }"
-            )
-            logger.debug(f"Refresh request - Payload: {payload}")
 
             response = self._http_manager.post(
                 refresh_url,
@@ -717,29 +957,17 @@ class MagentaAuthenticator(BaseAuthenticator):
             response.raise_for_status()
             token_data = response.json()
 
-            # Create new token with updated data but preserve session IDs
-            new_token = MagentaAuthToken(
-                access_token=token_data["accessToken"],
-                refresh_token=token_data.get("refreshToken", self._current_token.refresh_token),
-                token_type="Bearer",
-                expires_in=token_data.get("expiresIn", 3600),
-                issued_at=time.time(),
-                device_id=device_id,
-                session_id=session_id,
-                channel_map_id=channel_map_id,
-                session_id_updated_at=session_id_updated_at,
-            )
+            return self._create_token_from_response(token_data)
 
-            # Classify token
-            new_token.auth_level = self._classify_token(new_token)
-            logger.info("Token refresh successful")
-            return new_token
-
-        except Exception as e:
-            logger.warning(f"Token refresh failed: {e}")
-            if hasattr(e, "response") and hasattr(e.response, "text"):
-                logger.error(f"Refresh response content: {e.response.text}")
+        except Exception as exc:
+            logger.warning(f"Token refresh failed: {exc}")
+            if hasattr(exc, "response") and hasattr(exc.response, "text"):
+                logger.error(f"Refresh response content: {exc.response.text}")
             return None
+
+    # ------------------------------------------------------------------
+    # Token classification
+    # ------------------------------------------------------------------
 
     def _classify_token(self, token: BaseAuthToken) -> TokenAuthLevel:
         """Classify Magenta TV token - required by BaseAuthenticator"""
@@ -747,39 +975,63 @@ class MagentaAuthenticator(BaseAuthenticator):
             if not token or not token.access_token:
                 return TokenAuthLevel.UNKNOWN
 
-            # Only MagentaAuthToken has get_jwt_claims method
             if isinstance(token, MagentaAuthToken):
                 claims = token.get_jwt_claims()
             else:
-                # For BaseAuthToken, try to decode JWT manually
                 try:
                     claims = decode_jwt(token.access_token, verify=False)
                 except InvalidTokenError:
-                    return TokenAuthLevel.UNKNOWN
-                except (ValueError, json.JSONDecodeError, UnicodeDecodeError) as e:
-                    logger.debug(f"Error decoding JWT token: {e}")
                     return TokenAuthLevel.UNKNOWN
 
             if not claims:
                 return TokenAuthLevel.UNKNOWN
 
-            # Magenta tokens with username in claims indicate user authentication
             if "username" in claims or "preferred_username" in claims:
                 return TokenAuthLevel.USER_AUTHENTICATED
 
-            # Anonymous tokens typically have limited claims
-            if len(claims) <= 3:  # Basic claims like exp, iat, iss
+            if len(claims) <= 3:
                 return TokenAuthLevel.ANONYMOUS
 
             return TokenAuthLevel.USER_AUTHENTICATED
 
-        except Exception as e:
-            logger.debug(f"Error classifying token: {e}")
+        except Exception as exc:
+            logger.debug(f"Error classifying token: {exc}")
             return TokenAuthLevel.UNKNOWN
 
-    def get_user_account(self) -> Dict[str, Any]:
-        """Get user account information"""
+    # ------------------------------------------------------------------
+    # /user/account
+    # ------------------------------------------------------------------
+
+    def get_user_account(self, force_refresh: bool = False) -> Dict[str, Any]:
+        """
+        Get user account information, with in-memory caching on the token.
+
+        The response is cached for ACCOUNT_INFO_TTL_SECONDS and survives
+        restarts (persisted via _save_session / restored in
+        _create_token_from_response, with the TTL re-checked on restore).
+        Callers that need to pick up a mid-session entitlement change can
+        pass force_refresh=True.
+
+        Side effects:
+          * populates current_token.channel_map_id
+          * populates current_token.account_info / account_info_fetched_at
+          * persists the token
+        """
+        token = self._current_token
+        if not isinstance(token, MagentaAuthToken):
+            raise Exception("No token available to hold account info")
+
+        if not force_refresh and token.account_info is not None:
+            age = time.time() - (token.account_info_fetched_at or 0.0)
+            if age < self.ACCOUNT_INFO_TTL_SECONDS:
+                logger.debug(
+                    f"get_user_account: serving cached account info (age={age:.0f}s)"
+                )
+                return token.account_info
+
         access_token = self.get_bearer_token()
+        if access_token.startswith("Bearer "):
+            access_token = access_token[7:]
 
         account_url = API_ENDPOINTS["USER_ACCOUNT"].format(
             bifrost_url=get_bifrost_url(self.country)
@@ -791,11 +1043,7 @@ class MagentaAuthenticator(BaseAuthenticator):
             "natco_code": self.country,
         }
 
-        device_id = ""
-        session_id = ""
-        if self._current_token and isinstance(self._current_token, MagentaAuthToken):
-            device_id = self._current_token.device_id or ""
-            session_id = self._current_token.session_id or ""
+        device_id, session_id, _, _ = self._get_session_data()
 
         tracking_id = str(uuid.uuid4())
         call_time = str(int(time.time() * 1000))
@@ -822,14 +1070,21 @@ class MagentaAuthenticator(BaseAuthenticator):
         response.raise_for_status()
         account_data = response.json()
 
-        # Save channel map ID to current token
-        if (
-            "channelMap_id" in account_data
-            and self._current_token
-            and isinstance(self._current_token, MagentaAuthToken)
-        ):
-            self._current_token.channel_map_id = account_data["channelMap_id"]
-            # Save the updated token with channel_map_id
-            self._save_session()
+        if "channelMap_id" in account_data:
+            token.channel_map_id = account_data["channelMap_id"]
 
+        token.account_info = account_data
+        token.account_info_fetched_at = time.time()
+
+        ms = account_data.get("managed_settings") or {}
+        logger.info(
+            f"[{self.country}] account loaded: "
+            f"tvAccountId={account_data.get('tvAccountId')}, "
+            f"vod_enabled={ms.get('TVSOA-setting-VodEnabled')!r}, "
+            f"catchup_enabled={account_data.get('catchup_enabled')}, "
+            f"entitlement_bouquets="
+            f"{sorted(k for k, v in ms.items() if 'package' in k.lower() and str(v).lower() == 'true')}"
+        )
+
+        self._save_session()
         return account_data

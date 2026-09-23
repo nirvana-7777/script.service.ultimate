@@ -17,8 +17,11 @@ from ..lib_theplatform import (
     build_widevine_drm_config,
     parse_bifrost_epg_channel,
 )
+import threading
 from .auth import MagentaAuthenticator
 from .epg_manager import MagentaEUEpgManager
+from .vod_manager import MagentaEUVodManager
+from .vod_errors import VodCatchupRequiredError, VodNotFoundError
 from .constants import (
     API_ENDPOINTS,
     CONTENT_TYPE_LIVE,
@@ -102,6 +105,11 @@ class MagentaEUProvider(StreamingProvider):
             http_manager=self.http_manager,
             authenticator=self.authenticator,
         )
+
+        # VOD manager — lazy, same reasoning as epg_manager but VOD is
+        # opt-in per account (see MagentaEUVodManager.is_vod_enabled).
+        self._vod_manager: Optional[MagentaEUVodManager] = None
+        self._vod_manager_lock = threading.Lock()  # NEW
         logger.info(f"=== MagentaProvider.__init__ COMPLETE ===")
 
     def _load_proxy_from_manager(self, config_dir: Optional[str]) -> Optional[ProxyConfig]:
@@ -144,6 +152,39 @@ class MagentaEUProvider(StreamingProvider):
         if self.country.lower() in ("hr", "me"):
             return 336
         return 168
+
+    @property
+    def vod_manager(self) -> MagentaEUVodManager:
+        if self._vod_manager is None:
+            with self._vod_manager_lock:
+                if self._vod_manager is None:  # re-check inside the lock
+                    self._vod_manager = MagentaEUVodManager(
+                        country=self.country,
+                        http_manager=self.http_manager,
+                        authenticator=self.authenticator,
+                    )
+        return self._vod_manager
+
+    @property
+    def implements_vod(self) -> bool:
+        return True
+
+    def get_vod_category(self, content_id: str = "", **kwargs) -> List:
+        return self.vod_manager.get_category_children(content_id)
+
+    def search_vod(
+        self,
+        query: str,
+        cursor: Optional[str] = None,
+        page_size: int = 24,
+        **kwargs,
+    ) -> List:
+        if cursor is not None:
+            logger.warning(
+                f"[{self.country}] search_vod: cursor={cursor!r} ignored — "
+                f"search pagination is not yet implemented"
+            )
+        return self.vod_manager.search(query, size=page_size).entries
 
     @property
     def supported_auth_types(self) -> List[str]:
@@ -403,16 +444,63 @@ class MagentaEUProvider(StreamingProvider):
         return True
 
     def get_manifest(self, content_id: str, **kwargs) -> Optional[str]:
-        """Get manifest URL for a channel by ID"""
-        if not self._ensure_channels_cache():
+        """
+        Get manifest URL for a channel OR a VOD asset by ID.
+
+        Tries the live-channel cache first (unchanged fast path), then
+        falls back to the VOD manager.
+
+        Only VodNotFoundError and VodCatchupRequiredError are caught
+        and swallowed to None here — both are legitimate "there's
+        nothing to play at this content_id via this path" outcomes,
+        same as the pre-existing "channel not found" case below them.
+        Every other VodError (VodEntitlementError,
+        VodAccountVodDisabledError, VodGeoBlockError, VodAuthError
+        after its internal retry already failed, VodRateLimitError,
+        VodServerError, a bare VodError) is a real, user-relevant
+        failure and is NOT caught here — it propagates to the caller,
+        which is expected to already have error handling for
+        get_manifest() failing (this mirrors how the original
+        get_manifest() let arbitrary exceptions from
+        _ensure_channels_cache's callees propagate). Swallowing those
+        into a silent None would hide exactly the failures a person
+        needs to see (e.g. "you need HBO for this" vs. "nothing here").
+
+        A VodCatchupRequiredError means the "VOD" entry is actually a
+        linear catch-up item — see vod_errors.VodCatchupRequiredError
+        docstring, and vod_manager.py's note that the check producing
+        this exception is currently unconfirmed against real capture
+        data (see _resolve_playable_video_id). Full bridging into
+        get_catchup_manifest() is not implemented here: not because of
+        any epoch/ISO conversion difficulty (build_catchup_url() already
+        takes plain epoch ints, and the captured catchup_start_utc /
+        catchup_end_utc strings are ordinary ISO-8601 — trivial to parse
+        with stdlib datetime, no TimestampConverter reverse-direction
+        needed) — but because the exception that would carry the
+        catchup_schedules[] data isn't confirmed reachable from the
+        endpoint this code path actually calls. Wire the bridge once
+        that's confirmed; don't invent a conversion before there's data
+        to convert.
+        """
+        if self._ensure_channels_cache():
+            for channel in self._channels_cache:
+                if channel.channel_id == content_id:
+                    return channel.manifest
+
+        try:
+            return self.vod_manager.get_manifest(content_id, **kwargs)
+        except VodCatchupRequiredError as exc:
+            logger.warning(
+                f"[{self.country}] {content_id} is catch-up-only, not VOD. "
+                f"station_id={exc.station_id!r}, "
+                f"{len(exc.catchup_schedules)} catchup window(s) available. "
+                f"Bridging to get_catchup_manifest() is not yet implemented."
+            )
             return None
-
-        for channel in self._channels_cache:
-            if channel.channel_id == content_id:
-                return channel.manifest
-
-        logger.warning(f"Channel {content_id} not found in available channels")
-        return None
+        except VodNotFoundError:
+            logger.warning(f"Content {content_id} not found in channels or VOD")
+            return None
+        # Deliberately no broader `except VodError` here — see docstring.
 
     def get_catchup_manifest(
             self, content_id: str, start_time: int, end_time: int, drm_variant: Optional[str] = "auto", **kwargs
@@ -456,25 +544,33 @@ class MagentaEUProvider(StreamingProvider):
             return base_manifest
 
     def get_drm(self, content_id: str, **kwargs) -> List[DRMConfig]:
-        """Get DRM configurations for channel by ID"""
-        logger.info(f"=== get_drm_configs_by_id CALLED for channel_id: {content_id} ===")
+        """
+        Get DRM configurations for a channel OR a VOD asset by ID.
 
-        if not self._ensure_channels_cache():
-            logger.warning(f"Cannot get DRM for {content_id}, channels cache unavailable")
+        Same exception-narrowing rule as get_manifest() above: only
+        VodNotFoundError and VodCatchupRequiredError are swallowed to
+        an empty list. Every other VodError propagates.
+        """
+        logger.info(f"=== get_drm CALLED for content_id: {content_id} ===")
+
+        if self._ensure_channels_cache():
+            for cached_channel in self._channels_cache:
+                if cached_channel.channel_id == content_id:
+                    drm_config = self.get_drm_config(cached_channel, **kwargs)
+                    return [drm_config] if drm_config else []
+
+        try:
+            return self.vod_manager.get_drm(content_id, **kwargs)
+        except VodCatchupRequiredError as exc:
+            logger.warning(
+                f"[{self.country}] {content_id} is catch-up-only, not VOD — "
+                f"no DRM config to resolve here. station_id={exc.station_id!r}"
+            )
             return []
-
-        channel = None
-        for cached_channel in self._channels_cache:
-            if cached_channel.channel_id == content_id:
-                channel = cached_channel
-                break
-
-        if not channel:
-            logger.warning(f"Channel with ID {content_id} not found in cache")
+        except VodNotFoundError:
+            logger.warning(f"Content {content_id} not found in channels or VOD")
             return []
-
-        drm_config = self.get_drm_config(channel, **kwargs)
-        return [drm_config] if drm_config else []
+        # Deliberately no broader `except VodError` here — see docstring.
 
     def get_drm_configs(self, channel: StreamingChannel, **kwargs) -> List[DRMConfig]:
         """Get DRM configurations for channel"""
