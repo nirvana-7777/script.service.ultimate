@@ -40,6 +40,39 @@ NEW for the specifics):
          entries seen so far; still un-captured shapes raise
          VodNotImplementedError via the same discipline as search().
 
+Pricing (base.models.pricing.Pricing / PricePoint) is deliberately
+NEVER set on any VodItem this file constructs -- every parser below
+leaves it at its default of None. This is an explicit decision, not a
+gap that got missed:
+
+  - Pricing.access_type has no default and must be set explicitly, so
+    there is no way to attach a "partial" or "best guess" Pricing --
+    it's all-or-nothing.
+  - No capture has ever shown a non-empty actions.rent[] or
+    actions.purchase[] array, so the fields needed to build even one
+    PricePoint (amount, currency, sku, ...) are completely unknown.
+  - No capture has ever come from an account with vod_enabled=true, so
+    what a genuinely entitled actions.watch[] response looks like --
+    and whether pricing metadata rides alongside it -- is unknown.
+  - The one signal that looks price-model-relevant,
+    `svod_subscription_message`, does NOT reliably distinguish SVOD
+    from TVOD gating: it's present on titles with no trailer (Johnny
+    English, American Hostage) and absent on a title that does have one
+    and is independently confirmed content_type="tvod" via the
+    playback response (Tom i Jerry). That's consistent with it being a
+    generic "not entitled" upsell message shown regardless of the
+    underlying billing model, not a specific SVOD indicator -- but
+    there's no capture that rules out the alternative either.
+
+Per Pricing's own docstring ("None/unknown pricing should never be
+treated as free -- this is a revenue-leak risk"), leaving `pricing`
+unset is the only defensible choice against this evidence: setting
+even a plausible-looking access_type here would present a guess as
+fact to anything downstream that trusts it. Do not add pricing
+population to this file until at least one of: a non-empty
+rent[]/purchase[] capture, or a vod_enabled=true account capture,
+exists to build it from.
+
 Everything else (browse, search, pagination) is unchanged from the
 original proposal, which matched the capture well.
 """
