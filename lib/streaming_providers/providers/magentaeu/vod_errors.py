@@ -88,6 +88,18 @@ class VodNotFoundError(VodError):
     """Content has been removed or never existed."""
 
 
+class VodBadRequestError(VodError):
+    """
+    400 -- malformed request for the endpoint called.
+
+    Confirmed in production (not just capture): passing a component id
+    to `/home/page/{id}` returns 400, not 404. `get_category_children()`'s
+    page-then-component dispatch guess relies on this to know when its
+    first guess was wrong, since content_id alone doesn't reveal
+    whether it names a page or a component.
+    """
+
+
 class VodRateLimitError(VodError):
     """429 -- caller should back off."""
 

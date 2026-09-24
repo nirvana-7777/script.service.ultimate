@@ -74,6 +74,7 @@ from .constants import (
 from .vod_errors import (
     VodAccountVodDisabledError,
     VodAuthError,
+    VodBadRequestError,
     VodCatchupRequiredError,
     VodEntitlementError,
     VodError,
@@ -212,10 +213,25 @@ class MagentaEUVodManager:
         if not content_id:
             return self.get_root_categories()
 
+        # Rails come back as components; a page id returns the rails on
+        # that page. We cannot tell from the id alone which one this is,
+        # so we try page first and fall back to component.
+        #
+        # FIXED (production evidence, not capture): the wrong-guess
+        # signal from bifrost is 400 Bad Request, NOT 404 as originally
+        # assumed. A live call to /home/page/{component_id} for a real
+        # rail id (e.g. "PREPORUKA UREDNIKA" -> 640f02fb55eb300001743795)
+        # returned 400. Catching only VodNotFoundError here meant every
+        # non-page content_id propagated a raw VodError instead of
+        # falling through to _get_component_assets -- i.e. every rail
+        # was unbrowsable. Both exception types are caught now.
         try:
             return self._get_page_rails(content_id)
-        except VodNotFoundError:
-            pass
+        except (VodNotFoundError, VodBadRequestError) as exc:
+            logger.debug(
+                f"[{self._country}] {content_id} is not a page "
+                f"({type(exc).__name__}), trying as a component instead"
+            )
 
         return self._get_component_assets(content_id)
 
@@ -750,6 +766,12 @@ class MagentaEUVodManager:
             raise VodEntitlementError(message, status=status, url=url)
         if status == 404:
             raise VodNotFoundError(message, status=status, url=url)
+        if status == 400:
+            # FIXED (production evidence): a component id passed to
+            # /home/page/{id} returns 400, not 404. get_category_children()
+            # relies on this being raised as a distinguishable type to
+            # know its page-vs-component guess was wrong.
+            raise VodBadRequestError(message, status=status, url=url)
         if status == 429:
             raise VodRateLimitError(message, status=status, url=url)
         if 500 <= status < 600:
