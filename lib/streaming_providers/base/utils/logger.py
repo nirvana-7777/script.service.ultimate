@@ -14,6 +14,35 @@ from .environment import get_environment_manager
 _env_manager_instance = get_environment_manager()
 
 
+def _resolve_log_level() -> int:
+    """
+    Log level for the standalone logger.
+
+    The environment variable wins, because that is how a container is
+    configured, then config.json. Anything else defaults to INFO. Level DEBUG
+    logs every upstream request and response and is written to the log file in
+    profile_path as well, so it should only be active when it was actually
+    asked for.
+    """
+    import os
+
+    env_debug = os.environ.get("ULTIMATE_DEBUG")
+    if env_debug is not None and env_debug.strip() != "":
+        return (
+            logging.DEBUG
+            if env_debug.strip().lower() in ("1", "true", "yes", "on")
+            else logging.INFO
+        )
+
+    try:
+        if _env_manager_instance.get_config("debug_mode", False):
+            return logging.DEBUG
+    except Exception:  # noqa: BLE001 - config is optional, never fail logging setup
+        pass
+
+    return logging.INFO
+
+
 class BaseLogger:
     """Base logger interface that all logger implementations must follow"""
 
@@ -141,7 +170,7 @@ def create_logger() -> BaseLogger:
                             file=sys.stderr,
                         )
 
-                self._logger.setLevel(logging.DEBUG)
+                self._logger.setLevel(_resolve_log_level())
 
         def debug(self, message: str) -> None:
             self._logger.debug(message)
