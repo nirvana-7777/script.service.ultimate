@@ -681,6 +681,30 @@ class MagentaEUVodManager:
             call_type="AUTH_USER",
         )
 
+    @staticmethod
+    def _extract_status(exc: Exception) -> Optional[int]:
+        """
+        Best-effort extraction of an HTTP status code from an exception
+        raised by http_manager.get() itself.
+
+        FIXED (production evidence): confirmed via live logs that
+        http_manager.get() raises directly on non-2xx responses (it
+        logs "HTTP unknown error..." and raises) rather than returning
+        a response object with .status_code for the caller to inspect.
+        That meant _raise_for_status() was NEVER reached for any
+        non-2xx status -- every 400/401/403/404/429/5xx fell into the
+        generic "Transport error" catch-all below, and the 401-retry
+        logic was consequently unreachable too, despite looking correct
+        on inspection. This extracts the status from the exception
+        (the common requests.HTTPError shape: exc.response.status_code)
+        so the same classification logic can run regardless of whether
+        the status arrived via a raised exception or a returned
+        response object.
+        """
+        response_obj = getattr(exc, "response", None)
+        status = getattr(response_obj, "status_code", None)
+        return status if isinstance(status, int) else None
+
     def _request(
         self,
         path: str,
@@ -694,9 +718,15 @@ class MagentaEUVodManager:
         """
         Single HTTP entry point for every VOD call.
 
-        FIXED: retry_on_auth was previously accepted but never acted
-        on -- 401 always propagated straight out. It now actually
-        triggers one forced token refresh + one retry.
+        Status classification happens from TWO possible places, since
+        http_manager.get() has been confirmed to raise on non-2xx
+        rather than always returning a response object: (1) the
+        exception path below, via _extract_status(); (2) the
+        `status = getattr(response, "status_code", ...)` path further
+        down, kept as a defensive fallback in case behavior ever
+        differs by status code or client version. Both paths funnel
+        into the same _raise_for_status() + 401-retry logic so there's
+        exactly one place that owns the retry decision.
         """
         token = self._auth.get_bearer_token()
         if token.startswith("Bearer "):
@@ -724,12 +754,44 @@ class MagentaEUVodManager:
                 timeout=timeout,
             )
         except Exception as exc:
-            raise VodError(f"Transport error on {path}: {exc}", url=url) from exc
+            status = self._extract_status(exc)
+            if status is None:
+                # Genuine transport failure (DNS, TLS, connection
+                # refused, timeout) -- no status to classify.
+                raise VodError(f"Transport error on {path}: {exc}", url=url) from exc
+            return self._handle_status(
+                status, getattr(exc, "response", None), url, path,
+                params=params, flow=flow, step=step,
+                retry_on_auth=retry_on_auth, timeout=timeout,
+                transport_exc=exc,
+            )
 
         status = getattr(response, "status_code", None)
         if status == 200:
             return response.json()
 
+        return self._handle_status(
+            status, response, url, path,
+            params=params, flow=flow, step=step,
+            retry_on_auth=retry_on_auth, timeout=timeout,
+            transport_exc=None,
+        )
+
+    def _handle_status(
+        self,
+        status: Optional[int],
+        response,
+        url: str,
+        path: str,
+        *,
+        params: Dict[str, Any],
+        flow: str,
+        step: str,
+        retry_on_auth: bool,
+        timeout: int,
+        transport_exc: Optional[Exception],
+    ) -> Dict[str, Any]:
+        """Shared non-2xx handling for both call sites in _request()."""
         try:
             self._raise_for_status(status, response, url, path)
         except VodAuthError:
@@ -745,6 +807,10 @@ class MagentaEUVodManager:
             )
 
         # Defensive -- _raise_for_status always raises on non-200.
+        if transport_exc is not None:
+            raise VodError(
+                f"Unreachable: status {status}", status=status, url=url
+            ) from transport_exc
         raise VodError(f"Unreachable: status {status}", status=status, url=url)
 
     @staticmethod
