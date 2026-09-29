@@ -604,7 +604,8 @@ class SmilManager:
                 if "Invalid Token" in title or "InvalidAuthToken" in smil_content:
                     logger.error(f"SMIL invalid token for {content_id}: {title}")
                     return None
-                if "403" in smil_content:
+                if re.search(r"\b403\b", title) or re.search(r"\b403\b", abstract) \
+                        or "forbidden" in f"{title} {abstract}".lower():
                     logger.error(
                         f"SMIL access forbidden (403) for {content_id}: {title}"
                     )
