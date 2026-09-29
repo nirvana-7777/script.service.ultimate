@@ -11,7 +11,7 @@ class BootstrapConfig:
 
     client_model: str
     device_model: str
-    subscriber_type: str = "FTV_OTT_DT"  # resolved from platform via SUBSCRIBER_TYPES
+    subscriber_type: str = "FTV_OTT_DT"  # resolved from MAGENTA2_PLATFORMS[platform] in from_api_response()
     sam3_client_id: Optional[str] = None
     taa_url: Optional[str] = None
     device_tokens_url: Optional[str] = None
@@ -30,16 +30,35 @@ class BootstrapConfig:
 
     @classmethod
     def from_api_response(cls, bootstrap_data: Dict[str, Any], platform: str) -> "BootstrapConfig":
-        """Create BootstrapConfig from API response"""
-        from .constants import SUBSCRIBER_TYPES
+        """
+        Create BootstrapConfig from API response.
+
+        Raises:
+            ValueError: if clientModel, deviceModel or sam3ClientId is missing
+                from baseSettings. This is intentional — a bootstrap response
+                missing these fields means the server didn't recognize us as
+                a real client, and silently falling back (e.g. to the legacy
+                MAGENTA2_LEGACY_CLIENT_IDS table) would mask that. Do not add
+                a fallback here; let discovery fail loudly instead.
+        """
+        from .constants import MAGENTA2_PLATFORMS
 
         base_settings = bootstrap_data.get("baseSettings", {})
         dcm_settings = bootstrap_data.get("dcm", {})
 
+        required = ("clientModel", "deviceModel", "sam3ClientId")
+        missing = [k for k in required if not base_settings.get(k)]
+        if missing:
+            raise ValueError(
+                f"Bootstrap response missing required fields: {missing}"
+            )
+
+        platform_cfg = MAGENTA2_PLATFORMS.get(platform, {})
+
         return cls(
-            client_model=base_settings.get("clientModel", f"ftv-{platform}"),
-            device_model=base_settings.get("deviceModel", f"{platform.upper()}_FTV"),
-            subscriber_type=SUBSCRIBER_TYPES.get(platform, "FTV_OTT_DT"),
+            client_model=base_settings["clientModel"],
+            device_model=base_settings["deviceModel"],
+            subscriber_type=platform_cfg.get("subscriber_type", "FTV_OTT_DT"),
             sam3_client_id=base_settings.get("sam3ClientId"),
             taa_url=base_settings.get("taaUrl"),
             device_tokens_url=base_settings.get("deviceTokensUrl"),
@@ -264,6 +283,52 @@ class TvHubConfig:
 
 
 @dataclass
+class SpecialRightsRule:
+    """
+    One entry from manifest.mpx.specialRightsProfiles.clientData — governs
+    whether a station tagged with this profile name (e.g. "uhd") may be
+    played live, timeshifted, caught up, or recorded on this device/account.
+    """
+
+    name: str
+    live_tv_option: bool
+    timeshift_option: bool
+    catchup_option: bool
+    npvr_option: bool
+    manage_option: bool
+
+
+def _parse_special_rights_profiles(manifest_data: Dict[str, Any]) -> Dict[str, "SpecialRightsRule"]:
+    """
+    Parse manifest.mpx.specialRightsProfiles.clientData into a lookup by
+    profile name (e.g. "uhd"). A station with no matching entry here is
+    unrestricted — see channel_manager.ChannelManager._is_station_playable.
+    """
+    rules: Dict[str, SpecialRightsRule] = {}
+    entries = (
+        manifest_data.get("mpx", {})
+        .get("specialRightsProfiles", {})
+        .get("clientData", [])
+        or []
+    )
+    for entry in entries:
+        name = entry.get("name")
+        if not name:
+            continue
+        live = entry.get("liveTv", {}) or {}
+        rec = entry.get("recording", {}) or {}
+        rules[name] = SpecialRightsRule(
+            name=name,
+            live_tv_option=bool(live.get("liveTvOption", False)),
+            timeshift_option=bool(live.get("timeshiftOption", False)),
+            catchup_option=bool(live.get("catchupOption", False)),
+            npvr_option=bool(rec.get("npvrOption", False)),
+            manage_option=bool(rec.get("manageOption", False)),
+        )
+    return rules
+
+
+@dataclass
 class ManifestConfig:
     """Complete configuration from manifest discovery"""
 
@@ -273,6 +338,7 @@ class ManifestConfig:
     image_config: ImageConfig
     youbora_config: Dict[str, Any] = field(default_factory=dict)
     npvr_config: Dict[str, Any] = field(default_factory=dict)
+    special_rights_profiles: Dict[str, SpecialRightsRule] = field(default_factory=dict)
     raw_data: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -285,6 +351,7 @@ class ManifestConfig:
             image_config=ImageConfig.from_manifest_data(manifest_data),
             youbora_config=manifest_data.get("youbora", {}),
             npvr_config=manifest_data.get("npvr", {}),
+            special_rights_profiles=_parse_special_rights_profiles(manifest_data),
             raw_data=manifest_data,
         )
 

@@ -11,8 +11,9 @@ from .constants import (
     DEFAULT_REQUEST_TIMEOUT,
     MAGENTA2_BOOTSTRAP_URL,
     MAGENTA2_MANIFEST_URL,
+    MAGENTA2_PLATFORMS,
     OPENID_CONFIG_CACHE_DURATION,
-    SUBSCRIBER_TYPES,
+    render_user_agent,
 )
 
 
@@ -24,19 +25,26 @@ class DiscoveryService:
     def __init__(
         self,
         platform: str,
-        terminal_type: str,
         device_id: str,
         session_id: str,
         http_manager: HTTPManager,
         proxy_config: Optional[ProxyConfig] = None,
+        user_type: str = "normal",
     ):
+        cfg = MAGENTA2_PLATFORMS[platform]
         self.platform = platform
-        self.terminal_type = terminal_type
+        self._config_group = cfg["config_group"]
+        self._subscriber_type = cfg["subscriber_type"]
+        self._application_model = cfg["application_model"]
+        self._api_level = cfg["api_level"]
+        self._version = cfg["version"]
+        self._ua_plain = render_user_agent(platform, subscriber_suffix=False)
+        self._ua_subscriber = render_user_agent(platform, subscriber_suffix=True)
         self.device_id = device_id
         self.session_id = session_id
         self.http_manager = http_manager
         self.proxy_config = proxy_config
-        self.subscriber_type = SUBSCRIBER_TYPES.get(platform, "FTV_OTT_DT")
+        self._user_type = user_type
 
         # Cache storage
         self._bootstrap_config: Optional[BootstrapConfig] = None
@@ -118,16 +126,26 @@ class DiscoveryService:
         try:
             logger.info("Discovering bootstrap configuration")
 
-            terminal_type = self.terminal_type.lower().replace("_", "-")
-            url = MAGENTA2_BOOTSTRAP_URL.format(terminal_type=terminal_type)
+            url = MAGENTA2_BOOTSTRAP_URL.format(config_group=self._config_group)
 
+            # Superset of the modern web-client shape (deviceId, portal,
+            # subscriberType, $redirect, sid — from MacBook web capture) and
+            # the legacy/ATV shape (applicationModel, version — confirmed
+            # against real AndroidTV request logs, v3.180.7748). deviceModel
+            # is intentionally NOT sent on bootstrap: it's absent from every
+            # modern-shape capture we have (web and ATV alike) and only
+            # appears on the legacy ATV bootstrap shape.
             params = {
-                "deviceid": self.device_id,
-                "sid": self.session_id,
+                "deviceId": self.device_id,
+                "portal": "release",
+                "subscriberType": self._subscriber_type,
                 "$redirect": "false",
+                "sid": self.session_id,
+                "applicationModel": self._application_model,
+                "version": self._version,
             }
 
-            headers = self._get_dcm_headers()
+            headers = self._get_dcm_headers(subscriber_suffix=False)
 
             response = self.http_manager.get(
                 url,
@@ -183,42 +201,45 @@ class DiscoveryService:
         try:
             logger.info("Discovering manifest configuration")
 
+            # Manifest discovery only runs after a successful bootstrap — it
+            # needs deviceModel from the bootstrap response.
+            if not self._bootstrap_config:
+                logger.error("Cannot discover manifest: no bootstrap config available")
+                return None
+
             # Priority 1: Use dcm.manifestBaseUrl from bootstrap
-            if self._bootstrap_config and self._bootstrap_config.manifest_base_url:
-                terminal_type = self.terminal_type.lower().replace("_", "-")
+            if self._bootstrap_config.manifest_base_url:
                 manifest_url = self._bootstrap_config.manifest_base_url.replace(
-                    "{configGroupId}", terminal_type
+                    "{configGroupId}", self._config_group
                 )
                 logger.debug(f"Using bootstrap manifestBaseUrl: {manifest_url}")
 
             # Priority 2: Fallback to hardcoded manifest URL
             else:
-                terminal_type = self.terminal_type.lower().replace("_", "-")
-                manifest_url = MAGENTA2_MANIFEST_URL.format(terminal_type=terminal_type)
+                manifest_url = MAGENTA2_MANIFEST_URL.format(config_group=self._config_group)
                 logger.debug(f"Using fallback manifest URL: {manifest_url}")
 
-            # Build correct manifest parameters
-            from .constants import (
-                MAGENTA2_APP_NAME,
-                MAGENTA2_APP_VERSION,
-                MAGENTA2_RUNTIME_VERSION,
-                MANIFEST_FIRMWARE_MAPPINGS,
-                MANIFEST_MODEL_MAPPINGS,
-            )
-
+            # Superset of the modern web-client shape (deviceId, deviceModel,
+            # portal, subscriberType, $redirect, sid — from MacBook web
+            # capture) and the legacy/ATV shape (applicationModel, version,
+            # apiLevel, userType — confirmed against real AndroidTV request
+            # logs, v3.180.7748).
             params = {
-                "model": MANIFEST_MODEL_MAPPINGS.get(self.platform, "DT:ATV-AndroidTV"),
                 "deviceId": self.device_id,
-                "appname": MAGENTA2_APP_NAME,
-                "appVersion": MAGENTA2_APP_VERSION,
-                "firmware": MANIFEST_FIRMWARE_MAPPINGS.get(self.platform, "API level 30"),
-                "runtimeVersion": MAGENTA2_RUNTIME_VERSION,
-                "duid": self.device_id,  # Same as deviceId
+                "portal": "release",
+                "subscriberType": self._subscriber_type,
+                "$redirect": "false",
+                "sid": self.session_id,
+                "deviceModel": self._bootstrap_config.device_model,
+                "applicationModel": self._application_model,
+                "version": self._version,
+                "apiLevel": self._api_level,
+                "userType": self._user_type,
             }
 
             logger.debug(f"Manifest request params: {params}")
 
-            headers = self._get_dcm_headers()
+            headers = self._get_dcm_headers(subscriber_suffix=False)
 
             response = self.http_manager.get(
                 manifest_url,
@@ -315,18 +336,14 @@ class DiscoveryService:
             self._last_openid = None
             return None
 
-    def _get_dcm_headers(self) -> Dict[str, str]:
-        """Get headers for DCM requests"""
-        from .constants import DEFAULT_PLATFORM, MAGENTA2_PLATFORMS
-
-        platform_config = MAGENTA2_PLATFORMS.get(
-            self.platform, MAGENTA2_PLATFORMS[DEFAULT_PLATFORM]
-        )
-
+    def _get_dcm_headers(self, subscriber_suffix: bool = False) -> Dict[str, str]:
+        """Get headers for DCM requests (bootstrap/manifest)."""
+        ua = self._ua_subscriber if subscriber_suffix else self._ua_plain
         return {
-            "User-Agent": platform_config["user_agent"],
+            "User-Agent": ua,
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "Accept-Encoding": "gzip",
             "x-dt-session-id": self.session_id,
             "x-dt-call-id": self._generate_call_id(),
         }

@@ -57,6 +57,8 @@ class AuthBridge:
         provider_config: Any,
         session_id: str,
         serial_number: str,
+        user_agent_plain: str,
+        user_agent_subscriber: str,
         generate_call_id,  # callable() -> str
     ) -> None:
         self._authenticator = authenticator
@@ -67,6 +69,8 @@ class AuthBridge:
         self._provider_config = provider_config
         self._session_id = session_id
         self._serial_number = serial_number
+        self._ua_plain = user_agent_plain
+        self._ua_subscriber = user_agent_subscriber
         self._generate_call_id = generate_call_id
 
         self._persona_cache: Optional[PersonaResult] = None
@@ -187,7 +191,7 @@ class AuthBridge:
                 "x-dt-call-id": self._generate_call_id(),
                 "origin": "https://www.magenta.tv",
                 "referer": "https://www.magenta.tv/",
-                "user-agent": self._platform_config["user_agent"],
+                "user-agent": self._ua_subscriber,
                 "accept": "*/*",
                 "accept-encoding": "gzip, deflate, br, zstd",
                 "accept-language": "de-DE,de;q=0.9",
@@ -200,7 +204,7 @@ class AuthBridge:
                 "x-stbserialnumber": self._serial_number,
                 "dt-session-id": self._session_id,
                 "dt-call-id": self._generate_call_id(),
-                "user-agent": self._platform_config["user_agent"],
+                "user-agent": self._ua_subscriber,
                 "accept-encoding": "gzip",
             }
 
@@ -209,7 +213,7 @@ class AuthBridge:
         persona_token = self.ensure_authenticated()
         return {
             "Authorization": f"Basic {persona_token}",
-            "User-Agent": self._platform_config["user_agent"],
+            "User-Agent": self._ua_subscriber,
             "Accept-Encoding": "gzip",
             "CID": f"{self._session_id}::{self._generate_call_id()}",
         }

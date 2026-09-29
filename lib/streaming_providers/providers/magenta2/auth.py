@@ -23,15 +23,15 @@ from ...base.auth.base_oauth2_auth import OIDCConfiguration
 from ...base.auth.credentials import ClientCredentials
 from ...base.utils.logger import logger
 from .constants import (
-    APPVERSION2,
     DEFAULT_COUNTRY,
     DEFAULT_PLATFORM,
     IDM,
-    MAGENTA2_CLIENT_IDS,
+    MAGENTA2_LEGACY_CLIENT_IDS,
     MAGENTA2_PLATFORMS,
     SSO_USER_AGENT,
     SUPPORTED_COUNTRIES,
     TAA_REQUEST_TEMPLATE,
+    render_user_agent,
 )
 
 # Import Magenta2-specific components
@@ -58,10 +58,19 @@ class Magenta2Credentials(ClientCredentials):
         if not hasattr(self, "client_secret") or self.client_secret is None:
             self.client_secret = ""  # Empty string for public client
 
-        # Set client_id from constant if not provided
+        # client_id is no longer defaulted here. The caller (provider.py)
+        # supplies it explicitly — initially a placeholder from
+        # MAGENTA2_LEGACY_CLIENT_IDS, then the real, server-provided
+        # sam3ClientId once bootstrap discovery completes (see
+        # Magenta2Authenticator._configure_authenticator_from_discovery /
+        # provider.py's post-discovery update). Not defaulting here prevents
+        # silently re-introducing a stale/legacy client_id if a caller
+        # forgets to pass one.
         if not self.client_id:
-            self.client_id = MAGENTA2_CLIENT_IDS.get(
-                self.platform, MAGENTA2_CLIENT_IDS[DEFAULT_PLATFORM]
+            raise ValueError(
+                "Magenta2Credentials requires an explicit client_id "
+                "(pass a MAGENTA2_LEGACY_CLIENT_IDS placeholder pre-discovery, "
+                "or the bootstrap-provided sam3ClientId post-discovery)."
             )
 
         # Generate device ID if not provided
@@ -87,21 +96,48 @@ class Magenta2Credentials(ClientCredentials):
             self.platform, MAGENTA2_PLATFORMS[DEFAULT_PLATFORM]
         )
 
-        # Use provided models or fallback to platform defaults
+        # Single source of truth for the version: MAGENTA2_PLATFORMS[platform]
+        # ["version"] — the same value used to render the User-Agent. A real
+        # TAA capture confirms appVersion in both the JSON body and the
+        # keyValue string is identical to the version embedded in the UA
+        # (e.g. "3.134.4462" in both places) — there is no separate,
+        # independently-tracked TAA version.
+        version = platform_config["version"]
+
+        # device_name is unchanged as a key (still exists in
+        # MAGENTA2_PLATFORMS), only its value changed — from "Android TV" to
+        # the more specific "SHIELD Android TV" for the ATV platforms.
         resolved_device_model = device_model or platform_config["device_name"]
-        resolved_client_model = client_model or f"ftv-{self.platform}"
+
+        # Do NOT synthesize a client_model when the caller doesn't pass one.
+        # A real TAA onboarding-login capture shows neither a
+        # "ClientModelParams(...)" segment in keyValue nor a "client" key in
+        # the JSON body when client_model is omitted — a previous version of
+        # this method always synthesized f"ftv-{platform}" here, which meant
+        # ClientModelParams/"client" were ALWAYS sent even when the real
+        # client never sends them for this call. Only include them when the
+        # caller explicitly supplies a client_model.
+        resolved_client_model = client_model
+
+        # "os" is "API level {N}", not "Android {N}" — confirmed from a real
+        # TAA capture ("os":"API level 30" for android-tv/atv-launcher,
+        # api_level="30"). A previous version of this method reconstructed
+        # "Android 11" from android_version, which was an unconfirmed guess
+        # and is now known to be wrong.
+        api_level = platform_config.get("api_level")
+        os_string = f"API level {api_level}" if api_level else resolved_device_model
 
         # Build keyValue string with client model if available
-        key_value_parts = [IDM, APPVERSION2]
+        key_value_parts = [IDM, version]
 
-        # Add client model if available
+        # Add client model only if explicitly provided (see note above)
         if resolved_client_model:
             key_value_parts.append(f"ClientModelParams(id={resolved_client_model})")
 
         key_value_parts.extend(
             [
                 f"TokenChannelParams(id=Tv)",
-                f"TokenDeviceParams(id={self.device_id}, model={resolved_device_model}, os={platform_config['firmware']})",
+                f"TokenDeviceParams(id={self.device_id}, model={resolved_device_model}, os={os_string})",
                 "DE",
                 "telekom",
             ]
@@ -109,21 +145,24 @@ class Magenta2Credentials(ClientCredentials):
 
         key_value = "/".join(key_value_parts)
 
-        # Start with template and populate fields
+        # Start with template and populate fields — appVersion is set here
+        # from the single version source, not baked into the template (the
+        # template can't hold a platform-specific value).
         payload = TAA_REQUEST_TEMPLATE.copy()
         payload.update(
             {
                 "keyValue": key_value,
                 "accessToken": access_token,
+                "appVersion": version,
                 "device": {
                     "id": self.device_id,
                     "model": resolved_device_model,
-                    "os": platform_config["firmware"],
+                    "os": os_string,
                 },
             }
         )
 
-        # Add client model if available
+        # Add client model only if explicitly provided (see note above)
         if resolved_client_model:
             payload["client"] = {"model": resolved_client_model}
 
@@ -241,7 +280,7 @@ class Magenta2AuthConfig:
         self.platform_config = MAGENTA2_PLATFORMS.get(
             platform, MAGENTA2_PLATFORMS[DEFAULT_PLATFORM]
         )
-        self.user_agent = self.platform_config["user_agent"]
+        self.user_agent = render_user_agent(self.platform, subscriber_suffix=False)
         self.timeout = 30
         self.endpoints = endpoints or {}
         self.client_model = client_model
@@ -382,9 +421,13 @@ class Magenta2Authenticator(BaseAuthenticator):
             self._device_model,
         )
 
-        # Extract and cache client_id
-        self._client_id = self._sam3_client_id or MAGENTA2_CLIENT_IDS.get(
-            self.platform, MAGENTA2_CLIENT_IDS[DEFAULT_PLATFORM]
+        # Extract and cache client_id. Pre-discovery placeholder only —
+        # _configure_authenticator_from_discovery() (called by provider.py
+        # right after discover_provider_config() succeeds) overwrites this
+        # with the real, server-provided sam3ClientId before any actual
+        # token request is made.
+        self._client_id = self._sam3_client_id or MAGENTA2_LEGACY_CLIENT_IDS.get(
+            self.platform, MAGENTA2_LEGACY_CLIENT_IDS[DEFAULT_PLATFORM]
         )
 
         # Initialize credentials if not provided
@@ -581,13 +624,11 @@ class Magenta2Authenticator(BaseAuthenticator):
                     logger.debug(f"Token classified as USER_AUTHENTICATED (found {key} in JWT)")
                     return TokenAuthLevel.USER_AUTHENTICATED
 
-            # Check for client credentials patterns
-            client_id = claims.get("client_id", claims.get("clientId", ""))
-            if client_id in MAGENTA2_CLIENT_IDS.values():
-                logger.debug("Token classified as CLIENT_CREDENTIALS (known client ID)")
-                return TokenAuthLevel.CLIENT_CREDENTIALS
-
-            # Default to client credentials for TAA flow
+            # Everything else falls through to client-credentials classification
+            # for the TAA flow. (A prior version checked client_id against the
+            # legacy MAGENTA2_CLIENT_IDS table here, but both branches of that
+            # check returned CLIENT_CREDENTIALS regardless — it was a no-op,
+            # so it's been removed along with the dependency on that table.)
             logger.debug("Token classified as CLIENT_CREDENTIALS (default for TAA)")
             return TokenAuthLevel.CLIENT_CREDENTIALS
 

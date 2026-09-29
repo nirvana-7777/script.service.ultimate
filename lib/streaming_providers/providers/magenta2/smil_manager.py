@@ -50,7 +50,6 @@ from .constants import (
     DEFAULT_REQUEST_TIMEOUT,
     MAGENTA2_FALLBACK_ACCOUNT_URI,
     SMIL_CACHE_DURATION,
-    SMIL_CLIENT_ID,
     VOD_PREFIX_EPISODE,
     VOD_PREFIX_MOVIE_MV,
     VOD_PREFIX_MOVIE_SH,
@@ -65,11 +64,27 @@ class SmilManager:
         http_manager:       HTTPManager instance from the parent provider.
         provider_name:      Provider identifier string (e.g. ``"magenta2"``).
         session_id:         Stable session UUID used in ``cid`` correlation header.
+        device_id:          Persisted device UUID (from
+                            ``session_manager.get_device_id``). Used as
+                            ``player_{device_id}`` in the SMIL ``clientId``
+                            query param and passed through to the
+                            concurrency-unlock call, which must use the same
+                            value the SMIL request used.
+        user_agent_plain:   Rendered UA without the subscriber_type suffix.
+                            Currently unused directly by this class (SMIL and
+                            DRM requests are always subscriber-suffixed per
+                            capture) but kept for parity with DiscoveryService
+                            and in case a future endpoint needs it.
+        user_agent_subscriber: Rendered UA with the subscriber_type suffix —
+                            used for SMIL, DRM and concurrency-unlock requests,
+                            matching the real client's captured headers.
         call_id_callback:   Callable ``() -> str`` returning a fresh UUID per request.
         auth_callback:      Callable ``() -> str`` returning the current
                             Base64-encoded persona token.
-        platform_config:    Platform dict from ``MAGENTA2_PLATFORMS`` — supplies
-                            User-Agent and DRM request headers.
+        platform_config:    Platform dict from ``MAGENTA2_PLATFORMS``. Kept for
+                            any remaining legacy fields; no longer used for
+                            platform_config["user_agent"], which doesn't exist
+                            anymore — use user_agent_subscriber instead.
         endpoint_manager:   EndpointManager for selector / widevine endpoint lookup.
         provider_config:    ProviderConfig — account PID and account URI.
         vod_manager:        Optional VodManager — required only for GN id resolution.
@@ -81,6 +96,9 @@ class SmilManager:
         http_manager,
         provider_name: str,
         session_id: str,
+        device_id: str,
+        user_agent_plain: str,
+        user_agent_subscriber: str,
         call_id_callback,
         auth_callback,
         platform_config: Dict,
@@ -92,6 +110,9 @@ class SmilManager:
         self._http = http_manager
         self._provider = provider_name
         self._session_id = session_id
+        self._device_id = device_id
+        self._ua_plain = user_agent_plain
+        self._ua_subscriber = user_agent_subscriber
         self._call_id = call_id_callback
         self._auth = auth_callback
         self._platform_config = platform_config
@@ -217,6 +238,9 @@ class SmilManager:
                 f"account={quote(account_uri, safe='')}"
             )
 
+            call_id = self._call_id()
+            cid = f"{self._session_id}::{call_id}"
+
             drm_config = DRMConfig(
                 system=DRMSystem.WIDEVINE,
                 priority=1,
@@ -226,8 +250,9 @@ class SmilManager:
                     server_certificate=None,
                     req_headers=json.dumps(
                         {
-                            "User-Agent": self._platform_config["user_agent"],
+                            "User-Agent": self._ua_subscriber,
                             "Content-Type": "application/octet-stream",
+                            "CID": cid,
                         }
                     ),
                     use_http_get_request=False,
@@ -463,8 +488,15 @@ class SmilManager:
             logger.error(f"{self._provider}: No persona token for SMIL request")
             return None
 
-        cid = f"{self._session_id}::{self._call_id()}"
-        smil_params = f"?format=SMIL&formats=MPEG-DASH&tracking=true&cid={cid}"
+        call_id = self._call_id()
+        cid = f"{self._session_id}::{call_id}"
+        smil_params = (
+            f"?format=smil"
+            f"&formats=MPEG-DASH"
+            f"&tracking=true"
+            f"&clientId=player_{self._device_id}"
+            f"&cid={cid}"
+        )
 
         if smil_base_url:
             smil_url = f"{smil_base_url.split('?')[0]}{smil_params}"
@@ -487,8 +519,8 @@ class SmilManager:
 
         headers = {
             "Authorization": f"Basic {persona_token}",
-            "User-Agent": self._platform_config["user_agent"],
-            "Accept": "application/smil+xml, application/xml;q=0.9, */*;q=0.8",
+            "User-Agent": self._ua_subscriber,
+            "CID": cid,
         }
 
         logger.debug(f"{self._provider}: SMIL URL: {smil_url}")
@@ -528,8 +560,10 @@ class SmilManager:
         extract_and_release_lock(
             smil_content,
             self._http,
-            client_id=SMIL_CLIENT_ID,
-            user_agent=self._platform_config["user_agent"],
+            device_id=self._device_id,
+            session_id=self._session_id,
+            call_id_callback=self._call_id,
+            user_agent=self._ua_subscriber,
         )
 
         return smil_content

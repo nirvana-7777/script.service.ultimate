@@ -74,7 +74,21 @@ class PlaybackManager:
     provider_config:
         ProviderConfig after discovery.
     platform_config:
-        Platform-specific dict from MAGENTA2_PLATFORMS (user_agent, etc.).
+        Platform-specific dict from MAGENTA2_PLATFORMS. Kept for any fields
+        not covered by user_agent_subscriber (subscriber_type, etc.) — no
+        longer used for platform_config["user_agent"], which doesn't exist
+        anymore; use user_agent_subscriber instead.
+    user_agent_subscriber:
+        Rendered UA (with subscriber_type suffix) — used for the live-DRM
+        fast path in get_drm(), matching what SmilManager uses for its own
+        (SMIL/VOD) DRM path.
+    session_id / call_id_callback:
+        Needed so the live-DRM fast path can send a CID header
+        ("{session_id}::{call_id}"), matching the SMIL DRM path (see
+        smil_manager.get_drm) and confirmed against a real ATV widevine
+        capture, which shows only CID — no separate session-id header.
+        call_id_callback is optional — if omitted, CID is left off entirely
+        (better than sending a malformed header).
     auth_callback:
         Callable[[], str] — returns a valid persona token (Basic-auth value).
     recording_url_cache:
@@ -91,6 +105,9 @@ class PlaybackManager:
         platform_config: Dict,
         auth_callback: Callable[[], str],
         recording_url_cache: Dict[str, str],
+        user_agent_subscriber: Optional[str] = None,
+        session_id: Optional[str] = None,
+        call_id_callback: Optional[Callable[[], str]] = None,
     ):
         self._channel_manager = channel_manager
         self._smil_manager = smil_manager
@@ -99,6 +116,9 @@ class PlaybackManager:
         self._platform_config = platform_config
         self._ensure_authenticated = auth_callback
         self._recording_url_cache = recording_url_cache
+        self._ua_subscriber = user_agent_subscriber
+        self._session_id = session_id
+        self._call_id = call_id_callback
 
     # ------------------------------------------------------------------ #
     # Public API                                                           #
@@ -340,10 +360,15 @@ class PlaybackManager:
                 persona_jwt=raw_jwt,
                 account_uri=account_uri,
             )
+            call_id = self._call_id() if self._call_id else None
             return [
                 build_widevine_drm_config(
                     licence_url=licence_url,
-                    user_agent=self._platform_config["user_agent"],
+                    # Subscriber-suffixed UA — matches what SmilManager.get_drm
+                    # sends for the SMIL/VOD DRM path.
+                    user_agent=self._ua_subscriber,
+                    session_id=self._session_id,
+                    call_id=call_id,
                 )
             ]
         except Exception as exc:

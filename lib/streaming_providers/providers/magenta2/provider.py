@@ -15,7 +15,7 @@ that delegates to the three domain managers:
 """
 import uuid
 from datetime import datetime
-from typing import Any, ClassVar, Dict, List, Optional, Tuple, cast
+from typing import Any, ClassVar, Dict, List, Optional, Tuple, cast, Union
 from urllib.parse import quote
 
 from ...base.models import DRMConfig, StreamingChannel, Event
@@ -41,10 +41,11 @@ from .constants import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_PLATFORM,
     DEFAULT_REQUEST_TIMEOUT,
-    MAGENTA2_CLIENT_IDS,
+    MAGENTA2_LEGACY_CLIENT_IDS,
     MAGENTA2_LOGO,
     MAGENTA2_PLATFORMS,
     SUPPORTED_COUNTRIES,
+    render_user_agent,
 )
 from .discovery import DiscoveryService
 from .endpoint_manager import EndpointManager
@@ -78,15 +79,33 @@ class Magenta2Provider(StreamingProvider):
             )
 
         self.platform = platform
-        self.platform_config = MAGENTA2_PLATFORMS.get(
-            platform, MAGENTA2_PLATFORMS[DEFAULT_PLATFORM]
-        )
-        self.terminal_type = self.platform_config["terminal_type"]
+        if platform not in MAGENTA2_PLATFORMS:
+            raise ValueError(
+                f"Unknown platform '{platform}'. Supported: {list(MAGENTA2_PLATFORMS.keys())}"
+            )
+        self.platform_config = MAGENTA2_PLATFORMS[platform]
+        self.user_agent_plain = render_user_agent(platform, subscriber_suffix=False)
+        self.user_agent_subscriber = render_user_agent(platform, subscriber_suffix=True)
 
-        # Stable UUIDs for the lifetime of this provider instance.
-        self.session_id = self._generate_uuid()
-        self.device_id = self._generate_uuid()
-        self.serial_number = self._generate_uuid()
+        # session_id is fresh per process launch (matches the real client).
+        self.session_id = str(uuid.uuid1())
+
+        # device_id: read from the SAME persisted source TokenFlowManager
+        # already uses (SessionManager.get_device_id), which itself
+        # generates-and-persists on first call. Do NOT generate a second,
+        # independent device_id here — doing so would make discovery/SMIL
+        # send one device_id while the TAA/yo_digital token flow uses a
+        # different one, and the server would see two "devices" for one
+        # installation. get_device_id() currently persists a uuid4 — keep
+        # that format; do not switch to uuid1 for this value.
+        self.device_id = self.settings_manager.session_manager.get_device_id(
+            self.provider_name, self.country
+        )
+
+        # serial_number has no existing persisted home in SessionManager, so
+        # it gets its own small persisted key here (mirrors get_device_id's
+        # load-or-generate pattern without changing the shared SessionManager).
+        self.serial_number = self._get_or_create_serial_number()
 
         # ── Proxy ────────────────────────────────────────────────────────────
         self.proxy_config = (
@@ -103,7 +122,7 @@ class Magenta2Provider(StreamingProvider):
         self.http_manager = HTTPManagerFactory.create_for_provider(
             provider_name="magenta2",
             proxy_config=self.proxy_config,
-            user_agent=self.platform_config["user_agent"],
+            user_agent=self.user_agent_plain,
             timeout=DEFAULT_REQUEST_TIMEOUT,
             max_retries=DEFAULT_MAX_RETRIES,
         )
@@ -111,7 +130,6 @@ class Magenta2Provider(StreamingProvider):
         # ── Discovery service ────────────────────────────────────────────────
         self.discovery_service = DiscoveryService(
             platform=platform,
-            terminal_type=self.terminal_type,
             device_id=self.device_id,
             session_id=self.session_id,
             http_manager=self.http_manager,
@@ -127,12 +145,19 @@ class Magenta2Provider(StreamingProvider):
         self.provider_config = cast(ProviderConfig, cast(object, None))
 
         # ── Authenticator (minimal config; updated after discovery) ──────────
-        fallback_client_id = MAGENTA2_CLIENT_IDS.get(
-            platform, MAGENTA2_CLIENT_IDS[DEFAULT_PLATFORM]
+        # This placeholder client_id is overwritten by the real,
+        # server-provided sam3ClientId in _configure_authenticator_from_discovery()
+        # below, which always runs before __init__ returns (or __init__ raises
+        # and construction never completes — see _perform_configuration_discovery).
+        # It is unreachable in normal operation; it only matters for the
+        # handful of authenticator calls made before discovery finishes, none
+        # of which occur in this constructor.
+        fallback_client_id = MAGENTA2_LEGACY_CLIENT_IDS.get(
+            platform, MAGENTA2_LEGACY_CLIENT_IDS[DEFAULT_PLATFORM]
         )
 
         if username and password:
-            credentials: Magenta2Credentials | Magenta2UserCredentials = (
+            credentials: Union[Magenta2Credentials, Magenta2UserCredentials] = (
                 Magenta2UserCredentials(
                     client_id=fallback_client_id,
                     platform=platform,
@@ -221,6 +246,9 @@ class Magenta2Provider(StreamingProvider):
             http_manager=self.http_manager,
             provider_name=self.provider_name,
             session_id=self.session_id,
+            device_id=self.device_id,
+            user_agent_plain=self.user_agent_plain,
+            user_agent_subscriber=self.user_agent_subscriber,
             call_id_callback=self._generate_call_id,
             auth_callback=self._ensure_authenticated,
             platform_config=self.platform_config,
@@ -241,6 +269,8 @@ class Magenta2Provider(StreamingProvider):
             provider_config=self.provider_config,
             auth_callback=self._ensure_authenticated,
             build_scaled_image_url_callback=self._build_scaled_image_url,
+            user_agent_plain=self.user_agent_plain,
+            user_agent_subscriber=self.user_agent_subscriber,
             catchup_window=self.catchup_window,
         )
         logger.info("✓ ChannelManager initialized")
@@ -253,6 +283,9 @@ class Magenta2Provider(StreamingProvider):
             platform_config=self.platform_config,
             auth_callback=self._ensure_authenticated,
             recording_url_cache=self._recording_url_cache,
+            user_agent_subscriber=self.user_agent_subscriber,
+            session_id=self.session_id,
+            call_id_callback=self._generate_call_id,
         )
         logger.info("✓ PlaybackManager initialized")
 
@@ -279,6 +312,8 @@ class Magenta2Provider(StreamingProvider):
             provider_config=self.provider_config,
             session_id=self.session_id,
             serial_number=self.serial_number,
+            user_agent_plain=self.user_agent_plain,
+            user_agent_subscriber=self.user_agent_subscriber,
             generate_call_id=self._generate_call_id,
         )
 
@@ -294,6 +329,31 @@ class Magenta2Provider(StreamingProvider):
 
     def _generate_call_id(self) -> str:
         return self._generate_uuid()
+
+    def _get_or_create_serial_number(self) -> str:
+        """
+        Return a stable serial number for this installation, persisted
+        across runs.
+
+        SessionManager has a dedicated get_device_id() that TokenFlowManager
+        also relies on, but no equivalent for serial_number, so this mirrors
+        the same load-or-generate pattern locally (same session_data blob,
+        different key) rather than adding a new public method to the shared
+        SessionManager.
+        """
+        session_manager = self.settings_manager.session_manager
+        session_data = session_manager.load_session(self.provider_name, self.country) or {}
+
+        serial_number = session_data.get("serial_number")
+        if not serial_number:
+            serial_number = str(uuid.uuid4())
+            session_data["serial_number"] = serial_number
+            session_manager.save_session(self.provider_name, session_data, self.country)
+            logger.info(f"Generated new serial number: {serial_number}")
+        else:
+            logger.debug(f"Using existing serial number: {serial_number}")
+
+        return serial_number
 
     def _load_proxy_from_manager(self, config_dir: Optional[str]) -> Optional[ProxyConfig]:
         try:
@@ -630,7 +690,7 @@ class Magenta2Provider(StreamingProvider):
 
     def _get_dcm_headers(self) -> Dict[str, str]:
         return {
-            "User-Agent": self.platform_config["user_agent"],
+            "User-Agent": self.user_agent_plain,
             "Content-Type": "application/json",
             "Accept": "application/json",
             "x-dt-session-id": self.session_id,
@@ -639,7 +699,7 @@ class Magenta2Provider(StreamingProvider):
 
     def _get_api_headers(self, require_auth: bool = False) -> Dict[str, str]:
         headers: Dict[str, str] = {
-            "User-Agent": self.platform_config["user_agent"],
+            "User-Agent": self.user_agent_subscriber if require_auth else self.user_agent_plain,
             "Accept": "application/json",
             "Content-Type": "application/json",
         }

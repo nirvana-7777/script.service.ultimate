@@ -456,6 +456,8 @@ def build_widevine_drm_config(
     licence_url: str,
     user_agent: str,
     origin: Optional[str] = None,
+    session_id: Optional[str] = None,
+    call_id: Optional[str] = None,
 ) -> DRMConfig:
     """
     Build a Widevine DRMConfig for theplatform licence acquisition.
@@ -465,6 +467,14 @@ def build_widevine_drm_config(
         user_agent:   Platform user-agent string for the licence request.
         origin:       Optional Origin header value (used by magentaeu to set
                       the country base URL; omit for magenta2).
+        session_id:   Optional — if provided together with call_id, adds a
+                      CID header formatted as "{session_id}::{call_id}",
+                      matching the SMIL DRM path and confirmed against a
+                      real ATV widevine capture (which shows CID but no
+                      separate session-id header). session_id alone (without
+                      call_id) adds nothing — additive; callers that don't
+                      pass either keep prior behaviour unchanged.
+        call_id:      Optional — see session_id above.
 
     Returns:
         DRMConfig ready for use by the base streaming provider.
@@ -476,6 +486,8 @@ def build_widevine_drm_config(
     if origin:
         headers["Origin"] = origin
         headers["Referer"] = f"{origin}/"
+    if session_id and call_id:
+        headers["CID"] = f"{session_id}::{call_id}"
 
     return DRMConfig(
         system=DRMSystem.WIDEVINE,

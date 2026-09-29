@@ -72,7 +72,6 @@ from ...base.models.quality import Quality
 
 from .constants import (
     QUALITY_FALLBACK,
-    SUBSCRIBER_TYPES,
     TVHUBS_BASE_URL,
     VOD_DEFAULT_PAGE_SIZE,
     VOD_FLEX_ID_DETAILS,
@@ -222,9 +221,14 @@ class VodManager:
         # request via _playback_params().  Not available from bootstrap because it
         # is portal-specific metadata returned by the server, not a device identity.
         self._partner_map_id: Optional[str] = None
-        # subscriber_type is not in bootstrap; derive from platform once at init.
-        _platform = getattr(bootstrap, "platform", "")
-        self._subscriber_type: str = SUBSCRIBER_TYPES.get(_platform, "FTV_OTT_DT")
+        # subscriber_type comes straight from BootstrapConfig.subscriber_type,
+        # which config_models.BootstrapConfig.from_api_response populates from
+        # MAGENTA2_PLATFORMS[platform]["subscriber_type"] at discovery time.
+        # (Previously this tried bootstrap.platform, which BootstrapConfig
+        # never actually had -- getattr silently returned "" and the
+        # SUBSCRIBER_TYPES lookup always fell through to its "FTV_OTT_DT"
+        # default regardless of platform. This reads the real value now.)
+        self._subscriber_type: str = getattr(bootstrap, "subscriber_type", None) or "FTV_OTT_DT"
 
         # Node registry: opaque content_id → (fetch_url, extra_params)
         # Populated when lanes/series/seasons are discovered so that

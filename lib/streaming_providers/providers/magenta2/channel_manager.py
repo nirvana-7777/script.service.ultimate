@@ -21,7 +21,6 @@ from .constants import (
     DRM_SYSTEM_WIDEVINE,
     ERROR_CODES,
     MODE_LIVE,
-    QUALITY_RANK,
 )
 from .endpoint_manager import EndpointManager
 from .config_models import ProviderConfig
@@ -58,6 +57,8 @@ class ChannelManager:
         provider_config: Optional[ProviderConfig],
         auth_callback: Callable[[], str],
         build_scaled_image_url_callback: Callable[[str], Optional[str]],
+        user_agent_plain: str,
+        user_agent_subscriber: str,
         catchup_window: int = 4,
     ):
         self._http = http_manager
@@ -70,7 +71,18 @@ class ChannelManager:
         self._provider_config = provider_config
         self._ensure_authenticated = auth_callback
         self._build_scaled_image_url = build_scaled_image_url_callback
+        self._ua_plain = user_agent_plain
+        self._ua_subscriber = user_agent_subscriber
         self.catchup_window = catchup_window
+
+        # Special-rights rules (e.g. "uhd" -> liveTvOption False) from the
+        # manifest, used by _is_station_playable() to filter stations a
+        # non-managed device/account isn't allowed to play live.
+        self._special_rights = (
+            provider_config.manifest.special_rights_profiles
+            if provider_config and provider_config.manifest
+            else {}
+        )
 
         # Populated on first get_channels() call
         self._cached_channels: Optional[List[StreamingChannel]] = None
@@ -106,7 +118,7 @@ class ChannelManager:
         try:
             import uuid
             cid = f"{self._session_id}::{str(uuid.uuid4())}"
-            user_agent = self._platform_config["user_agent"]
+            user_agent = self._ua_subscriber
 
             # ── Step 1: distribution rights ──────────────────────────────────
             rights_url = (
@@ -170,6 +182,14 @@ class ChannelManager:
                 try:
                     station_id = self._extract_station_id(tp_ch.station_id)
                     meta = self.station_metadata.get(station_id, {})
+
+                    if not self._is_station_playable(meta.get("special_rights_profile")):
+                        logger.debug(
+                            f"Skipping {station_id} — special-rights blocked "
+                            f"(profile={meta.get('special_rights_profile')})"
+                        )
+                        continue
+
                     name = meta.get("title") or tp_ch.station_id
                     logo_url = meta.get("logo_url")
                     quality = meta.get("quality")
@@ -362,7 +382,7 @@ class ChannelManager:
 
         headers = {
             "Authorization": f"Bearer {entitlement_token}",
-            "User-Agent": self._platform_config["user_agent"],
+            "User-Agent": self._ua_subscriber,
             "Accept": "application/json",
         }
 
@@ -567,17 +587,20 @@ class ChannelManager:
                                 break
 
                     channel_number = entry.get("dt$displayChannelNumber")
+                    special_rights_profile = (
+                        station_info.get("dt$clientData", {}) or {}
+                    ).get("specialRightsProfile")
 
-                    existing = metadata.get(station_id)
-                    if not existing or QUALITY_RANK.get(quality, 1) > QUALITY_RANK.get(
-                        existing["quality"], 1
-                    ):
+                    if station_id in metadata:
+                        logger.debug(f"Duplicate station entry: {station_id}")
+                    else:
                         metadata[station_id] = {
                             "title": title,
                             "logo_url": logo_url,
                             "quality": quality,
                             "channel_number": channel_number,
                             "playback_id": playback_id,
+                            "special_rights_profile": special_rights_profile,
                         }
                 except Exception as exc:
                     logger.debug(f"_fetch_station_metadata: skipping entry: {exc}")
@@ -591,9 +614,36 @@ class ChannelManager:
 
         return metadata
 
+    def _is_station_playable(self, profile: Optional[str]) -> bool:
+        """
+        Return True if the manifest allows live playback of a station
+        carrying this specialRightsProfile tag (e.g. "uhd").
+
+        `profile` comes from station_metadata[station_id]["special_rights_profile"],
+        which _fetch_station_metadata reads from the station feed's
+        dt$clientData.specialRightsProfile. It is NOT read from the
+        entitled-channels feed's tp_ch.extra — parse_entitled_channels_feed
+        only carries distributionRightIds into `extra`, never dt$clientData,
+        so reading it from there would always fail open (nothing filtered).
+
+        A station is blocked only if:
+          1. It carries a specialRightsProfile tag, AND
+          2. The manifest has a rule for that tag, AND
+          3. The rule says liveTvOption == False.
+
+        No rule for a given tag means unrestricted (e.g. this is the case
+        for UHD/Sky/DAZN on the MagentaTV One manifest).
+        """
+        if not profile:
+            return True
+        rule = self._special_rights.get(profile)
+        if rule is None:
+            return True
+        return rule.live_tv_option
+
     def _get_api_headers(self, require_auth: bool = False) -> Dict[str, str]:
         headers = {
-            "User-Agent": self._platform_config["user_agent"],
+            "User-Agent": self._ua_subscriber if require_auth else self._ua_plain,
             "Accept": "application/json",
             "Content-Type": "application/json",
         }

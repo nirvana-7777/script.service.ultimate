@@ -1,4 +1,6 @@
 # streaming_providers/providers/magenta2/constants.py
+from typing import Optional
+
 # ============================================================================
 # Magenta2 Configuration
 # ============================================================================
@@ -12,107 +14,129 @@ DEFAULT_COUNTRY = "de"
 MAGENTA2_LOGO = "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e4/Magenta_TV_Logo_2024.svg/2339px-Magenta_TV_Logo_2024.svg.png"
 
 # Platform configuration
+#
+# Each entry describes only what's needed to build the bootstrap/manifest
+# request and the User-Agent. Everything else (client_model, device_model,
+# sam3_client_id, all endpoint URLs) comes from the server's bootstrap/
+# manifest response — see config_models.BootstrapConfig / ManifestConfig.
+#
+# Versions below are confirmed from real-device captures/logs:
+#   - android-tv / atv-launcher: 3.180.7748 (Sebastian's current AndroidTV,
+#     shape confirmed against real AndroidTV request logs). SMIL, DRM and
+#     concurrency request *shapes* were only ever captured on atv-launcher
+#     (v3.136.4682) — carried over to android-tv on the assumption the
+#     selector/concurrency service doesn't vary by config_group. Treat that
+#     part as unverified for android-tv specifically until confirmed by a
+#     live-play capture.
+#   - web: 2.128.5 (MacBook web client capture).
 DEFAULT_PLATFORM = "android-tv"
+
 MAGENTA2_PLATFORMS = {
-    "web": {
-        "device_name": "Web Browser",
-        "firmware": "Chrome 120",
-        "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "terminal_type": "WEB",
-        # TAA-specific device identification
-        "taa_device_model": "Web Browser",
-        "taa_os": "Chrome 120",
-    },
     "android-tv": {
-        "device_name": "Android TV",
-        "firmware": "Android 11",
-        "user_agent": "Dalvik/2.1.0 (Linux; U; Android 11; SHIELD Android TV Build/RQ1A.210105.003) ((2.00T_ATV::3.134.4462::mdarcy::))",
-        "terminal_type": "ATV_ANDROIDTV",
-        # TAA-specific device identification (API level format required)
-        "taa_device_model": "SHIELD Android TV",
-        "taa_os": "API level 30",
+        "config_group": "atv-androidtv",
+        "subscriber_type": "FTV_OTT_DT",
+        "application_model": "DT:ATV-AndroidTV",
+        "api_level": "30",
+        "android_version": "11",
+        "device_name": "SHIELD Android TV",
+        "build_id": "RQ1A.210105.003",
+        "build_flavor": "mdarcy",
+        "version": "3.180.7748",
+        "ua_template_plain": (
+            "Dalvik/2.1.0 (Linux; U; Android {android_version}; "
+            "{device_name} Build/{build_id}) "
+            "((2.00T_ATV::{version}::{build_flavor}::))"
+        ),
+        "ua_template_subscriber": (
+            "Dalvik/2.1.0 (Linux; U; Android {android_version}; "
+            "{device_name} Build/{build_id}) "
+            "((2.00T_ATV::{version}::{build_flavor}::{subscriber_type}))"
+        ),
     },
+
     "atv-launcher": {
-        "device_name": "MagentaTV Stick",
-        "firmware": "Android 11",
-        "user_agent": "Mozilla/5.0 (Linux; Android 11; AFTS Build/PPR1.180610.011) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        "terminal_type": "ATV_LAUNCHER",
-        # TAA-specific device identification
-        "taa_device_model": "MagentaTV Stick",
-        "taa_os": "API level 30",
+        "config_group": "atv-launcher",
+        "subscriber_type": "FTV_OTT_DT",
+        "application_model": "DT:ATV-Launcher",
+        "api_level": "30",
+        "android_version": "11",
+        "device_name": "SHIELD Android TV",
+        "build_id": "RQ1A.210105.003",
+        "build_flavor": "mdarcy",
+        "version": "3.180.7748",
+        "ua_template_plain": (
+            "Dalvik/2.1.0 (Linux; U; Android {android_version}; "
+            "{device_name} Build/{build_id}) "
+            "((2.00T_ATV::{version}::{build_flavor}::))"
+        ),
+        "ua_template_subscriber": (
+            "Dalvik/2.1.0 (Linux; U; Android {android_version}; "
+            "{device_name} Build/{build_id}) "
+            "((2.00T_ATV::{version}::{build_flavor}::{subscriber_type}))"
+        ),
     },
-    "android-mobile": {
-        "device_name": "Android Mobile",
-        "firmware": "Android 13",
-        "user_agent": "Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36",
-        "terminal_type": "ANDROID_MOBILE",
-        # TAA-specific device identification
-        "taa_device_model": "Android Mobile",
-        "taa_os": "API level 33",
+
+    "web": {
+        "config_group": "web-mtv",
+        "subscriber_type": "FTV_OTT_DT",
+        "application_model": "DT:WEB",
+        "api_level": "0",
+        "android_version": "",           # unused for web
+        "device_name": "",
+        "build_id": "",
+        "build_flavor": "",
+        "version": "2.128.5",
+        "ua_template_plain": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "ua_template_subscriber": None,  # web UA never has a suffix
     },
-    "ios": {
-        "device_name": "iPhone",
-        "firmware": "iOS 15",
-        "user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1",
-        "terminal_type": "IOS",
-        # TAA-specific device identification
-        "taa_device_model": "iPhone",
-        "taa_os": "iOS 15.0",
-    },
 }
 
-# ============================================================================
-# Manifest Request Configuration
-# ============================================================================
 
-# App identification for manifest requests
-MAGENTA2_APP_NAME = "MagentaTV"
-MAGENTA2_APP_VERSION = "104180"
-MAGENTA2_RUNTIME_VERSION = "1"
+def render_user_agent(
+    platform: str,
+    subscriber_suffix: bool = False,
+    version_override: Optional[str] = None,
+) -> str:
+    """
+    Render the User-Agent string for a platform.
 
-# Model names for manifest requests (different from device models!)
-MANIFEST_MODEL_MAPPINGS = {
-    "web": "DT:WEB",
-    "android-tv": "DT:ATV-AndroidTV",
-    "atv-launcher": "DT:ATV-Launcher",
-    "android-mobile": "DT:Android-Mobile",
-    "ios": "DT:IOS",
-}
+    Args:
+        platform: key into MAGENTA2_PLATFORMS.
+        subscriber_suffix: if True, use the template with the subscriber_type
+            suffix (SMIL and DRM requests). If False, use the plain template
+            (bootstrap, manifest, DCM requests).
+        version_override: optional; replaces the platform's configured version.
 
-# Firmware strings for manifest requests
-MANIFEST_FIRMWARE_MAPPINGS = {
-    "web": "Chrome 120",
-    "android-tv": "API level 30",
-    "atv-launcher": "API level 30",
-    "android-mobile": "API level 33",
-    "ios": "iOS 15.0",
-}
+    Raises:
+        ValueError: if `platform` is not a known key in MAGENTA2_PLATFORMS.
+    """
+    cfg = MAGENTA2_PLATFORMS.get(platform)
+    if cfg is None:
+        raise ValueError(f"Unknown platform: {platform}")
 
-# Also update the fallback mappings:
-CLIENT_MODEL_MAPPINGS = {
-    "web": "ftv-web",
-    "android-tv": "ftv-androidtv",
-    "atv-launcher": "ftv-androidtv",
-    "android-mobile": "ftv-android",
-    "ios": "ftv-ios",
-}
+    template = (
+        cfg["ua_template_subscriber"] if subscriber_suffix
+        else cfg["ua_template_plain"]
+    )
+    if template is None:
+        template = cfg["ua_template_plain"]
 
-DEVICE_MODEL_MAPPINGS = {
-    "web": "WebBrowser_FTV",
-    "android-tv": "AndroidTV_FTV",
-    "atv-launcher": "AndroidTV_FTV",
-    "android-mobile": "AndroidMobile_FTV",
-    "ios": "iOS_FTV",
-}
+    version = version_override or cfg["version"]
 
-# And update subscriber types if needed:
-SUBSCRIBER_TYPES = {
-    "web": "WEB_OTT_DT",
-    "android-tv": "FTV_OTT_DT",
-    "atv-launcher": "FTV_OTT_DT",  # Same as android-tv
-    "android-mobile": "MOB_OTT_DT",  # Different for mobile
-    "ios": "IOS_OTT_DT",
-}
+    if "{" not in template:
+        return template
+
+    return template.format(
+        android_version=cfg["android_version"],
+        device_name=cfg["device_name"],
+        build_id=cfg["build_id"],
+        build_flavor=cfg["build_flavor"],
+        version=version,
+        subscriber_type=cfg["subscriber_type"],
+    )
 
 # ============================================================================
 # API Configuration - MINIMAL HARDCODING
@@ -120,8 +144,8 @@ SUBSCRIBER_TYPES = {
 
 # Only bootstrap endpoint is hardcoded - everything else discovered dynamically
 MAGENTA2_BASE_URL = "https://prod.dcm.telekom-dienste.de/v1"
-MAGENTA2_BOOTSTRAP_URL = MAGENTA2_BASE_URL + "/settings/{terminal_type}/bootstrap"
-MAGENTA2_MANIFEST_URL = MAGENTA2_BASE_URL + "/settings/{terminal_type}/manifest"
+MAGENTA2_BOOTSTRAP_URL = MAGENTA2_BASE_URL + "/settings/{config_group}/bootstrap"
+MAGENTA2_MANIFEST_URL = MAGENTA2_BASE_URL + "/settings/{config_group}/manifest"
 
 # Fallback endpoints if discovery fails
 MAGENTA2_FALLBACK_ENDPOINTS = {
@@ -141,7 +165,10 @@ MAGENTA2_FALLBACK_ACCOUNT_URI = "http://access.auth.theplatform.com/data/Account
 
 # Application identifiers
 IDM = "TDGIDM"
-APPVERSION2 = "3.134.4462"
+# NOTE: no separate app-version constant. auth.py::to_taa_payload reads
+# MAGENTA2_PLATFORMS[platform]["version"] directly, confirmed by a real TAA
+# capture to be identical to the version embedded in the User-Agent — a
+# previously separate APPVERSION2 constant here could drift from that value.
 
 SSO_URL = "https://ssom.magentatv.de/login"
 # SSO User Agent
@@ -151,15 +178,18 @@ SSO_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, lik
 # OAuth2 Configuration
 # ============================================================================
 
-# Client IDs for different platforms
-MAGENTA2_CLIENT_IDS = {
+# Legacy UUIDv4 client IDs.
+#
+# Used ONLY as a last-resort fallback if the bootstrap response fails to
+# return a sam3ClientId — which in practice never happens, because a missing
+# sam3ClientId already makes BootstrapConfig.from_api_response raise (see
+# config_models.py), so discovery itself fails before this table would be
+# consulted. Modern clients read sam3ClientId from the bootstrap response
+# (baseSettings.sam3ClientId), not from this table.
+MAGENTA2_LEGACY_CLIENT_IDS = {
     "web": "709115c2-f87e-4bad-9b94-28ac08d72cd9",
     "android-tv": "05f5f3df-1130-4707-a761-c04d0c50b7f2",
-    "ios": "21218403-52ec-4a65-abf4-f36a0eadd631",
 }
-
-# Client ID used for SMIL/selector manifest requests
-SMIL_CLIENT_ID = "a8198f31-b406-4177-8dee-f6216c356c75"
 
 # OAuth2 scopes
 MAGENTA2_OAUTH_SCOPE = "openid profile offline_access tvhubs"
@@ -256,10 +286,13 @@ ERROR_CODES = {
 # TAA Configuration
 # ============================================================================
 
-# TAA request template
+# TAA request template.
+# NOTE: no "appVersion" key here — it must vary by platform (each platform
+# has its own version in MAGENTA2_PLATFORMS), so auth.py::to_taa_payload
+# sets it dynamically from platform_config["version"] instead of baking in
+# a single fixed value that couldn't be correct for every platform.
 TAA_REQUEST_TEMPLATE = {
     "accessTokenSource": IDM,
-    "appVersion": APPVERSION2,
     "channel": {"id": "Tv"},
     "natco": "DE",
     "type": "telekom",
@@ -287,8 +320,15 @@ QUALITY_FALLBACK: dict = {
     "SD":     ["SD"],
 }
 
-# Integer rank per quality label — used for fast channel deduplication when
-# multiple entries share the same display number (keep the highest-ranked one).
+# Integer rank per quality label.
+#
+# NOTE: no longer used for live-channel dedup in channel_manager.py —
+# SD/HD/UHD variants of a station have distinct station_ids in the entitled-
+# channels feed, so a rank-based "keep the highest quality" merge in
+# _fetch_station_metadata never actually fired on real data and has been
+# removed (first entry wins for a genuinely duplicate station_id, with a
+# debug log). Kept here because it may still be read by VOD quality
+# selection alongside QUALITY_FALLBACK above — grep before deleting.
 QUALITY_RANK: dict = {
     "SD":     1,
     "HD":     2,
@@ -302,9 +342,9 @@ QUALITY_RANK: dict = {
 # ============================================================================
 
 # tvhubs base URL template — {client_model} is resolved at runtime from
-# CLIENT_MODEL_MAPPINGS.  This is a fallback; the live value should come
-# from the manifest's tv_hubs.base_urls["ftv"] (or equivalent) via
-# ProviderConfig.get_resolved_tvhub_url().
+# BootstrapConfig.client_model (server-provided). This URL is only a
+# fallback; the live value should come from the manifest's
+# tv_hubs.base_urls["ftv"] (or equivalent) via ProviderConfig.get_resolved_tvhub_url().
 TVHUBS_BASE_URL = "https://tvhubs.t-online.de/v3/{client_model}"
 
 # Flex IDs for the VOD catalogue.
