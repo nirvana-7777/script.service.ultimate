@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 
 from ...base.network import HTTPManager
 from ...base.utils.logger import logger
-from .constants import APPVERSION2, DEFAULT_PLATFORM, IDM, MAGENTA2_PLATFORMS
+from .constants import DEFAULT_PLATFORM, IDM, MAGENTA2_PLATFORMS, render_user_agent
 
 
 @dataclass
@@ -46,12 +46,24 @@ class TaaClient:
     Handles yo_digital token operations via the TAA endpoint
     """
 
-    def __init__(self, http_manager: HTTPManager, platform: str = DEFAULT_PLATFORM):
+    def __init__(
+        self,
+        http_manager: HTTPManager,
+        platform: str = DEFAULT_PLATFORM,
+        session_id: Optional[str] = None,
+        call_id_callback: Optional[Any] = None,
+    ):
         self.http_manager = http_manager
         self.platform = platform
         self.platform_config = MAGENTA2_PLATFORMS.get(
             platform, MAGENTA2_PLATFORMS[DEFAULT_PLATFORM]
         )
+        # Used to build the "cid" header (real TAA capture shows
+        # "{session_id}::{call_id}", lowercase header name). Optional so
+        # existing callers that don't pass these keep working — the header
+        # is simply omitted when either is missing.
+        self._session_id = session_id
+        self._call_id_callback = call_id_callback
 
     def get_yo_digital_tokens(
         self,
@@ -365,41 +377,64 @@ class TaaClient:
         device_model: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Build complete TAA payload matching the correct format exactly
+        Build the TAA/yo_digital onboarding-login payload.
 
-        Correct format:
+        Confirmed against a real capture of
+        POST /de-idm/P/onboarding/login (atv-launcher, v3.134.4462):
         {
-          "keyValue": "IDM/APPVERSION2/TokenChannelParams(id=Tv)/TokenDeviceParams(id=..., model=..., os=...)/DE/telekom",
+          "keyValue": "TDGIDM/3.134.4462/TokenChannelParams(id=Tv)/
+                       TokenDeviceParams(id=<device_id>, model=SHIELD Android TV,
+                       os=API level 30)/DE/telekom",
           "accessToken": "...",
-          "accessTokenSource": "IDM",
-          "appVersion": "APPVERSION2",
+          "accessTokenSource": "TDGIDM",
+          "appVersion": "3.134.4462",
           "channel": {"id": "Tv"},
-          "device": {"id": "...", "model": "...", "os": "..."},
+          "device": {"id": "...", "model": "SHIELD Android TV", "os": "API level 30"},
           "natco": "DE",
           "type": "telekom"
         }
+        Notably: no "ClientModelParams(...)" segment in keyValue, and no
+        "client" key in the body, when the caller doesn't pass client_model.
         """
-        # Use provided device model or fallback to TAA-specific device model
-        resolved_device_model = (
-            device_model
-            or self.platform_config.get("taa_device_model")
-            or self.platform_config["device_name"]
-        )
+        # Single version source: MAGENTA2_PLATFORMS[platform]["version"] — the
+        # same value used to render the User-Agent. The real capture confirms
+        # appVersion, the keyValue version segment, and the UA version are all
+        # identical; there is no separate TAA-specific version constant.
+        version = self.platform_config["version"]
 
-        # Get TAA-specific OS format
-        resolved_os = self.platform_config.get("taa_os") or self.platform_config["firmware"]
+        # device_name is the only device-model key that still exists in
+        # MAGENTA2_PLATFORMS (no more taa_device_model — that key was
+        # deleted along with the old per-platform dict shape).
+        resolved_device_model = device_model or self.platform_config["device_name"]
 
-        resolved_client_model = client_model or f"ftv-{self.platform}"
+        # "os" is "API level {api_level}", confirmed by the real capture
+        # ("os":"API level 30" for android-tv/atv-launcher, api_level="30").
+        # The old "firmware"/"taa_os" keys this used to read from no longer
+        # exist — reading platform_config["firmware"] directly (as this used
+        # to) would KeyError on every single TAA request.
+        api_level = self.platform_config.get("api_level")
+        resolved_os = f"API level {api_level}" if api_level else resolved_device_model
+
+        # Do NOT synthesize a client_model when the caller doesn't pass one.
+        # The real capture shows neither "ClientModelParams(...)" in keyValue
+        # nor a "client" key in the body when client_model is omitted — a
+        # previous version of this method always synthesized f"ftv-{platform}"
+        # here, so ClientModelParams/"client" were ALWAYS sent even though
+        # the real client never sends them for this call.
+        resolved_client_model = client_model
 
         # Build keyValue string with CORRECT spacing (spaces after commas!)
-        key_value_parts = [
-            IDM,
-            APPVERSION2,
-            "TokenChannelParams(id=Tv)",
-            f"TokenDeviceParams(id={device_id}, model={resolved_device_model}, os={resolved_os})",
-            "DE",
-            "telekom",
-        ]
+        key_value_parts = [IDM, version]
+        if resolved_client_model:
+            key_value_parts.append(f"ClientModelParams(id={resolved_client_model})")
+        key_value_parts.extend(
+            [
+                "TokenChannelParams(id=Tv)",
+                f"TokenDeviceParams(id={device_id}, model={resolved_device_model}, os={resolved_os})",
+                "DE",
+                "telekom",
+            ]
+        )
 
         key_value = "/".join(key_value_parts)
 
@@ -408,7 +443,7 @@ class TaaClient:
             "keyValue": key_value,
             "accessToken": sam3_token,
             "accessTokenSource": IDM,
-            "appVersion": APPVERSION2,
+            "appVersion": version,
             "channel": {"id": "Tv"},
             "device": {
                 "id": device_id,
@@ -419,7 +454,7 @@ class TaaClient:
             "type": "telekom",
         }
 
-        # Add client model if available
+        # Add client model only if explicitly provided (see note above)
         if resolved_client_model:
             payload["client"] = {"model": resolved_client_model}
 
@@ -508,18 +543,29 @@ class TaaClient:
 
     def _get_taa_headers(self) -> Dict[str, str]:
         """
-        Get headers for TAA/yo_digital requests
+        Get headers for TAA/yo_digital requests.
+
+        Confirmed against a real capture of the onboarding-login request:
+        requestid, cid, user-agent, content-type (+ standard content-length)
+        — no Accept header, and User-Agent has no subscriber_type suffix
+        (matches render_user_agent(..., subscriber_suffix=False)).
         """
         import uuid
 
-        user_agent = self.platform_config.get("user_agent")
+        user_agent = render_user_agent(self.platform, subscriber_suffix=False)
 
         headers = {
             "requestId": str(uuid.uuid4()),
             "User-Agent": user_agent,
-            "Accept": "application/json",
             "Content-Type": "application/json; charset=UTF-8",
         }
+
+        # cid = "{session_id}::{call_id}", only when both are available —
+        # this client can be constructed without them (backward compatible),
+        # in which case the header is simply omitted rather than sent
+        # malformed.
+        if self._session_id and self._call_id_callback:
+            headers["cid"] = f"{self._session_id}::{self._call_id_callback()}"
 
         return headers
 

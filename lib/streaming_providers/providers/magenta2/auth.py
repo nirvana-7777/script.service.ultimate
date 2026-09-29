@@ -733,7 +733,12 @@ class Magenta2Authenticator(BaseAuthenticator):
 
     def _initialize_taa_client(self) -> None:
         """Initialize TAA client"""
-        self._taa_client = TaaClient(http_manager=self._http_manager, platform=self.platform)
+        self._taa_client = TaaClient(
+            http_manager=self._http_manager,
+            platform=self.platform,
+            session_id=self._session_id,
+            call_id_callback=lambda: str(uuid.uuid4()),
+        )
         logger.debug("TAA client initialized")
 
     def _initialize_token_flow_manager(self) -> None:
