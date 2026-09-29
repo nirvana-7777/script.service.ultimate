@@ -18,6 +18,7 @@ from datetime import datetime
 from typing import Any, ClassVar, Dict, List, Optional, Tuple, cast, Union
 from urllib.parse import quote
 
+from ...base.auth.session_manager import SessionManager
 from ...base.models import DRMConfig, StreamingChannel, Event
 from ...base.models.auth import AuthState
 from ...base.models.epg_models import EPGEntry, EPGProgramDetails
@@ -54,12 +55,23 @@ from .auth_bridge import AuthBridge
 
 
 class Magenta2Provider(StreamingProvider):
-    PROVIDER_LABEL: ClassVar[str] = "Magenta TV 2.0"
-    PROVIDER_LOGO: ClassVar[str] = MAGENTA2_LOGO
-    implements_timers: ClassVar[bool] = True
     """
     Magenta2 streaming provider implementation with enhanced dynamic discovery.
     """
+
+    # ── Static metadata (StreamingProvider ClassVar contract) ──────────────
+    # The base class reads these without instantiation. Previously only the
+    # @property twins existed, so static access fell through to the base
+    # defaults — e.g. SUPPORTED_COUNTRIES == [] reads as "single-country
+    # provider" to any registry/metadata consumer.
+    PROVIDER_LABEL: ClassVar[str] = "Magenta TV 2.0"
+    PROVIDER_LOGO: ClassVar[str] = MAGENTA2_LOGO
+    SUPPORTED_AUTH_TYPES: ClassVar[List[str]] = ["network_based"]
+    # The RHS resolves to the module-level import from .constants (the name
+    # is not yet in the class namespace at this point); list() copies it so
+    # the ClassVar never aliases the mutable constants-module object.
+    SUPPORTED_COUNTRIES: ClassVar[List[str]] = list(SUPPORTED_COUNTRIES)
+    implements_timers: ClassVar[bool] = True
 
     def __init__(
         self,
@@ -90,6 +102,20 @@ class Magenta2Provider(StreamingProvider):
         # session_id is fresh per process launch (matches the real client).
         self.session_id = str(uuid.uuid1())
 
+        # ── Session persistence (shared session.json) ─────────────────────────
+        # FIX (was: "'Magenta2Provider' object has no attribute
+        # 'settings_manager'"): the old code accessed
+        # self.settings_manager.session_manager, but `settings_manager` is
+        # assigned neither here nor by StreamingProvider.__init__() nor by any
+        # mixin. The provider only needs the SessionManager half of
+        # SettingsManager, so construct it directly — exactly the way
+        # SettingsManager itself builds its own SessionManager
+        # (SessionManager(config_dir_path)). The same `config_dir` is handed
+        # to Magenta2Authenticator further below, so this class, the
+        # authenticator and its TokenFlowManager all resolve the SAME
+        # session.json through the same VFS paths.
+        self._session_manager: SessionManager = SessionManager(config_dir)
+
         # device_id: read from the SAME persisted source TokenFlowManager
         # already uses (SessionManager.get_device_id), which itself
         # generates-and-persists on first call. Do NOT generate a second,
@@ -98,7 +124,7 @@ class Magenta2Provider(StreamingProvider):
         # different one, and the server would see two "devices" for one
         # installation. get_device_id() currently persists a uuid4 — keep
         # that format; do not switch to uuid1 for this value.
-        self.device_id = self.settings_manager.session_manager.get_device_id(
+        self.device_id = self._session_manager.get_device_id(
             self.provider_name, self.country
         )
 
@@ -109,9 +135,9 @@ class Magenta2Provider(StreamingProvider):
 
         # ── Proxy ────────────────────────────────────────────────────────────
         self.proxy_config = (
-            proxy_config
-            or (ProxyConfig.from_url(proxy_url) if proxy_url else None)
-            or self._load_proxy_from_manager(config_dir)
+                proxy_config
+                or self._proxy_from_url_safe(proxy_url)
+                or self._load_proxy_from_manager(config_dir)
         )
         if self.proxy_config:
             logger.info("Using proxy configuration for Magenta2")
@@ -324,6 +350,18 @@ class Magenta2Provider(StreamingProvider):
     # ------------------------------------------------------------------ #
 
     @staticmethod
+    def _proxy_from_url_safe(proxy_url: Optional[str]) -> Optional[ProxyConfig]:
+        """Match ProviderHttpMixin._resolve_proxy_config: warn-and-continue
+        on a malformed proxy URL instead of raising during construction."""
+        if not proxy_url:
+            return None
+        try:
+            return ProxyConfig.from_url(proxy_url)
+        except Exception as e:
+            logger.warning(f"magenta2: Failed to parse proxy URL '{proxy_url}': {e}")
+            return None
+
+    @staticmethod
     def _generate_uuid() -> str:
         return str(uuid.uuid4())
 
@@ -341,14 +379,17 @@ class Magenta2Provider(StreamingProvider):
         different key) rather than adding a new public method to the shared
         SessionManager.
         """
-        session_manager = self.settings_manager.session_manager
-        session_data = session_manager.load_session(self.provider_name, self.country) or {}
+        session_data = self._session_manager.load_session(
+            self.provider_name, self.country
+        ) or {}
 
         serial_number = session_data.get("serial_number")
         if not serial_number:
             serial_number = str(uuid.uuid4())
             session_data["serial_number"] = serial_number
-            session_manager.save_session(self.provider_name, session_data, self.country)
+            self._session_manager.save_session(
+                self.provider_name, session_data, self.country
+            )
             logger.info(f"Generated new serial number: {serial_number}")
         else:
             logger.debug(f"Using existing serial number: {serial_number}")
@@ -394,7 +435,14 @@ class Magenta2Provider(StreamingProvider):
 
     @property
     def catchup_window(self) -> int:
-        return 4
+        """
+        Catchup window in HOURS — ProviderCatchupMixin contract
+        (validate_catchup_request: max_age = catchup_window * 3600;
+        supports_catchup: catchup_window > 0).
+
+        `4` = 4 hours. If the intended window is 4 days, return 96.
+        """
+        return 4  # hours
 
     @property
     def supported_auth_types(self) -> List[str]:
@@ -548,7 +596,7 @@ class Magenta2Provider(StreamingProvider):
                 logger.debug("Device token configured in authenticator")
             if cfg.manifest.mpx.account_pid:
                 self.authenticator.set_mpx_account_pid(cfg.manifest.mpx.account_pid)
-                logger.debug(f"MPX account PID configured: {cfg.manifest.mpx.account_pid}")
+                logger.debug(f"MPX account PID configured in authenticator: {cfg.manifest.mpx.account_pid}")
             if cfg.openid:
                 self.authenticator.set_openid_config(cfg.openid.raw_data)
 
@@ -768,16 +816,53 @@ class Magenta2Provider(StreamingProvider):
         return self._playback_manager.get_manifest(content_id, content_type, **kwargs)
 
     def get_drm(
-            self, content_id: str, content_type: str = CONTENT_TYPE_LIVE, **kwargs: Any
+            self,
+            content_id: str,
+            drm_variant: Optional[str] = None,
+            content_type: str = CONTENT_TYPE_LIVE,
+            **kwargs: Any,
     ) -> List[DRMConfig]:
+        """
+        Honors the base signature get_drm(content_id, drm_variant=None, **kwargs)
+        while keeping the Magenta2-specific content_type routing.
+
+        The previous override used content_type as the second parameter:
+        - a positional base-contract call get_drm(cid, "auto") routed "auto"
+          into content_type (breaking live playback-id resolution), and
+        - get_drm(cid, drm_variant="auto") had the kwarg silently swallowed
+          by **kwargs.
+        """
         # Convert station_id -> playback_id for live channels
         if content_type == CONTENT_TYPE_LIVE:
             content_id = self._get_playback_id(content_id)
-        return self._playback_manager.get_drm(content_id, content_type, **kwargs)
+        return self._playback_manager.get_drm(
+            content_id, content_type, drm_variant=drm_variant, **kwargs
+        )
 
     def get_catchup_manifest(
-        self, content_id: str, start_time: int, end_time: int, drm_variant: Optional[str] = "auto", **kwargs: Any
+            self,
+            content_id: str,
+            start_time: int,
+            end_time: int,
+            epg_id: Optional[str] = None,
+            drm_variant: Optional[str] = "auto",
+            **kwargs: Any,
     ) -> Optional[str]:
+        """
+        ProviderCatchupMixin contract:
+            get_catchup_manifest(content_id, start_time, end_time, epg_id=None, **kwargs)
+
+        The previous override declared drm_variant as the 4th parameter:
+        - a positional base-contract call routed the epg_id into drm_variant,
+        - epg_id=... keyword calls (e.g. from get_catchup_manifest_with_headers,
+          the CatchupOperations entry point) were swallowed by **kwargs and
+          forwarded to PlaybackManager.
+
+        epg_id is accepted to honor the contract; Magenta2's SMIL catchup
+        routing keys off playback_id + time range, so it is deliberately
+        not forwarded. Move it into the PlaybackManager call if it ever
+        needs it.
+        """
         content_id = self._get_playback_id(content_id)
         return self._playback_manager.get_catchup_manifest(
             content_id, start_time, end_time, drm_variant, **kwargs
@@ -895,13 +980,33 @@ class Magenta2Provider(StreamingProvider):
         self._timers_manager.delete_timer(client_index, force_delete=force_delete)
 
     def get_epg(
-        self,
-        channel_id: str,
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
-        **kwargs: Any,
+            self,
+            channel_id: str,
+            start_time: Optional[datetime] = None,
+            end_time: Optional[datetime] = None,
+            country: Optional[str] = None,
+            **kwargs: Any,
     ) -> List[EPGEntry]:
-        """Get EPG data for a specific channel (delegates to Magenta2EpgManager)."""
+        """
+        ProviderEpgMixin contract:
+            get_epg(channel_id, start_time, end_time, country=None, **kwargs)
+
+        The previous override omitted `country`, so base-contract positional
+        or keyword country values were swallowed by **kwargs and forwarded
+        into the EPG manager.
+
+        A Magenta2Provider instance is bound to a single country at
+        construction (self.country drives discovery/endpoints), so a
+        differing requested country is logged — not silently ignored — and
+        the instance's country is served.
+        """
+        if country and country.lower() != self.country.lower():
+            logger.warning(
+                f"{self.provider_name}: EPG requested for country '{country}', "
+                f"but this instance is bound to '{self.country}'; "
+                f"serving '{self.country}' data"
+            )
+
         if not self._epg_manager:
             logger.warning(f"{self.provider_name}: EPG manager not initialized")
             return []
@@ -919,13 +1024,24 @@ class Magenta2Provider(StreamingProvider):
         )
 
     def get_epg_grid(
-        self,
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
-        channel_ids: Optional[List[str]] = None,
-        **kwargs: Any,
+            self,
+            start_time: Optional[datetime] = None,
+            end_time: Optional[datetime] = None,
+            channel_ids: Optional[List[str]] = None,
+            country: Optional[str] = None,
+            **kwargs: Any,
     ) -> Dict[str, List[EPGEntry]]:
-        """Get EPG data for all channels (or a subset) over a time window."""
+        """
+        ProviderEpgMixin contract:
+            get_epg_grid(start_time, end_time, channel_ids, country=None, **kwargs)
+        """
+        if country and country.lower() != self.country.lower():
+            logger.warning(
+                f"{self.provider_name}: EPG grid requested for country '{country}', "
+                f"but this instance is bound to '{self.country}'; "
+                f"serving '{self.country}' data"
+            )
+
         if not self._epg_manager:
             logger.warning(f"{self.provider_name}: EPG manager not initialized")
             return {}
