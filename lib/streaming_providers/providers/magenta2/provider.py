@@ -4,18 +4,22 @@
 Magenta2 streaming provider.
 
 This module contains only lifecycle, authentication, and the thin public API
-that delegates to the three domain managers:
+that delegates to the domain managers:
 
-    ChannelManager    – channel discovery, entitlement, streaming-data population
-    PlaybackManager   – manifest / DRM routing (live fast-path + SMIL fallback)
-    VodManager        – VOD catalogue browsing
-    RecordingsManager – nPVR (list / delete / manifest)
-    SmilManager       – SMIL-based manifest and DRM for VOD / recordings
+    ChannelManager     – channel discovery, entitlement, streaming-data population
+    PlaybackManager    – manifest / DRM routing (live fast-path + SMIL fallback)
+    VodManager         – VOD catalogue browsing
+    RecordingsManager  – nPVR recordings (list / delete / manifest)
+    TimersManager      – nPVR scheduled recordings (timer CRUD)
+    SmilManager        – SMIL-based manifest and DRM for VOD / recordings
     Magenta2EpgManager – EPG grid + programme-details (ThePlatform API)
 """
+import hashlib
+import random
+import threading
 import uuid
 from datetime import datetime
-from typing import Any, ClassVar, Dict, List, Optional, Tuple, cast, Union
+from typing import Any, ClassVar, Dict, List, NamedTuple, Optional, Tuple, cast, Union
 from urllib.parse import quote
 
 from ...base.auth.session_manager import SessionManager
@@ -34,7 +38,7 @@ from .auth import Magenta2Authenticator, Magenta2Credentials, Magenta2UserCreden
 from .channel_manager import ChannelManager
 from .epg_manager import Magenta2EpgManager
 from .playback_manager import PlaybackManager
-from .config_models import BootstrapConfig, ProviderConfig
+from .config_models import ProviderConfig
 from .constants import (
     CONTENT_TYPE_LIVE,
     DEFAULT_COUNTRY,
@@ -48,10 +52,44 @@ from .constants import (
     SUPPORTED_COUNTRIES,
     render_user_agent,
 )
+from . import constants as _constants
 from .discovery import DiscoveryService
 from .endpoint_manager import EndpointManager
 from .models import Magenta2PlaybackRestrictedException  # noqa: F401 – re-exported
 from .auth_bridge import AuthBridge
+
+# drm_variant vocabulary as documented by ProviderCatchupMixin — used only
+# for the epg_id misroute warning in get_catchup_manifest().
+_KNOWN_DRM_VARIANTS = ("auto", "software", "hardware")
+
+# Key fragments that mark a dict value as secret-looking, for the
+# _redact() safety net in debug_authentication().
+_SENSITIVE_KEY_PARTS = (
+    "token", "secret", "password", "authorization", "jwt",
+    "cookie", "credential", "bearer", "key",
+)
+
+# Values that can ONLY be a legacy positional content_type argument, never a
+# legitimate drm_variant — no DRM-variant vocabulary contains content-type
+# tokens, so matching these has no false positives. Derived from every
+# CONTENT_TYPE_* constant in .constants so a missed spelling is impossible.
+_MISROUTE_DRM_VARIANT_TOKENS = frozenset(
+    v.lower()
+    for k, v in vars(_constants).items()
+    if k.startswith("CONTENT_TYPE_") and isinstance(v, str)
+)
+
+
+class _ManagerBundle(NamedTuple):
+    """A fully-constructed domain-manager set, published by a single
+    attribute assignment so readers can never observe a mixed generation."""
+    vod: VodManager
+    recordings: RecordingsManager
+    timers: TimersManager
+    smil: SmilManager
+    channel: ChannelManager
+    playback: PlaybackManager
+    epg: Magenta2EpgManager
 
 
 class Magenta2Provider(StreamingProvider):
@@ -60,16 +98,14 @@ class Magenta2Provider(StreamingProvider):
     """
 
     # ── Static metadata (StreamingProvider ClassVar contract) ──────────────
-    # The base class reads these without instantiation. Previously only the
-    # @property twins existed, so static access fell through to the base
-    # defaults — e.g. SUPPORTED_COUNTRIES == [] reads as "single-country
-    # provider" to any registry/metadata consumer.
+    # Readable without instantiation; the @property twins below return these
+    # so there is exactly one source of truth per value.
     PROVIDER_LABEL: ClassVar[str] = "Magenta TV 2.0"
     PROVIDER_LOGO: ClassVar[str] = MAGENTA2_LOGO
     SUPPORTED_AUTH_TYPES: ClassVar[List[str]] = ["network_based"]
-    # The RHS resolves to the module-level import from .constants (the name
-    # is not yet in the class namespace at this point); list() copies it so
-    # the ClassVar never aliases the mutable constants-module object.
+    # RHS resolves to the module-level import from .constants (the name is
+    # not yet in the class namespace at this point); list() copies it so the
+    # ClassVar never aliases the mutable constants-module object.
     SUPPORTED_COUNTRIES: ClassVar[List[str]] = list(SUPPORTED_COUNTRIES)
     implements_timers: ClassVar[bool] = True
 
@@ -99,21 +135,23 @@ class Magenta2Provider(StreamingProvider):
         self.user_agent_plain = render_user_agent(platform, subscriber_suffix=False)
         self.user_agent_subscriber = render_user_agent(platform, subscriber_suffix=True)
 
-        # session_id is fresh per process launch (matches the real client).
-        self.session_id = str(uuid.uuid1())
+        # session_id is fresh per process launch (matches the real client's
+        # UUIDv1 wire format) but uses a RANDOM node so the host/container
+        # MAC address is never embedded and never leaves the machine in
+        # x-dt-session-id. Bit 40 (the multicast bit, RFC 4122) marks the
+        # node as random rather than a hardware address. Accepted risk: a
+        # real device's MAC has that bit clear, so a node-checking server
+        # could tell — but fabricating a unicast MAC risks colliding with a
+        # real device's address, which is worse.
+        self.session_id = str(uuid.uuid1(node=random.getrandbits(48) | (1 << 40)))
 
         # ── Session persistence (shared session.json) ─────────────────────────
-        # FIX (was: "'Magenta2Provider' object has no attribute
-        # 'settings_manager'"): the old code accessed
-        # self.settings_manager.session_manager, but `settings_manager` is
-        # assigned neither here nor by StreamingProvider.__init__() nor by any
-        # mixin. The provider only needs the SessionManager half of
-        # SettingsManager, so construct it directly — exactly the way
-        # SettingsManager itself builds its own SessionManager
-        # (SessionManager(config_dir_path)). The same `config_dir` is handed
-        # to Magenta2Authenticator further below, so this class, the
-        # authenticator and its TokenFlowManager all resolve the SAME
-        # session.json through the same VFS paths.
+        # The provider needs only the SessionManager half of SettingsManager,
+        # so construct it directly — the same way SettingsManager itself does
+        # (SessionManager(config_dir_path)). The same `config_dir` is passed
+        # to Magenta2Authenticator below, so this class, the authenticator
+        # and its TokenFlowManager all resolve the SAME session.json through
+        # the same VFS paths (one device_id / serial_number per installation).
         self._session_manager: SessionManager = SessionManager(config_dir)
 
         # device_id: read from the SAME persisted source TokenFlowManager
@@ -128,16 +166,14 @@ class Magenta2Provider(StreamingProvider):
             self.provider_name, self.country
         )
 
-        # serial_number has no existing persisted home in SessionManager, so
-        # it gets its own small persisted key here (mirrors get_device_id's
-        # load-or-generate pattern without changing the shared SessionManager).
+        # serial_number: same load-or-generate pattern, its own persisted key.
         self.serial_number = self._get_or_create_serial_number()
 
         # ── Proxy ────────────────────────────────────────────────────────────
         self.proxy_config = (
-                proxy_config
-                or self._proxy_from_url_safe(proxy_url)
-                or self._load_proxy_from_manager(config_dir)
+            proxy_config
+            or (ProxyConfig.from_url(proxy_url) if proxy_url else None)
+            or self._load_proxy_from_manager(config_dir)
         )
         if self.proxy_config:
             logger.info("Using proxy configuration for Magenta2")
@@ -162,22 +198,27 @@ class Magenta2Provider(StreamingProvider):
             proxy_config=self.proxy_config,
         )
 
+        # Serializes configuration refreshes end-to-end (whole
+        # refresh_configuration body). Readers never take it: the manager
+        # bundle is published by a single attribute assignment.
+        self._refresh_lock = threading.Lock()
+
         # Both are assigned concrete values by _perform_configuration_discovery()
-        # (or _create_fallback_configuration()) before __init__ returns.  We use
-        # cast(None) as a typed sentinel so the class-level annotation stays
-        # non-Optional -- callers and other methods see EndpointManager /
-        # ProviderConfig directly, with no Optional unwrapping needed.
+        # before __init__ returns — or discovery raises and construction never
+        # completes (fail-hard: there is no fallback configuration). cast(None)
+        # is a typed sentinel so the class-level annotations stay non-Optional
+        # and other methods see EndpointManager / ProviderConfig directly.
         self.endpoint_manager = cast(EndpointManager, cast(object, None))
         self.provider_config = cast(ProviderConfig, cast(object, None))
 
         # ── Authenticator (minimal config; updated after discovery) ──────────
-        # This placeholder client_id is overwritten by the real,
-        # server-provided sam3ClientId in _configure_authenticator_from_discovery()
-        # below, which always runs before __init__ returns (or __init__ raises
-        # and construction never completes — see _perform_configuration_discovery).
-        # It is unreachable in normal operation; it only matters for the
-        # handful of authenticator calls made before discovery finishes, none
-        # of which occur in this constructor.
+        # This placeholder client_id is replaced by the server-provided
+        # sam3ClientId in _configure_authenticator_from_discovery() below —
+        # UNLESS the discovered config lacks a sam3_client_id, in which case
+        # this legacy fallback persists (and discovery has already warned
+        # that the config is incomplete). It also covers the window before
+        # discovery completes; no authenticator call that depends on the
+        # real client_id happens inside this constructor.
         fallback_client_id = MAGENTA2_LEGACY_CLIENT_IDS.get(
             platform, MAGENTA2_LEGACY_CLIENT_IDS[DEFAULT_PLATFORM]
         )
@@ -218,116 +259,23 @@ class Magenta2Provider(StreamingProvider):
             provider_config=None,
         )
 
-        # ── Configuration discovery ──────────────────────────────────────────
-        # _perform_configuration_discovery always assigns self.endpoint_manager
-        # and self.provider_config (either from discovery or from the fallback).
-        # Re-raise so callers see the error; do NOT silently swallow it.
-        try:
-            self._perform_configuration_discovery()
-        except Exception as e:
-            logger.error(f"Configuration discovery failed: {e}")
-            raise
+        # ── Configuration discovery (fail-hard) ──────────────────────────────
+        # _perform_configuration_discovery() logs and re-raises on failure;
+        # construction never completes with a half-configured provider.
+        self._perform_configuration_discovery()
 
         # ── Update authenticator with discovered config ───────────────────────
         self._configure_authenticator_from_discovery(self.provider_config, self.endpoint_manager)
 
         # ── recording content_id → manifest_script; shared with PlaybackManager ──
+        # Survives refresh_configuration() rebuilds (playback cache, not config state).
         self._recording_url_cache: Dict[str, str] = {}
 
-        # ── Domain managers ──────────────────────────────────────────────────
-        self._vod_manager: Optional[VodManager] = None
-        self._recordings_manager: Optional[RecordingsManager] = None
-        self._timers_manager: Optional[TimersManager] = None
-        self._smil_manager: Optional[SmilManager] = None
-        self._epg_manager: Optional[Magenta2EpgManager] = None
-
-        self._vod_manager = VodManager(
-            http_manager=self.http_manager,
-            provider_name=self.provider_name,
-            bootstrap=self.endpoint_manager.config.bootstrap,
-            provider_config=self.endpoint_manager.config,
-            session_id=self.session_id,
-            serial_number=self.serial_number,
-            auth_headers_callback=self._vod_auth_headers,
-        )
-        logger.info("✓ VodManager initialized")
-
-        self._recordings_manager = RecordingsManager(
-            http_manager=self.http_manager,
-            provider_name=self.provider_name,
-            provider_config=self.endpoint_manager.config,
-            auth_headers_callback=self._pvr_auth_headers,
-        )
-        logger.info("✓ RecordingsManager initialized")
-
-        self._timers_manager = TimersManager(
-            http_manager=self.http_manager,
-            provider_name=self.provider_name,
-            provider_config=self.endpoint_manager.config,
-            auth_headers_callback=self._pvr_auth_headers,
-        )
-        logger.info("✓ TimersManager initialized")
-
-        self._smil_manager = SmilManager(
-            http_manager=self.http_manager,
-            provider_name=self.provider_name,
-            session_id=self.session_id,
-            device_id=self.device_id,
-            user_agent_plain=self.user_agent_plain,
-            user_agent_subscriber=self.user_agent_subscriber,
-            call_id_callback=self._generate_call_id,
-            auth_callback=self._ensure_authenticated,
-            platform_config=self.platform_config,
-            endpoint_manager=self.endpoint_manager,
-            provider_config=self.endpoint_manager.config,
-            vod_manager=self._vod_manager,
-        )
-        logger.info("✓ SmilManager initialized")
-
-        self._channel_manager = ChannelManager(
-            http_manager=self.http_manager,
-            provider_name=self.provider_name,
-            country=country,
-            platform_config=self.platform_config,
-            session_id=self.session_id,
-            serial_number=self.serial_number,
-            endpoint_manager=self.endpoint_manager,
-            provider_config=self.provider_config,
-            auth_callback=self._ensure_authenticated,
-            build_scaled_image_url_callback=self._build_scaled_image_url,
-            user_agent_plain=self.user_agent_plain,
-            user_agent_subscriber=self.user_agent_subscriber,
-            catchup_window=self.catchup_window,
-        )
-        logger.info("✓ ChannelManager initialized")
-
-        self._playback_manager = PlaybackManager(
-            channel_manager=self._channel_manager,
-            smil_manager=self._smil_manager,
-            endpoint_manager=self.endpoint_manager,
-            provider_config=self.provider_config,
-            platform_config=self.platform_config,
-            auth_callback=self._ensure_authenticated,
-            recording_url_cache=self._recording_url_cache,
-            user_agent_subscriber=self.user_agent_subscriber,
-            session_id=self.session_id,
-            call_id_callback=self._generate_call_id,
-        )
-        logger.info("✓ PlaybackManager initialized")
-
-        # ── EPG Manager ────────────────────────────────────────────────────────
-        self._epg_manager = Magenta2EpgManager(
-            endpoint_manager=self.endpoint_manager,
-            provider_config=self.endpoint_manager.config,
-            http_manager=self.http_manager,
-            authenticator=self.authenticator,
-            fetch_details=False,  # ← Don't fetch details on schedule grid
-            default_past_days=7,
-            default_future_days=13,
-        )
-        logger.info("✓ EPG Manager initialized")
-
         # ── Auth bridge ───────────────────────────────────────────────────────
+        # Constructed BEFORE the domain managers: the managers receive
+        # callbacks (_ensure_authenticated, _vod_auth_headers,
+        # _pvr_auth_headers) that dereference self._auth, and all of
+        # AuthBridge's dependencies exist right after discovery.
         self.device_token = None
         self._auth = AuthBridge(
             authenticator=self.authenticator,
@@ -343,23 +291,58 @@ class Magenta2Provider(StreamingProvider):
             generate_call_id=self._generate_call_id,
         )
 
+        # ── Domain managers: build fully, publish in ONE assignment ──────────
+        # _construct_domain_managers() assigns nothing to self; the single
+        # assignment below is the atomic publish. Readers snapshot
+        # self._managers (see the accessor properties and the multi-manager
+        # methods) and so never observe a mixed generation.
+        self._managers: _ManagerBundle = self._construct_domain_managers(
+            self.endpoint_manager, self.provider_config
+        )
+
         logger.info("Magenta2 provider initialization completed successfully")
+
+    # ------------------------------------------------------------------ #
+    # Manager accessors (single-attribute bundle)                          #
+    # ------------------------------------------------------------------ #
+    # self._managers is the ONLY published manager state; it is swapped in
+    # a single assignment, which is atomic under the GIL. These read-only
+    # properties return non-Optional types. Methods that touch MORE than
+    # one manager must snapshot the bundle once instead of using several
+    # properties in sequence (see get_manifest / get_drm /
+    # get_catchup_manifest / get_epg_grid).
+
+    @property
+    def _vod_manager(self) -> VodManager:
+        return self._managers.vod
+
+    @property
+    def _recordings_manager(self) -> RecordingsManager:
+        return self._managers.recordings
+
+    @property
+    def _timers_manager(self) -> TimersManager:
+        return self._managers.timers
+
+    @property
+    def _smil_manager(self) -> SmilManager:
+        return self._managers.smil
+
+    @property
+    def _channel_manager(self) -> ChannelManager:
+        return self._managers.channel
+
+    @property
+    def _playback_manager(self) -> PlaybackManager:
+        return self._managers.playback
+
+    @property
+    def _epg_manager(self) -> Magenta2EpgManager:
+        return self._managers.epg
 
     # ------------------------------------------------------------------ #
     # Static / utility                                                     #
     # ------------------------------------------------------------------ #
-
-    @staticmethod
-    def _proxy_from_url_safe(proxy_url: Optional[str]) -> Optional[ProxyConfig]:
-        """Match ProviderHttpMixin._resolve_proxy_config: warn-and-continue
-        on a malformed proxy URL instead of raising during construction."""
-        if not proxy_url:
-            return None
-        try:
-            return ProxyConfig.from_url(proxy_url)
-        except Exception as e:
-            logger.warning(f"magenta2: Failed to parse proxy URL '{proxy_url}': {e}")
-            return None
 
     @staticmethod
     def _generate_uuid() -> str:
@@ -368,16 +351,44 @@ class Magenta2Provider(StreamingProvider):
     def _generate_call_id(self) -> str:
         return self._generate_uuid()
 
+    @staticmethod
+    def _token_fingerprint(token: str) -> str:
+        """Non-reversible correlation handle for secrets (sha256, 12 hex chars)."""
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+
+    @classmethod
+    def _redact(cls, value: Any, _key: str = "") -> Any:
+        """
+        Recursively replace string values under secret-looking keys with
+        length + fingerprint. Over-redacts on purpose. This is a safety net
+        for unaudited third-party dict output, NOT a substitute for auditing
+        the sources — name-based redaction cannot catch secrets stored
+        under innocent keys.
+        """
+        if isinstance(value, dict):
+            return {k: cls._redact(v, str(k)) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [cls._redact(v, _key) for v in value]
+        if isinstance(value, str) and any(p in _key.lower() for p in _SENSITIVE_KEY_PARTS):
+            return f"<redacted len={len(value)} fp={cls._token_fingerprint(value)}>"
+        return value
+
     def _get_or_create_serial_number(self) -> str:
         """
         Return a stable serial number for this installation, persisted
-        across runs.
+        across runs (mirrors SessionManager.get_device_id's load-or-generate
+        pattern without adding a new public method to the shared
+        SessionManager).
 
-        SessionManager has a dedicated get_device_id() that TokenFlowManager
-        also relies on, but no equivalent for serial_number, so this mirrors
-        the same load-or-generate pattern locally (same session_data blob,
-        different key) rather than adding a new public method to the shared
-        SessionManager.
+        NOTE: this is a load-modify-save on the shared session.json. Within
+        one process it is safe (sequential init). Across processes sharing a
+        config dir there is a first-run race — the same one
+        SessionManager.get_device_id already has. The proper fix is a file
+        lock or an atomic get-or-create in SessionManager, covering both.
+        SessionManager's own save_* methods are merge-safe (verified: every
+        one loads-or-{} before writing), so later token writes will NOT drop
+        this key; only a direct save_session() caller passing a non-loaded
+        blob could.
         """
         session_data = self._session_manager.load_session(
             self.provider_name, self.country
@@ -390,7 +401,7 @@ class Magenta2Provider(StreamingProvider):
             self._session_manager.save_session(
                 self.provider_name, session_data, self.country
             )
-            logger.info(f"Generated new serial number: {serial_number}")
+            logger.debug(f"Generated new serial number: {serial_number}")
         else:
             logger.debug(f"Using existing serial number: {serial_number}")
 
@@ -414,7 +425,7 @@ class Magenta2Provider(StreamingProvider):
 
     @property
     def provider_label(self) -> str:
-        return "Magenta TV 2.0"
+        return self.PROVIDER_LABEL
 
     @property
     def provider_logo(self) -> str:
@@ -436,17 +447,18 @@ class Magenta2Provider(StreamingProvider):
     @property
     def catchup_window(self) -> int:
         """
-        Catchup window in HOURS — ProviderCatchupMixin contract
-        (validate_catchup_request: max_age = catchup_window * 3600;
-        supports_catchup: catchup_window > 0).
+        Catchup window in HOURS — the ProviderCatchupMixin contract
+        (validate_catchup_request computes max_age = catchup_window * 3600).
 
-        `4` = 4 hours. If the intended window is 4 days, return 96.
+        Ground truth from the station feed: dt$catchupOptions.cacheDuration
+        is "PT4H" (recordingPolicies.catchup.expirationOffset = 14400 s) on
+        every observed station, so 4 is correct.
         """
-        return 4  # hours
+        return 4
 
     @property
     def supported_auth_types(self) -> List[str]:
-        return ["network_based"]
+        return list(self.SUPPORTED_AUTH_TYPES)
 
     @property
     def primary_token_scope(self) -> Optional[str]:
@@ -464,36 +476,24 @@ class Magenta2Provider(StreamingProvider):
         """
         Run discovery and initialise EndpointManager.
 
-        Always sets both self.provider_config and self.endpoint_manager — either
-        from the live discovery result or from the fallback (via
-        _create_fallback_configuration).  Callers may therefore assert both are
-        non-None after this method returns without raising.
+        Fail-hard contract: on success, sets both self.provider_config and
+        self.endpoint_manager from the live discovery result. On failure,
+        logs and re-raises — __init__ does not complete. There is
+        deliberately no fallback configuration: without the manifest there
+        is no client_id, device token or endpoints, so a degraded instance
+        would fail on every subsequent operation anyway.
         """
         logger.info("Performing Magenta2 configuration discovery")
         try:
             self.provider_config = self.discovery_service.discover_provider_config()
 
             if not self.provider_config or not self.provider_config.is_complete:
+                # Incomplete configs are still usable for the parts that were
+                # discovered. refresh_configuration() is deliberately
+                # stricter: it would replace a known-good config.
                 logger.warning("Configuration discovery incomplete, some features may not work")
 
             self.endpoint_manager = EndpointManager(self.provider_config)
-
-            qr_url = self.endpoint_manager.get_endpoint("login_qr_code")
-            if qr_url:
-                logger.info(f"✓ QR code endpoint discovered: {qr_url}")
-                if hasattr(self.authenticator, "update_sam3_qr_code_url"):
-                    success = self.authenticator.update_sam3_qr_code_url(qr_url)
-                    logger.info(
-                        "✓ SAM3 client updated with QR code URL"
-                        if success
-                        else "✗ Failed to update SAM3 client with QR code URL"
-                    )
-                if hasattr(self.authenticator, "get_sam3_client_status"):
-                    logger.debug(
-                        f"SAM3 client status: {self.authenticator.get_sam3_client_status()}"
-                    )
-            else:
-                logger.warning("✗ QR code endpoint NOT found")
 
             if self.provider_config and self.provider_config.manifest:
                 device_token = self.provider_config.get_device_token()
@@ -527,19 +527,7 @@ class Magenta2Provider(StreamingProvider):
 
         except Exception as e:
             logger.error(f"Configuration discovery failed: {e}")
-            self._create_fallback_configuration()
             raise
-
-    def _create_fallback_configuration(self) -> None:
-        """Create minimal fallback configuration when discovery fails."""
-        logger.warning("Creating fallback configuration")
-        bootstrap_config = BootstrapConfig(
-            client_model=f"ftv-{self.platform}",
-            device_model=f"{self.platform.upper()}_FTV",
-        )
-        self.provider_config = ProviderConfig(bootstrap=bootstrap_config)
-        self.endpoint_manager = EndpointManager(self.provider_config)
-        logger.info("Fallback configuration created")
 
     def _configure_authenticator_from_discovery(
         self,
@@ -547,11 +535,13 @@ class Magenta2Provider(StreamingProvider):
         endpoint_manager: EndpointManager,
     ) -> None:
         """
-        Push discovered config values (client_id, models, device token, MPX PID,
-        endpoints) into the authenticator and its TokenFlowManager.
+        Push discovered config values (client_id, models, device token, MPX
+        PID, openid, endpoints, QR URL) into the authenticator and its
+        TokenFlowManager. Single config-push choke point — called from
+        __init__ and refresh_configuration() (including the rollback path).
 
-        Parameters are passed explicitly (not read from self) so the type checker
-        knows they are non-None.
+        Parameters are passed explicitly (not read from self) so the type
+        checker knows they are non-None.
         """
         self.authenticator.provider_config = cfg
         logger.info("✓ ProviderConfig stored in authenticator")
@@ -613,6 +603,7 @@ class Magenta2Provider(StreamingProvider):
         else:
             logger.warning("No public method available to update endpoints")
 
+        # Single site for the QR-URL push (also covers refresh_configuration).
         qr_url = endpoint_manager.get_endpoint("login_qr_code")
         if qr_url and hasattr(self.authenticator, "update_sam3_qr_code_url"):
             success = self.authenticator.update_sam3_qr_code_url(qr_url)
@@ -622,46 +613,265 @@ class Magenta2Provider(StreamingProvider):
                 else "✗ Failed to update SAM3 client with QR code URL"
             )
 
+    def _construct_domain_managers(
+        self, endpoint_manager: EndpointManager, provider_config: ProviderConfig
+    ) -> _ManagerBundle:
+        """
+        Build a fresh manager bundle against the given config.
+
+        No instance state is mutated (no assignments to self anywhere in
+        this method), so a failure here leaves the previously published
+        bundle and config fully intact. It is NOT side-effect free in
+        general, though: these are third-party constructors that may perform
+        I/O — ChannelManager's constructor fetches station metadata
+        (verified against its source) — and the returned bundle shares
+        self._recording_url_cache with the previous generation by design.
+
+        Note on cache loss: a rebuilt ChannelManager starts with cold
+        _live_manifest_cache / _live_pid_cache, and its station→pid map
+        holds only the station-metadata (media) pids until get_channels()
+        re-runs and overwrites them with the entitled release pids. Callers
+        that need warm caches should follow the publish with a
+        get_channels() warmup (see refresh_configuration).
+        """
+        vod = VodManager(
+            http_manager=self.http_manager,
+            provider_name=self.provider_name,
+            bootstrap=endpoint_manager.config.bootstrap,
+            provider_config=endpoint_manager.config,
+            session_id=self.session_id,
+            serial_number=self.serial_number,
+            auth_headers_callback=self._vod_auth_headers,
+        )
+        logger.debug("VodManager constructed")
+
+        recordings = RecordingsManager(
+            http_manager=self.http_manager,
+            provider_name=self.provider_name,
+            provider_config=endpoint_manager.config,
+            auth_headers_callback=self._pvr_auth_headers,
+        )
+        logger.debug("RecordingsManager constructed")
+
+        timers = TimersManager(
+            http_manager=self.http_manager,
+            provider_name=self.provider_name,
+            provider_config=endpoint_manager.config,
+            auth_headers_callback=self._pvr_auth_headers,
+        )
+        logger.debug("TimersManager constructed")
+
+        smil = SmilManager(
+            http_manager=self.http_manager,
+            provider_name=self.provider_name,
+            session_id=self.session_id,
+            device_id=self.device_id,
+            user_agent_plain=self.user_agent_plain,
+            user_agent_subscriber=self.user_agent_subscriber,
+            call_id_callback=self._generate_call_id,
+            auth_callback=self._ensure_authenticated,
+            platform_config=self.platform_config,
+            endpoint_manager=endpoint_manager,
+            provider_config=endpoint_manager.config,
+            vod_manager=vod,
+        )
+        logger.debug("SmilManager constructed")
+
+        channel = ChannelManager(
+            http_manager=self.http_manager,
+            provider_name=self.provider_name,
+            country=self.country,
+            platform_config=self.platform_config,
+            session_id=self.session_id,
+            serial_number=self.serial_number,
+            endpoint_manager=endpoint_manager,
+            provider_config=provider_config,
+            auth_callback=self._ensure_authenticated,
+            build_scaled_image_url_callback=self._build_scaled_image_url,
+            user_agent_plain=self.user_agent_plain,
+            user_agent_subscriber=self.user_agent_subscriber,
+            catchup_window=self.catchup_window,
+        )
+        logger.debug("ChannelManager constructed")
+
+        playback = PlaybackManager(
+            channel_manager=channel,
+            smil_manager=smil,
+            endpoint_manager=endpoint_manager,
+            provider_config=provider_config,
+            platform_config=self.platform_config,
+            auth_callback=self._ensure_authenticated,
+            recording_url_cache=self._recording_url_cache,
+            user_agent_subscriber=self.user_agent_subscriber,
+            session_id=self.session_id,
+            call_id_callback=self._generate_call_id,
+        )
+        logger.debug("PlaybackManager constructed")
+
+        epg = Magenta2EpgManager(
+            endpoint_manager=endpoint_manager,
+            provider_config=endpoint_manager.config,
+            http_manager=self.http_manager,
+            authenticator=self.authenticator,
+            fetch_details=False,  # ← Don't fetch details on schedule grid
+            default_past_days=7,
+            default_future_days=13,
+        )
+        logger.debug("EPG Manager constructed")
+
+        return _ManagerBundle(
+            vod=vod,
+            recordings=recordings,
+            timers=timers,
+            smil=smil,
+            channel=channel,
+            playback=playback,
+            epg=epg,
+        )
+
+    @staticmethod
+    def _retire_managers(bundle: _ManagerBundle) -> None:
+        """
+        Release resources held by a replaced manager bundle.
+
+        CAVEAT vs. the snapshot design: in-flight requests may still hold
+        this bundle when it is retired. That is harmless while close() is a
+        no-op (true today — PlaybackManager holds no state of its own,
+        ChannelManager only caches), but the FIRST manager that implements
+        a real close() will break those in-flight requests. When that
+        happens, defer retirement instead (grace period or refcounting)
+        rather than closing immediately after the swap.
+        """
+        for manager in bundle:
+            close = getattr(manager, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception as e:
+                    logger.warning(
+                        f"Error closing retired {type(manager).__name__}: {e}"
+                    )
+
     def get_discovery_status(self) -> Dict[str, Any]:
         """Return discovery and endpoint statistics."""
-        if not self.discovery_service:
-            return {"error": "Discovery service not initialized"}
         status = self.discovery_service.get_discovery_status()
         status["endpoints"] = self.endpoint_manager.get_stats()
         return status
 
-    def refresh_configuration(self, force: bool = False) -> bool:
-        """Re-run configuration discovery."""
+    def refresh_configuration(self, force: bool = False, warm: bool = True) -> bool:
+        """
+        Re-run configuration discovery and propagate the result everywhere.
+
+        Concurrency: guarded by a NON-BLOCKING acquire of _refresh_lock — a
+        concurrent or re-entrant refresh (e.g. warmup or an auth callback
+        triggering refresh_configuration again) loses the race and returns
+        False immediately instead of deadlocking.
+
+        Failure-safe ordering:
+
+        * Build phase — new EndpointManager and a complete manager bundle
+          are constructed into locals; a failure here changes nothing.
+          Caveat: the constructors (and any constructor-time callbacks) run
+          against the OLD authenticator configuration and the OLD
+          self.provider_config — the authenticator is reconfigured only
+          after the build. Harmless unless a refresh changes auth endpoints
+          or image-scaling config.
+        * Raising steps first — authenticator reconfiguration and
+          AuthBridge update. On failure the authenticator is re-pushed the
+          PREVIOUS config, then the error propagates. Rollback caveat:
+          _configure_authenticator_from_discovery only sets truthy fields,
+          so the rollback restores every value the old config defined but
+          cannot UNSET values that existed only in the new config (e.g. an
+          openid block present only in the new manifest) — in that narrow
+          case the authenticator keeps a new-only field alongside otherwise
+          old state.
+        * Non-raising commit — plain reference assignments plus ONE atomic
+          bundle swap. Note: provider_config / endpoint_manager / _managers
+          are three separate assignments, so a reader of the first two can
+          momentarily see a different generation than a snapshotted bundle;
+          accepted today (nothing reads them in that combination
+          mid-flight). If it ever matters, move the config objects into
+          _ManagerBundle.
+        * Retirement — the old bundle's close() hooks fire (no-op today;
+          see _retire_managers for the in-flight caveat).
+
+        Unlike initial discovery, an INCOMPLETE result is rejected: at init
+        there is nothing to lose, but a refresh must never replace a
+        known-good configuration with an incomplete one.
+
+        The warmup (warm=True) re-runs ChannelManager.get_channels() so the
+        rebuilt channel manager's station→pid map holds entitled release
+        pids and its live caches are populated. It is a synchronous,
+        few-request operation (distribution rights + paginated entitled
+        feed — ChannelManager ignores its populate_streaming /
+        prefer_highest_quality parameters on this path). Pass warm=False on
+        request threads or scheduler ticks and warm explicitly later; a
+        failed warmup is non-fatal and leaves the provider in the same
+        state as a fresh one, which PlaybackManager._ensure_live_cache
+        self-heals on demand.
+        """
+        if not self._refresh_lock.acquire(blocking=False):
+            logger.warning("Configuration refresh already in progress — skipping")
+            return False
         try:
-            logger.info("Refreshing provider configuration")
-            new_config = self.discovery_service.discover_provider_config(force_refresh=force)
+            try:
+                logger.info("Refreshing provider configuration")
+                new_config = self.discovery_service.discover_provider_config(force_refresh=force)
 
-            if new_config and new_config.is_complete:
-                self.provider_config = new_config
-                self.endpoint_manager = EndpointManager(new_config)
-
-                if new_config.manifest:
-                    device_token: Any = new_config.manifest.raw_data.get("deviceToken")
-                    authorize_tokens_url: Any = new_config.manifest.raw_data.get(
-                        "authorizeTokensUrl"
+                if not (new_config and new_config.is_complete):
+                    logger.warning(
+                        "Configuration refresh incomplete — keeping previous configuration"
                     )
-                    if device_token:
-                        self.authenticator.set_device_token(device_token, authorize_tokens_url)
-                    if new_config.manifest.mpx.account_pid:
-                        self.authenticator.set_mpx_account_pid(
-                            new_config.manifest.mpx.account_pid
+                    return False
+
+                old_config = self.provider_config
+                old_endpoints = self.endpoint_manager
+                old_managers = self._managers
+
+                # ── Build phase: nothing committed. ─────────────────────────
+                new_endpoints = EndpointManager(new_config)
+                bundle = self._construct_domain_managers(new_endpoints, new_config)
+
+                # ── Raising steps first. ─────────────────────────────────────
+                try:
+                    self._configure_authenticator_from_discovery(new_config, new_endpoints)
+                    self._auth.update_provider_config(new_config)
+                except Exception:
+                    logger.warning(
+                        "Authenticator configuration failed mid-refresh — "
+                        "rolling back to previous configuration"
+                    )
+                    try:
+                        self._configure_authenticator_from_discovery(old_config, old_endpoints)
+                        self._auth.update_provider_config(old_config)
+                    except Exception as rollback_exc:
+                        logger.error(f"Authenticator rollback failed: {rollback_exc}")
+                    raise
+
+                # ── Non-raising commit: plain assignments + one atomic swap. ──
+                self.provider_config = new_config
+                self.endpoint_manager = new_endpoints
+                self._managers = bundle
+
+                self._retire_managers(old_managers)
+
+                # ── Warmup. ───────────────────────────────────────────────────
+                if warm:
+                    try:
+                        self._managers.channel.get_channels()
+                    except Exception as e:
+                        logger.warning(
+                            f"Post-refresh channel warmup failed (caches stay cold): {e}"
                         )
 
-                self._auth.update_provider_config(new_config)
                 logger.info("Configuration refresh successful")
                 return True
-            else:
-                logger.warning("Configuration refresh incomplete")
-                return False
 
-        except Exception as e:
-            logger.error(f"Configuration refresh failed: {e}")
-            return False
+            except Exception as e:
+                logger.error(f"Configuration refresh failed: {e}")
+                return False
+        finally:
+            self._refresh_lock.release()
 
     def register_device(self) -> bool:
         """Perform device registration / authentication."""
@@ -728,8 +938,13 @@ class Magenta2Provider(StreamingProvider):
                 call_params[key] = value
 
         base_url = image_config.scaling_base_url.rstrip("/")
+        # Only `src` is quoted (it is a raw URL). The manifest-provided call
+        # parameters are emitted verbatim — they may already be
+        # percent-encoded, and re-quoting would double-encode them.
         params = {**call_params, "x": "120", "y": "42", "ar": "keep", "src": original_url}
-        query_string = "&".join([f"{k}={quote(v, safe='')}" for k, v in params.items()])
+        query_string = "&".join(
+            f"{k}={quote(v, safe='') if k == 'src' else v}" for k, v in params.items()
+        )
         return f"{base_url}/iss?{query_string}"
 
     # ------------------------------------------------------------------ #
@@ -773,10 +988,17 @@ class Magenta2Provider(StreamingProvider):
         prefer_highest_quality: bool = True,
         **kwargs: Any,
     ) -> List[StreamingChannel]:
+        # NOTE: prefer_highest_quality is accepted for signature stability
+        # but is a documented no-op — the entitled-channels feed resolves
+        # SD/HD variants server-side (one station per channel per account).
+        # ChannelManager spells the flag `populate_streaming`; accept both
+        # spellings so a caller passing it via **kwargs doesn't hit a
+        # duplicate-keyword TypeError at the forwarding call below.
+        populate_streaming = kwargs.pop("populate_streaming", populate_streaming_data)
         return self._channel_manager.get_channels(
             time_window_hours=time_window_hours,
             fetch_manifests=fetch_manifests,
-            populate_streaming=populate_streaming_data,
+            populate_streaming=populate_streaming,
             prefer_highest_quality=prefer_highest_quality,
             **kwargs,
         )
@@ -789,82 +1011,104 @@ class Magenta2Provider(StreamingProvider):
     ) -> List[Event]:
         return []
 
-    def _get_playback_id(self, content_id: str) -> str:
+    @staticmethod
+    def _get_playback_id(content_id: str, channel_manager: ChannelManager) -> str:
         """
-        Convert station_id to playback_id if needed.
+        Convert station_id to playback_id if needed, using the given
+        ChannelManager so the conversion and the subsequent playback call
+        operate on the same manager generation.
 
         If content_id is numeric (station_id), convert to playback_id.
         Otherwise return as-is (already a playback_id or VOD ID).
         """
-        # If it's a numeric station_id, convert to playback_id
         if content_id.isdigit():
-            playback_id = self._channel_manager.get_playback_id_for_station(content_id)
+            playback_id = channel_manager.get_playback_id_for_station(content_id)
             if playback_id:
                 logger.debug(f"Converted station_id {content_id} -> playback_id {playback_id}")
                 return playback_id
-            else:
-                logger.warning(f"No playback_id found for station_id {content_id}")
-                return content_id
+            logger.warning(f"No playback_id found for station_id {content_id}")
+            return content_id
         return content_id
 
     def get_manifest(
             self, content_id: str, content_type: str = CONTENT_TYPE_LIVE, **kwargs: Any
     ) -> Optional[str]:
+        # Snapshot one manager generation: the station→pid conversion and
+        # the playback call must not straddle a refresh swap.
+        managers = self._managers
         # Convert station_id -> playback_id for live channels
         if content_type == CONTENT_TYPE_LIVE:
-            content_id = self._get_playback_id(content_id)
-        return self._playback_manager.get_manifest(content_id, content_type, **kwargs)
+            content_id = self._get_playback_id(content_id, managers.channel)
+        return managers.playback.get_manifest(content_id, content_type, **kwargs)
 
     def get_drm(
-            self,
-            content_id: str,
-            drm_variant: Optional[str] = None,
-            content_type: str = CONTENT_TYPE_LIVE,
-            **kwargs: Any,
+        self,
+        content_id: str,
+        drm_variant: Optional[str] = None,
+        content_type: str = CONTENT_TYPE_LIVE,
+        **kwargs: Any,
     ) -> List[DRMConfig]:
         """
-        Honors the base signature get_drm(content_id, drm_variant=None, **kwargs)
-        while keeping the Magenta2-specific content_type routing.
+        Base signature (StreamingProvider):
+            get_drm(content_id, drm_variant=None, **kwargs)
 
-        The previous override used content_type as the second parameter:
-        - a positional base-contract call get_drm(cid, "auto") routed "auto"
-          into content_type (breaking live playback-id resolution), and
-        - get_drm(cid, drm_variant="auto") had the kwarg silently swallowed
-          by **kwargs.
+        drm_variant is accepted to honor the contract but not forwarded:
+        the verified PlaybackManager signature is
+        get_drm(content_id, content_type=CONTENT_TYPE_LIVE, **kwargs) —
+        it has no drm_variant parameter. Unknown or non-string values are
+        accepted and ignored (nothing depends on them here).
         """
+        if isinstance(drm_variant, str) and drm_variant.lower() in _MISROUTE_DRM_VARIANT_TOKENS:
+            # This value is a content-type token, which can only be the
+            # legacy positional call get_drm(cid, "vod"/"live"/"recording")
+            # — it would silently route VOD content through the live path
+            # and return the wrong DRM. No legitimate drm_variant ever
+            # matches, so this has no false positives.
+            raise ValueError(
+                f"{self.provider_name}: get_drm got drm_variant={drm_variant!r}, which is a "
+                f"content-type token — this looks like the legacy positional call "
+                f"get_drm(content_id, content_type). Pass content_type by keyword: "
+                f"get_drm(content_id, content_type={drm_variant!r})"
+            )
+        managers = self._managers
         # Convert station_id -> playback_id for live channels
         if content_type == CONTENT_TYPE_LIVE:
-            content_id = self._get_playback_id(content_id)
-        return self._playback_manager.get_drm(
-            content_id, content_type, drm_variant=drm_variant, **kwargs
-        )
+            content_id = self._get_playback_id(content_id, managers.channel)
+        return managers.playback.get_drm(content_id, content_type, **kwargs)
 
     def get_catchup_manifest(
-            self,
-            content_id: str,
-            start_time: int,
-            end_time: int,
-            epg_id: Optional[str] = None,
-            drm_variant: Optional[str] = "auto",
-            **kwargs: Any,
+        self,
+        content_id: str,
+        start_time: int,
+        end_time: int,
+        epg_id: Optional[str] = None,
+        drm_variant: Optional[str] = "auto",
+        **kwargs: Any,
     ) -> Optional[str]:
         """
-        ProviderCatchupMixin contract:
+        Base signature (ProviderCatchupMixin):
             get_catchup_manifest(content_id, start_time, end_time, epg_id=None, **kwargs)
 
-        The previous override declared drm_variant as the 4th parameter:
-        - a positional base-contract call routed the epg_id into drm_variant,
-        - epg_id=... keyword calls (e.g. from get_catchup_manifest_with_headers,
-          the CatchupOperations entry point) were swallowed by **kwargs and
-          forwarded to PlaybackManager.
-
-        epg_id is accepted to honor the contract; Magenta2's SMIL catchup
-        routing keys off playback_id + time range, so it is deliberately
-        not forwarded. Move it into the PlaybackManager call if it ever
-        needs it.
+        epg_id is accepted to honor the contract but not forwarded: the
+        verified PlaybackManager signature is
+        get_catchup_manifest(content_id, start_time, end_time, drm_variant="auto",
+        **kwargs) — drm_variant is its 4th positional, forwarded as such
+        below. (PlaybackManager itself ignores start_time/end_time: Magenta2
+        catchup is a DVR sliding window via dvr_window_length, not a fixed
+        time-range asset.)
         """
-        content_id = self._get_playback_id(content_id)
-        return self._playback_manager.get_catchup_manifest(
+        # _KNOWN_DRM_VARIANTS is the vocabulary documented by
+        # ProviderCatchupMixin, not a guess. Warning only (not an error):
+        # a misroute here still produces a correct manifest — the value is
+        # simply ignored — so a loud warning is proportionate.
+        if epg_id is not None and str(epg_id).lower() in _KNOWN_DRM_VARIANTS:
+            logger.warning(
+                f"{self.provider_name}: get_catchup_manifest got epg_id={epg_id!r}, "
+                f"which looks like a drm_variant — pass drm_variant by keyword"
+            )
+        managers = self._managers
+        content_id = self._get_playback_id(content_id, managers.channel)
+        return managers.playback.get_catchup_manifest(
             content_id, start_time, end_time, drm_variant, **kwargs
         )
 
@@ -876,10 +1120,6 @@ class Magenta2Provider(StreamingProvider):
         **kwargs: Any,
     ) -> Any:
         """Return children of a VOD node (empty string → root)."""
-        if not self._vod_manager:
-            raise RuntimeError(
-                "VodManager not available — configuration discovery may have failed"
-            )
         return self._vod_manager.get_children(
             content_id=content_id,
             cursor=cursor,
@@ -895,10 +1135,6 @@ class Magenta2Provider(StreamingProvider):
             **kwargs: Any,
     ) -> Any:
         """Search the VOD catalogue. Delegates to VodManager.search()."""
-        if not self._vod_manager:
-            raise RuntimeError(
-                "VodManager not available — configuration discovery may have failed"
-            )
         return self._vod_manager.search(
             query=query,
             cursor=cursor,
@@ -908,10 +1144,6 @@ class Magenta2Provider(StreamingProvider):
 
     def get_recordings(self, include_deleted: bool = False, **kwargs: Any) -> Any:
         """Return a list of Recording objects from the nPVR backend."""
-        if not self._recordings_manager:
-            raise RuntimeError(
-                "RecordingsManager not available — configuration discovery may have failed"
-            )
         recordings = self._recordings_manager.get_recordings(
             include_deleted=include_deleted, **kwargs
         )
@@ -921,16 +1153,10 @@ class Magenta2Provider(StreamingProvider):
         return recordings
 
     def delete_recording(self, recording_id: str, **kwargs: Any) -> None:
-        if not self._recordings_manager:
-            raise RuntimeError(
-                "RecordingsManager not available — configuration discovery may have failed"
-            )
         self._recordings_manager.delete_recording(recording_id)
 
     def get_recording_manifest(self, recording_id: str, **kwargs: Any) -> Optional[str]:
         """Return the playback URL for a recording by ID (fresh API lookup)."""
-        if not self._recordings_manager:
-            return None
         return self._recordings_manager.get_recording_manifest(recording_id)
 
     # ------------------------------------------------------------------ #
@@ -939,66 +1165,43 @@ class Magenta2Provider(StreamingProvider):
 
     def get_timer_types(self, **kwargs: Any) -> Any:
         """Return the timer types this provider supports."""
-        if not self._timers_manager:
-            raise RuntimeError(
-                "TimersManager not available — configuration discovery may have failed"
-            )
         return self._timers_manager.get_timer_types()
 
     def get_timers(self, **kwargs: Any) -> Any:
         """Return the list of currently scheduled timers."""
-        if not self._timers_manager:
-            raise RuntimeError(
-                "TimersManager not available — configuration discovery may have failed"
-            )
         return self._timers_manager.get_timers(**kwargs)
 
     def add_timer(self, timer: Any, **kwargs: Any) -> Any:
         """Schedule a new timer. Delegates to TimersManager.add_timer()."""
-        if not self._timers_manager:
-            raise RuntimeError(
-                "TimersManager not available — configuration discovery may have failed"
-            )
         return self._timers_manager.add_timer(timer)
 
     def update_timer(self, timer: Any, **kwargs: Any) -> Any:
         """Update an existing timer. Delegates to TimersManager.update_timer()."""
-        if not self._timers_manager:
-            raise RuntimeError(
-                "TimersManager not available — configuration discovery may have failed"
-            )
         return self._timers_manager.update_timer(timer)
 
     def delete_timer(
         self, client_index: int, force_delete: bool = False, **kwargs: Any
     ) -> None:
         """Delete/cancel a timer. Delegates to TimersManager.delete_timer()."""
-        if not self._timers_manager:
-            raise RuntimeError(
-                "TimersManager not available — configuration discovery may have failed"
-            )
         self._timers_manager.delete_timer(client_index, force_delete=force_delete)
 
     def get_epg(
-            self,
-            channel_id: str,
-            start_time: Optional[datetime] = None,
-            end_time: Optional[datetime] = None,
-            country: Optional[str] = None,
-            **kwargs: Any,
+        self,
+        channel_id: str,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        country: Optional[str] = None,
+        **kwargs: Any,
     ) -> List[EPGEntry]:
         """
-        ProviderEpgMixin contract:
+        Base signature (ProviderEpgMixin):
             get_epg(channel_id, start_time, end_time, country=None, **kwargs)
-
-        The previous override omitted `country`, so base-contract positional
-        or keyword country values were swallowed by **kwargs and forwarded
-        into the EPG manager.
 
         A Magenta2Provider instance is bound to a single country at
         construction (self.country drives discovery/endpoints), so a
         differing requested country is logged — not silently ignored — and
-        the instance's country is served.
+        the instance's country is served. If Magenta2EpgManager.get_channel_epg
+        ever gains a country parameter, forward it there instead.
         """
         if country and country.lower() != self.country.lower():
             logger.warning(
@@ -1006,10 +1209,6 @@ class Magenta2Provider(StreamingProvider):
                 f"but this instance is bound to '{self.country}'; "
                 f"serving '{self.country}' data"
             )
-
-        if not self._epg_manager:
-            logger.warning(f"{self.provider_name}: EPG manager not initialized")
-            return []
 
         try:
             self._ensure_authenticated()
@@ -1024,15 +1223,15 @@ class Magenta2Provider(StreamingProvider):
         )
 
     def get_epg_grid(
-            self,
-            start_time: Optional[datetime] = None,
-            end_time: Optional[datetime] = None,
-            channel_ids: Optional[List[str]] = None,
-            country: Optional[str] = None,
-            **kwargs: Any,
+        self,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        channel_ids: Optional[List[str]] = None,
+        country: Optional[str] = None,
+        **kwargs: Any,
     ) -> Dict[str, List[EPGEntry]]:
         """
-        ProviderEpgMixin contract:
+        Base signature (ProviderEpgMixin):
             get_epg_grid(start_time, end_time, channel_ids, country=None, **kwargs)
         """
         if country and country.lower() != self.country.lower():
@@ -1042,23 +1241,23 @@ class Magenta2Provider(StreamingProvider):
                 f"serving '{self.country}' data"
             )
 
-        if not self._epg_manager:
-            logger.warning(f"{self.provider_name}: EPG manager not initialized")
-            return {}
-
         try:
             self._ensure_authenticated()
         except Exception as e:
             logger.warning(f"{self.provider_name}: Auth failed for EPG grid: {e}")
 
+        # Snapshot one manager generation: the channel-list fallback and the
+        # EPG call must not straddle a refresh swap.
+        managers = self._managers
+
         # If channel_ids is None, pull the full channel list and use each
         # channel's station-ID-derived channel_id (the same ID space the
         # EPG manager keys its grid by — see ChannelManager / EPGEntry wiring).
         if channel_ids is None:
-            channels = self._channel_manager.get_channels(populate_streaming=False)
+            channels = managers.channel.get_channels(populate_streaming=False)
             channel_ids = [ch.channel_id for ch in channels]
 
-        return self._epg_manager.get_epg_grid(
+        return managers.epg.get_epg_grid(
             start_time=start_time,
             end_time=end_time,
             channel_ids=channel_ids,
@@ -1067,9 +1266,6 @@ class Magenta2Provider(StreamingProvider):
 
     def get_program_details(self, program_id: str, **kwargs: Any) -> Optional[EPGProgramDetails]:
         """Get detailed metadata for a single programme."""
-        if not self._epg_manager:
-            logger.warning(f"{self.provider_name}: EPG manager not initialized")
-            return None
         return self._epg_manager.get_program_details(program_id)
 
     # ------------------------------------------------------------------ #
@@ -1089,7 +1285,19 @@ class Magenta2Provider(StreamingProvider):
         return self._auth.get_auth_details(self.token_scopes, context)
 
     def debug_authentication(self) -> Dict[str, Any]:
-        """Return comprehensive auth-state and token-flow diagnostic info."""
+        """
+        Return auth-state and token-flow diagnostic info.
+
+        Secret handling: the provider's own token fields are length +
+        sha256 fingerprint only. The third-party sections
+        (token_flow_manager.get_token_status(), get_authentication_capabilities(),
+        get_sam3_client_status()) run through _redact(), a name-based
+        recursive redaction that replaces string values under
+        secret-looking keys. That is a SAFETY NET, not a substitute for
+        auditing those sources — name-based redaction cannot catch secrets
+        under innocent keys. Exception reporting uses type names only,
+        since messages can embed URLs or token fragments.
+        """
         result: Dict[str, Any] = {
             "provider": {
                 "provider_name": self.provider_name,
@@ -1103,25 +1311,25 @@ class Magenta2Provider(StreamingProvider):
             persona_info: Dict[str, Any] = {
                 "available": True,
                 "length": len(persona_token),
-                "preview": persona_token[:50] + "...",
+                "fingerprint": self._token_fingerprint(persona_token),
             }
             try:
                 persona_jwt = PlaybackManager.extract_persona_jwt_from_token(persona_token)
                 persona_info["jwt_available"] = bool(persona_jwt)
                 if persona_jwt:
                     persona_info["jwt_length"] = len(persona_jwt)
-                    persona_info["jwt_preview"] = persona_jwt[:50] + "..."
+                    persona_info["jwt_fingerprint"] = self._token_fingerprint(persona_jwt)
             except Exception as e:
-                persona_info["jwt_extraction_error"] = str(e)
+                persona_info["jwt_extraction_error"] = type(e).__name__
             result["persona_token"] = persona_info
         except Exception as e:
-            result["persona_token"] = {"available": False, "error": str(e)}
+            result["persona_token"] = {"available": False, "error": type(e).__name__}
 
         tfm = getattr(self.authenticator, "token_flow_manager", None)
         if tfm is not None:
             result["token_flow_manager"] = {
                 "available": True,
-                "token_status": tfm.get_token_status(),
+                "token_status": self._redact(tfm.get_token_status()),
             }
         else:
             result["token_flow_manager"] = {
@@ -1130,23 +1338,27 @@ class Magenta2Provider(StreamingProvider):
             }
 
         if hasattr(self.authenticator, "get_authentication_capabilities"):
-            result["authentication_capabilities"] = (
+            result["authentication_capabilities"] = self._redact(
                 self.authenticator.get_authentication_capabilities()
             )
 
+        # Snapshot the endpoint manager so all reads see one generation.
+        endpoint_manager = self.endpoint_manager
         result["endpoints"] = {
-            "has_taa_auth": self.endpoint_manager.has_endpoint("taa_auth"),
-            "has_entitlement": self.endpoint_manager.has_endpoint("entitlement"),
-            "has_widevine_license": self.endpoint_manager.has_endpoint("widevine_license"),
-            "has_mpx_selector": self.endpoint_manager.has_endpoint("mpx_selector"),
-            "total_endpoints": len(self.endpoint_manager.get_all_endpoints()),
+            "has_taa_auth": endpoint_manager.has_endpoint("taa_auth"),
+            "has_entitlement": endpoint_manager.has_endpoint("entitlement"),
+            "has_widevine_license": endpoint_manager.has_endpoint("widevine_license"),
+            "has_mpx_selector": endpoint_manager.has_endpoint("mpx_selector"),
+            "total_endpoints": len(endpoint_manager.get_all_endpoints()),
         }
 
         if hasattr(self.authenticator, "get_sam3_client_status"):
-            result["sam3_client"] = self.authenticator.get_sam3_client_status()
+            result["sam3_client"] = self._redact(
+                self.authenticator.get_sam3_client_status()
+            )
 
         return result
 
     @classmethod
     def get_static_supported_countries(cls) -> List[str]:
-        return SUPPORTED_COUNTRIES.copy()
+        return list(cls.SUPPORTED_COUNTRIES)
