@@ -24,7 +24,6 @@ from typing import ClassVar, Dict, List, Optional, Tuple
 from ..providers.auth import AuthContext, AuthStatus  # noqa: F401  (re-exported for callers)
 from .auth_type import AuthType  # noqa: F401  (re-exported for callers)
 from .models import DRMConfig, Event, StreamingChannel
-from .utils.logger import logger
 from .provider_mixins.auth import ProviderAuthMixin
 from .provider_mixins.bookmarks import ProviderBookmarksMixin
 from .provider_mixins.catchup import ProviderCatchupMixin
@@ -150,7 +149,6 @@ class StreamingProvider(
         """
         url = self.get_manifest(content_id, **kwargs)
         headers = self.get_manifest_headers(content_id, **kwargs)
-        logger.info(f"ALLENTE-DEBUG get_manifest_with_headers → url={url!r}, headers={headers!r}")
         return url, headers
 
     def get_dynamic_manifest_params(self, channel: StreamingChannel, **kwargs) -> Optional[str]:
