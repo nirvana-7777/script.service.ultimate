@@ -12,11 +12,11 @@ Public API (implemented here):
 
 Inherited from StreamingProvider (verified against base source — do not
 re-implement):
-  * get_manifest_with_headers() -> base default composes get_manifest() +
-                                   get_manifest_headers(); base
-                                   get_manifest_headers() returns {}, which
-                                   is correct for Allente (open CDN).
-  * get_segment_headers()       -> defaults to manifest headers ({}).
+  * get_manifest_headers() / get_segment_headers() → overridden to send
+                                   origin/referer/UA. Akamai's edge rejects
+                                   requests without them (Access Denied HTML page).
+                                   The response advertises access-control-allow-origin:
+                                    * for CORS, but the actual gate is enforced at the edge.
   * get_events()/EPG/VOD/etc.   -> mixin defaults (empty) — out of v1 scope.
   * to_output_format()/to_json()-> consume self.channels, populated by
                                    get_channels().
