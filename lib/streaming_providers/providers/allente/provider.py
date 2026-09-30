@@ -356,9 +356,23 @@ class AllenteProvider(StreamingProvider):
         playout = self._resolve_playout_cached(content_id)
         return playout.stream_url if playout else None
 
-    # NOTE: get_manifest_with_headers() is intentionally NOT overridden —
-    # see module docstring. The base default (get_manifest() +
-    # get_manifest_headers()) produces exactly (playout_url, {}).
+    def get_manifest_headers(self, content_id: str, **kwargs) -> Dict[str, str]:
+        """
+        Headers for the MPD fetch.
+
+        Akamai fronts stream-live-01.allente.tv and rejects requests without
+        a whitelisted origin/referer (returns an Akamai "Access Denied"
+        HTML page). The CDN also advertises access-control-allow-origin: *
+        for CORS, but that is a browser-level policy — the actual gate is
+        enforced at the edge based on these headers.
+
+        We send the same origin/referer/UA the browser sends.
+        """
+        return {
+            "origin": AllenteDefaults.TV_WEB_ORIGIN,
+            "referer": AllenteDefaults.TV_WEB_REFERER,
+            "user-agent": self.provider_config.user_agent,
+        }
 
     # ------------------------------------------------------------------
     # DRM (Widevine via Zulu)
