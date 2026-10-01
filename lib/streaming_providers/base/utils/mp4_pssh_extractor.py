@@ -42,18 +42,45 @@ class MP4PSSHExtractor:
             List of PSSHData objects with extracted information
         """
         try:
-            if http_manager is not None:
-                response = http_manager.get(segment_url, headers=headers or {}, timeout=timeout, operation="api")
-            else:
-                import requests
-                response = requests.get(segment_url, timeout=timeout, headers=headers or {})
-            response.raise_for_status()
-            data = response.content[:1024 * 100]
+            data = MP4PSSHExtractor._fetch_head(segment_url, timeout, headers, http_manager)
             return MP4PSSHExtractor.extract_from_bytes(data)
 
         except Exception as e:
             logger.error(f"Failed to extract PSSH from {segment_url}: {e}")
             return []
+
+    @staticmethod
+    def extract_tenc_kids_from_url(
+            segment_url: str,
+            timeout: int = 10,
+            headers: Optional[Dict[str, str]] = None,
+            http_manager=None,
+    ) -> List[str]:
+        """
+        Download an init segment and return the default KIDs of its protected
+        tracks (from tenc boxes), as normalized 32-char hex strings.
+
+        Unlike _extract_all_tenc_kids (a byte-resync scan used as PSSH fallback),
+        this walks the box tree structurally, so it does not depend on box sizes
+        happening to line up.
+        """
+        try:
+            data = MP4PSSHExtractor._fetch_head(segment_url, timeout, headers, http_manager)
+            return MP4PSSHExtractor.extract_tenc_kids_structured(data)
+        except Exception as e:
+            logger.error(f"Failed to extract tenc KIDs from {segment_url}: {e}")
+            return []
+
+    @staticmethod
+    def _fetch_head(segment_url: str, timeout: int, headers: Optional[Dict[str, str]], http_manager) -> bytes:
+        """Fetch a segment and return at most its first 100 KB."""
+        if http_manager is not None:
+            response = http_manager.get(segment_url, headers=headers or {}, timeout=timeout, operation="api")
+        else:
+            import requests
+            response = requests.get(segment_url, timeout=timeout, headers=headers or {})
+        response.raise_for_status()
+        return response.content[:1024 * 100]
 
     @staticmethod
     def extract_from_bytes(data: bytes) -> List[PSSHData]:
@@ -147,6 +174,55 @@ class MP4PSSHExtractor:
             )
 
         return pssh_data_list
+
+    # Fixed-size sample entry fields that precede child boxes (ISO/IEC 14496-12)
+    _SAMPLE_ENTRY_FIELDS = {b"encv": 78, b"enca": 28}
+    _TENC_CONTAINERS = {b"moov", b"trak", b"mdia", b"minf", b"stbl", b"sinf", b"schi"}
+
+    @staticmethod
+    def extract_tenc_kids_structured(data: bytes) -> List[str]:
+        """
+        Collect KIDs from tenc boxes by walking the box tree
+        moov/trak/mdia/minf/stbl/stsd/{encv,enca}/sinf/schi/tenc.
+
+        Handles the two places where children do not start right after the
+        8-byte box header: stsd (version/flags + entry_count) and the
+        encv/enca sample entries (fixed-size fields before child boxes).
+        Unprotected tracks (default_isProtected == 0) are skipped.
+        """
+        kids: List[str] = []
+        MP4PSSHExtractor._walk_for_tenc(data, 0, len(data), kids)
+        return kids
+
+    @staticmethod
+    def _walk_for_tenc(data: bytes, start: int, end: int, kids: List[str]) -> None:
+        offset = start
+        while offset + 8 <= end:
+            box_size = struct.unpack(">I", data[offset: offset + 4])[0]
+            box_type = data[offset + 4: offset + 8]
+            if box_size < 8 or offset + box_size > end:
+                break  # malformed or truncated: stop, don't guess
+
+            body = offset + 8
+            box_end = offset + box_size
+
+            if box_type == b"tenc":
+                # header(8) + version/flags(4) + reserved(1) + crypt/skip(1)
+                # + isProtected(1) + ivSize(1) + KID(16)
+                if box_size >= 32 and data[offset + 14] != 0:
+                    kid = data[offset + 16: offset + 32].hex()
+                    if any(data[offset + 16: offset + 32]) and kid not in kids:
+                        kids.append(kid)
+            elif box_type in MP4PSSHExtractor._TENC_CONTAINERS:
+                MP4PSSHExtractor._walk_for_tenc(data, body, box_end, kids)
+            elif box_type == b"stsd":
+                # version/flags(4) + entry_count(4), then sample entries
+                MP4PSSHExtractor._walk_for_tenc(data, body + 8, box_end, kids)
+            elif box_type in MP4PSSHExtractor._SAMPLE_ENTRY_FIELDS:
+                skip = MP4PSSHExtractor._SAMPLE_ENTRY_FIELDS[box_type]
+                MP4PSSHExtractor._walk_for_tenc(data, body + skip, box_end, kids)
+
+            offset = box_end
 
     @staticmethod
     def _extract_all_tenc_kids(data: bytes) -> List[str]:

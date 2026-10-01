@@ -8,7 +8,7 @@ import base64
 import struct
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from typing import Optional, Tuple, Set, Dict
+from typing import Callable, Optional, Tuple, Set, Dict
 from urllib.parse import urljoin, quote, urlencode
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -68,7 +68,13 @@ class MPDRewriter:
             blocklist_path: str = "representation_blocklist.json",
             clearkey_receiver_side: bool = False,
             segment_headers: Optional[Dict[str, str]] = None,
+            kid_resolver: Optional[Callable[[str], Optional[str]]] = None,
     ):
+        # kid_resolver: init-segment URL -> KID (32 hex chars) or None. Injected
+        # so the rewriter itself stays free of network I/O. Only consulted in
+        # multi-key server-side decrypt mode, for AdaptationSets whose MPD
+        # carries no KID (see _resolve_kid_from_init_segment).
+        self.kid_resolver = kid_resolver
         self.media_proxy_url = media_proxy_url.rstrip("/")
         self.provider_proxy_url = provider_proxy_url
         self.key_config = KeyConfiguration(clearkey_keyids or {})
@@ -378,6 +384,10 @@ class MPDRewriter:
 
                     # Extract KID
                     extracted_kid = self._extract_kid_from_adaptationset(adaptation_set)
+                    if not extracted_kid and self._needs_kid_from_init_segment():
+                        extracted_kid = self._resolve_kid_from_init_segment(
+                            adaptation_set, as_base_url, unique_id
+                        )
                     if extracted_kid:
                         as_id_to_kid[unique_id] = extracted_kid
 #                        logger.debug(f"AdaptationSet {unique_id} KID: {extracted_kid[:8]}...")
@@ -409,6 +419,74 @@ class MPDRewriter:
                 # else: proxy-only, no keys — leave ContentProtection untouched
 
         return encrypted_ids, as_id_to_kid, base_url_map
+
+    def _needs_kid_from_init_segment(self) -> bool:
+        """KIDs are only consumed for key selection in multi-key server-side decrypt."""
+        return (
+            self.kid_resolver is not None
+            and bool(self.key_config.keys)
+            and not self.clearkey_receiver_side
+            and not self.key_config.single_key_mode
+        )
+
+    def _find_init_segment_url(self, adaptation_set: ET.Element, base_url: str) -> Optional[str]:
+        """
+        Resolve the init segment URL of the first Representation, using the same
+        base-URL logic that is later used to proxy the segments.
+
+        Supports SegmentTemplate (Representation or AdaptationSet level) and
+        single-file Representation BaseURL (SegmentBase). Period-level
+        SegmentTemplate is not handled.
+        """
+        representations = adaptation_set.findall("mpd:Representation", self.MPD_NAMESPACE)
+        first_rep = representations[0] if representations else None
+        rep_id = first_rep.get("id", "") if first_rep is not None else ""
+        bandwidth = first_rep.get("bandwidth", "0") if first_rep is not None else "0"
+
+        containers = ([first_rep] if first_rep is not None else []) + [adaptation_set]
+        for container in containers:
+            template = container.find("mpd:SegmentTemplate", self.MPD_NAMESPACE)
+            if template is None or not template.get("initialization"):
+                continue
+            init = URLResolver.substitute_template_variables(
+                template.get("initialization"),
+                representation_id=rep_id,
+                bandwidth=bandwidth,
+            )
+            if "$" in init:
+                return None  # unsupported variable/format specifier in an init template
+            return self._urljoin_preserve_query(base_url, init)
+
+        if first_rep is not None:
+            base_elem = first_rep.find("mpd:BaseURL", self.MPD_NAMESPACE)
+            if base_elem is not None and base_elem.text and base_elem.text.strip():
+                return self._urljoin_preserve_query(base_url, base_elem.text.strip())
+
+        return None
+
+    def _resolve_kid_from_init_segment(
+            self, adaptation_set: ET.Element, base_url: str, unique_id: str
+    ) -> Optional[str]:
+        """Fallback KID lookup (tenc in the init segment) via the injected resolver."""
+        init_url = self._find_init_segment_url(adaptation_set, base_url)
+        if not init_url:
+            logger.warning(
+                f"AdaptationSet {unique_id}: no KID in MPD and no init segment URL found"
+            )
+            return None
+        try:
+            kid = self.kid_resolver(init_url)
+        except Exception as e:
+            logger.debug(f"KID resolver failed for AdaptationSet {unique_id}: {e}")
+            kid = None
+        if kid:
+            logger.debug(f"AdaptationSet {unique_id} KID from init tenc: {kid[:8]}...")
+        else:
+            logger.warning(
+                f"AdaptationSet {unique_id}: no KID in MPD and none in init segment; "
+                f"fallback key will be used"
+            )
+        return kid
 
     def _extract_kid_from_adaptationset(self, adaptation_set: ET.Element) -> Optional[str]:
         """Extract KID from ContentProtection elements in an AdaptationSet."""

@@ -5,7 +5,7 @@ from typing import Optional
 
 class TencParser:
     """Parser for tenc (Track Encryption) boxes - simplified version."""
-    
+
     @staticmethod
     def extract_kid_from_tenc(tenc_data: bytes) -> Optional[bytes]:
         """
@@ -21,15 +21,15 @@ class TencParser:
                 is_protected = tenc_data[7]
                 if is_protected == 0:
                     return None
-            
+
             # Extract KID from bytes 9-24
             if len(tenc_data) >= 25:
                 kid_bytes = tenc_data[9:25]
                 return kid_bytes
-                
+
         except Exception:
             pass
-        
+
         return None
 
     @staticmethod
@@ -53,29 +53,14 @@ class TencParser:
                 if box_type != b'tenc':
                     return []
 
-            # The KID appears to be at offset 16-31 in your data
-            # Let's check if that looks like a valid KID
-            if len(tenc_data) >= 32:
-                # Try offset 16 first (based on your data)
-                kid_bytes = tenc_data[16:32]
-                kid_hex = kid_bytes.hex().lower()
+            # Full box layout: header(8) + version/flags(4) + reserved(1)
+            # + crypt/skip(1) + default_isProtected(1) + ivSize(1) + KID(16)
+            if tenc_data[14] == 0:
+                return []  # unprotected track: the KID field is meaningless
 
-                # Validate it's not all zeros
-                if not all(c == '0' for c in kid_hex):
-                    return [kid_hex]
-
-            # If that didn't work, try scanning for valid-looking KID
-            for offset in range(0, len(tenc_data) - 16):
-                chunk = tenc_data[offset:offset + 16]
-                # Check if it looks like a valid KID (not all zeros, not repetitive)
-                if all(b == 0 for b in chunk):
-                    continue
-                if all(b == chunk[0] for b in chunk):
-                    continue
-
-                # This could be a KID
-                kid_hex = chunk.hex().lower()
-                return [kid_hex]
+            kid_bytes = tenc_data[16:32]
+            if any(kid_bytes):
+                return [kid_bytes.hex().lower()]
 
         except Exception:
             pass

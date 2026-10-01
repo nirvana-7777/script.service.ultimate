@@ -27,6 +27,7 @@ try:
         ProviderEnableManager,
     )
     from streaming_providers.base.utils import MPDCacheManager, MPDRewriter, logger
+    from streaming_providers.base.utils.init_kid_resolver import get_init_kid_resolver
     from streaming_providers.base.utils.environment import (
         get_environment_manager,
         get_vfs_instance,
@@ -396,6 +397,13 @@ class UltimateService:
 
         return manifest_response.text, ttl, provider_proxy_url, segment_headers, manifest_response.url
 
+    def _make_kid_resolver(self, provider: str, segment_headers: Optional[dict]):
+        resolver = get_init_kid_resolver()
+        http_manager = self.manager.get_provider_http_manager(provider)
+        return lambda init_url: resolver.resolve(
+            init_url, headers=segment_headers, http_manager=http_manager
+        )
+
     def _get_decrypted_cached(self, key: str, max_stale: int = 0) -> Optional[str]:
         entry = self._decrypted_cache.get(key)
         if not entry:
@@ -581,6 +589,7 @@ class UltimateService:
                 self.media_proxy_url, provider_proxy_url, keyids, highest_quality_only,
                 provider=provider, channel=channel_id, clearkey_receiver_side=receiver_side,
                 segment_headers=segment_headers,
+                id_resolver=self._make_kid_resolver(provider, segment_headers),
             )
             rewritten_mpd = rewriter.rewrite_mpd(manifest_text, effective_url)
             return rewritten_mpd, min(ttl, 10)  # holds key material — keep exposure window short
@@ -636,6 +645,7 @@ class UltimateService:
                 self.media_proxy_url, provider_proxy_url, keyids, highest_quality_only,
                 provider=provider, channel=channel_id, clearkey_receiver_side=receiver_side,
                 segment_headers=segment_headers,
+                id_resolver=self._make_kid_resolver(provider, segment_headers),
             )
             rewritten_mpd = rewriter.rewrite_mpd(manifest_text, effective_url)
             return rewritten_mpd, min(ttl, 30)
