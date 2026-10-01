@@ -129,6 +129,76 @@ class ManifestUtils:
         return match.group(1) if match else None
 
     @staticmethod
+    def _find_segment_template_tag(ad_set_content: str, attribute: str) -> Optional[str]:
+        """Return the first <SegmentTemplate ...> opening tag that carries `attribute`."""
+        for match in re.finditer(r"<SegmentTemplate\b[^>]*>", ad_set_content, re.IGNORECASE):
+            if re.search(rf'\b{attribute}="', match.group(0)):
+                return match.group(0)
+        return None
+
+    @staticmethod
+    def extract_segment_template_media(ad_set_content: str) -> Optional[str]:
+        """
+        Extract media attribute from SegmentTemplate.
+
+        Mirrors extract_segment_template_initialization().
+
+        Args:
+            ad_set_content: AdaptationSet XML content
+
+        Returns:
+            Media template string or None if not found
+        """
+        tag = ManifestUtils._find_segment_template_tag(ad_set_content, "media")
+        if not tag:
+            return None
+        match = re.search(r'\bmedia="([^"]+)"', tag)
+        return match.group(1) if match else None
+
+    @staticmethod
+    def extract_segment_template_start_number(ad_set_content: str) -> Optional[str]:
+        """
+        Extract startNumber from the SegmentTemplate that carries the media template.
+
+        Returns:
+            startNumber as string, or None if the attribute is absent
+            (DASH default is 1, the caller decides).
+        """
+        tag = ManifestUtils._find_segment_template_tag(ad_set_content, "media")
+        if not tag:
+            return None
+        match = re.search(r'\bstartNumber="(\d+)"', tag)
+        return match.group(1) if match else None
+
+    @staticmethod
+    def extract_first_segment_time(ad_set_content: str) -> Optional[str]:
+        """
+        Extract the t attribute of the FIRST <S> element of a SegmentTimeline.
+
+        The attribute is read from that one tag only (attribute order is free
+        in XML, and a first <S> without t must not pick up a later one's t).
+
+        Returns:
+            Start time as string, or None if there is no timeline or the
+            first <S> has no explicit t.
+        """
+        timeline = re.search(
+            r"<SegmentTimeline[^>]*>\s*(<S\b[^>]*>)",
+            ad_set_content,
+            re.IGNORECASE,
+        )
+        if not timeline:
+            return None
+        match = re.search(r'\bt="(\d+)"', timeline.group(1))
+        return match.group(1) if match else None
+
+    @staticmethod
+    def extract_first_representation_bandwidth(ad_set_content: str) -> Optional[str]:
+        """Extract the bandwidth of the first Representation in an AdaptationSet."""
+        match = re.search(r'<Representation[^>]*\bbandwidth="(\d+)"', ad_set_content)
+        return match.group(1) if match else None
+
+    @staticmethod
     def extract_base_urls(manifest_content: str) -> List[str]:
         """
         Extract only MPD-level and Period-level BaseURL elements from manifest.

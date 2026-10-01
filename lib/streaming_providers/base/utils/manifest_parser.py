@@ -1,6 +1,6 @@
 # streaming_providers/base/utils/manifest_parser.py
 """
-DASH manifest parser for extracting init segment URLs.
+DASH manifest parser for extracting init and first-media segment URLs.
 For PSSH/DRM extraction, use drm_extractor module.
 """
 
@@ -155,6 +155,88 @@ class ManifestParser:
                 return full_url
 
         logger.warning("Could not find init segment URL in manifest")
+        return None
+
+    @staticmethod
+    def extract_first_media_segment_url(
+            manifest_content: str,
+            manifest_url: str
+    ) -> Optional[str]:
+        """
+        Extract the URL of the FIRST media segment from a DASH manifest.
+
+        Counterpart to extract_single_init_segment_url(), used as a PSSH
+        fallback for providers that put the pssh box in the moof of each media
+        segment instead of the manifest or the init segment.
+
+        Only SegmentTemplate manifests are supported (SegmentBase has no
+        separate media segments). Template variables are resolved as follows:
+          $RepresentationID$  first Representation ID of the AdaptationSet
+          $Bandwidth$         bandwidth of the first Representation
+          $Time$              t of the first <S> of the SegmentTimeline (else 0)
+          $Number$            startNumber of the SegmentTemplate (else 1)
+        Templates with format specifiers (e.g. $Number%05d$) are not resolved
+        and are skipped rather than requested with a broken URL.
+
+        Args:
+            manifest_content: Full manifest XML content
+            manifest_url: URL where the manifest was fetched from
+
+        Returns:
+            Full URL to the first media segment, or None if not found
+        """
+        base_urls = ManifestUtils.extract_base_urls(manifest_content)
+        effective_base = URLResolver.build_effective_base_url(manifest_url, base_urls)
+
+        adaptation_sets = ManifestUtils.parse_adaptation_sets(manifest_content)
+        video_sets, audio_sets = ManifestUtils.separate_video_audio_sets(adaptation_sets)
+
+        # Try video first, then audio (same order as the init segment lookup)
+        for ad_set_info in video_sets + audio_sets:
+            media_template = ManifestUtils.extract_segment_template_media(
+                ad_set_info.content
+            )
+            if not media_template:
+                continue
+
+            logger.debug(f"Found media template: {media_template}")
+
+            rep_id = ManifestUtils.extract_first_representation_id(ad_set_info.content)
+            if not rep_id:
+                logger.debug("No Representation ID found in AdaptationSet")
+                continue
+
+            bandwidth = ManifestUtils.extract_first_representation_bandwidth(
+                ad_set_info.content
+            ) or "0"
+            first_time = ManifestUtils.extract_first_segment_time(ad_set_info.content) or "0"
+            start_number = (
+                ManifestUtils.extract_segment_template_start_number(ad_set_info.content)
+                or "1"
+            )
+
+            media_url = URLResolver.substitute_template_variables(
+                media_template,
+                representation_id=rep_id,
+                bandwidth=bandwidth,
+                time=first_time,
+                number=start_number
+            )
+
+            if "$" in media_url:
+                logger.debug(f"Unresolved template variables in media URL: {media_url}")
+                continue
+
+            full_url = URLResolver.construct_full_url(
+                effective_base,
+                media_url,
+                url_encode_filename=True
+            )
+
+            logger.info(f"Constructed media segment URL (SegmentTemplate): {full_url}")
+            return full_url
+
+        logger.debug("Could not find media segment URL in manifest")
         return None
 
     @staticmethod

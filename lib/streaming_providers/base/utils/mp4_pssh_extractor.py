@@ -97,10 +97,16 @@ class MP4PSSHExtractor:
                 box_type = data[offset + 4: offset + 8]
 
                 if box_type == b"moov":
-                    # Look for PSSH in moov container
+                    # Look for PSSH in moov container (init segments)
                     moov_data = data[offset: offset + box_size]
                     pssh_in_moov = MP4PSSHExtractor._extract_from_moov(moov_data)
                     pssh_data_list.extend(pssh_in_moov)
+
+                elif box_type == b"moof":
+                    # Look for PSSH in moof container (media segments, e.g. Allente)
+                    moof_data = data[offset: offset + box_size]
+                    pssh_in_moof = MP4PSSHExtractor._extract_from_moof(moof_data)
+                    pssh_data_list.extend(pssh_in_moof)
 
                 elif box_type == b"pssh":
                     # Found standalone PSSH box
@@ -250,6 +256,50 @@ class MP4PSSHExtractor:
 
             except Exception as e:
                 logger.debug(f"Error parsing moov box at offset {offset}: {e}")
+                break
+
+        return pssh_list
+
+    @staticmethod
+    def _extract_from_moof(moof_data: bytes) -> List[PSSHData]:
+        """
+        Extract PSSH boxes from a moof (movie fragment) box.
+
+        Media segments carry moof where init segments carry moov. Per
+        ISO/IEC 23001-7 a pssh box may live in moov or moof (as a sibling of
+        mfhd/traf), so only the direct children of moof are inspected.
+
+        Args:
+            moof_data: Raw moof box data
+
+        Returns:
+            List of PSSHData objects found in moof
+        """
+        pssh_list = []
+        offset = 8  # Skip moof header
+
+        while offset < len(moof_data):
+            try:
+                if offset + 8 > len(moof_data):
+                    break
+
+                box_size = struct.unpack(">I", moof_data[offset: offset + 4])[0]
+                box_type = moof_data[offset + 4: offset + 8]
+
+                if box_size < 8 or offset + box_size > len(moof_data):
+                    break
+
+                if box_type == b"pssh":
+                    pssh_box = MP4PSSHExtractor._parse_pssh_box(
+                        moof_data[offset: offset + box_size]
+                    )
+                    if pssh_box:
+                        pssh_list.append(pssh_box)
+
+                offset += box_size
+
+            except Exception as e:
+                logger.debug(f"Error parsing moof box at offset {offset}: {e}")
                 break
 
         return pssh_list

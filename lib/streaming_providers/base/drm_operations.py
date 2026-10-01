@@ -19,7 +19,8 @@ and get_catchup_content_drm_configs):
 2. fetch manifest, parse ONCE → (is_encrypted, pssh_list); analysis failures
    degrade gracefully rather than crashing the request
 3. verified-clear short-circuit
-4. generic plugin phase (with stub-PSSH upgrade via init segment)
+4. generic plugin phase (with stub-PSSH upgrade via init segment, then
+   first media segment for providers that put the pssh in the moof)
 5. provider DRM configs (generics become the base list if provider has none)
 6. system-specific plugin loop with incremental ClearKey coverage checks
 7. final composition: generic merge, ClearKey validation, reinstatement
@@ -56,6 +57,10 @@ _PSSH_TAG_RE = re.compile(r'<(?:cenc:)?pssh[^>]*>', re.IGNORECASE)
 
 # kwargs that produce distinct DRM results and therefore belong in cache keys
 _VARIANT_KEYS = ("drm_variant", "preferred_quality", "preferred_format")
+
+# The media-segment PSSH fallback only needs the moof at the start of the
+# segment; request just this many bytes (MP4PSSHExtractor reads 100 KB at most).
+_MEDIA_SEGMENT_PROBE_BYTES = 100 * 1024
 
 
 class TTLCache:
@@ -450,7 +455,8 @@ class DRMOperations:
         1. PSSH TTL cache (may hold a previous init-segment-upgraded result —
            still valid even if THIS call's parse failed)
         2. The list parsed during manifest analysis (populates the cache)
-        3. Full extraction: manifest (re-)fetch + init-segment fallback
+        3. Full extraction: manifest (re-)fetch + init-segment fallback +
+           first-media-segment fallback
 
         Note: the cache key includes catchup start/end times, so each timeshift
         window gets its own entry even though PSSH is likely identical per
@@ -578,12 +584,15 @@ class DRMOperations:
         pssh_list: Optional[List] = None,
         **kwargs,
     ) -> List:
-        """Extract PSSH data from a manifest, falling back to the init segment.
+        """Extract PSSH data from a manifest, falling back to segments.
+
+        Levels, each tried only while the previous one left a PSSH unresolved:
+        1. manifest, 2. init segment (moov), 3. first media segment (moof).
 
         manifest_headers now defaults to None so the legacy facade call
         (which passes only the URL) works. pssh_list lets callers that already
         parsed the manifest skip the redundant re-parse and go straight to
-        init-segment extraction (passing [] implies the manifest was already
+        segment extraction (passing [] implies the manifest was already
         parsed and yielded nothing).
 
         **kwargs (which contain start_time/end_time for catchup) are passed to
@@ -626,21 +635,54 @@ class DRMOperations:
 
             if needs_segment_extraction:
                 if not manifest_content:
-                    # Content is needed to locate the init segment URL.
+                    # Content is needed to locate the segment URLs.
                     manifest_content = self._fetch_manifest_text(http, manifest_url, manifest_headers)
-                if manifest_content:
-                    init_segment_url = ManifestParser.extract_single_init_segment_url(
+                if not manifest_content:
+                    return pssh_list
+
+                # Level 2: init segment (pssh in moov)
+                init_segment_url = ManifestParser.extract_single_init_segment_url(
+                    manifest_content, manifest_url
+                )
+                if init_segment_url:
+                    segment_pssh = DRMExtractor._extract_from_single_segment(
+                        init_segment_url,
+                        [p.system_id for p in pssh_list] if pssh_list else [],
+                        headers=segment_headers,
+                        http_manager=http,
+                    )
+                    if segment_pssh:
+                        pssh_list = DRMExtractor._merge_pssh_data(pssh_list, segment_pssh)
+
+                # Level 3: first media segment (pssh in moof). Only while a
+                # system that should carry a PSSH is still unresolved, so
+                # providers whose init segment works never pay for this and
+                # ClearKey stubs (legitimately PSSH-less) don't trigger it.
+                if self._has_unresolved_pssh(pssh_list):
+                    media_segment_url = ManifestParser.extract_first_media_segment_url(
                         manifest_content, manifest_url
                     )
-                    if init_segment_url:
-                        segment_pssh = DRMExtractor._extract_from_single_segment(
-                            init_segment_url,
+                    if media_segment_url:
+                        # Only the moof at the start of the segment is needed.
+                        probe_headers = {
+                            **(segment_headers or {}),
+                            "Range": f"bytes=0-{_MEDIA_SEGMENT_PROBE_BYTES - 1}",
+                        }
+                        media_pssh = DRMExtractor._extract_from_single_segment(
+                            media_segment_url,
                             [p.system_id for p in pssh_list] if pssh_list else [],
-                            headers=segment_headers,
+                            headers=probe_headers,
                             http_manager=http,
                         )
-                        if segment_pssh:
-                            return DRMExtractor._merge_pssh_data(pssh_list, segment_pssh)
+                        if media_pssh:
+                            pssh_list = DRMExtractor._merge_pssh_data(pssh_list, media_pssh)
+
+                    if self._has_unresolved_pssh(pssh_list):
+                        logger.warning(
+                            f"DRMOperations: PSSH still unresolved after manifest, init and "
+                            f"media segment extraction for {channel_id or manifest_url}; "
+                            f"license acquisition may fail"
+                        )
 
             return pssh_list
 
@@ -716,6 +758,22 @@ class DRMOperations:
             if not pssh.pssh_box or not pssh.key_ids:
                 return True
         return False
+
+    @staticmethod
+    def _has_unresolved_pssh(pssh_list: Optional[List]) -> bool:
+        """True if a system that should carry a PSSH is still a stub.
+
+        Like _has_stub_pssh, but ClearKey stubs don't count: ClearKey content
+        legitimately has no PSSH box, so chasing one would only cost a
+        pointless segment download on every uncached resolution. An empty
+        list counts as unresolved (nothing found yet).
+        """
+        if not pssh_list:
+            return True
+        return any(
+            (not p.pssh_box or not p.key_ids) and p.drm_system != DRMSystem.CLEARKEY
+            for p in pssh_list
+        )
 
     def _needs_pssh_extraction(self, drm_configs) -> bool:
         config_systems = {config.system for config in drm_configs}
