@@ -5,6 +5,7 @@ For PSSH/DRM extraction, use drm_extractor module.
 """
 
 from typing import Optional, List
+from urllib.parse import urlsplit, urlunsplit
 
 from .logger import logger
 from .url_resolver import URLResolver
@@ -49,13 +50,79 @@ class ManifestParser:
         return DRMExtractor._merge_pssh_data(manifest_pssh, segment_pssh)
 
     # ========================================================================
+    # URL helpers: auth-token (query string) inheritance and log redaction
+    # ========================================================================
+
+    @staticmethod
+    def inherit_query_string(manifest_url: str, segment_url: str) -> str:
+        """Append the manifest URL's query string to a constructed segment URL.
+
+        Query-string token CDNs (Akamai 'hdnts', '?token=...', ...) authenticate
+        EVERY request, but RFC 3986 relative-reference resolution does not
+        inherit query strings, so a manifest fetched as
+            https://host/50114/manifest.mpd?hdnts=st=...~exp=...~acl=*/50114/*~...
+        yields token-less segment URLs that the edge rejects with 403. When the
+        token's ACL covers the segment paths (as above), repeating the
+        manifest's query on segment requests is exactly what the CDN expects.
+
+        Deliberately conservative:
+          - manifest has no query        -> nothing to inherit
+          - segment already has a query  -> keep it (the template/BaseURL
+            supplied its own auth; merging could duplicate/conflict tokens)
+          - different authority          -> keep it (foreign hosts carry
+            their own authentication; never leak this token to them)
+
+        The query is passed through verbatim (no re-encoding of ~, *, ...).
+        """
+        if not manifest_url or not segment_url:
+            return segment_url
+        try:
+            base = urlsplit(manifest_url)
+            if not base.query:
+                return segment_url
+            seg = urlsplit(segment_url)
+            if seg.query or seg.netloc.lower() != base.netloc.lower():
+                return segment_url
+            merged = urlunsplit(
+                (seg.scheme, seg.netloc, seg.path, base.query, seg.fragment)
+            )
+            logger.debug(
+                f"Inherited manifest query string onto segment URL: "
+                f"{ManifestParser.redact_url(merged)}"
+            )
+            return merged
+        except (ValueError, AttributeError):
+            return segment_url
+
+    @staticmethod
+    def redact_url(url: Optional[str]) -> Optional[str]:
+        """Mask query-string VALUES for logging (keeps parameter names).
+
+        Segment URLs now carry the manifest's auth token; it must not end up
+        in log files. Use this for every log line that prints a URL which may
+        have a query string.
+        """
+        if not url:
+            return url
+        try:
+            parts = urlsplit(url)
+        except ValueError:
+            return url
+        if not parts.query:
+            return url
+        names = [pair.split("=", 1)[0] for pair in parts.query.split("&") if pair]
+        redacted = "&".join(f"{name}=<redacted>" for name in names)
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, redacted, ""))
+
+    # ========================================================================
     # Segment URL Extraction (Primary Purpose)
     # ========================================================================
 
     @staticmethod
     def extract_single_init_segment_url(
             manifest_content: str,
-            manifest_url: str
+            manifest_url: str,
+            inherit_query: bool = True,
     ) -> Optional[str]:
         """
         Extract ONE init segment URL from DASH manifest.
@@ -63,7 +130,12 @@ class ManifestParser:
 
         Args:
             manifest_content: Full manifest XML content
-            manifest_url: URL where the manifest was fetched from
+            manifest_url: URL where the manifest was fetched from. Pass the
+                FINAL (post-redirect) URL when known: relative segment paths
+                resolve against it, and its query string is inherited.
+            inherit_query: append the manifest URL's query string (auth
+                token) to the constructed segment URL; see
+                inherit_query_string for the exact rules.
 
         Returns:
             Full URL to an initialization segment, or None if not found
@@ -120,7 +192,13 @@ class ManifestParser:
                     url_encode_filename=True
                 )
 
-                logger.info(f"Constructed init segment URL (SegmentTemplate): {full_url}")
+                if inherit_query:
+                    full_url = ManifestParser.inherit_query_string(manifest_url, full_url)
+
+                logger.info(
+                    f"Constructed init segment URL (SegmentTemplate): "
+                    f"{ManifestParser.redact_url(full_url)}"
+                )
                 return full_url
 
             # ------------------------------------------------------------------
@@ -142,14 +220,18 @@ class ManifestParser:
                     url_encode_filename=False  # path is already a clean relative URL
                 )
 
+                if inherit_query:
+                    full_url = ManifestParser.inherit_query_string(manifest_url, full_url)
+
+                log_url = ManifestParser.redact_url(full_url)
                 if init_range:
                     logger.info(
-                        f"Constructed init segment URL (SegmentBase): {full_url} "
+                        f"Constructed init segment URL (SegmentBase): {log_url} "
                         f"[Range: bytes={init_range}]"
                     )
                 else:
                     logger.info(
-                        f"Constructed init segment URL (SegmentBase, no range): {full_url}"
+                        f"Constructed init segment URL (SegmentBase, no range): {log_url}"
                     )
 
                 return full_url
@@ -160,7 +242,8 @@ class ManifestParser:
     @staticmethod
     def extract_media_segment_url(
             manifest_content: str,
-            manifest_url: str
+            manifest_url: str,
+            inherit_query: bool = True,
     ) -> Optional[str]:
         """
         Extract the URL of ONE media segment from a DASH manifest.
@@ -185,7 +268,12 @@ class ManifestParser:
 
         Args:
             manifest_content: Full manifest XML content
-            manifest_url: URL where the manifest was fetched from
+            manifest_url: URL where the manifest was fetched from. Pass the
+                FINAL (post-redirect) URL when known: relative segment paths
+                resolve against it, and its query string is inherited.
+            inherit_query: append the manifest URL's query string (auth
+                token) to the constructed segment URL; see
+                inherit_query_string for the exact rules.
 
         Returns:
             Full URL to the chosen media segment, or None if not found
@@ -241,7 +329,13 @@ class ManifestParser:
                 url_encode_filename=True
             )
 
-            logger.info(f"Constructed media segment URL (SegmentTemplate): {full_url}")
+            if inherit_query:
+                full_url = ManifestParser.inherit_query_string(manifest_url, full_url)
+
+            logger.info(
+                f"Constructed media segment URL (SegmentTemplate): "
+                f"{ManifestParser.redact_url(full_url)}"
+            )
             return full_url
 
         logger.debug("Could not find media segment URL in manifest")

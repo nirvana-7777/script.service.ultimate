@@ -144,6 +144,16 @@ class _ManifestContext(NamedTuple):
     manifest_content: Optional[str]
     parsed_pssh: Optional[List]      # single manifest parse result; None = not analysed
     analysis_failed: bool = False    # parse raised; don't retry deterministically-failing work
+    # Post-redirect URL of the manifest when we fetched it ourselves.
+    effective_manifest_url: Optional[str] = None
+
+    @property
+    def url_for_segments(self) -> Optional[str]:
+        """URL that segment construction must be based on: the FINAL
+        (post-redirect) manifest URL. Relative references resolve against it
+        (RFC 3986) and its query string carries the auth token that segment
+        requests must repeat."""
+        return self.effective_manifest_url or self.manifest_url
 
 
 class DRMOperations:
@@ -297,12 +307,20 @@ class DRMOperations:
         # -- 1. Manifest: fetch once, parse once --------------------------------
         manifest_url, manifest_headers = resolve_manifest()
         manifest_content: Optional[str] = None
+        effective_manifest_url: Optional[str] = None
         parsed_pssh: Optional[List] = None
         analysis_failed = False
 
         if manifest_url and manifest_url.startswith(("http://", "https://")):
             http = getattr(provider, "http_manager", None) or HTTPManager()
-            manifest_content = self._fetch_manifest_text(http, manifest_url, manifest_headers)
+            manifest_content, effective_manifest_url = self._fetch_manifest_text(
+                http, manifest_url, manifest_headers
+            )
+            if effective_manifest_url and effective_manifest_url != manifest_url:
+                logger.debug(
+                    f"DRMOperations: manifest redirected; segment URLs will be built "
+                    f"from final URL: {ManifestParser.redact_url(effective_manifest_url)}"
+                )
             if manifest_content is not None:
                 # Degrade, don't crash: extractor blowups on malformed content
                 # must leave the pipeline free to resolve DRM from provider
@@ -334,6 +352,7 @@ class DRMOperations:
             manifest_content=manifest_content,
             parsed_pssh=parsed_pssh,
             analysis_failed=analysis_failed,
+            effective_manifest_url=effective_manifest_url,
         )
 
         # -- 2. Generic plugin phase ---------------------------------------------
@@ -421,10 +440,10 @@ class DRMOperations:
 
         # Stub PSSH (no box / no key IDs): try to upgrade via the init segment.
         if self._has_stub_pssh(pssh_list):
-            if not ctx.manifest_url:
+            if not ctx.url_for_segments:
                 return None, pssh_list
             upgraded = self._extract_pssh_from_manifest(
-                ctx.manifest_url, ctx.manifest_headers, ctx.provider_name,
+                ctx.url_for_segments, ctx.manifest_headers, ctx.provider_name,
                 channel_id=ctx.channel_id,
                 manifest_content=ctx.manifest_content,
                 pssh_list=pssh_list,
@@ -476,9 +495,9 @@ class DRMOperations:
             self.pssh_cache.set(base_cache_key, ctx.parsed_pssh)
             return ctx.parsed_pssh
 
-        if ctx.manifest_url:
+        if ctx.url_for_segments:
             pssh_list = self._extract_pssh_from_manifest(
-                ctx.manifest_url, ctx.manifest_headers, ctx.provider_name,
+                ctx.url_for_segments, ctx.manifest_headers, ctx.provider_name,
                 channel_id=ctx.channel_id,
                 manifest_content=ctx.manifest_content,
                 # None → full parse inside; [] → skip the re-parse and go
@@ -560,15 +579,42 @@ class DRMOperations:
     @staticmethod
     def _fetch_manifest_text(
         http, manifest_url: str, manifest_headers: Optional[Dict[str, str]]
-    ) -> Optional[str]:
-        """Fetch manifest text; returns None (with a debug log) on failure."""
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Fetch manifest text; returns (content, final_url).
+
+        final_url is the post-redirect URL (response.url), falling back to the
+        requested URL when the response doesn't expose one. Relative segment
+        URLs must resolve against it rather than the requested URL, and its
+        query string (auth token) is inherited by constructed segment URLs.
+        Returns (None, None) with a debug log on failure.
+        """
         try:
             response = http.get(manifest_url, headers=manifest_headers, timeout=10, operation="api")
             response.raise_for_status()
-            return response.text
+            return response.text, DRMOperations._final_url(response, manifest_url)
         except Exception as e:
-            logger.debug(f"DRMOperations: Manifest fetch failed for '{manifest_url}': {e}")
-            return None
+            logger.debug(
+                f"DRMOperations: Manifest fetch failed for "
+                f"'{ManifestParser.redact_url(manifest_url)}': {e}"
+            )
+            return None, None
+
+    @staticmethod
+    def _final_url(response, requested_url: str) -> str:
+        """Post-redirect URL of a response; the requested URL if unavailable.
+
+        Accepts str or URL-like objects (httpx.URL); anything that doesn't
+        stringify to an http(s) URL is ignored.
+        """
+        final = getattr(response, "url", None)
+        if final is not None and not isinstance(final, str):
+            try:
+                final = str(final)
+            except Exception:
+                final = None
+        if isinstance(final, str) and final.startswith(("http://", "https://")):
+            return final
+        return requested_url
 
     # ==========================================================================
     # PSSH EXTRACTION
@@ -589,6 +635,11 @@ class DRMOperations:
         Levels, each tried only while the previous one left a PSSH unresolved:
         1. manifest, 2. init segment (moov), 3. a media segment (moof).
 
+        manifest_url should be the FINAL (post-redirect) manifest URL when
+        known: constructed segment URLs resolve against it and repeat its
+        query string (auth tokens). A manifest fetched in here is tracked
+        through redirects the same way.
+
         manifest_headers now defaults to None so the legacy facade call
         (which passes only the URL) works. pssh_list lets callers that already
         parsed the manifest skip the redundant re-parse and go straight to
@@ -605,11 +656,17 @@ class DRMOperations:
         try:
             http = None
             segment_headers = manifest_headers  # default to manifest headers
+            inherit_query = True
 
             if provider_name:
                 provider = self.registry.get_provider(provider_name)
                 if provider:
                     http = getattr(provider, "http_manager", None)
+                    # Escape hatch for CDNs that reject the manifest's query
+                    # being repeated on segment requests.
+                    inherit_query = bool(
+                        getattr(provider, "inherit_manifest_query_on_segments", True)
+                    )
                     if channel_id:
                         try:
                             # Full context (start_time, end_time, ...) for
@@ -621,9 +678,16 @@ class DRMOperations:
             if not http:
                 http = HTTPManager()
 
+            # Segment URLs must be built from the post-redirect URL.
+            effective_url = manifest_url
+
             if pssh_list is None:
                 if not manifest_content:
-                    manifest_content = self._fetch_manifest_text(http, manifest_url, manifest_headers)
+                    manifest_content, fetched_url = self._fetch_manifest_text(
+                        http, manifest_url, manifest_headers
+                    )
+                    if fetched_url:
+                        effective_url = fetched_url
                 if manifest_content:
                     pssh_list = DRMExtractor._extract_from_manifest_content(manifest_content) or []
                 else:
@@ -636,13 +700,17 @@ class DRMOperations:
             if needs_segment_extraction:
                 if not manifest_content:
                     # Content is needed to locate the segment URLs.
-                    manifest_content = self._fetch_manifest_text(http, manifest_url, manifest_headers)
+                    manifest_content, fetched_url = self._fetch_manifest_text(
+                        http, manifest_url, manifest_headers
+                    )
+                    if fetched_url:
+                        effective_url = fetched_url
                 if not manifest_content:
                     return pssh_list
 
                 # Level 2: init segment (pssh in moov)
                 init_segment_url = ManifestParser.extract_single_init_segment_url(
-                    manifest_content, manifest_url
+                    manifest_content, effective_url, inherit_query=inherit_query
                 )
                 if init_segment_url:
                     segment_pssh = DRMExtractor._extract_from_single_segment(
@@ -660,7 +728,7 @@ class DRMOperations:
                 # ClearKey stubs (legitimately PSSH-less) don't trigger it.
                 if self._has_unresolved_pssh(pssh_list):
                     media_segment_url = ManifestParser.extract_media_segment_url(
-                        manifest_content, manifest_url
+                        manifest_content, effective_url, inherit_query=inherit_query
                     )
                     if media_segment_url:
                         # Only the moof at the start of the segment is needed.
