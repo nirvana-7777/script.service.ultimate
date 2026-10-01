@@ -20,7 +20,7 @@ and get_catchup_content_drm_configs):
    degrade gracefully rather than crashing the request
 3. verified-clear short-circuit
 4. generic plugin phase (with stub-PSSH upgrade via init segment, then
-   first media segment for providers that put the pssh in the moof)
+   a media segment for providers that put the pssh in the moof)
 5. provider DRM configs (generics become the base list if provider has none)
 6. system-specific plugin loop with incremental ClearKey coverage checks
 7. final composition: generic merge, ClearKey validation, reinstatement
@@ -456,7 +456,7 @@ class DRMOperations:
            still valid even if THIS call's parse failed)
         2. The list parsed during manifest analysis (populates the cache)
         3. Full extraction: manifest (re-)fetch + init-segment fallback +
-           first-media-segment fallback
+           media-segment fallback
 
         Note: the cache key includes catchup start/end times, so each timeshift
         window gets its own entry even though PSSH is likely identical per
@@ -587,7 +587,7 @@ class DRMOperations:
         """Extract PSSH data from a manifest, falling back to segments.
 
         Levels, each tried only while the previous one left a PSSH unresolved:
-        1. manifest, 2. init segment (moov), 3. first media segment (moof).
+        1. manifest, 2. init segment (moov), 3. a media segment (moof).
 
         manifest_headers now defaults to None so the legacy facade call
         (which passes only the URL) works. pssh_list lets callers that already
@@ -654,12 +654,12 @@ class DRMOperations:
                     if segment_pssh:
                         pssh_list = DRMExtractor._merge_pssh_data(pssh_list, segment_pssh)
 
-                # Level 3: first media segment (pssh in moof). Only while a
+                # Level 3: media segment (pssh in moof). Only while a
                 # system that should carry a PSSH is still unresolved, so
                 # providers whose init segment works never pay for this and
                 # ClearKey stubs (legitimately PSSH-less) don't trigger it.
                 if self._has_unresolved_pssh(pssh_list):
-                    media_segment_url = ManifestParser.extract_first_media_segment_url(
+                    media_segment_url = ManifestParser.extract_media_segment_url(
                         manifest_content, manifest_url
                     )
                     if media_segment_url:

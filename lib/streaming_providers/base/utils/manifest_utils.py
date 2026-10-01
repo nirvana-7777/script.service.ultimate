@@ -171,26 +171,59 @@ class ManifestUtils:
         return match.group(1) if match else None
 
     @staticmethod
-    def extract_first_segment_time(ad_set_content: str) -> Optional[str]:
+    def extract_segment_timeline_position(
+            ad_set_content: str,
+            position: float = 0.5,
+    ) -> Optional[Tuple[int, int]]:
         """
-        Extract the t attribute of the FIRST <S> element of a SegmentTimeline.
+        Locate a segment inside a SegmentTimeline.
 
-        The attribute is read from that one tag only (attribute order is free
-        in XML, and a first <S> without t must not pick up a later one's t).
+        Walks the <S t d r> entries (r = repeat count, t optional and
+        continuing from the previous entry) and returns the start time and the
+        zero-based index of the segment at `position` (0.0 = first, 0.5 = middle,
+        1.0 = last).
 
         Returns:
-            Start time as string, or None if there is no timeline or the
-            first <S> has no explicit t.
+            (start_time_ticks, index), or None if there is no usable timeline
+            (absent, an <S> without d, or an open-ended r="-1").
         """
         timeline = re.search(
-            r"<SegmentTimeline[^>]*>\s*(<S\b[^>]*>)",
+            r"<SegmentTimeline[^>]*>(.*?)</SegmentTimeline>",
             ad_set_content,
-            re.IGNORECASE,
+            re.IGNORECASE | re.DOTALL,
         )
         if not timeline:
             return None
-        match = re.search(r'\bt="(\d+)"', timeline.group(1))
-        return match.group(1) if match else None
+
+        entries = []  # (explicit t or None, duration, segment count)
+        for tag in re.finditer(r"<S\b[^>]*>", timeline.group(1), re.IGNORECASE):
+            attrs = tag.group(0)
+            d = re.search(r'\bd="(\d+)"', attrs)
+            if not d:
+                return None
+            t = re.search(r'\bt="(\d+)"', attrs)
+            r = re.search(r'\br="(-?\d+)"', attrs)
+            repeat = int(r.group(1)) if r else 0
+            if repeat < 0:
+                return None  # open-ended repeat: segment count unknown
+            entries.append((int(t.group(1)) if t else None, int(d.group(1)), repeat + 1))
+
+        if not entries:
+            return None
+
+        total = sum(count for _, _, count in entries)
+        target = min(total - 1, max(0, int(total * position)))
+
+        time = 0
+        index = 0
+        for explicit_t, duration, count in entries:
+            if explicit_t is not None:
+                time = explicit_t
+            if target < index + count:
+                return time + (target - index) * duration, target
+            time += count * duration
+            index += count
+        return None
 
     @staticmethod
     def extract_first_representation_bandwidth(ad_set_content: str) -> Optional[str]:

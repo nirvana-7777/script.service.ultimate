@@ -1,6 +1,6 @@
 # streaming_providers/base/utils/manifest_parser.py
 """
-DASH manifest parser for extracting init and first-media segment URLs.
+DASH manifest parser for extracting init and media segment URLs.
 For PSSH/DRM extraction, use drm_extractor module.
 """
 
@@ -158,23 +158,28 @@ class ManifestParser:
         return None
 
     @staticmethod
-    def extract_first_media_segment_url(
+    def extract_media_segment_url(
             manifest_content: str,
             manifest_url: str
     ) -> Optional[str]:
         """
-        Extract the URL of the FIRST media segment from a DASH manifest.
+        Extract the URL of ONE media segment from a DASH manifest.
 
         Counterpart to extract_single_init_segment_url(), used as a PSSH
         fallback for providers that put the pssh box in the moof of each media
         segment instead of the manifest or the init segment.
 
+        The segment is taken from the MIDDLE of the SegmentTimeline, not the
+        first entry: in a live manifest the first entry sits at the very edge
+        of the time-shift window and is typically evicted (404) by the time it
+        is requested.
+
         Only SegmentTemplate manifests are supported (SegmentBase has no
         separate media segments). Template variables are resolved as follows:
           $RepresentationID$  first Representation ID of the AdaptationSet
           $Bandwidth$         bandwidth of the first Representation
-          $Time$              t of the first <S> of the SegmentTimeline (else 0)
-          $Number$            startNumber of the SegmentTemplate (else 1)
+          $Time$              start time of the chosen SegmentTimeline entry (else 0)
+          $Number$            startNumber + index of the chosen entry (else startNumber, default 1)
         Templates with format specifiers (e.g. $Number%05d$) are not resolved
         and are skipped rather than requested with a broken URL.
 
@@ -183,7 +188,7 @@ class ManifestParser:
             manifest_url: URL where the manifest was fetched from
 
         Returns:
-            Full URL to the first media segment, or None if not found
+            Full URL to the chosen media segment, or None if not found
         """
         base_urls = ManifestUtils.extract_base_urls(manifest_content)
         effective_base = URLResolver.build_effective_base_url(manifest_url, base_urls)
@@ -209,18 +214,21 @@ class ManifestParser:
             bandwidth = ManifestUtils.extract_first_representation_bandwidth(
                 ad_set_info.content
             ) or "0"
-            first_time = ManifestUtils.extract_first_segment_time(ad_set_info.content) or "0"
-            start_number = (
+            segment_time, segment_index = (
+                ManifestUtils.extract_segment_timeline_position(ad_set_info.content)
+                or (0, 0)
+            )
+            start_number = int(
                 ManifestUtils.extract_segment_template_start_number(ad_set_info.content)
-                or "1"
+                or 1
             )
 
             media_url = URLResolver.substitute_template_variables(
                 media_template,
                 representation_id=rep_id,
                 bandwidth=bandwidth,
-                time=first_time,
-                number=start_number
+                time=str(segment_time),
+                number=str(start_number + segment_index)
             )
 
             if "$" in media_url:

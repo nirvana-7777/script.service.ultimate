@@ -398,6 +398,11 @@ class UltimateService:
         return manifest_response.text, ttl, provider_proxy_url, segment_headers, manifest_response.url
 
     def _make_kid_resolver(self, provider: str, segment_headers: Optional[dict]):
+        """
+        Build the init-URL -> KID callable for MPDRewriter (tenc lookup when the
+        MPD carries no KID in multi-key mode). The resolver and its cache are
+        process-wide; headers and HTTP manager are bound per provider here.
+        """
         resolver = get_init_kid_resolver()
         http_manager = self.manager.get_provider_http_manager(provider)
         return lambda init_url: resolver.resolve(
@@ -589,7 +594,7 @@ class UltimateService:
                 self.media_proxy_url, provider_proxy_url, keyids, highest_quality_only,
                 provider=provider, channel=channel_id, clearkey_receiver_side=receiver_side,
                 segment_headers=segment_headers,
-                id_resolver=self._make_kid_resolver(provider, segment_headers),
+                kid_resolver=self._make_kid_resolver(provider, segment_headers),
             )
             rewritten_mpd = rewriter.rewrite_mpd(manifest_text, effective_url)
             return rewritten_mpd, min(ttl, 10)  # holds key material — keep exposure window short
@@ -645,7 +650,7 @@ class UltimateService:
                 self.media_proxy_url, provider_proxy_url, keyids, highest_quality_only,
                 provider=provider, channel=channel_id, clearkey_receiver_side=receiver_side,
                 segment_headers=segment_headers,
-                id_resolver=self._make_kid_resolver(provider, segment_headers),
+                kid_resolver=self._make_kid_resolver(provider, segment_headers),
             )
             rewritten_mpd = rewriter.rewrite_mpd(manifest_text, effective_url)
             return rewritten_mpd, min(ttl, 30)
