@@ -31,6 +31,19 @@
     </category>
 
     <!-- =============================================== -->
+    <!-- Allente (Multi-Country)                     -->
+    <!-- =============================================== -->
+    <category id="allente" label="Allente (SE)">
+        <setting id="enable_allente_se" type="bool" label="Enable Allente (SE)" default="false" />
+        <setting id="allente_se_country" type="text" label="Country Code" default="se" visible="false" />
+        <setting id="allente_se_username" type="text" label="Username" default="" enable="eq(-2,true)" />
+        <setting id="allente_se_password" type="text" label="Password" option="hidden" default="" enable="eq(-3,true)" />
+        <setting id="allente_se_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-4,true)" />
+        <setting id="allente_se_proxy_host" type="text" label="Proxy Host" default="" visible="eq(-1,true)" />
+        <setting id="allente_se_proxy_port" type="number" label="Proxy Port" default="8080" visible="eq(-2,true)" />
+    </category>
+
+    <!-- =============================================== -->
     <!-- DISCOVERY+                                      -->
     <!-- =============================================== -->
     <category id="discovery" label="Discovery+ Germany">
