@@ -37,8 +37,10 @@ def _discover_providers():
         for item in os.listdir(providers_dir):
             provider_path = os.path.join(providers_dir, item)
 
-            # Skip if not a directory or if it starts with __
-            if not os.path.isdir(provider_path) or item.startswith("__"):
+            # Skip if not a directory. Skip private/dunder directories -- names
+            # starting with "_" are reserved for scaffolding (e.g. _template)
+            # and are never treated as real providers.
+            if not os.path.isdir(provider_path) or item.startswith("_"):
                 continue
 
             # Check if __init__.py exists in the provider directory
