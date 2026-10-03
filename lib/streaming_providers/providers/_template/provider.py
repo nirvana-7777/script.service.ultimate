@@ -34,6 +34,19 @@ class YourProvider(StreamingProvider):
     SUPPORTED_AUTH_TYPES: ClassVar[List[str]] = ["user_credentials"]
     SUPPORTED_COUNTRIES: ClassVar[List[str]] = ["TODO", "country", "codes"]
 
+    # Module-private constants used by get_drm's folded path.
+    #
+    # Only these two values narrow the search when content_type is
+    # provided. Anything else (None, "event", "catchup", or a typo)
+    # tries both domains. This is deliberate: a wrong narrowing produces
+    # a silent [] for protected content, which is the hardest kind of
+    # bug to trace. Widening on unknown input is always safe.
+    #
+    # Adding more narrowing values here is a deliberate act and should
+    # be justified by a caller that reliably knows the content type.
+    _LIVE_ONLY_CONTENT_TYPES = frozenset({"live"})
+    _VOD_ONLY_CONTENT_TYPES = frozenset({"vod"})
+
     def __init__(
         self,
         country: str = "TODO",
@@ -47,7 +60,7 @@ class YourProvider(StreamingProvider):
         config = config or {}
         self.config = YourConfig(config)
 
-        # 1. HTTP manager.
+        # 1. HTTP manager (existing StreamingProvider helper).
         self.http_manager = self._setup_http_manager(
             provider_name="TODO: provider_name",
             proxy_config=proxy_config,
@@ -68,7 +81,9 @@ class YourProvider(StreamingProvider):
         self.epg = self._build_epg()
         self.drm = self._build_drm()
 
-    # ----- Factory methods -----
+    # ------------------------------------------------------------------
+    # Factory methods
+    # ------------------------------------------------------------------
 
     def _build_auth(self, settings_manager):
         return YourProviderAuth(
@@ -103,7 +118,8 @@ class YourProvider(StreamingProvider):
         """
         Return a dedicated DRM manager, or None.
 
-        Two supported architectures:
+        Two supported architectures (see the README's "DRM" section for
+        the state-sharing rule that picks between them):
 
           * Dedicated manager: return a class matching DrmManagerProtocol
             here; the provider's get_drm() delegates to it.
@@ -113,13 +129,10 @@ class YourProvider(StreamingProvider):
             get_vod_drm() on your VodManager. The provider's get_drm()
             falls back to routing to those.
 
-        New providers should prefer the dedicated manager (see the README
-        section "DRM"). The folded style exists for providers whose DRM
-        call shares significant state with the manifest step.
-
-        See providers/_template/drm_manager.py for the four existing
-        patterns (RTL+ upfront token, Magenta constructed URL, Discovery
-        playbackInfo, HRTi session id).
+        New providers should prefer the dedicated manager unless the DRM
+        step shares state with the manifest step. See
+        providers/_template/drm_manager.py for the four existing source
+        patterns.
         """
         # TODO: return YourDrmManager(
         #     http_manager=self.http_manager,
@@ -130,7 +143,9 @@ class YourProvider(StreamingProvider):
         # )
         return None
 
-    # ----- Capability flags (derived from manager presence) -----
+    # ------------------------------------------------------------------
+    # Capability flags (derived from manager presence)
+    # ------------------------------------------------------------------
 
     @property
     def implements_channels(self) -> bool:
@@ -173,7 +188,9 @@ class YourProvider(StreamingProvider):
         )
         return folded_channels or folded_vod
 
-    # ----- Router -----
+    # ------------------------------------------------------------------
+    # Router
+    # ------------------------------------------------------------------
 
     def _route(self, content_id: str, attempts: List[Tuple[Any, Callable]]):
         """
@@ -188,6 +205,11 @@ class YourProvider(StreamingProvider):
         If nobody resolved and a NotFoundError was seen, re-raise it --
         that's "the content existed in some manager's domain but is gone",
         distinct from "nobody handles this id at all" (which returns None).
+
+        BadRequestError and other errors are NOT caught here. Providers
+        that need endpoint-fallback behavior (Magenta's page-vs-component
+        dispatch) should override handles_content_id() instead, so the
+        router never has to guess.
         """
         last_not_found: Optional[NotFoundError] = None
         for manager, call in attempts:
@@ -204,7 +226,9 @@ class YourProvider(StreamingProvider):
             raise last_not_found
         return None
 
-    # ----- Public delegations -----
+    # ------------------------------------------------------------------
+    # Public delegations
+    # ------------------------------------------------------------------
 
     def get_channels(self, **kw):
         if self.channels is None:
@@ -212,6 +236,13 @@ class YourProvider(StreamingProvider):
         return self.channels.get_channels(**kw)
 
     def get_manifest(self, content_id: str, **kw) -> Optional[str]:
+        """
+        Return the manifest URL for the given content, routing by manager.
+
+        Providers with events, catchup, or other content types extend
+        this method to add their branches. Each branch is a
+        (manager, call) tuple in the attempts list.
+        """
         return self._route(content_id, [
             (self.channels, lambda m: m.get_channel_manifest(content_id, **kw)),
             (self.vod,      lambda m: m.get_vod_manifest(content_id, **kw)),
@@ -226,16 +257,16 @@ class YourProvider(StreamingProvider):
         """
         Return DRM configuration(s) for the given content.
 
-        content_type is an optional hint. When None (the default), the
-        DRM source infers the type from its own content_id grammar --
-        which is the preferred mode, since the source knows its own
-        grammar better than the caller does. Callers that already know
-        the type (e.g. the backend's streaming route) should pass it
-        explicitly.
+        content_type is an optional hint. Only "live" and "vod" narrow
+        the search on the folded path; any other value (including None,
+        "event", "catchup", or an unrecognized string) tries both
+        domains. This is deliberate: a wrong narrowing produces a silent
+        [] for protected content, which is the hardest kind of bug to
+        trace. Widening on unknown input is always safe.
 
-        If a dedicated DRM manager is configured, delegate to it. Otherwise
-        fall back to per-manager DRM (channel manager's get_channel_drm,
-        VOD manager's get_vod_drm) via the router.
+        If a dedicated DRM manager is configured, the hint is passed
+        through unchanged and the manager decides what to do with it.
+        Otherwise the folded path narrows the search as described above.
         """
         if self.drm is not None:
             return self.drm.get_drm_configs(
@@ -243,7 +274,16 @@ class YourProvider(StreamingProvider):
                 content_type=content_type,
                 **kw,
             )
-        return self._route(content_id, [
-            (self.channels, lambda m: m.get_channel_drm(content_id, **kw)),
-            (self.vod,      lambda m: m.get_vod_drm(content_id, **kw)),
-        ]) or []
+
+        # Folded path: invert the check so only recognized values narrow.
+        # Unknown values (including typos) fall through to "try both".
+        attempts: List[Tuple[Any, Callable]] = []
+        if content_type not in self._VOD_ONLY_CONTENT_TYPES:
+            attempts.append(
+                (self.channels, lambda m: m.get_channel_drm(content_id, **kw))
+            )
+        if content_type not in self._LIVE_ONLY_CONTENT_TYPES:
+            attempts.append(
+                (self.vod, lambda m: m.get_vod_drm(content_id, **kw))
+            )
+        return self._route(content_id, attempts) or []

@@ -177,41 +177,54 @@ DRM is optional. Providers with no DRM leave `_build_drm()` returning
 `None` and don't override `get_channel_drm` / `get_vod_drm`. The
 provider's `get_drm()` returns `[]` and `implements_drm` is `False`.
 
-Providers with DRM pick ONE of two architectures:
+Providers with DRM make two independent choices.
 
-**Architecture 1 — dedicated DRM manager (preferred for new providers)**
+### Architecture: dedicated manager vs. folded into managers
 
-Create `drm_manager.py` with a class matching
-`base.protocols.DrmManagerProtocol`. Wire it in the provider's
-`_build_drm()` factory. The provider's `get_drm()` delegates to it.
+    Rule: Does the DRM step share state with the manifest step?
+          yes -> fold into the channel/vod managers
+          no  -> use a dedicated DRM manager
 
-When to pick this: DRM is a distinct step with its own data sources
-(upfront tokens, licence URL construction, session authorization) that
-does not share significant state with the manifest fetch.
+    Tie-breaker: when both work, prefer the dedicated manager, because it
+    keeps DRM logic in one place. Folded exists for cases where the
+    alternative would be plumbing session state, an upfront token, or a
+    playbackInfo response between two managers that both need it.
 
-See `drm_manager.py` in this directory for four concrete reference
-patterns (RTL+ upfront token, Magenta constructed URL, Discovery
-playbackInfo, HRTi session id). Pick the closest and adapt.
+"State" means any value the DRM step would otherwise have to receive
+from the manifest step: a session id, an upfront token, a playbackInfo
+response, an account/licence structure, and so on.
 
-**Architecture 2 — folded into channel/vod managers**
+### Source pattern: how the licence URL is produced
 
-Override `get_channel_drm()` on your `ChannelManager` and/or
-`get_vod_drm()` on your `VodManager`. Leave `_build_drm()` returning
-`None`. The provider's `get_drm()` routes through the manager list, and
-`implements_drm` is derived from whether either override is present.
+Four source patterns appear across the existing providers. The source
+pattern is orthogonal to the architecture -- any source can be wired
+into either architecture. See `drm_manager.py` in this directory for
+file-level references and mechanics:
 
-When to pick this: the DRM call shares state with the manifest fetch
-(session ids, playbackInfo responses) and a separate manager would have
-to be handed that state anyway. HRTi and Magenta use this shape.
+    A. Per-content upfront token                    (RTL+)
+    B. Constructed from token claims + /user/account  (Magenta)
+    C. Arrives with the playbackInfo response         (Discovery)
+    D. Session id becomes a base64 auth blob          (HRTi)
 
-**The three method names**
+New-provider guidance: pick the architecture first (state-sharing rule
+above), then pick the source pattern that most closely matches how the
+provider's licence URL is produced, and adapt the mechanics.
+
+The existing providers currently sit in a mix of shapes -- some have DRM
+logic directly on the provider class, some in a playback manager, some
+in a VOD manager that predates this template. "Source pattern" describes
+what their code does, not what class it lives in. Migrating any provider
+onto the dedicated or folded architecture is optional; when migrated,
+each will map to whichever architecture the state-sharing rule selects.
+
+### The three method names
 
 Three names appear in the DRM path. They are not interchangeable:
 
-    get_drm_configs   — the dedicated DrmManager's only method
-                        (matches DrmManagerProtocol)
-    get_channel_drm   — the folded architecture's live-channel entry point
-    get_vod_drm       — the folded architecture's VOD entry point
+    get_drm_configs   -- the dedicated DrmManager's only method
+                         (matches DrmManagerProtocol)
+    get_channel_drm   -- the folded architecture's live-channel entry point
+    get_vod_drm       -- the folded architecture's VOD entry point
 
 New providers using the dedicated-manager architecture implement
 `get_drm_configs` and leave the other two alone. Providers using the
@@ -220,20 +233,28 @@ leave `get_drm_configs` alone.
 
 `StreamingProvider.get_drm(content_id, content_type=None)` is the public
 method callers use; it dispatches to whichever architecture the provider
-chose. `content_type` is a hint — pass it when you already know the
-content type (e.g. the backend streaming route has already resolved the
-item). Leave it `None` and the DRM source infers the type from its own
-`content_id` grammar, which it knows better than the caller.
+chose.
 
-**Which architecture to pick — a rule of thumb**
+### content_type hint semantics
 
-    Does the DRM call share state with the manifest fetch?
-        yes  -> folded (Architecture 2)
-        no   -> dedicated (Architecture 1)
+`content_type` is an optional hint. Pass it when you already know the
+content type (e.g. the backend streaming route, which has already
+resolved the item). It is a *narrowing* hint, not a required argument.
 
-Dedicated is preferred when both work, because it keeps the DRM logic in
-one place. Folded is the right call when the alternative would be passing
-session or playback state between two managers anyway.
+On the folded path, only two values narrow the search:
+
+    "live"  -> channel manager only
+    "vod"   -> VOD manager only
+
+Any other value -- including None, "event", "catchup", or a typo --
+tries both. This is deliberate: widening on unknown input is always
+safe, but a wrong narrowing produces a silent `[]` for protected
+content, which is the hardest kind of bug to trace.
+
+On the dedicated-manager path, the hint is passed through to
+`get_drm_configs`. The manager may honour it, ignore it, or infer the
+type from `content_id` grammar when `content_type is None`. Managers are
+encouraged to widen when in doubt, for the same reason as above.
 
 ## Errors
 

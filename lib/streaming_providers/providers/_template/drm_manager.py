@@ -12,6 +12,29 @@ DrmManagerProtocol). The shape is shared; the implementations vary enough
 that a shared ABC would need more escape hatches than it saves. This file
 is a scaffold and a document -- not an abstract class.
 
+Source patterns vs. architecture
+--------------------------------
+"Source pattern" describes HOW a provider obtains DRM material (an
+upfront token, a constructed URL, a playbackInfo response, a session id).
+"Architecture" describes WHERE the code lives in the target model (a
+dedicated DrmManager or folded into the channel/vod managers). The two
+are orthogonal: any source pattern can be wired into either architecture.
+
+A third shape is common in the existing providers: DRM logic in the
+provider itself (methods on the provider class, not on any manager).
+This is neither of the target architectures. It works, and it is not
+required to migrate, but new providers should prefer one of the two
+target architectures for testability.
+
+The four source patterns described below are references for the
+*mechanics* of obtaining DRM material, not for the architecture. See the
+file-level pointers in each pattern for a working example.
+
+Use the README's "DRM" section to pick the architecture first (the rule
+is: fold if DRM shares state with the manifest step). Then pick the
+source pattern below that most closely matches how your provider's
+license URL is produced, and adapt the mechanics.
+
 How to structure a DRM manager for a new provider
 -------------------------------------------------
 
@@ -55,16 +78,12 @@ How to structure a DRM manager for a new provider
 
     The provider's get_drm() delegates to this manager when present.
 
-3. Reference implementations
-    The four existing patterns differ enough that picking the closest
-    match and adapting it is faster than designing from scratch. Read
-    the referenced files before writing yours; the description below
-    is a summary, the code is the source of truth.
+3. Source patterns -- read the referenced files before writing yours
 
     Pattern A -- per-content upfront token
-        Files:  providers/rtlplus/provider.py (DRM flow)
-                providers/rtlplus/auth.py (upfront token)
-                providers/lib_drmtoday.py (the shared library)
+        Files:  providers/rtlplus/provider.py
+                providers/rtlplus/auth.py
+                providers/lib_drmtoday.py
 
         Summary: fetch the layout for the content_id, extract the DRM
         asset config, call auth.get_scoped_token("upfront", content_id,
@@ -74,11 +93,11 @@ How to structure a DRM manager for a new provider
         Requires an authenticated user (profile selected). The upfront
         token is per-content, not per-session.
 
-    Pattern B -- construct licence URL from token claims
-        Files:  providers/magentaeu/vod_manager.py (DRM flow)
-                providers/magentaeu/provider.py (live DRM flow)
-                providers/magentaeu/auth.py (token claims)
-                providers/lib_theplatform.py (URL + config builders)
+    Pattern B -- constructed licence URL from token claims
+        Files:  providers/magentaeu/vod_manager.py
+                providers/magentaeu/provider.py
+                providers/magentaeu/auth.py
+                providers/lib_theplatform.py
 
         Summary: resolve the media item to get release_pid (via the
         /media endpoint), read persona_jwt from the access token claims,
@@ -91,10 +110,8 @@ How to structure a DRM manager for a new provider
         sources: /media response, token claims, /user/account.
 
     Pattern C -- DRM arrives with the playback response
-        Files:  providers/discovery/playback_manager.py (playbackInfo +
-                DRM extraction in one place)
-                providers/discovery/constants.py (platform_os -> DRM
-                system mapping)
+        Files:  providers/discovery/playback_manager.py
+                providers/discovery/constants.py
 
         Summary: during get_manifest, POST playbackInfo and cache the
         response. get_drm() is a cache lookup; no separate DRM call.
@@ -106,10 +123,9 @@ How to structure a DRM manager for a new provider
         drm.expirationDate governs cache invalidation.
 
     Pattern D -- session id becomes a base64 auth blob
-        Files:  providers/hrti/provider.py (both live and VOD DRM flows)
-                providers/hrti/auth.py (session authorize + licence
-                data generation)
-                providers/lib_drmtoday.py (the shared library)
+        Files:  providers/hrti/provider.py
+                providers/hrti/auth.py
+                providers/lib_drmtoday.py
 
         Summary: auth.authorize_session(...) returns a session dict
         carrying "DrmId". auth.get_license_data(DrmId) returns a
@@ -124,8 +140,7 @@ How to structure a DRM manager for a new provider
 4. What to cache and where
     Every existing provider caches DRM material somewhere:
       * RTL+       no cache; the upfront token is refetched per playback.
-      * Magenta    the account_info lives on the auth token, not the
-                   DRM manager.
+      * Magenta    the account_info lives on the auth token.
       * Discovery  the whole playbackInfo response lives in the
                    playback_cache, keyed by edit_id, TTL from
                    drm.expirationDate.
@@ -133,8 +148,8 @@ How to structure a DRM manager for a new provider
                    during the manifest step.
 
     Pick whichever fits. If DRM shares state with manifest, put the cache
-    on the provider and pass it into both managers, matching the pattern
-    the other managers already use.
+    on the provider and pass it into both managers -- that is exactly the
+    signal that the folded architecture is the right choice.
 
 5. Testing
     DRM managers take http_manager and auth by injection, so they are
