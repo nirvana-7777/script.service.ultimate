@@ -25,6 +25,7 @@ from .vod_errors import VodCatchupRequiredError, VodNotFoundError
 from .constants import (
     API_ENDPOINTS,
     CONTENT_TYPE_LIVE,
+    COUNTRY_CONFIG,
     DEFAULT_COUNTRY,
     DEFAULT_MAX_RETRIES,
     DEFAULT_REQUEST_TIMEOUT,
@@ -99,11 +100,21 @@ class MagentaEUProvider(StreamingProvider):
             proxy_config=self.http_manager.config.proxy_config,
         )
 
-        # EPG manager — owns all schedule fetch/parse logic
+        # EPG manager — owns all schedule fetch/parse logic.
+        #
+        # Migration: constructor now takes the four ABC-required keyword
+        # collaborators (http_manager, auth, country, config). The
+        # `config` here is the COUNTRY_CONFIG entry for this country --
+        # the ABC requires a config object but Magenta's managers do not
+        # read it (they use country-derived URLs directly via helpers in
+        # constants.py). Passing the COUNTRY_CONFIG entry keeps the
+        # shape uniform and lets a future refactor to a proper config
+        # class happen without touching the manager.
         self.epg_manager = MagentaEUEpgManager(
             country=country,
             http_manager=self.http_manager,
-            authenticator=self.authenticator,
+            auth=self.authenticator,
+            config=COUNTRY_CONFIG.get(country, COUNTRY_CONFIG[DEFAULT_COUNTRY]),
         )
 
         # VOD manager — lazy, same reasoning as epg_manager but VOD is
@@ -143,7 +154,14 @@ class MagentaEUProvider(StreamingProvider):
 
     @property
     def epg_window(self) -> Tuple[int, int]:
-        return 7, 7
+        """
+        Return the EPG window as (past_days, future_days).
+
+        Delegates to the EPG manager's own property so there is one
+        source of truth. Kept here because external callers and the
+        operations layer already read it from the provider.
+        """
+        return self.epg_manager.epg_window
 
     @property
     def catchup_window(self) -> int:
@@ -158,10 +176,16 @@ class MagentaEUProvider(StreamingProvider):
         if self._vod_manager is None:
             with self._vod_manager_lock:
                 if self._vod_manager is None:  # re-check inside the lock
+                    # Migration: constructor now takes auth= and config=
+                    # instead of authenticator=. The config argument
+                    # follows the same pattern as epg_manager above.
                     self._vod_manager = MagentaEUVodManager(
                         country=self.country,
                         http_manager=self.http_manager,
-                        authenticator=self.authenticator,
+                        auth=self.authenticator,
+                        config=COUNTRY_CONFIG.get(
+                            self.country, COUNTRY_CONFIG[DEFAULT_COUNTRY]
+                        ),
                     )
         return self._vod_manager
 
@@ -170,7 +194,16 @@ class MagentaEUProvider(StreamingProvider):
         return True
 
     def get_vod_category(self, content_id: str = "", **kwargs) -> List:
-        return self.vod_manager.get_category_children(content_id)
+        """
+        Return the children of a VOD node.
+
+        Migration: the manager's ABC method now returns a VodPage; the
+        provider keeps returning the entries list for backward
+        compatibility with existing callers. Migrating callers to
+        VodPage is a separate step and can be done incrementally --
+        for now, `.entries` preserves the old shape exactly.
+        """
+        return self.vod_manager.get_vod_category(content_id, **kwargs).entries
 
     def search_vod(
         self,
@@ -330,6 +363,10 @@ class MagentaEUProvider(StreamingProvider):
         directly (the manager constructs these internally; no dict conversion
         happens at this layer).
 
+        Migration: the manager's method was renamed from get_channel_epg
+        to get_epg to match the ABC. Call shape and semantics are
+        unchanged.
+
         Parameters
         ----------
         channel_id:  Station ID (theplatform Station URI) — same value stored
@@ -339,8 +376,8 @@ class MagentaEUProvider(StreamingProvider):
         """
         if not self._ensure_channels_cache():
             return []
-        return self.epg_manager.get_channel_epg(
-            channel_id=channel_id,
+        return self.epg_manager.get_epg(
+            channel_id,
             start_time=kwargs.get("start_time"),
             end_time=kwargs.get("end_time"),
         )
@@ -355,9 +392,13 @@ class MagentaEUProvider(StreamingProvider):
         """
         Get EPG data for multiple channels efficiently as EPGEntry objects.
 
-        Uses get_channel_epg_batch() which fetches schedule data once per
-        calendar day and extracts all channels in a single pass (8*D HTTP
-        requests rather than 8*D*N).
+        Uses get_epg_grid() on the manager, which fetches schedule data
+        once per calendar day and extracts all channels in a single pass
+        (8*D HTTP requests rather than 8*D*N).
+
+        Migration: the manager's method was renamed from
+        get_channel_epg_batch to get_epg_grid to match the ABC. Call
+        shape and semantics are unchanged.
 
         Note on wall-clock cost: each calendar day in the window requires 8
         sequential HTTP requests (3-hour blocks) with a 1-second sleep between
@@ -383,8 +424,8 @@ class MagentaEUProvider(StreamingProvider):
         if channel_ids is None:
             channel_ids = [channel.channel_id for channel in self._channels_cache]
 
-        return self.epg_manager.get_channel_epg_batch(
-            channel_ids=channel_ids,
+        return self.epg_manager.get_epg_grid(
+            channel_ids,
             start_time=start_time,
             end_time=end_time,
         )
@@ -401,7 +442,7 @@ class MagentaEUProvider(StreamingProvider):
         """
         if not self._ensure_channels_cache():
             return None
-        return self.epg_manager.get_program_details(program_id)
+        return self.epg_manager.get_program_details(program_id, **kwargs)
 
     def enrich_channel_data(
         self, channel: StreamingChannel, **kwargs

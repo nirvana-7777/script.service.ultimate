@@ -23,6 +23,21 @@ Design notes
   cached in-memory via ``_ProgramDetailsCache`` to avoid hammering the API.
 * Credit labels are localised per country because the bifrost API returns
   role names in the content language, sometimes ALL-CAPS (HR, ME).
+
+Migration note
+--------------
+This manager now subclasses ``base.managers.EpgManager``. Two method names
+changed to match the ABC:
+
+    get_channel_epg       -> get_epg
+    get_channel_epg_batch -> get_epg_grid
+
+Everything else is unchanged. The provider's own ``get_epg`` /
+``get_epg_grid`` / ``get_program_details`` still work; they now call the
+renamed methods.
+
+The provider's ``epg_window`` property delegates to ``self.epg_window``
+on this class, which was previously read from the provider.
 """
 
 from __future__ import annotations
@@ -32,6 +47,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from ...base.managers import EpgManager
 from ...base.utils.logger import logger
 from ...base.models.epg_models import EPGEntry, EPGProgramDetails, EPGFlags
 from .constants import (
@@ -143,7 +159,7 @@ _ROLE_MAPS: Dict[str, Dict[str, str]] = {
 # MagentaEUEpgManager
 # ---------------------------------------------------------------------------
 
-class MagentaEUEpgManager:
+class MagentaEUEpgManager(EpgManager):
     """
     Fetches and normalises EPG data from the Magenta EU bifrost API.
 
@@ -174,9 +190,11 @@ class MagentaEUEpgManager:
 
     def __init__(
             self,
+            *,
             country: str,
             http_manager: Any,
-            authenticator: Any,
+            auth: Any,
+            config: Any,
             cache: Optional[_ProgramDetailsCache] = None,
             fetch_details: bool = False,
     ) -> None:
@@ -185,8 +203,13 @@ class MagentaEUEpgManager:
         ----------
         country:       Two-letter country code (at / pl / hr / me / hu).
         http_manager:  Provider's shared HTTPManager instance.
-        authenticator: MagentaAuthenticator — used only to read device_id /
-                       session_id from the current token (no auth calls made).
+        auth:          MagentaAuthenticator — used only to read device_id /
+                       session_id from the current token and to obtain
+                       guest-session ids via get_guest_session_ids().
+                       No auth calls are made from here directly.
+        config:        The provider's config object (COUNTRY_CONFIG entry
+                       or a wrapper). The ABC requires it for consistency;
+                       this manager does not read it.
         cache:         Optional shared _ProgramDetailsCache.  A default in-memory
                        instance is created if omitted.
         fetch_details: If True, fetch full programme details (description, credits,
@@ -195,9 +218,20 @@ class MagentaEUEpgManager:
         if country not in SUPPORTED_COUNTRIES:
             raise ValueError(f"MagentaEUEpgManager: unsupported country '{country}'")
 
+        # Forward ONLY the four required collaborators. Extra state goes on
+        # self below. A typo at a call site becomes an immediate TypeError.
+        super().__init__(
+            http_manager=http_manager,
+            auth=auth,
+            country=country,
+            config=config,
+        )
+
+        # Preserve internal aliases so every existing method body below
+        # continues to read the same names.
         self._country = country
         self._http = http_manager
-        self._auth = authenticator
+        self._auth = auth
         self._cache = cache or _ProgramDetailsCache()
         self._fetch_details = fetch_details
         self._role_map = _ROLE_MAPS.get(country, _ROLES_DE)
@@ -212,21 +246,43 @@ class MagentaEUEpgManager:
         )
 
     # ------------------------------------------------------------------
+    # ABC capability
+    # ------------------------------------------------------------------
+
+    @property
+    def epg_window(self) -> Tuple[int, int]:
+        """
+        Return the EPG window as (past_days, future_days).
+
+        Magenta EU provides 7 days each direction for every country.
+        The provider's own epg_window property delegates here.
+        """
+        return 7, 7
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def get_channel_epg(
+    def get_epg(
             self,
             channel_id: str,
             start_time: Optional[datetime] = None,
             end_time: Optional[datetime] = None,
             **_kwargs: Any,
     ) -> List[EPGEntry]:
+        """
+        Return all EPG entries for a single channel within the window.
+
+        (Method body is identical to the previous get_channel_epg; only the
+        name changed to match the ABC.)
+        """
         date_from, date_to = self._resolve_window(start_time, end_time)
 
         # Collect the calendar dates spanned by the window in UTC
         dates: List[datetime] = []
-        current = date_from.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        current = date_from.astimezone(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
         utc_to = date_to.astimezone(timezone.utc)
         while current.date() <= utc_to.date():
             dates.append(current)
@@ -260,13 +316,19 @@ class MagentaEUEpgManager:
         )
         return programmes
 
-    def get_channel_epg_batch(
+    def get_epg_grid(
             self,
             channel_ids: List[str],
             start_time: Optional[datetime] = None,
             end_time: Optional[datetime] = None,
             **_kwargs: Any,
     ) -> Dict[str, List[EPGEntry]]:
+        """
+        Batch EPG for multiple channels.
+
+        (Method body is identical to the previous get_channel_epg_batch;
+        only the name changed to match the ABC.)
+        """
         if not channel_ids:
             return {}
 
@@ -274,7 +336,9 @@ class MagentaEUEpgManager:
 
         # Collect the calendar dates spanned by the window in UTC
         dates: List[datetime] = []
-        current = date_from.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        current = date_from.astimezone(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
         utc_to = date_to.astimezone(timezone.utc)
         while current.date() <= utc_to.date():
             dates.append(current)
@@ -323,7 +387,9 @@ class MagentaEUEpgManager:
 
         return result
 
-    def get_program_details(self, program_id: str) -> Optional[EPGProgramDetails]:
+    def get_program_details(
+            self, program_id: str, **_kwargs: Any
+    ) -> Optional[EPGProgramDetails]:
         """
         Fetch detailed metadata for a single programme.
 
@@ -450,8 +516,12 @@ class MagentaEUEpgManager:
             return dt.replace(tzinfo=timezone.utc)
         return dt
 
-    def _fetch_day_schedules(self, date: datetime, start_time: Optional[datetime] = None,
-                             end_time: Optional[datetime] = None) -> Dict[str, Any]:
+    def _fetch_day_schedules(
+        self,
+        date: datetime,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
         """Fetch only the 3-hour blocks that overlap with the requested time window.
 
         `date` and the window bounds are UTC-aware (per _resolve_window). The
@@ -826,7 +896,7 @@ class MagentaEUEpgManager:
             first_aired=None,  # Not available from bifrost API
             imdb_number=None,  # Not available from bifrost API
             series_link=None,  # Not available from bifrost API
-            flags=flags, # Could be set based on programme properties if needed
+            flags=flags,  # Could be set based on programme properties if needed
         )
 
     # ------------------------------------------------------------------

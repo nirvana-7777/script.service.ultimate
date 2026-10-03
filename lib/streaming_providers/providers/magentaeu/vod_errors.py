@@ -3,6 +3,10 @@
 """
 Typed exceptions for the MagentaEU VOD path.
 
+Rebased on the shared hierarchy in base.errors. The class names are
+unchanged so existing callers (except VodError: ...) keep working; the
+only change is what these classes inherit from.
+
 Rationale: the bifrost API returns 4xx for several distinct conditions --
 expired token, geo-block, entitlement denial, content removed -- and they
 need to be handled differently. `raise_for_status()` alone collapses them
@@ -11,39 +15,56 @@ to distinguish "refresh and retry" from "tell the user they can't watch
 this here" from "this title is gone" from "this is actually catch-up,
 not VOD -- hand it to the channel/catchup pathway instead".
 
-Hierarchy:
+Hierarchy (now rebased on base.errors):
 
-    VodError                          (base, catch-all)
-    ├── VodAuthError                  (401 -- token expired/invalid)
-    ├── VodGeoBlockError              (403 -- not available in your region)
-    ├── VodEntitlementError           (403 -- not in your subscription)
-    │   └── VodAccountVodDisabledError (account-level VOD gate is off)
-    ├── VodNotFoundError              (404 -- content removed)
-    ├── VodRateLimitError             (429)
-    ├── VodServerError                (5xx -- retryable)
-    ├── VodCatchupRequiredError       (item has no watch/trailer action but
-    │                                  DOES have schedules/catchup_schedules
-    │                                  -- it's a linear-catchup item, not a
-    │                                  playable VOD asset; see docstring)
-    └── VodNotImplementedError        (feature captured-but-not-yet-mapped)
+    VodError                            (base, catch-all -- subclass of ProviderError)
+    ├── VodAuthError                    (401 -- token expired/invalid)
+    ├── VodGeoBlockError                (403 -- not available in your region)
+    ├── VodEntitlementError             (403 -- not in your subscription)
+    │   └── VodAccountVodDisabledError  (account-level VOD gate is off)
+    ├── VodNotFoundError                (404 -- content removed)
+    ├── VodBadRequestError              (400 -- routing signal)
+    ├── VodRateLimitError               (429)
+    ├── VodServerError                  (5xx -- retryable)
+    ├── VodCatchupRequiredError         (item has no watch/trailer action but
+    │                                    DOES have schedules/catchup_schedules
+    │                                    -- it's a linear-catchup item, not a
+    │                                    playable VOD asset)
+    └── VodNotImplementedError          (feature captured-but-not-yet-mapped)
+
+Callers can now catch either the local name (VodAuthError) or the shared
+base (AuthError) depending on their intent.
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from ...base.errors import (
+    AuthError,
+    BadRequestError,
+    CatchupRequiredError,
+    EntitlementError,
+    GeoBlockError,
+    NotFoundError,
+    NotImplementedYetError,
+    ProviderError,
+    RateLimitError,
+    ServerError,
+)
 
-class VodError(Exception):
-    """Base class for all MagentaEU VOD errors."""
 
-    def __init__(self, message: str, *, status: Optional[int] = None,
-                 url: Optional[str] = None) -> None:
-        super().__init__(message)
-        self.status = status
-        self.url = url
+class VodError(ProviderError):
+    """
+    Base class for all MagentaEU VOD errors.
+
+    Kept as a distinct name so existing `except VodError:` sites continue
+    to work; it is now a subclass of the shared ProviderError, so callers
+    that prefer the shared name (`except ProviderError:`) also catch it.
+    """
 
 
-class VodAuthError(VodError):
+class VodAuthError(AuthError, VodError):
     """
     Raised on 401 or on a locally-detected expired Bff_token.
 
@@ -55,11 +76,11 @@ class VodAuthError(VodError):
     """
 
 
-class VodGeoBlockError(VodError):
+class VodGeoBlockError(GeoBlockError, VodError):
     """Content is geo-blocked for the current network egress."""
 
 
-class VodEntitlementError(VodError):
+class VodEntitlementError(EntitlementError, VodError):
     """
     The subscriber is authenticated but not entitled to this content.
 
@@ -84,11 +105,11 @@ class VodAccountVodDisabledError(VodEntitlementError):
     """
 
 
-class VodNotFoundError(VodError):
+class VodNotFoundError(NotFoundError, VodError):
     """Content has been removed or never existed."""
 
 
-class VodBadRequestError(VodError):
+class VodBadRequestError(BadRequestError, VodError):
     """
     400 -- malformed request for the endpoint called.
 
@@ -100,15 +121,15 @@ class VodBadRequestError(VodError):
     """
 
 
-class VodRateLimitError(VodError):
+class VodRateLimitError(RateLimitError, VodError):
     """429 -- caller should back off."""
 
 
-class VodServerError(VodError):
+class VodServerError(ServerError, VodError):
     """5xx -- retryable."""
 
 
-class VodCatchupRequiredError(VodError):
+class VodCatchupRequiredError(CatchupRequiredError, VodError):
     """
     This "VOD" list entry is actually a catch-up item from a linear
     channel, not a TVOD/SVOD asset.
@@ -150,7 +171,7 @@ class VodCatchupRequiredError(VodError):
         self.catchup_schedules = catchup_schedules or []
 
 
-class VodNotImplementedError(VodError):
+class VodNotImplementedError(NotImplementedYetError, VodError):
     """
     Raised by methods whose endpoint shape has not been captured yet.
 

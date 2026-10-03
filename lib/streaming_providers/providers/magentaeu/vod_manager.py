@@ -75,6 +75,13 @@ exists to build it from.
 
 Everything else (browse, search, pagination) is unchanged from the
 original proposal, which matched the capture well.
+
+Migration note
+--------------
+This manager now subclasses ``base.managers.VodManager``. Three new
+methods (get_vod_category, get_vod_manifest, get_vod_drm) wrap the
+existing ones (get_category_children, get_manifest, get_drm) to satisfy
+the ABC contract. None of the existing methods changed.
 """
 
 from __future__ import annotations
@@ -83,9 +90,11 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from ...base.managers import VodManager
 from ...base.models import ContentType, DRMConfig, StreamingMode
 from ...base.models.vod import VodCategory, VodItem
 from ...base.utils.logger import logger
+from ...base.vod import VodPage
 
 from ..lib_theplatform import (
     build_licence_url,
@@ -123,7 +132,7 @@ from .vod_errors import (
 # ---------------------------------------------------------------------------
 
 @dataclass
-class VodPage:
+class VodPage_Internal:
     """A page of VOD results (see get_component_assets_page)."""
     entries: List[Union[VodCategory, VodItem]]
     next_offset: Optional[int]
@@ -161,7 +170,7 @@ class ResolvedPlayback:
 # Manager
 # ---------------------------------------------------------------------------
 
-class MagentaEUVodManager:
+class MagentaEUVodManager(VodManager):
     """VOD browse / search / playback-info manager for MagentaEU."""
 
     DEFAULT_ASSET_PAGE_SIZE = 20
@@ -176,13 +185,36 @@ class MagentaEUVodManager:
 
     def __init__(
         self,
+        *,
         country: str,
         http_manager,
-        authenticator: MagentaAuthenticator,
+        auth: MagentaAuthenticator,
+        config: Any,
     ) -> None:
+        """
+        Args:
+            country:      Two-letter country code.
+            http_manager: Provider's shared HTTPManager instance.
+            auth:         MagentaAuthenticator -- provides the access token
+                          and per-request auth headers.
+            config:       The provider's config object (COUNTRY_CONFIG
+                          entry or a wrapper). Required by the ABC; this
+                          manager does not read it.
+        """
+        # Forward ONLY the four required collaborators. Extra state
+        # (country-derived URLs, playback cache) goes on self below.
+        super().__init__(
+            http_manager=http_manager,
+            auth=auth,
+            country=country,
+            config=config,
+        )
+
+        # Preserve internal aliases so every existing method body below
+        # continues to read the same names.
         self._country = country
         self._http = http_manager
-        self._auth = authenticator
+        self._auth = auth
 
         self._bifrost_url = get_bifrost_url(country)
         self._natco_key = get_natco_key(country)
@@ -194,6 +226,53 @@ class MagentaEUVodManager:
         self._playback_cache: Dict[Tuple[str, str], Tuple[ResolvedPlayback, float]] = {}
 
         logger.info(f"[MagentaEUVodManager/{country}] initialised")
+
+    # ==================================================================
+    # ABC methods (base.managers.VodManager)
+    # ==================================================================
+    #
+    # These three wrappers satisfy the ABC. Each delegates to an existing
+    # method that already implements the behavior under a different name.
+    # No existing method changes.
+
+    def get_vod_category(
+        self,
+        content_id: str = "",
+        cursor: Optional[str] = None,
+        page_size: int = 24,
+        **kw,
+    ) -> VodPage:
+        """
+        ABC entry point. Delegates to the existing get_category_children
+        and wraps the result in a VodPage.
+
+        Magenta's VOD catalogue does not paginate -- the API returns the
+        full list for a node in one call -- so next_cursor is always None
+        and total is always None.
+        """
+        entries = self.get_category_children(content_id)
+        return VodPage(entries=entries, next_cursor=None, total=None)
+
+    def get_vod_manifest(self, content_id: str, **kw) -> Optional[str]:
+        """
+        ABC entry point. Delegates to the existing get_manifest().
+
+        The existing method implements the full flow: resolve playback
+        info via playinfo/media, cache the result, return the manifest
+        URL. This wrapper exists to satisfy the ABC name.
+        """
+        return self.get_manifest(content_id, **kw)
+
+    def get_vod_drm(self, content_id: str, **kw) -> List[DRMConfig]:
+        """
+        ABC entry point. Delegates to the existing get_drm().
+
+        Same reasoning as get_vod_manifest. Because this method is
+        overridden (the ABC's default returns []), the provider's
+        implements_drm property correctly reports True for Magenta
+        without any additional flag.
+        """
+        return self.get_drm(content_id, **kw)
 
     # ==================================================================
     # Public API -- VOD enablement
@@ -314,7 +393,7 @@ class MagentaEUVodManager:
         component_id: str,
         offset: int = 0,
         page_size: Optional[int] = None,
-    ) -> VodPage:
+    ) -> VodPage_Internal:
         size = page_size or self.DEFAULT_ASSET_PAGE_SIZE
 
         data = self._request(
@@ -344,7 +423,7 @@ class MagentaEUVodManager:
             f"[{self._country}] component {component_id} offset={offset}: "
             f"{len(entries)} items, next={normalised_next}"
         )
-        return VodPage(entries=entries, next_offset=normalised_next)
+        return VodPage_Internal(entries=entries, next_offset=normalised_next)
 
     # ==================================================================
     # Public API -- details
