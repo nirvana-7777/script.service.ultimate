@@ -1,4 +1,4 @@
-# streaming_providers/providers/magenta2/recordings_manager.py
+# streaming_providers/providers/magenta2/recordings.py
 """
 Magenta2 Recordings Manager
 

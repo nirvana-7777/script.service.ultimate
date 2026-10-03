@@ -2,9 +2,9 @@
 """
 Manager ABCs for streaming providers.
 
-Each manager wraps one capability area (channels, VOD, EPG) with a fixed
-public interface. Providers subclass and implement the abstract methods;
-the concrete methods (headers, DRM defaults, search no-ops) come for free.
+Each manager wraps one capability area with a fixed public interface.
+Providers subclass and implement the abstract methods; the concrete
+methods (headers, DRM defaults, search no-ops) come for free.
 
 Design rules
 ------------
@@ -17,21 +17,49 @@ Design rules
 
 On the None-vs-exception rule
 -----------------------------
-Manager top-level methods (get_*_manifest, get_*_drm) signal "this manager
-doesn't handle that content_id" by returning None / [] -- NOT by raising
-NotFoundError. See providers/_template/README.md for the full rule.
+Manager top-level methods signal "this manager doesn't handle that
+content_id" by returning None / [] -- NOT by raising NotFoundError.
+See providers/_template/README.md for the full rule.
 
 Rigidity note
 -------------
 The ABCs enforce the *method names and signatures* through the abstract
 method mechanism. They do NOT enforce that providers raise the right
 error classes, or that they return the right content shapes. Those are
-conventions documented in the template. Treat the ABCs as "the interface
-is fixed" not as "everything about a manager is enforced."
+conventions documented in the template.
+
+Manager list
+------------
+Three required capabilities:
+    ChannelManager
+    VodManager        (providers without a browseable catalogue return None)
+    EpgManager        (providers without EPG return None)
+
+Four optional capabilities -- providers implement the ones they support:
+    RecordingsManager  (cloud / network PVR)
+    FavoritesManager    (user bookmarks on programs / channels)
+    BookmarksManager    (resume position)
+    CatchupManager      (timeshift / restart)
+
+Providers signal a capability's presence by whether _build_*() returns
+a manager or None. Capability flags (implements_vod, implements_epg,
+implements_recordings, ...) are derived from that.
 """
 
 from .channel import ChannelManager
 from .vod import VodManager
 from .epg import EpgManager
+from .recordings import RecordingsManager
+from .favorites import FavoritesManager
+from .bookmarks import BookmarksManager
+from .catchup import CatchupManager
 
-__all__ = ["ChannelManager", "VodManager", "EpgManager"]
+__all__ = [
+    "ChannelManager",
+    "VodManager",
+    "EpgManager",
+    "RecordingsManager",
+    "FavoritesManager",
+    "BookmarksManager",
+    "CatchupManager",
+]
