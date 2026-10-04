@@ -11,7 +11,7 @@ from typing import Optional
 
 class SimpliTVDefaults:
     PROVIDER_NAME = "simpli"
-    PROVIDER_LOGO = "https://files.app.simplitv.at/files/orf1-hd-bunt.png"
+    PROVIDER_LOGO = "https://files.app.austrostream.at/files/tenants/simpli/images/logo/v2/simpli-horizontal-center-2.png"
 
     # --- Endpoints / hosts ---------------------------------------------
     # The API host is api.app.austrostream.at (multi-tenant). The

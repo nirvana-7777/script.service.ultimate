@@ -23,7 +23,7 @@ from ..globals import get_user_agent
 class AllenteDefaults:
     """Default values for the Allente provider."""
 
-    ALLENTE_LOGO = "https://upload.wikimedia.org/wikipedia/commons/0/0f/Allente_logo.png"
+    ALLENTE_LOGO = "https://imgix-images-cdn.3ready.cc/e2dbff8f-a707-4d34-b7f5-856e45193f3c/logo_white_big.png"
 
     # ------------------------------------------------------------------
     # Identity / device
