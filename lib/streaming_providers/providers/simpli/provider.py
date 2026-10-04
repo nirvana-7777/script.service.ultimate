@@ -64,9 +64,9 @@ from .recordings_manager import SimpliTVRecordingsManager
 
 
 class SimpliTVProvider(StreamingProvider):
-    """simpliTV streaming provider."""
+    """simpli streaming provider."""
 
-    PROVIDER_LABEL: ClassVar[str] = "simpliTV"
+    PROVIDER_LABEL: ClassVar[str] = "simpli"
     PROVIDER_LOGO: ClassVar[str] = SimpliTVDefaults.PROVIDER_LOGO
     SUPPORTED_AUTH_TYPES: ClassVar[List[str]] = ["user_credentials"]
     SUPPORTED_COUNTRIES: ClassVar[List[str]] = ["AT"]
