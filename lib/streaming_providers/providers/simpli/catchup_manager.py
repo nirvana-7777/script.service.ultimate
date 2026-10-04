@@ -1,4 +1,4 @@
-# streaming_providers/providers/simplitv/catchup_manager.py
+# streaming_providers/providers/simpli/catchup_manager.py
 """
 simpliTV catchup manager.
 

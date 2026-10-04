@@ -72,7 +72,7 @@ class RecordingsManager(ABC):
 
     Providers that need a recording's manifest should implement the
     routing in their provider's get_manifest, not by adding a
-    get_manifest method here. See providers/simplitv/provider.py for
+    get_manifest method here. See providers/simpli/provider.py for
     the pattern.
     """
 

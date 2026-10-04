@@ -1,4 +1,4 @@
-# streaming_providers/providers/simplitv/channel_manager.py
+# streaming_providers/providers/simpli/channel_manager.py
 """
 simpliTV channel manager.
 
@@ -482,7 +482,7 @@ def codename_from_playable_id(content_id: str) -> str:
 def programme_codename_from_epg_id(epg_id: str) -> str:
     """
     Programme codename from whatever the host passes as epg_id: an EPG
-    broadcast_id (simplitv:<channel>:<start>:<programme>), a prog: id,
+    broadcast_id (simpli:<channel>:<start>:<programme>), a prog: id,
     or the bare programme codename.
     """
     if not epg_id:

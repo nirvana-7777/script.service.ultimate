@@ -1,4 +1,4 @@
-# streaming_providers/providers/simplitv/constants.py
+# streaming_providers/providers/simpli/constants.py
 """
 simpliTV constants.
 
@@ -10,14 +10,14 @@ from typing import Optional
 
 
 class SimpliTVDefaults:
-    PROVIDER_NAME = "simplitv"
+    PROVIDER_NAME = "simpli"
     PROVIDER_LOGO = "https://files.app.simplitv.at/files/orf1-hd-bunt.png"
 
     # --- Endpoints / hosts ---------------------------------------------
     # Confirmed against the browser capture: the API host is
     # api.app.austrostream.at (multi-tenant; simpliTV is the
-    # X-Tenant-Codename: simplitv tenant). The web app itself lives on
-    # streaming.simpli.at, NOT streaming.simplitv.at.
+    # X-Tenant-Codename: simpli tenant). The web app itself lives on
+    # streaming.simpli.at, NOT streaming.simpli.at.
     BASE_URL = "https://api.app.austrostream.at"
     WEBSITE = "https://streaming.simpli.at"
 
@@ -64,7 +64,7 @@ class SimpliTVDefaults:
 
     # --- Platform / device identity ------------------------------------
     PLATFORM_CODENAME = "www"
-    TENANT_CODENAME = "simplitv"
+    TENANT_CODENAME = "simpli"
     RESOURCE_LANGUAGE_CONTEXT = "de"
 
     DEVICE_NAME = "Firefox"
@@ -133,7 +133,7 @@ class SimpliTVDefaults:
     PROGRAMME_PREFIX = "prog:"
     CATCHUP_PREFIX = "catchup:"
     CATCHUP_TS_SEPARATOR = "@"
-    BROADCAST_ID_PREFIX = "simplitv:"
+    BROADCAST_ID_PREFIX = "simpli:"
 
     # --- Catchup / timeshift ------------------------------------------
     # The DVR window is per-channel (AdditionalInfo.Epg_TimeshiftSeconds

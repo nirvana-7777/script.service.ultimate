@@ -1,4 +1,4 @@
-# streaming_providers/providers/simplitv/provider.py
+# streaming_providers/providers/simpli/provider.py
 """
 simpliTV orchestrator.
 

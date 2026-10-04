@@ -1,4 +1,4 @@
-# streaming_providers/providers/simplitv/__init__.py
+# streaming_providers/providers/simpli/__init__.py
 """
 simpliTV streaming provider.
 

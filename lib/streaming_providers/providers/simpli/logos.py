@@ -1,4 +1,4 @@
-# streaming_providers/providers/simplitv/logos.py
+# streaming_providers/providers/simpli/logos.py
 """
 simpliTV channel names and logos.
 

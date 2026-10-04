@@ -1,4 +1,4 @@
-# streaming_providers/providers/simplitv/helpers.py
+# streaming_providers/providers/simpli/helpers.py
 """
 Helpers shared by more than one simpliTV module.
 

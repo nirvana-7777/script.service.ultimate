@@ -1,4 +1,4 @@
-# streaming_providers/providers/simplitv/auth.py
+# streaming_providers/providers/simpli/auth.py
 """
 simpliTV authentication.
 

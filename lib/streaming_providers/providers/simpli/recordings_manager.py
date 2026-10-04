@@ -1,4 +1,4 @@
-# streaming_providers/providers/simplitv/recordings_manager.py
+# streaming_providers/providers/simpli/recordings_manager.py
 """
 simpliTV recordings manager.
 

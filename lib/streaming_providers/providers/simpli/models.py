@@ -1,4 +1,4 @@
-# streaming_providers/providers/simplitv/models.py
+# streaming_providers/providers/simpli/models.py
 """
 simpliTV models.
 

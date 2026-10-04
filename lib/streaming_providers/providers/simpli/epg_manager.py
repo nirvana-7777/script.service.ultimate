@@ -1,4 +1,4 @@
-# streaming_providers/providers/simplitv/epg_manager.py
+# streaming_providers/providers/simpli/epg_manager.py
 """
 simpliTV EPG manager.
 

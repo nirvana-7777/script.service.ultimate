@@ -204,6 +204,20 @@
     </category>
 
     <!-- =============================================== -->
+    <!-- Simpli (AT)                                     -->
+    <!-- =============================================== -->
+    <category id="simpli" label="Simpli (AT)">
+        <setting id="enable_simpli" type="bool" label="Enable Simpli (AT)" default="false" />
+        <setting id="simpli_country" type="text" label="Country Code" default="se" visible="false" />
+        <setting id="simpli_username" type="text" label="Username" default="" enable="eq(-2,true)" />
+        <setting id="simpli_password" type="text" label="Password" option="hidden" default="" enable="eq(-3,true)" />
+        <setting id="simpli_proxy_enabled" type="bool" label="Enable Proxy" default="false" enable="eq(-4,true)" />
+        <setting id="simpli_proxy_host" type="text" label="Proxy Host" default="" visible="eq(-1,true)" />
+        <setting id="simpli_proxy_port" type="number" label="Proxy Port" default="8080" visible="eq(-2,true)" />
+    </category>
+
+
+    <!-- =============================================== -->
     <!-- BH TELECOM                                      -->
     <!-- =============================================== -->
     <category id="bhtelecom" label="BH Telecom Bosnia">

@@ -12,7 +12,7 @@ See ../_template/README.md for the contract.
 Reference implementation
 ------------------------
 simpliTV's SimpliTVRecordingsManager
-(providers/simplitv/recordings_manager.py) is the first example: it
+(providers/simpli/recordings_manager.py) is the first example: it
 returns recordings as SimpliTVChannel objects, carries recording_id
 on the subclass, and paginates through /v2/Pvr/GetRecordings.
 
@@ -51,7 +51,7 @@ class YourRecordingsManager(RecordingsManager):
 
         Do not add a get_manifest method here. Route it in the
         provider's get_manifest instead. See
-        providers/simplitv/provider.py for the pattern.
+        providers/simpli/provider.py for the pattern.
 
     Recording identity
     ------------------
