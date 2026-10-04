@@ -6,51 +6,118 @@ and fill in the stubs. Read this file first — it explains the contract.
 ## What you get for free
 
 - HTTP manager setup, proxying, retries.
-- Credential storage / Kodi sync via the base `settings_manager`.
-- Token caching and session persistence (in your Auth class).
+- Credential storage / Kodi sync via the base `settings_manager` (if the
+  provider needs credentials).
+- Token caching and session persistence (in your Auth class, if you have one).
 - Capability flags (`implements_vod`, `implements_epg`, `implements_recordings`,
   ...) — derived from whether you wire up the corresponding manager.
 - Shared error types, shared `VodPage` shape, shared `Channel` base.
 
 ## What you implement
 
-1. **Auth** — `auth.py`. Writes the three shared methods and any optional
-   extensions the provider needs.
-2. **Managers** — one file per capability the provider supports. Each
+1. **Provider** — `provider.py`. Required. Declares the provider's class
+   metadata, wires up whatever managers it has, and exposes the public
+   interface.
+2. **Auth** — `auth.py`. Optional. Required only if the provider
+   authenticates requests. Free / static-key providers can omit it
+   entirely, or provide a minimal `Auth` that only sets base headers.
+3. **Managers** — one file per capability the provider supports. Each
    subclasses the corresponding ABC from `base/managers/` and implements
-   the abstract methods. See "The manager ABCs" below for the full list.
-3. **Provider wiring** — `provider.py`. Fills in the `_build_*` factory
-   methods; returns `None` for capabilities the provider doesn't have.
+   the abstract methods. **All seven managers are optional** — a
+   VOD-only provider has no `ChannelManager`; a linear-only provider has
+   no `VodManager`; a favorites-sync-only provider may have neither.
+   See "The manager ABCs" below.
 4. **Constants** — `constants.py`. URLs, endpoints, static headers.
 5. **Models** (optional) — `models.py`. Only if you need a custom Channel
    or AuthToken subclass.
 
+## Provider class metadata
+
+Every provider declares these class attributes. They are used by the
+registry and the UI before any instance is constructed.
+
+    PROVIDER_LABEL: ClassVar[str]           # display name, e.g. "simpliTV"
+    PROVIDER_LOGO: ClassVar[str]            # logo URL
+    SUPPORTED_AUTH_TYPES: ClassVar[List[str]]  # e.g. ["user_credentials"]
+    SUPPORTED_COUNTRIES: ClassVar[List[str]]   # ALWAYS set this
+
+### SUPPORTED_COUNTRIES is not optional
+
+**Always declare `SUPPORTED_COUNTRIES`.** Never leave it at the base
+default. The base class defines it as an empty list, which has a
+specific meaning: "the provider does not support country-specific
+instances." That meaning is easy to collide with the accidental case of
+"the author forgot to declare it," and the failure mode is silent — the
+provider shows up in every country's list or in none, depending on
+which code path reads it.
+
+Declare it explicitly, even for a single-country provider:
+
+    # Single country
+    SUPPORTED_COUNTRIES: ClassVar[List[str]] = ["AT"]
+
+    # Multi-country with per-country instances
+    SUPPORTED_COUNTRIES: ClassVar[List[str]] = ["hr", "pl", "me", "at", "hu"]
+
+    # Multi-country with per-country instances but no explicit list —
+    # the provider discovers its country at runtime (Discovery+ shape)
+    SUPPORTED_COUNTRIES: ClassVar[List[str]] = ["*"]
+
+The three cases:
+
+* **Single country** — one-element list. The registry creates one
+  instance for that country.
+* **Multi-country** — one instance per listed country. `country` is a
+  constructor argument; each instance is independent.
+* **Wildcard** — `["*"]`. The registry creates one instance for the
+  default country; the provider discovers its actual country at
+  runtime (e.g. from a `/users/me` call).
+
+An empty list is reserved for providers with no country concept at all
+(a purely global, country-agnostic service). If you find yourself
+wanting to leave it empty because "I'm not sure yet," declare `["*"]`
+instead — it's honest about the ambiguity and behaves correctly in
+both the registry and the runtime.
+
 ## The manager ABCs
 
-There are **seven** manager ABCs. Three are required capabilities, four
-are optional. Providers implement the ones their service offers and
-return `None` from the corresponding `_build_*()` for the rest.
-
-### Required capabilities
+There are **seven** manager ABCs. **All seven are optional.** A provider
+implements the ones its service offers and returns `None` from the
+corresponding `_build_*()` for the rest.
 
     ChannelManager     -- live channels, channel manifest, channel DRM
-    VodManager         -- browseable VOD catalogue (None for live-only)
-    EpgManager         -- EPG (None for providers without EPG)
-
-### Optional capabilities
-
+    VodManager         -- browseable VOD catalogue
+    EpgManager         -- EPG
     RecordingsManager  -- cloud / network PVR
     FavoritesManager   -- user favorites on programs / channels
     BookmarksManager   -- resume positions
     CatchupManager     -- timeshift / restart
 
 **The rule: if a capability area has a public interface in the base
-layer, it gets a manager ABC.** The base layer's
+layer, it gets a manager ABC. If the provider has the capability, wire
+the manager; if not, return `None` from the factory.** The base layer's
 `ProviderRecordingsMixin`, `ProviderFavoritesMixin`,
 `ProviderBookmarksMixin`, and `ProviderCatchupMixin` correspond
 one-to-one to the four optional managers. Do not fold a capability into
 another manager because the data happens to come from the same
 endpoint — the public interface is the contract, not the URL.
+
+### Providers vary in which managers they have
+
+Common shapes:
+
+    Linear-only free provider    -> ChannelManager + EpgManager
+    Linear + catchup             -> ChannelManager + EpgManager + CatchupManager
+    VOD-only                     -> VodManager
+    VOD + linear                 -> ChannelManager + VodManager
+    Linear + recordings          -> ChannelManager + RecordingsManager (+ EpgManager)
+    Metadata-only (EPG feed)     -> EpgManager only
+    Favorites-sync-only          -> FavoritesManager only
+
+Do not assume "every provider has channels." Do not assume "every
+provider has VOD." Do not assume "every provider has EPG." If a
+capability is missing, `_build_*()` returns `None`, the capability flag
+is `False`, and callers that gate on the flag skip it cleanly.
 
 ### Constructor contract
 
@@ -380,7 +447,55 @@ helper should either be renamed public or moved to a shared module
 ## The Auth protocol
 
 Auth is a documented protocol (see `base/protocols.py`), not an ABC.
-Every provider writes:
+**Auth is optional** — a free provider that never authenticates requests
+does not need one at all.
+
+### Providers without auth
+
+Some providers need no authentication:
+
+* Free, public-content providers with no user accounts.
+* Static-API-key providers where the key never changes and is best
+  expressed in `constants.py` headers.
+* Providers where every request is anonymous and no session state is
+  carried.
+
+For these, `_build_auth()` returns `None`, `self.auth = None`, and any
+manager that receives `auth=None` must not call its methods. This is
+supportable but produces a warning from the manager base constructors
+(the `AuthProtocol` isinstance check fires). If you are writing a
+provider with no auth:
+
+* Return `None` from `_build_auth()`.
+* Either accept the warning (it is non-fatal — the manager still
+  constructs and runs), or
+* Provide a minimal `Auth` stub that only implements `build_headers()`
+  and returns the static headers. This is usually cheaper than
+  suppressing the warning, because managers that call `auth.build_headers()`
+  still work.
+
+Minimal no-auth stub:
+
+    class YourNoAuth:
+        """Auth stub for a provider with no authentication."""
+
+        def get_access_token(self, force_refresh=False):
+            return ""
+
+        def build_headers(self, token=None, **opts):
+            return {"User-Agent": "...", "Accept": "application/json"}
+
+        def invalidate(self):
+            pass
+
+Wire it as `self.auth = YourNoAuth()` in `_build_auth()`. The manager
+ABCs' isinstance check passes (all three required methods are present),
+and `build_headers()` returns whatever static headers the provider
+needs.
+
+### Providers with auth
+
+Every provider with auth writes:
 
     get_access_token(force_refresh=False) -> str
         Raw token string. No scheme prefix.
@@ -422,7 +537,10 @@ assume a bearer token is being sent.
 The manager ABCs verify `auth` against `AuthProtocol` at construction
 time via `isinstance` (this works because the protocol is
 `@runtime_checkable`). The check confirms method *presence*, not
-signatures — a mismatched signature will not be caught here.
+signatures — a mismatched signature will not be caught here. A warning
+from this check means the `auth` object is missing one of the three
+required methods; it is not fatal, but it usually means a wiring
+mistake.
 
 ## DRM
 
@@ -660,6 +778,9 @@ object for inspection without hitting the network.
 If your provider has a strong reason to authenticate eagerly (e.g. you
 need to fail fast on bad credentials), do it in the provider's `__init__`
 inside a try/except and log a warning — do not raise.
+
+For providers with no auth, this section does not apply — there is
+nothing to authenticate.
 
 ## Reference providers
 

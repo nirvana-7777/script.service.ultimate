@@ -7,6 +7,10 @@ the public StreamingProvider interface.
 
 Subclasses the existing StreamingProvider. Does NOT subclass any new
 base class. Authentication is lazy -- no network I/O in __init__.
+
+All seven managers are optional. This template shows the shape for a
+provider that has channels, VOD, and EPG. Delete the factories for
+capabilities you don't have, or return None from them.
 """
 
 from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple
@@ -23,6 +27,10 @@ from .channel_manager import YourChannelManager
 from .constants import YourConfig
 # from .vod_manager import YourVodManager
 # from .epg_manager import YourEpgManager
+# from .recordings_manager import YourRecordingsManager
+# from .favorites_manager import YourFavoritesManager
+# from .bookmarks_manager import YourBookmarksManager
+# from .catchup_manager import YourCatchupManager
 # from .drm_manager import YourDrmManager
 
 
@@ -32,18 +40,22 @@ class YourProvider(StreamingProvider):
     PROVIDER_LABEL: ClassVar[str] = "TODO: display label"
     PROVIDER_LOGO: ClassVar[str] = "TODO: logo url"
     SUPPORTED_AUTH_TYPES: ClassVar[List[str]] = ["user_credentials"]
-    SUPPORTED_COUNTRIES: ClassVar[List[str]] = ["TODO", "country", "codes"]
 
-    # Module-private constants used by get_drm's folded path.
+    # ALWAYS set SUPPORTED_COUNTRIES. Never leave it at the base
+    # default (an empty list), which has a specific meaning: "no
+    # country concept at all." Even a single-country provider declares
+    # a one-element list.
     #
-    # Only these two values narrow the search when content_type is
-    # provided. Anything else (None, "event", "catchup", or a typo)
-    # tries both domains. This is deliberate: a wrong narrowing produces
-    # a silent [] for protected content, which is the hardest kind of
-    # bug to trace. Widening on unknown input is always safe.
+    #   Single country:      ["AT"]
+    #   Multi-country:       ["hr", "pl", "me", "at", "hu"]
+    #   Wildcard:            ["*"]  (country discovered at runtime)
     #
-    # Adding more narrowing values here is a deliberate act and should
-    # be justified by a caller that reliably knows the content type.
+    # See the README's "SUPPORTED_COUNTRIES is not optional" section.
+    SUPPORTED_COUNTRIES: ClassVar[List[str]] = ["TODO"]
+
+    # Only "live" and "vod" narrow the folded DRM search; anything else
+    # (None, "event", "catchup", a typo) tries both domains. See the
+    # README's "content_type hint semantics".
     _LIVE_ONLY_CONTENT_TYPES = frozenset({"live"})
     _VOD_ONLY_CONTENT_TYPES = frozenset({"vod"})
 
@@ -53,6 +65,7 @@ class YourProvider(StreamingProvider):
         config: Optional[Dict] = None,
         proxy_config: Optional[ProxyConfig] = None,
         settings_manager=None,
+        credentials=None,
         **kwargs,
     ):
         super().__init__(country)
@@ -60,7 +73,7 @@ class YourProvider(StreamingProvider):
         config = config or {}
         self.config = YourConfig(config)
 
-        # 1. HTTP manager (existing StreamingProvider helper).
+        # 1. HTTP manager.
         self.http_manager = self._setup_http_manager(
             provider_name="TODO: provider_name",
             proxy_config=proxy_config,
@@ -68,17 +81,30 @@ class YourProvider(StreamingProvider):
             timeout=self.config.timeout,
         )
 
-        # 2. Auth (protocol, not ABC). Lazy -- no network call here.
+        # 2. Auth (lazy -- no network call in __init__).
+        #
+        # Providers WITHOUT auth: leave self.auth = None, and either
+        # accept the manager base constructors' AuthProtocol warning,
+        # or provide a minimal stub with the three methods. See the
+        # README's "Providers without auth" section.
+        self._credentials = credentials
         self.auth = self._build_auth(settings_manager)
 
         # 3. Provider-owned caches. Managers borrow these by reference.
+        #    Add caches here as the provider needs them.
         self._channels_cache: Dict = {}
         self._playback_cache: Dict = {}
 
-        # 4. Managers.
+        # 4. Managers. Every factory returns a manager or None.
+        #    Delete the lines for capabilities you don't have, or leave
+        #    the corresponding _build_* returning None.
         self.channels = self._build_channels()
         self.vod = self._build_vod()
         self.epg = self._build_epg()
+        self.recordings = self._build_recordings()
+        self.favorites = self._build_favorites()
+        self.bookmarks = self._build_bookmarks()
+        self.catchup = self._build_catchup()
         self.drm = self._build_drm()
 
     # ------------------------------------------------------------------
@@ -86,13 +112,27 @@ class YourProvider(StreamingProvider):
     # ------------------------------------------------------------------
 
     def _build_auth(self, settings_manager):
+        """
+        Return the provider's Auth instance, or None if the provider
+        needs no authentication.
+
+        See the README's "Providers without auth" section for the
+        minimal stub shape.
+        """
         return YourProviderAuth(
             http_manager=self.http_manager,
             country=self.country,
             settings_manager=settings_manager,
         )
 
-    def _build_channels(self):
+    def _build_channels(self) -> Optional[ChannelManager]:
+        """
+        Return a ChannelManager, or None if the provider has no live
+        channels.
+
+        A VOD-only provider returns None here. A free linear-only
+        provider returns a manager here and None from _build_vod.
+        """
         return YourChannelManager(
             http_manager=self.http_manager,
             auth=self.auth,
@@ -101,7 +141,11 @@ class YourProvider(StreamingProvider):
             channels_cache=self._channels_cache,
         )
 
-    def _build_vod(self):
+    def _build_vod(self) -> Optional[VodManager]:
+        """
+        Return a VodManager, or None if the provider has no browseable
+        VOD catalogue.
+        """
         # TODO: return YourVodManager(
         #     http_manager=self.http_manager,
         #     auth=self.auth,
@@ -112,35 +156,56 @@ class YourProvider(StreamingProvider):
         return None
 
     def _build_epg(self):
+        """
+        Return an EpgManager, or None if the provider has no EPG.
+
+        Some providers have channels but no EPG; some have EPG but no
+        channels. The two capabilities are independent.
+        """
+        return None
+
+    def _build_recordings(self):
+        """Return a RecordingsManager, or None."""
+        return None
+
+    def _build_favorites(self):
+        """Return a FavoritesManager, or None."""
+        return None
+
+    def _build_bookmarks(self):
+        """Return a BookmarksManager, or None."""
+        return None
+
+    def _build_catchup(self):
+        """
+        Return a CatchupManager, or None.
+
+        Catchup usually needs the channel manager as a collaborator
+        (to reuse the live manifest fetch). Ensure
+        self.channels is built before this factory runs.
+        """
         return None
 
     def _build_drm(self) -> Optional[DrmManagerProtocol]:
         """
         Return a dedicated DRM manager, or None.
 
-        Two supported architectures (see the README's "DRM" section for
-        the state-sharing rule that picks between them):
+        Two supported architectures (see the README's "DRM" section):
 
-          * Dedicated manager: return a class matching DrmManagerProtocol
-            here; the provider's get_drm() delegates to it.
+          * Dedicated manager: return a class matching
+            DrmManagerProtocol here; the provider's get_drm() delegates
+            to it.
 
-          * Folded into managers: leave this returning None, and instead
+          * Folded into managers: leave this returning None, and
             override get_channel_drm() on your ChannelManager and/or
             get_vod_drm() on your VodManager. The provider's get_drm()
             falls back to routing to those.
 
-        New providers should prefer the dedicated manager unless the DRM
-        step shares state with the manifest step. See
-        providers/_template/drm_manager.py for the four existing source
-        patterns.
+        New providers should prefer the dedicated manager unless the
+        DRM step shares state with the manifest step. See
+        providers/_template/drm_manager.py for the four existing
+        source patterns.
         """
-        # TODO: return YourDrmManager(
-        #     http_manager=self.http_manager,
-        #     auth=self.auth,
-        #     country=self.country,
-        #     config=self.config,
-        #     # ... provider-specific collaborators
-        # )
         return None
 
     # ------------------------------------------------------------------
@@ -160,6 +225,22 @@ class YourProvider(StreamingProvider):
         return self.epg is not None
 
     @property
+    def implements_recordings(self) -> bool:
+        return self.recordings is not None
+
+    @property
+    def implements_favorites(self) -> bool:
+        return self.favorites is not None
+
+    @property
+    def implements_bookmarks(self) -> bool:
+        return self.bookmarks is not None
+
+    @property
+    def implements_catchup(self) -> bool:
+        return self.catchup is not None
+
+    @property
     def implements_drm(self) -> bool:
         """
         True when this provider can produce DRM configurations.
@@ -170,8 +251,7 @@ class YourProvider(StreamingProvider):
           * a VodManager that overrides get_vod_drm.
 
         The base classes' defaults return []; we detect overrides by
-        comparing the bound method against the base class's method. This
-        is what makes the flag correct for the folded architecture.
+        comparing the bound method against the base class's method.
         """
         if self.drm is not None:
             return True
@@ -205,11 +285,6 @@ class YourProvider(StreamingProvider):
         If nobody resolved and a NotFoundError was seen, re-raise it --
         that's "the content existed in some manager's domain but is gone",
         distinct from "nobody handles this id at all" (which returns None).
-
-        BadRequestError and other errors are NOT caught here. Providers
-        that need endpoint-fallback behavior (Magenta's page-vs-component
-        dispatch) should override handles_content_id() instead, so the
-        router never has to guess.
         """
         last_not_found: Optional[NotFoundError] = None
         for manager, call in attempts:
@@ -239,13 +314,17 @@ class YourProvider(StreamingProvider):
         """
         Return the manifest URL for the given content, routing by manager.
 
-        Providers with events, catchup, or other content types extend
-        this method to add their branches. Each branch is a
-        (manager, call) tuple in the attempts list.
+        Providers with catchup, events, or other content types extend
+        this method with additional branches. Providers with a
+        structured content_id grammar add explicit prefix branches
+        above _route when the manager needs parsed arguments -- see the
+        README's "Parsers vs. dispatch".
         """
         return self._route(content_id, [
-            (self.channels, lambda m: m.get_channel_manifest(content_id, **kw)),
-            (self.vod,      lambda m: m.get_vod_manifest(content_id, **kw)),
+            (self.channels, lambda m: m.get_channel_manifest(
+                content_id, **kw
+            )),
+            (self.vod, lambda m: m.get_vod_manifest(content_id, **kw)),
         ])
 
     def get_drm(
@@ -266,21 +345,18 @@ class YourProvider(StreamingProvider):
 
         If a dedicated DRM manager is configured, the hint is passed
         through unchanged and the manager decides what to do with it.
-        Otherwise the folded path narrows the search as described above.
         """
         if self.drm is not None:
             return self.drm.get_drm_configs(
-                content_id,
-                content_type=content_type,
-                **kw,
+                content_id, content_type=content_type, **kw
             )
 
-        # Folded path: invert the check so only recognized values narrow.
-        # Unknown values (including typos) fall through to "try both".
         attempts: List[Tuple[Any, Callable]] = []
         if content_type not in self._VOD_ONLY_CONTENT_TYPES:
             attempts.append(
-                (self.channels, lambda m: m.get_channel_drm(content_id, **kw))
+                (self.channels, lambda m: m.get_channel_drm(
+                    content_id, **kw
+                ))
             )
         if content_type not in self._LIVE_ONLY_CONTENT_TYPES:
             attempts.append(
