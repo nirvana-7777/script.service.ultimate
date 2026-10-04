@@ -66,11 +66,15 @@ from .recordings_manager import SimpliTVRecordingsManager
 class SimpliTVProvider(StreamingProvider):
     """simpli streaming provider."""
 
-    PROVIDER_NAME: ClassVar[str] = SimpliTVDefaults.PROVIDER_NAME  # "simpli"
     PROVIDER_LABEL: ClassVar[str] = "simpli"
     PROVIDER_LOGO: ClassVar[str] = SimpliTVDefaults.PROVIDER_LOGO
     SUPPORTED_AUTH_TYPES: ClassVar[List[str]] = ["user_credentials"]
     SUPPORTED_COUNTRIES: ClassVar[List[str]] = ["AT"]
+
+    @property
+    def provider_name(self) -> str:
+        """Return the provider name (matches the directory / registry key)."""
+        return SimpliTVDefaults.PROVIDER_NAME   # "simpli"
 
     # Only "live" and "vod" narrow the folded DRM search; anything else
     # (None, "event", "catchup", a typo) tries both domains.
