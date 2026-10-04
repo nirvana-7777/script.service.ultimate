@@ -16,7 +16,7 @@ and fill in the stubs. Read this file first — it explains the contract.
 ## What you implement
 
 1. **Provider** — `provider.py`. Required. Declares the provider's class
-   metadata, wires up whatever managers it has, and exposes the public
+   members, wires up whatever managers it has, and exposes the public
    interface.
 2. **Auth** — `auth.py`. Optional. Required only if the provider
    authenticates requests. Free / static-key providers can omit it
@@ -31,15 +31,51 @@ and fill in the stubs. Read this file first — it explains the contract.
 5. **Models** (optional) — `models.py`. Only if you need a custom Channel
    or AuthToken subclass.
 
-## Provider class metadata
+## Provider class members
 
-Every provider declares these class attributes. They are used by the
-registry and the UI before any instance is constructed.
+Every provider declares these. Some are abstract (must be implemented by
+the concrete class, or the class cannot be instantiated); some are class
+attributes with defaults.
 
-    PROVIDER_LABEL: ClassVar[str]           # display name, e.g. "simpliTV"
-    PROVIDER_LOGO: ClassVar[str]            # logo URL
-    SUPPORTED_AUTH_TYPES: ClassVar[List[str]]  # e.g. ["user_credentials"]
-    SUPPORTED_COUNTRIES: ClassVar[List[str]]   # ALWAYS set this
+### Required abstract property
+
+    @property
+    def provider_name(self) -> str: ...
+
+**This is abstract on StreamingProvider.** A subclass that does not
+override it cannot be instantiated — Python raises
+`TypeError: Can't instantiate abstract class ... with abstract method
+provider_name` the moment the registry calls `YourProvider(country=...)`.
+
+The failure is silent if you don't notice it: the registry catches the
+exception, logs "Failed to create instance for {name}: ..." at ERROR
+level, and moves on. The provider simply does not appear in the UI. If
+your provider is registered but never instantiates, this is the first
+thing to check.
+
+The value is the provider's machine identifier — lowercase, no spaces,
+used in settings keys, log lines, and the `provider` field on models.
+It should match the plugin directory name and the `PROVIDER_NAME`
+constant in `constants.py`.
+
+    @property
+    def provider_name(self) -> str:
+        return "your_provider_name"
+
+### Required class attributes
+
+    PROVIDER_LABEL: ClassVar[str]
+        Display name, e.g. "simpliTV". Used by the registry and the UI.
+
+    PROVIDER_LOGO: ClassVar[str]
+        Logo URL.
+
+    SUPPORTED_AUTH_TYPES: ClassVar[List[str]]
+        e.g. ["user_credentials"], ["anonymous"], or ["user_credentials",
+        "anonymous"] if the provider supports both.
+
+    SUPPORTED_COUNTRIES: ClassVar[List[str]]
+        ALWAYS set this. See "SUPPORTED_COUNTRIES is not optional" below.
 
 ### SUPPORTED_COUNTRIES is not optional
 
@@ -78,6 +114,24 @@ An empty list is reserved for providers with no country concept at all
 wanting to leave it empty because "I'm not sure yet," declare `["*"]`
 instead — it's honest about the ambiguity and behaves correctly in
 both the registry and the runtime.
+
+### Cross-check: what the registry reads
+
+The registry's `ProviderMetadata._extract_metadata` reads these members
+before any instance exists. If any are missing or wrong, the provider
+misbehaves in the UI even if the runtime works.
+
+    PROVIDER_LABEL                -> metadata.label
+    PROVIDER_LOGO                 -> metadata.logo
+    SUPPORTED_AUTH_TYPES          -> metadata.supported_auth_types
+    SUPPORTED_COUNTRIES           -> metadata.supported_countries
+    class.__name__                -> metadata.plugin_name (derived)
+
+The plugin name is derived from the class name:
+`cls.__name__.lower().replace("provider", "")`. `YourProvider` becomes
+`your`. If your class name is non-standard the derived name will be
+wrong — pick a class name whose lowercase form (minus the word
+"provider") matches your intended plugin name.
 
 ## The manager ABCs
 

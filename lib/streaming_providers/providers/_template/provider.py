@@ -37,6 +37,36 @@ from .constants import YourConfig
 class YourProvider(StreamingProvider):
     """{TODO: provider name} streaming provider."""
 
+    # ------------------------------------------------------------------
+    # provider_name -- ABSTRACT, must be implemented
+    # ------------------------------------------------------------------
+    #
+    # `provider_name` is declared as an @property @abstractmethod on
+    # StreamingProvider. If this class does not override it, Python
+    # raises TypeError at instantiation:
+    #
+    #     Can't instantiate abstract class YourProvider with abstract
+    #     method provider_name
+    #
+    # The registry catches that exception, logs it at ERROR level, and
+    # skips the provider. The symptom is a provider that is registered
+    # but never appears in the UI.
+    #
+    # The value is the machine identifier: lowercase, no spaces, matching
+    # the plugin directory name and the PROVIDER_NAME constant in
+    # constants.py. Used in settings keys, log lines, and the `provider`
+    # field on models.
+    #
+    # Do not delete this property. Override the return value; do not
+    # replace it with a class attribute.
+    @property
+    def provider_name(self) -> str:
+        return "TODO: provider_name"
+
+    # ------------------------------------------------------------------
+    # Class metadata
+    # ------------------------------------------------------------------
+
     PROVIDER_LABEL: ClassVar[str] = "TODO: display label"
     PROVIDER_LOGO: ClassVar[str] = "TODO: logo url"
     SUPPORTED_AUTH_TYPES: ClassVar[List[str]] = ["user_credentials"]
@@ -75,7 +105,7 @@ class YourProvider(StreamingProvider):
 
         # 1. HTTP manager.
         self.http_manager = self._setup_http_manager(
-            provider_name="TODO: provider_name",
+            provider_name=self.provider_name,
             proxy_config=proxy_config,
             user_agent=self.config.user_agent,
             timeout=self.config.timeout,
