@@ -12,6 +12,14 @@ DrmManagerProtocol). The shape is shared; the implementations vary enough
 that a shared ABC would need more escape hatches than it saves. This file
 is a scaffold and a document -- not an abstract class.
 
+Method names (not interchangeable)
+----------------------------------
+    get_drm_configs   -- the dedicated DrmManager's only method
+    get_channel_drm   -- folded architecture, live-channel entry point
+    get_vod_drm       -- folded architecture, VOD entry point
+A dedicated manager implements get_drm_configs and leaves the other two
+alone; a folded provider does the opposite.
+
 Source patterns vs. architecture
 --------------------------------
 "Source pattern" describes HOW a provider obtains DRM material (an
@@ -38,28 +46,9 @@ license URL is produced, and adapt the mechanics.
 How to structure a DRM manager for a new provider
 -------------------------------------------------
 
-1. Class shape
-    class YourDrmManager:
-        def __init__(
-            self,
-            *,
-            http_manager,     # shared HTTPManager from the provider
-            auth,             # your Auth instance (matches AuthProtocol)
-            country,
-            config,
-            # plus whatever else this provider's DRM needs:
-            #   playback_manager=None, session_cache=None, ...
-        ):
-            ...
-
-        def get_drm_configs(
-            self,
-            content_id: str,
-            content_type: Optional[str] = None,
-            **opts,
-        ) -> List[DRMConfig]:
-            # If content_type is None, infer it from content_id grammar.
-            ...
+1. Class shape -- see YourDrmManager below. If content_type is None,
+   infer it from the content_id grammar; when in doubt, widen (a wrong
+   narrowing yields a silent [] for protected content).
 
 2. Wiring
     In provider.py's __init__:
@@ -112,6 +101,7 @@ How to structure a DRM manager for a new provider
     Pattern C -- DRM arrives with the playback response
         Files:  providers/discovery/playback_manager.py
                 providers/discovery/constants.py
+                providers/simplitv/ (folded into the channel manager)
 
         Summary: during get_manifest, POST playbackInfo and cache the
         response. get_drm() is a cache lookup; no separate DRM call.
@@ -165,3 +155,35 @@ How to structure a DRM manager for a new provider
       * If it's something structurally new, raise it before extending the
         shared model -- every provider inherits changes.
 """
+
+from typing import List, Optional
+
+from ...base.models import DRMConfig
+from ...base.utils.logger import logger
+
+
+class YourDrmManager:
+    """Dedicated DRM manager. Matches DrmManagerProtocol by shape."""
+
+    def __init__(
+        self,
+        *,
+        http_manager,     # shared HTTPManager from the provider
+        auth,             # your Auth instance (matches AuthProtocol)
+        country,
+        config,
+        # plus whatever else this provider's DRM needs:
+        #   playback_manager=None, session_cache=None, ...
+    ):
+        self.http_manager = http_manager
+        self.auth = auth
+        self.country = country
+        self.config = config
+
+    def get_drm_configs(
+        self,
+        content_id: str,
+        content_type: Optional[str] = None,
+        **opts,
+    ) -> List[DRMConfig]:
+        raise NotImplementedError("YourDrmManager.get_drm_configs")

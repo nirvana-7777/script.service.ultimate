@@ -8,11 +8,19 @@ the public StreamingProvider interface.
 Subclasses the existing StreamingProvider. Does NOT subclass any new
 base class. Authentication is lazy -- no network I/O in __init__.
 
-All seven managers are optional. This template shows the shape for a
-provider that has channels, VOD, and EPG. Delete the factories for
-capabilities you don't have, or return None from them.
+There are seven optional manager ABCs (channels, vod, epg, recordings,
+favorites, bookmarks, catchup) plus an optional DRM manager (a protocol,
+not an ABC). This template shows the shape for a provider that has
+channels, VOD, and EPG. Delete the factories for capabilities you don't
+have, or return None from them.
+
+Plugin name: the registry derives it from the CLASS NAME via
+`cls.__name__.lower().replace("provider", "")`. `YourProvider` becomes
+"your". Name the class so that this matches your plugin directory, e.g.
+`SimpliTVProvider` -> "simplitv" -> providers/simplitv/.
 """
 
+from datetime import datetime
 from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple
 
 from ...base.errors import NotFoundError
@@ -21,10 +29,12 @@ from ...base.models.proxy_models import ProxyConfig
 from ...base.protocols import DrmManagerProtocol
 from ...base.provider import StreamingProvider
 from ...base.utils.logger import logger
+from ...base.vod import VodPage
 
 from .auth import YourProviderAuth
 from .channel_manager import YourChannelManager
-from .constants import YourConfig
+from .constants import YourConfig, YourDefaults
+# from .channel_manager import parse_catchup_id   # if you route catchup
 # from .vod_manager import YourVodManager
 # from .epg_manager import YourEpgManager
 # from .recordings_manager import YourRecordingsManager
@@ -55,20 +65,20 @@ class YourProvider(StreamingProvider):
     # The value is the machine identifier: lowercase, no spaces, matching
     # the plugin directory name and the PROVIDER_NAME constant in
     # constants.py. Used in settings keys, log lines, and the `provider`
-    # field on models.
+    # field on models. Return the constant so the two cannot drift.
     #
     # Do not delete this property. Override the return value; do not
     # replace it with a class attribute.
     @property
     def provider_name(self) -> str:
-        return "TODO: provider_name"
+        return YourDefaults.PROVIDER_NAME
 
     # ------------------------------------------------------------------
-    # Class metadata
+    # Class metadata (read by the registry BEFORE any instance exists)
     # ------------------------------------------------------------------
 
     PROVIDER_LABEL: ClassVar[str] = "TODO: display label"
-    PROVIDER_LOGO: ClassVar[str] = "TODO: logo url"
+    PROVIDER_LOGO: ClassVar[str] = YourDefaults.PROVIDER_LOGO
     SUPPORTED_AUTH_TYPES: ClassVar[List[str]] = ["user_credentials"]
 
     # ALWAYS set SUPPORTED_COUNTRIES. Never leave it at the base
@@ -78,7 +88,8 @@ class YourProvider(StreamingProvider):
     #
     #   Single country:      ["AT"]
     #   Multi-country:       ["hr", "pl", "me", "at", "hu"]
-    #   Wildcard:            ["*"]  (country discovered at runtime)
+    #   Wildcard:            ["*"]  (country discovered at runtime;
+    #                               also the right answer for "not sure yet")
     #
     # See the README's "SUPPORTED_COUNTRIES is not optional" section.
     SUPPORTED_COUNTRIES: ClassVar[List[str]] = ["TODO"]
@@ -100,8 +111,16 @@ class YourProvider(StreamingProvider):
     ):
         super().__init__(country)
 
+        # Unknown kwargs are tolerated (the registry may pass host-level
+        # extras) but never silently: a typo here is otherwise invisible.
+        if kwargs:
+            logger.debug(
+                f"{self.provider_name}: ignoring unknown kwargs "
+                f"{sorted(kwargs)}"
+            )
+
         config = config or {}
-        self.config = YourConfig(config)
+        self.config = YourConfig(config, country=self.country)
 
         # 1. HTTP manager.
         self.http_manager = self._setup_http_manager(
@@ -113,10 +132,10 @@ class YourProvider(StreamingProvider):
 
         # 2. Auth (lazy -- no network call in __init__).
         #
-        # Providers WITHOUT auth: leave self.auth = None, and either
-        # accept the manager base constructors' AuthProtocol warning,
-        # or provide a minimal stub with the three methods. See the
-        # README's "Providers without auth" section.
+        # Providers WITHOUT auth: _build_auth returns None (accept the
+        # manager base constructors' AuthProtocol warning) or a minimal
+        # stub with the three token methods. See the README's
+        # "Providers without auth" section.
         self._credentials = credentials
         self.auth = self._build_auth(settings_manager)
 
@@ -125,16 +144,17 @@ class YourProvider(StreamingProvider):
         self._channels_cache: Dict = {}
         self._playback_cache: Dict = {}
 
-        # 4. Managers. Every factory returns a manager or None.
-        #    Delete the lines for capabilities you don't have, or leave
-        #    the corresponding _build_* returning None.
+        # 4. Managers, in DEPENDENCY ORDER. Every factory returns a
+        #    manager or None. Catchup (and a dedicated DRM manager) may
+        #    need channels/epg/vod, so they are built after them. Do not
+        #    introduce cycles between managers.
         self.channels = self._build_channels()
         self.vod = self._build_vod()
         self.epg = self._build_epg()
         self.recordings = self._build_recordings()
         self.favorites = self._build_favorites()
         self.bookmarks = self._build_bookmarks()
-        self.catchup = self._build_catchup()
+        self.catchup = self._build_catchup()   # sees channels + epg
         self.drm = self._build_drm()
 
     # ------------------------------------------------------------------
@@ -146,13 +166,16 @@ class YourProvider(StreamingProvider):
         Return the provider's Auth instance, or None if the provider
         needs no authentication.
 
-        See the README's "Providers without auth" section for the
-        minimal stub shape.
+        `credentials=` MUST be forwarded: it is credentials source #1
+        (constructor argument). The auth class falls back to the
+        settings_manager and CredentialManager on its own.
         """
         return YourProviderAuth(
             http_manager=self.http_manager,
             country=self.country,
             settings_manager=settings_manager,
+            credentials=self._credentials,
+            config=self.config,
         )
 
     def _build_channels(self) -> Optional[ChannelManager]:
@@ -210,10 +233,18 @@ class YourProvider(StreamingProvider):
         """
         Return a CatchupManager, or None.
 
-        Catchup usually needs the channel manager as a collaborator
-        (to reuse the live manifest fetch). Ensure
-        self.channels is built before this factory runs.
+        Catchup usually needs the channel manager and/or the EPG manager
+        as collaborators. Pass them as explicit keyword-only arguments;
+        self.channels and self.epg are already built when this runs.
         """
+        # TODO: return YourCatchupManager(
+        #     http_manager=self.http_manager,
+        #     auth=self.auth,
+        #     country=self.country,
+        #     config=self.config,
+        #     channels=self.channels,
+        #     epg=self.epg,
+        # )
         return None
 
     def _build_drm(self) -> Optional[DrmManagerProtocol]:
@@ -231,10 +262,9 @@ class YourProvider(StreamingProvider):
             get_vod_drm() on your VodManager. The provider's get_drm()
             falls back to routing to those.
 
-        New providers should prefer the dedicated manager unless the
-        DRM step shares state with the manifest step. See
-        providers/_template/drm_manager.py for the four existing
-        source patterns.
+        Rule: fold if DRM shares state with the manifest step; otherwise
+        use the dedicated manager. See providers/_template/drm_manager.py
+        for the four existing source patterns.
         """
         return None
 
@@ -315,6 +345,13 @@ class YourProvider(StreamingProvider):
         If nobody resolved and a NotFoundError was seen, re-raise it --
         that's "the content existed in some manager's domain but is gone",
         distinct from "nobody handles this id at all" (which returns None).
+
+        Any OTHER exception propagates. In particular BadRequestError is
+        deliberately NOT caught: if a manager uses a 400 as an endpoint
+        dispatch signal, override handles_content_id() on that manager
+        instead of relying on try-and-catch. When both channels and vod
+        exist, override handles_content_id() on both -- the default
+        (True) makes the first manager see every id.
         """
         last_not_found: Optional[NotFoundError] = None
         for manager, call in attempts:
@@ -333,6 +370,13 @@ class YourProvider(StreamingProvider):
 
     # ------------------------------------------------------------------
     # Public delegations
+    #
+    # The optional capabilities (recordings, favorites, bookmarks,
+    # catchup) are exposed by the base layer's Provider*Mixin classes,
+    # which correspond one-to-one to those managers -- no delegation is
+    # needed here. Channels, VOD and EPG are delegated explicitly below.
+    # VERIFY these three signatures against StreamingProvider when you
+    # copy the template; remove any the base class already provides.
     # ------------------------------------------------------------------
 
     def get_channels(self, **kw):
@@ -340,15 +384,50 @@ class YourProvider(StreamingProvider):
             return []
         return self.channels.get_channels(**kw)
 
+    def get_vod_category(
+        self,
+        content_id: str = "",
+        cursor: Optional[str] = None,
+        page_size: int = 24,
+        **kw,
+    ) -> VodPage:
+        if self.vod is None:
+            return VodPage()
+        return self.vod.get_vod_category(
+            content_id, cursor=cursor, page_size=page_size, **kw
+        )
+
+    def get_epg(
+        self,
+        channel_id: str,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        **kw,
+    ):
+        if self.epg is None:
+            return []
+        return self.epg.get_epg(
+            channel_id, start_time=start_time, end_time=end_time, **kw
+        )
+
     def get_manifest(self, content_id: str, **kw) -> Optional[str]:
         """
         Return the manifest URL for the given content, routing by manager.
 
-        Providers with catchup, events, or other content types extend
-        this method with additional branches. Providers with a
-        structured content_id grammar add explicit prefix branches
-        above _route when the manager needs parsed arguments -- see the
-        README's "Parsers vs. dispatch".
+        Route through `_route` when the manager needs only the
+        content_id. Add an explicit prefix branch ABOVE `_route` when the
+        manager needs parsed arguments (a timestamp, an episode index).
+        One parser, in the router -- see the README's "Parsers vs.
+        dispatch". Catchup is the usual example:
+
+            # if content_id.startswith("catchup:"):
+            #     parsed = parse_catchup_id(content_id)   # raises
+            #     return self.catchup.get_catchup_manifest(   # BadRequestError
+            #         parsed.content_id, parsed.start_time, parsed.end_time,
+            #         **kw,
+            #     ) if self.catchup else None
+
+        Do NOT fall back to the live manifest when catchup fails.
         """
         return self._route(content_id, [
             (self.channels, lambda m: m.get_channel_manifest(

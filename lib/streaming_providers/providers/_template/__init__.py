@@ -8,8 +8,15 @@ subclass, so directory-based discovery (see streaming_providers/__init__.py)
 never registers it, even if the leading-underscore skip rule is removed.
 
 To use: copy this directory to providers/{new_name}/ and rename the
-classes. Change this __init__.py to import and export YourProvider once
-the new provider is a real one.
+classes. Then replace the body of this __init__.py with:
+
+    from .provider import YourProvider   # renamed
+
+    __all__ = ["YourProvider"]
+
+The registry derives the plugin name from the class name
+(`cls.__name__.lower().replace("provider", "")`), so the class name must
+match the directory name you chose.
 """
 
 __all__ = []

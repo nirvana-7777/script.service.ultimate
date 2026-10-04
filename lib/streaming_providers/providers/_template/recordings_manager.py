@@ -12,7 +12,7 @@ See ../_template/README.md for the contract.
 Reference implementation
 ------------------------
 simpliTV's SimpliTVRecordingsManager
-(providers/simpli/recordings_manager.py) is the first example: it
+(providers/simplitv/recordings_manager.py) is the first example: it
 returns recordings as SimpliTVChannel objects, carries recording_id
 on the subclass, and paginates through /v2/Pvr/GetRecordings.
 
@@ -22,9 +22,13 @@ A recording has its own id (recording_id) distinct from the content_id
 of the underlying programme. The two namespaces are usually different:
 recording_id is what you pass to delete_recording, content_id is what
 you pass to get_manifest to play the recording. Keep them separate.
+
+Recordings do not participate in the content_id router (they have their
+own id namespace); the manager may override handles_recording_id() when
+several recordings managers exist (cloud PVR + local PVR, say).
 """
 
-from typing import Any, List
+from typing import List
 
 from ...base.managers import RecordingsManager
 from ...base.models import Channel
@@ -51,7 +55,9 @@ class YourRecordingsManager(RecordingsManager):
 
         Do not add a get_manifest method here. Route it in the
         provider's get_manifest instead. See
-        providers/simpli/provider.py for the pattern.
+        providers/simplitv/provider.py for the pattern. (Two managers
+        may accept the same prefix, e.g. "rec:", when their concerns
+        are disjoint -- but only ONE router branch per prefix.)
 
     Recording identity
     ------------------
@@ -97,8 +103,9 @@ class YourRecordingsManager(RecordingsManager):
         Delete a recording.
 
         Raises:
-            KeyError:     if the recording doesn't exist.
-            ProviderError: on backend failure.
+            KeyError:      if the recording doesn't exist.
+            ProviderError: (a subclass from base.errors) on backend
+                           failure. Never return silently on failure.
         """
         raise NotImplementedError("YourRecordingsManager.delete_recording")
 

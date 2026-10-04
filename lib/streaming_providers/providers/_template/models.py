@@ -2,137 +2,134 @@
 """
 {TODO: Provider name} models.
 
-Only needed if your provider requires:
-  * A custom Channel subclass (extra fields on channels — see MoveTV's
-    MoveTVChannel and Discovery's DiscoveryChannel).
-  * A custom AuthToken subclass (extra claims on the token — most existing
-    providers have one: RTLPlusAuthToken, MagentaAuthToken, MoveTVAuthToken,
-    DiscoveryAuthToken, HRTiAuthToken).
-  * A custom Credentials subclass (unusual auth payload — see HRTi's
-    HRTiCredentials).
+What is needed:
+  * A custom AuthToken subclass -- MANDATORY for any provider with auth.
+    BaseAuthToken is an ABC with an abstract to_dict(), so it cannot be
+    instantiated directly. The minimal subclass below is live code, not
+    an example; auth.py imports it.
+  * A custom Channel subclass -- optional (extra per-channel fields; see
+    MoveTV's MoveTVChannel, Discovery's DiscoveryChannel, simpliTV's
+    SimpliTVChannel).
+  * A custom Credentials subclass -- optional (unusual login payload; see
+    HRTi's HRTiCredentials).
 
-If your provider can be expressed with the base Channel / BaseAuthToken and
-a plain UserPasswordCredentials, you don't need this file.
+A provider WITHOUT auth can delete the AuthToken subclass. A provider that
+uses plain Channel and UserPasswordCredentials needs nothing else here.
 
 Rules
 -----
 * When overriding to_dict(), call super().to_dict() and add your fields.
-  Both Channel.to_dict() and BaseAuthToken.to_dict() chain correctly.
+  Channel.to_dict() chains correctly. BaseAuthToken.to_dict() is abstract,
+  so an AuthToken subclass implements it in full.
+* to_dict() keys on Channel subclasses are TitleCase, no underscores
+  ("YourField"), matching the base serializer.
 * Custom Channel subclasses are returned from ChannelManager.get_channels()
-  as-is; nothing in the base inspects the concrete type.
+  as-is; nothing in the base inspects the concrete type. Use the inherited
+  factories (create_live_channel / create_vod_channel / create_radio_channel);
+  they use cls(...) and therefore return your subclass.
 * Custom AuthToken subclasses are returned from your Auth's
   _perform_authentication(); the base never inspects their type beyond the
   attributes it needs (access_token, expires_in, is_expired).
 """
 
+from dataclasses import dataclass
+from typing import Any, Dict
+
+from ...base.auth.base_auth import BaseAuthToken
+
+# from ...base.models import Channel
+# from ...base.auth.credentials import UserPasswordCredentials
+
+
+# ---------------------------------------------------------------------------
+# AuthToken subclass (mandatory when the provider has auth)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class YourAuthToken(BaseAuthToken):
+    """
+    Minimal concrete token.
+
+    Add provider-specific claims as new fields WITH DEFAULTS, after the
+    base fields, and include them in to_dict()/from_dict().
+
+    to_dict() must exist even if you never persist tokens (the ABC
+    requires it). Implement it for real so enabling persistence later
+    needs no follow-up edit.
+
+    VERIFY against base/auth/base_auth.py: the field list below mirrors
+    the README example. If BaseAuthToken has required fields not listed
+    here, add them to to_dict() and from_dict().
+    """
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "access_token": self.access_token,
+            "token_type": self.token_type,
+            "expires_in": self.expires_in,
+            "issued_at": self.issued_at,
+            "refresh_token": self.refresh_token,
+            "refresh_expires_in": self.refresh_expires_in,
+            "auth_level": self.auth_level.value,
+            "credential_type": self.credential_type,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "YourAuthToken":
+        """
+        Reconstruct from a persisted dict. Used by Auth._load_session().
+
+        Mirror to_dict(). auth_level is serialized via `.value`, so it
+        must be converted back to its enum here (see base_auth.py);
+        until you do, keep persistence off or let _load_session() return
+        None -- a failed load only costs one re-authentication.
+        """
+        return cls(
+            access_token=data["access_token"],
+            token_type=data.get("token_type", "Bearer"),
+            expires_in=data.get("expires_in", 0),
+            issued_at=data.get("issued_at", 0),
+            refresh_token=data.get("refresh_token"),
+            refresh_expires_in=data.get("refresh_expires_in", 0),
+            # TODO: auth_level=..., credential_type=...
+        )
+
+
 # ---------------------------------------------------------------------------
 # Example: custom Channel subclass
 # ---------------------------------------------------------------------------
 
-# from dataclasses import dataclass
-# from typing import Any, Dict
-#
-# from ...base.models import Channel
-#
-#
 # @dataclass
 # class YourChannel(Channel):
 #     """
 #     Channel with provider-specific extra fields.
 #
 #     Keep the base class's field names and defaults; add new fields after
-#     them so positional construction still works if any caller relies on it.
-#     Keyword construction is preferred.
+#     them so positional construction still works. Never remove or rename
+#     base fields -- downstream consumers read them.
 #     """
 #
-#     # Provider-specific extras.
-#     your_field: str = ""
-#     your_expires_at: float = 0.0
+#     codename: str = ""
+#     recording_id: str = ""
 #
 #     def to_dict(self) -> Dict[str, Any]:
 #         result = super().to_dict()
-#         result["YourField"] = self.your_field
-#         result["YourExpiresAt"] = self.your_expires_at
+#         result["Codename"] = self.codename
+#         result["RecordingId"] = self.recording_id
 #         return result
-
-
-# ---------------------------------------------------------------------------
-# Example: custom AuthToken subclass
-# ---------------------------------------------------------------------------
-
-# from typing import Any, Dict, Optional
-#
-# from ...base.auth.base_auth import BaseAuthToken
-#
-#
-# class YourAuthToken(BaseAuthToken):
-#     """
-#     AuthToken with provider-specific fields.
-#
-#     BaseAuthToken.__init__ takes:
-#         access_token, token_type, expires_in, issued_at,
-#         refresh_token=None, refresh_expires_in=0
-#
-#     Add your fields as keyword args with sensible defaults.
-#     """
-#
-#     def __init__(
-#         self,
-#         *,
-#         access_token: str,
-#         token_type: str,
-#         expires_in: int,
-#         issued_at: float,
-#         your_extra: str = "",
-#         refresh_token: Optional[str] = None,
-#         refresh_expires_in: int = 0,
-#     ):
-#         super().__init__(
-#             access_token=access_token,
-#             token_type=token_type,
-#             expires_in=expires_in,
-#             issued_at=issued_at,
-#             refresh_token=refresh_token,
-#             refresh_expires_in=refresh_expires_in,
-#         )
-#         self.your_extra = your_extra
-#
-#     def to_dict(self) -> Dict[str, Any]:
-#         result = super().to_dict()
-#         result["your_extra"] = self.your_extra
-#         return result
-#
-#     @classmethod
-#     def from_dict(cls, data: Dict[str, Any]) -> "YourAuthToken":
-#         """Reconstruct from a persisted dict. Used by _load_session()."""
-#         return cls(
-#             access_token=data["access_token"],
-#             token_type=data.get("token_type", "Bearer"),
-#             expires_in=data.get("expires_in", 0),
-#             issued_at=data.get("issued_at", 0),
-#             your_extra=data.get("your_extra", ""),
-#             refresh_token=data.get("refresh_token"),
-#             refresh_expires_in=data.get("refresh_expires_in", 0),
-#         )
 
 
 # ---------------------------------------------------------------------------
 # Example: custom Credentials subclass
 # ---------------------------------------------------------------------------
 
-# from dataclasses import dataclass
-# from typing import Any, Dict
-#
-# from ...base.auth.credentials import UserPasswordCredentials
-#
-#
 # @dataclass
 # class YourCredentials(UserPasswordCredentials):
 #     """
 #     Credentials with a provider-specific payload shape.
 #
-#     Only needed when the provider's login payload isn't the usual
-#     {username, password} shape (HRTi's grant_access takes
+#     Only needed when the login payload isn't the usual
+#     {username, password} (HRTi's grant_access takes
 #     {Username, Password, OperatorReferenceId}, for example).
 #     """
 #

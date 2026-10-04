@@ -23,9 +23,17 @@ update_bookmark is called on every playback stop / pause, often
 consecutively for the same position. Providers should tolerate
 repeated no-op writes to the same position without erroring or
 firing spurious events.
+
+Errors
+------
+Backend failures raise a ProviderError subclass from base.errors
+(ServerError, TransportError, ...), per the README's "Errors" section.
+NOTE: earlier revisions of this template said RuntimeError. If
+ProviderBookmarksMixin still documents RuntimeError, align the two
+(callers catching RuntimeError would miss ProviderError).
 """
 
-from typing import Any, List, Optional
+from typing import List, Optional
 
 from ...base.managers import BookmarksManager
 from ...base.models.bookmark import Bookmark, ContentType
@@ -74,7 +82,7 @@ class YourBookmarksManager(BookmarksManager):
 
         position_seconds = -1 marks the content as completed.
 
-        Raises RuntimeError if the provider rejects.
+        Raises a ProviderError subclass if the provider rejects.
         """
         raise NotImplementedError("YourBookmarksManager.update_bookmark")
 
@@ -83,7 +91,7 @@ class YourBookmarksManager(BookmarksManager):
         Delete a bookmark.
 
         Raises:
-            KeyError:     if no bookmark exists for content_id.
-            RuntimeError: on backend failure.
+            KeyError:      if no bookmark exists for content_id.
+            ProviderError: (a subclass) on backend failure.
         """
         raise NotImplementedError("YourBookmarksManager.delete_bookmark")

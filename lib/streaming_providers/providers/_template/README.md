@@ -34,6 +34,23 @@ and fill in the stubs. Read this file first — it explains the contract.
    `BaseAuthToken` is an ABC with an abstract `to_dict()`. A custom
    Channel subclass is optional. See "Models" below.
 
+## Files in this template
+
+    provider.py             orchestrator (required)
+    auth.py                 token + credential surface (if the provider authenticates)
+    models.py               AuthToken subclass (mandatory with auth); Channel/Credentials examples
+    constants.py            URLs, paths, headers, parameter names, PROVIDER_NAME
+    channel_manager.py      ChannelManager + module-scope content-id parsers
+    vod_manager.py          VodManager
+    epg_manager.py          EpgManager
+    recordings_manager.py   RecordingsManager
+    favorites_manager.py    FavoritesManager
+    bookmarks_manager.py    BookmarksManager
+    catchup_manager.py      CatchupManager
+    drm_manager.py          dedicated DRM manager (a protocol, not an ABC) + patterns
+
+Delete the files for capabilities the provider does not have.
+
 ## Provider class members
 
 Every provider declares these. Some are abstract (must be implemented by
@@ -647,7 +664,7 @@ Only one of them participates in `_route` for the prefix, and the
 choice is which manager owns the manifest fetch. The provider's
 `get_manifest` is the authoritative declaration of that choice.
 
-Do not give the same prefix two router branches. Two branches for thesame prefix means two code paths for the same content, and they will
+Do not give the same prefix two router branches. Two branches for the same prefix means two code paths for the same content, and they will
 drift.
 
 ### Sentinels for unused ABC parameters
@@ -904,6 +921,11 @@ it may be None), then falls back to `CredentialManager`. The auth
 class's `_resolve_credentials()` calls that helper only if
 `self._credentials` is None.
 
+The template's `auth.py` implements this whole surface
+(`has_credentials`, `set_credentials`, `clear_credentials`,
+`_load_stored_credentials`, `_ensure_credentials`) and the provider's
+`_build_auth()` forwards `credentials=self._credentials`. Keep both.
+
 **Re-read credentials on every authenticate, not just at construction.**
 A user can store credentials through the UI at any time after the
 provider was constructed. If your auth class caches
@@ -1155,7 +1177,9 @@ Bookmarks: `update_bookmark` is called on every playback stop / pause,
 often consecutively for the same position. Providers should tolerate
 repeated no-op writes to the same position without erroring or firing
 spurious events. `position_seconds = -1` marks the content as
-completed. Deleting a non-existent bookmark raises `KeyError`.
+completed. Deleting a non-existent bookmark raises `KeyError`. Backend
+failures raise a `ProviderError` subclass from `base.errors`, like every
+other manager.
 
 ## Conventions
 

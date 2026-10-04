@@ -3,6 +3,16 @@
 {TODO: Provider name} EPG manager.
 
 Subclasses base.managers.EpgManager. See ../_template/README.md.
+
+EPG does not participate in the provider's content-id router; get_epg
+goes straight to this manager. EpgManager has handles_channel_id(),
+used internally by get_epg_grid().
+
+TIME HANDLING (TODO: state it for your provider): start_time/end_time are
+datetimes. Decide and document whether you require tz-aware UTC values
+and convert provider-local times at the boundary. Mixing naive and aware
+datetimes (or local time zones) is the classic source of off-by-N-hours
+guide bugs. Catchup, by contrast, takes integer epoch seconds.
 """
 
 from datetime import datetime

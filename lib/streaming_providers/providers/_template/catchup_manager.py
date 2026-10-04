@@ -22,6 +22,11 @@ Magenta EU's provider (providers/magentaeu/provider.py) implements
 catchup by appending start/end query parameters to the live manifest
 URL via build_catchup_url().
 
+simpliTV's catchup only takes a start bound: it passes end_time=None
+through and documents that it ignores it. The router parses the
+"catchup:<codename>@<ts>" id (an explicit branch above _route) and
+hands the parsed arguments to this manager.
+
 HRTi has no catchup -- its VOD and EPG are separate domains, and
 authorize_session's session id is not reused for timeshift.
 
@@ -30,21 +35,31 @@ State sharing
 The catchup step often shares state with the channel manager (the live
 manifest URL) or the EPG manager (the epg_id for the requested window).
 Pass those collaborators as explicit keyword-only arguments rather than
-reaching back to the provider.
+reaching back to the provider (the provider's _build_catchup does this).
 
 Do NOT fall back to the live manifest
 -------------------------------------
 If get_catchup_manifest cannot resolve catchup for the given window,
 return None. Do not return the live manifest URL as a "catchup"
 manifest -- the DRM pipeline would extract PSSH from the live stream,
-which may differ from the catchup stream's encryption context.
+which may differ from the catchup stream's encryption context. Callers
+that want the live manifest on failure call provider.get_manifest().
+
+end_time is Optional[int]
+-------------------------
+If the provider's API takes only a start bound, accept None and document
+that it is ignored. If the API needs both bounds, raise BadRequestError
+on None. Never pass a sentinel (0, start_time + 1800) when the ABC
+accepts None.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from ...base.managers import CatchupManager
 from ...base.models import DRMConfig
 from ...base.utils.logger import logger
+
+# from ...base.errors import BadRequestError
 
 
 class YourCatchupManager(CatchupManager):
@@ -68,7 +83,7 @@ class YourCatchupManager(CatchupManager):
         )
         # Common collaborators. Catchup often needs one or both.
         #   - channels: for resolving a channel's live manifest URL
-        #     (Magenta) or its stream uid (MoveTV).
+        #     (Magenta, simpliTV) or its stream uid (MoveTV).
         #   - epg: for resolving an epg_id from a start_time
         #     (MoveTV).
         self._channels = channels
@@ -87,12 +102,15 @@ class YourCatchupManager(CatchupManager):
         self,
         content_id: str,
         start_time: int,
-        end_time: int,
+        end_time: Optional[int] = None,
         epg_id: Optional[str] = None,
         **kw,
     ) -> Optional[str]:
         """
         Return the catchup manifest URL, or None if not resolvable.
+
+        start_time / end_time are integer epoch seconds. end_time may be
+        None (see module docstring).
 
         Do NOT fall back to the live manifest URL here.
         """
@@ -104,7 +122,7 @@ class YourCatchupManager(CatchupManager):
     #     self,
     #     content_id: str,
     #     start_time: int,
-    #     end_time: int,
+    #     end_time: Optional[int] = None,
     #     epg_id: Optional[str] = None,
     #     **kw,
     # ) -> List[DRMConfig]:
