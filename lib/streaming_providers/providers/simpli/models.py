@@ -6,15 +6,48 @@ A custom Channel subclass carries extra provider metadata (codename,
 logo, recording id/status). Base fields are preserved; extras are
 appended.
 
-No custom AuthToken subclass: the token is a plain opaque string, and
-the device key is discovered via GetDevices (registered only if the
-account has none) -- see auth.py for the two-step flow.
+A custom AuthToken subclass exists because BaseAuthToken is an ABC with
+an abstract to_dict() -- it cannot be instantiated directly, so the
+provider needs a concrete subclass. The simpliTV token is a plain opaque
+UUID with no refresh flow, so to_dict() is only the storage contract
+required by BaseAuthenticator._save_session(); the provider does not
+persist sessions.
 """
 
 from dataclasses import dataclass
 from typing import Any, Dict
 
+from ...base.auth.base_auth import BaseAuthToken
 from ...base.models import Channel
+
+
+@dataclass
+class SimpliTVAuthToken(BaseAuthToken):
+    """
+    Concrete BaseAuthToken for simpliTV.
+
+    simpliTV issues a plain opaque token (a UUID string) with no refresh
+    token and no scopes. BaseAuthToken is an ABC with an abstract
+    to_dict(); this subclass provides it so the provider can construct
+    an instance in auth._perform_authentication().
+
+    to_dict() is only exercised if the host persists sessions through a
+    settings_manager (BaseAuthenticator._save_session). It is provided
+    for completeness and compatibility; this provider does not itself
+    persist tokens.
+    """
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "access_token": self.access_token,
+            "token_type": self.token_type,
+            "expires_in": self.expires_in,
+            "issued_at": self.issued_at,
+            "refresh_token": self.refresh_token,
+            "refresh_expires_in": self.refresh_expires_in,
+            "auth_level": self.auth_level.value,
+            "credential_type": self.credential_type,
+        }
 
 
 @dataclass

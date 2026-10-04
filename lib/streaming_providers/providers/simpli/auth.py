@@ -75,6 +75,7 @@ from ...base.utils.logger import logger
 
 from .constants import SimpliTVConfig, SimpliTVDefaults
 from .helpers import parse_iso, transport_errors
+from .models import SimpliTVAuthToken
 
 
 def _generate_device_key() -> str:
@@ -337,7 +338,7 @@ class SimpliTVAuth:
             or SimpliTVDefaults.TOKEN_LIFETIME_SECONDS
         )
 
-        return BaseAuthToken(
+        return SimpliTVAuthToken(
             access_token=token_value,
             token_type="token",
             expires_in=expires_in,

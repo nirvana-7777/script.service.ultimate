@@ -28,8 +28,10 @@ and fill in the stubs. Read this file first — it explains the contract.
    no `VodManager`; a favorites-sync-only provider may have neither.
    See "The manager ABCs" below.
 4. **Constants** — `constants.py`. URLs, endpoints, static headers.
-5. **Models** (optional) — `models.py`. Only if you need a custom Channel
-   or AuthToken subclass.
+5. **Models** — often required. A custom `AuthToken` subclass is
+   mandatory whenever the auth class returns a `BaseAuthToken`, because
+   `BaseAuthToken` is an ABC with an abstract `to_dict()`. A custom
+   Channel subclass is optional. See "Models" below.
 
 ## Provider class members
 
@@ -589,14 +591,40 @@ Optional extensions — implement only if needed:
 There is no fixed interface for `authorize_playback`. The name is a
 convention; the shape is provider-specific.
 
-**Deviation: token not in a header.** Some providers pass the token as a
-URL query parameter or body field rather than an `Authorization` header.
-simpliTV does this — `build_headers()` returns base headers only, and
-callers attach the token via `auth.with_token(url)` / `auth.auth_body()`.
-If your provider deviates this way, document it prominently in your
-`auth.py` module docstring **and** add a one-line comment at every
-manager call site that uses `build_headers()`, so a future reader doesn't
-assume a bearer token is being sent.
+**Thread safety.** If the host serves requests from multiple threads
+(which it does), and your auth flow involves more than one HTTP call
+(e.g. login + device registration, or login + feature-flags fetch), wrap
+`get_access_token()` and any other stateful accessor in a
+`threading.RLock`. Without it, two threads hitting a cold cache will each
+start the full flow, and the second one will either duplicate the work
+or observe partial state. Providers whose auth flow is a single HTTP
+call can skip the lock; providers whose flow has two or more round-trips
+need it.
+
+**Token placement deviation: not in a header.** Some providers pass the
+token as a URL query parameter or body field rather than an
+`Authorization` header. simpliTV does this — `build_headers()` returns
+base headers only, and callers attach the token via
+`auth.with_token(url)` / `auth.auth_body()`. If your provider deviates
+this way, document it prominently in your `auth.py` module docstring
+**and** add a one-line comment at every manager call site that uses
+`build_headers()`, so a future reader doesn't assume a bearer token is
+being sent.
+
+When the query-parameter name differs per endpoint (simpliTV's
+`GetRecordings` uses `tokenValue` instead of `token`), put both names in
+`constants.py` and give `with_token()` a `param=` keyword so the caller
+can pick. Do not hardcode the parameter name in the auth class.
+
+**Content-Type deviation: JSON body, non-JSON header.** Some endpoints
+reject `Content-Type: application/json` even though the body is valid
+JSON, and return a different (often empty) response when the header is
+"correct". simpliTV's `/Authenticate` is the canonical example: it
+requires `Content-Type: text/plain` with a JSON body. If your provider
+has an endpoint like this, send the body as a raw string
+(`data=json.dumps(payload)`) with the header set explicitly **for that
+call only**, and add a comment explaining why — a future reader will
+otherwise "fix" the header and silently break the login.
 
 The manager ABCs verify `auth` against `AuthProtocol` at construction
 time via `isinstance` (this works because the protocol is
@@ -648,16 +676,37 @@ The three credential methods:
    `credentials=self._credentials`, which is non-None only when the
    caller constructed the provider with explicit credentials. This is
    the case for CLI tools and tests, not for the runtime UI flow.
-2. **Settings manager.** `settings_manager.get_provider_credentials(
-   provider_name, country)` reads the stored credentials that the
-   settings UI wrote via `set_credentials`. **This is the path the
-   runtime actually uses.** If your auth class doesn't call this, the
-   provider can never authenticate from the UI.
-3. **Fallback.** Providers with anonymous or free access return a
+2. **Injected `settings_manager`.** If the host passed a
+   `settings_manager` to the provider's constructor (or the provider
+   forwards one to `_build_auth`), call
+   `settings_manager.get_provider_credentials(provider_name, country)`.
+   This reads credentials the settings UI wrote through
+   `save_provider_credentials`. **This path is preferred when present,
+   but is not guaranteed to be present.**
+3. **`CredentialManager` (direct file read).** The host's provider
+   registry constructs providers *without* a settings_manager, so in
+   normal runtime the injected-manager path above is a no-op. Fall back
+   to reading `credentials.json` directly:
+
+        from ...base.auth.credential_manager import CredentialManager
+        creds = CredentialManager().load_credentials(provider, country)
+
+   `CredentialManager.load_credentials` tries the country-nested format
+   (`{"provider": {"country": {...}}}`) first and falls back to the flat
+   format (`{"provider": {...}}`), so a single call covers both storage
+   layouts. Do not branch on the format yourself.
+4. **Fallback.** Providers with anonymous or free access return a
    fallback credentials object from `get_fallback_credentials()` (as
    `BaseAuthenticator` does). The fallback is what lets the auth class
    succeed even when the user hasn't configured anything — useful for
    providers that offer a limited anonymous tier.
+
+**Implementing this in the template `auth.py`.** Wrap paths 2 and 3 in
+a single `_load_stored_credentials()` helper that tries the
+settings_manager first (guarded by `hasattr` and a try/except, because
+it may be None), then falls back to `CredentialManager`. The auth
+class's `_resolve_credentials()` calls that helper only if
+`self._credentials` is None.
 
 **Re-read credentials on every authenticate, not just at construction.**
 A user can store credentials through the UI at any time after the
@@ -670,9 +719,9 @@ provider stays broken until the app restarts. The pattern from
         # 1. If current credentials are valid, keep them.
         if self._credentials and self._credentials.validate():
             return True
-        # 2. Otherwise try the settings manager, in case the user just
-        #    stored them.
-        fresh = self._load_credentials_from_manager()
+        # 2. Otherwise try the settings manager / CredentialManager,
+        #    in case the user just stored them.
+        fresh = self._load_stored_credentials()
         if fresh and fresh.validate():
             self._credentials = fresh
             return True
@@ -690,8 +739,7 @@ running.
 `base/auth/base_auth.py`:
 `_load_credentials_from_manager`, `_ensure_credentials`,
 `save_credentials`, `clear_stored_credentials`, `has_stored_credentials`.
-Read them before writing your auth class. They are the contract even
-though they are not part of the protocol.
+Read them before writing your auth class.
 
 **Providers with no user credentials** (anonymous-only, static-key,
 free):
@@ -720,6 +768,73 @@ A correct `_perform_authentication()` looks like this:
 The critical piece is `_ensure_credentials()`. Without it, the auth
 class silently depends on the caller having passed credentials — which
 the registry never does.
+
+### Session persistence is optional
+
+Not every provider persists tokens. simpliTV, for example, uses a plain
+opaque token with no refresh flow, so re-authenticating is cheap and
+the auth class caches the token in-process only. No
+`_save_session()` / `_load_session()` calls.
+
+If your provider *does* persist tokens, use the settings_manager:
+
+    # In get_access_token, after _perform_authentication():
+    self.settings_manager.save_token_data(
+        provider_name, token.to_dict(), country
+    )
+
+    # At construction:
+    stored = self.settings_manager.load_token_data(provider_name, country)
+    if stored:
+        self._cached_token = self._token_from_dict(stored)
+
+Decide whether persistence is worth the complexity. Providers with
+cheap re-auth should skip it. Providers whose auth flow is expensive
+(multi-step, has a rate limit, or requires user interaction like a
+device code) should persist.
+
+## Models
+
+Two kinds of custom models exist across the providers:
+
+**`Channel` subclasses (optional).** A provider whose channels carry
+extra metadata (logo, current programme, recording id) subclasses
+`Channel` and calls `super().to_dict()` in its override. MoveTV,
+Discovery, HRTi, and simpliTV all do this. If your channels can be
+expressed with the base fields, skip the subclass.
+
+**`AuthToken` subclasses (required whenever the auth class returns a
+`BaseAuthToken`).** `BaseAuthToken` is an ABC with an abstract
+`to_dict()`, so it cannot be instantiated directly. Every provider
+whose `_perform_authentication()` returns a `BaseAuthToken` needs a
+concrete subclass. The subclass is usually tiny — often just a
+`to_dict()` that emits the base fields plus provider-specific ones:
+
+    @dataclass
+    class YourAuthToken(BaseAuthToken):
+        def to_dict(self) -> Dict[str, Any]:
+            return {
+                "access_token": self.access_token,
+                "token_type": self.token_type,
+                "expires_in": self.expires_in,
+                "issued_at": self.issued_at,
+                "refresh_token": self.refresh_token,
+                "refresh_expires_in": self.refresh_expires_in,
+                "auth_level": self.auth_level.value,
+                "credential_type": self.credential_type,
+            }
+
+If the provider doesn't persist tokens, `to_dict()` is never called at
+runtime — but it still must exist, because the ABC requires it. Provide
+a real implementation anyway (as above) so that a future change to
+persist tokens works without a follow-up edit.
+
+**`Credentials` subclasses (optional).** Only needed when the provider's
+login payload isn't the usual `{username, password}` shape. HRTi's
+`grant_access` takes `{Username, Password, OperatorReferenceId}`, so it
+has a custom `HRTiCredentials(UserPasswordCredentials)` with a
+`to_auth_payload()` override. Most providers use
+`UserPasswordCredentials` directly.
 
 ## DRM
 
@@ -968,7 +1083,9 @@ The six existing providers, in order of implementation complexity:
     simpliTV    -- built from this template. Recordings + catchup + folded
                    DRM. Content-id grammar with three prefixes, module-scope
                    parsers, and a router that parses the catchup timestamp.
-                   Good first read.
+                   Token-in-body deviation, per-endpoint param naming,
+                   custom AuthToken subclass, direct-CredentialManager
+                   credential loading. Good first read.
     MoveTV      -- dynamic manifests, play-auth headers, EPG-based catchup.
     Magenta EU  -- EPG-heavy, VOD with typed errors, multi-country.
     HRTi        -- session-authorize playback, custom credentials shape.
