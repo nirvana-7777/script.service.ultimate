@@ -6,8 +6,9 @@ A custom Channel subclass carries extra provider metadata (codename,
 logo, recording id/status). Base fields are preserved; extras are
 appended.
 
-No custom AuthToken subclass -- the token is a plain opaque string and
-the device key is read from the server (see auth.py).
+No custom AuthToken subclass: the token is a plain opaque string, and
+the device key is discovered via GetDevices (registered only if the
+account has none) -- see auth.py for the two-step flow.
 """
 
 from dataclasses import dataclass

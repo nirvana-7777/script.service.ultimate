@@ -36,6 +36,15 @@ raise BadRequestError and are not swallowed.
 
 Restart-from-beginning cannot be expressed as a manifest URL (it needs a
 player-side seek), so it has its own method: get_restart().
+
+Catchup windows
+---------------
+The DVR window is per-channel (AdditionalInfo.Epg_TimeshiftSeconds in
+the AcquireContent response: 2h, 3h or 4h in the browser capture).
+SimpliTVCatchupManager reads the per-channel value inside
+get_restart_manifest. Its catchup_window_hours property returns the
+conservative minimum (2h) because the ABC can only express a single
+integer.
 """
 
 from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple
@@ -289,8 +298,9 @@ class SimpliTVProvider(StreamingProvider):
         Restart a programme from its beginning.
 
         Returns (live manifest URL, seek_seconds from the start of the
-        3h DVR window) or None when outside the window. The caller must
-        seek; the URL alone plays live.
+        channel's DVR window) or None when the programme began outside
+        that window. The window is per-channel (see "Catchup windows"
+        above). The caller must seek; the URL alone plays live.
         """
         if self.catchup is None:
             return None

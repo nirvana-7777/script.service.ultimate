@@ -2,8 +2,7 @@
 """
 simpliTV authentication.
 
-Two deliberate deviations from the AuthProtocol's *implied* shape (the
-protocol only requires the three method names, not their semantics):
+Two deliberate deviations from the AuthProtocol's *implied* shape:
 
   1. The simpliTV token is passed as a *query parameter* (GET) or *body
      field* (POST), never as an Authorization header. build_headers()
@@ -12,19 +11,35 @@ protocol only requires the three method names, not their semantics):
      query parameter `tokenValue` instead of `token`.
 
   2. A second credential, the *device key*, is required by
-     AcquireContent. It lives on the server: GetDevices returns the
-     account's registered device, and a device is only registered when
-     the list is empty. Nothing about it is persisted locally, so a
-     restart or invalidate() can never leak devices.
+     AcquireContent. It is discovered from the server (GetDevices) and
+     registered once if the account has none. Sessions are not
+     persisted: the token is cheap to re-acquire.
 
-Sessions are not persisted: the token is cheap to re-acquire, and the
-device key is re-read from the server.
+Device key lifecycle
+--------------------
+On first use:
+  1. GetDevices. If the account already has devices, reuse the first
+     one's key. This is the common case on a re-install.
+  2. If GetDevices is empty, generate a fresh key and RegisterDevice.
+  3. GetDevices again and use the first entry. If the server does not
+     hand a device back, raise -- do not proceed with an unverified
+     key. The read-back, not the RegisterDevice response, is the
+     authoritative check (the RegisterDevice response shape is not
+     verified).
+
+The key is cached in-process only. The settings_manager accessor names
+are host-specific and are not guessed. A process restart therefore hits
+GetDevices again, which returns the already-registered device.
+
+Error handling: network / JSON failures in the device calls are wrapped
+in ServerError by transport_errors(); typed provider errors (AuthError
+etc.) pass through unchanged.
 """
 
 import secrets
-import string
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -33,20 +48,73 @@ from ...base.errors import AuthError, CredentialsError
 from ...base.utils.logger import logger
 
 from .constants import SimpliTVConfig, SimpliTVDefaults
+from .helpers import parse_iso, transport_errors
 
 
 def _generate_device_key() -> str:
-    """32 lowercase-alnum chars (the addon's format), from a CSPRNG."""
-    alphabet = string.ascii_lowercase + string.digits
-    return "".join(secrets.choice(alphabet) for _ in range(32))
+    """
+    Return a 10-digit numeric device key.
+
+    The browser log shows the format the server accepts:
+    "1421859737". Earlier versions of this provider used a 32-char
+    lowercase-alnum string (ported from the addon); that shape is not
+    what the API advertises.
+    """
+    return f"{secrets.randbelow(10**10):010d}"
+
+
+def _mask(key: Optional[str]) -> str:
+    """Short tag for logs; never the full key."""
+    if not key or len(key) < 6:
+        return "***"
+    return f"{key[:2]}...{key[-2:]}"
+
+
+def _parse_expiry(iso: Optional[str]) -> Optional[int]:
+    """
+    Parse `tokenExpirationTime` to seconds from now. Returns None on
+    missing / malformed input or a time already in the past.
+    """
+    dt = parse_iso(iso)
+    if dt is None:
+        return None
+    delta = (dt - datetime.now(timezone.utc)).total_seconds()
+    if delta <= 0:
+        return None
+    return int(delta)
+
+
+def _extract_device_key(entry: Any) -> str:
+    """
+    Return the device key from one GetDevices entry.
+
+    The response shape is unverified (the browser capture never calls
+    GetDevices). "key" is the addon's field name; "deviceKey" is the
+    field the RegisterDevice payload uses. Either is accepted; if
+    neither is present (or the entry is not an object), raise rather
+    than silently return empty.
+    """
+    if not isinstance(entry, dict):
+        raise AuthError(
+            f"simpliTV: GetDevices entry is not an object: "
+            f"{type(entry).__name__}"
+        )
+    for field in ("key", "deviceKey"):
+        value = entry.get(field)
+        if value:
+            return str(value)
+    raise AuthError(
+        f"simpliTV: GetDevices entry has no device key field "
+        f"(keys: {sorted(entry.keys())!r})"
+    )
 
 
 class SimpliTVAuth:
     """
     Authenticator for simpliTV.
 
-    Not a subclass of any base class -- matches AuthProtocol by shape for
-    the three shared methods, plus simpliTV-specific helpers
+    Not a subclass of any base class -- matches AuthProtocol by shape
+    for the three shared methods, plus simpliTV-specific helpers
     (with_token, auth_body) and the device-key accessor.
 
     Thread-safe: the backend serves requests from several threads, and
@@ -93,8 +161,8 @@ class SimpliTVAuth:
         """
         Return *base* headers for the simpliTV API.
 
-        The token is deliberately NOT placed here -- see with_token() and
-        auth_body(). The `token` argument is accepted for protocol
+        The token is deliberately NOT placed here -- see with_token()
+        and auth_body(). The `token` argument is accepted for protocol
         compatibility and ignored.
         """
         return self.config.get_api_headers()
@@ -120,7 +188,15 @@ class SimpliTVAuth:
         *,
         param: str = SimpliTVDefaults.TOKEN_PARAM,
     ) -> str:
-        """Append the token (as `param`) and any extra params to `url`."""
+        """
+        Append the token (as `param`) and any extra params to `url`.
+
+        NOTE: this parses and re-encodes the existing query string, so
+        the pre-encoded `$headers` blob is re-encoded. The key/value
+        pairs are identical, but the bytes differ from the browser
+        capture. If the server ever proves sensitive to that, build the
+        query string by hand instead.
+        """
         token = self.get_access_token()
         parsed = urlparse(url)
         query = dict(parse_qsl(parsed.query))
@@ -139,23 +215,37 @@ class SimpliTVAuth:
         """
         Return the account's device key.
 
-        Reads GetDevices first and uses the registered device; registers
-        a new one only if the account has none.
+        Order of preference:
+          1. In-process cache.
+          2. GetDevices -- reuse the first registered device.
+          3. RegisterDevice with a fresh key, then GetDevices again.
         """
         with self._lock:
             if self._device_key:
                 return self._device_key
 
             devices = self._list_devices()
-            if not devices:
-                self._register_device()
-                devices = self._list_devices()
+            if devices:
+                self._device_key = _extract_device_key(devices[0])
+                logger.debug(
+                    f"simpliTV[{self.country}]: reusing device "
+                    f"{_mask(self._device_key)}"
+                )
+                return self._device_key
+
+            self._register_device(_generate_device_key())
+
+            devices = self._list_devices()
             if not devices:
                 raise AuthError(
-                    "simpliTV: device registration returned no devices"
+                    "simpliTV: device registration did not result in a "
+                    "registered device (GetDevices is still empty)"
                 )
-            self._device_key = devices[0]["key"]
-            logger.debug(f"simpliTV[{self.country}]: device key resolved")
+            self._device_key = _extract_device_key(devices[0])
+            logger.debug(
+                f"simpliTV[{self.country}]: registered device "
+                f"{_mask(self._device_key)}"
+            )
             return self._device_key
 
     # ------------------------------------------------------------------
@@ -166,25 +256,32 @@ class SimpliTVAuth:
         creds = self._resolve_credentials()
         logger.debug(f"simpliTV[{self.country}]: logging in")
 
+        # The browser sends lowercase `login`/`password` and does NOT
+        # send LongExpiration.
         payload = {
-            "Login": creds["username"],
-            "Password": creds["password"],
-            "LongExpiration": "true",
             "platformCodename": self.config.platform_codename,
+            "login": creds["username"],
+            "password": creds["password"],
         }
         resp = self.http_manager.post(
             self.config.authenticate_url(),
             json=payload,
             headers=self.build_headers(),
         )
-        token_value = resp.json().get("token")
+        data = resp.json()
+        token_value = data.get("token")
         if not token_value:
             raise AuthError("simpliTV: no token in authenticate response")
+
+        expires_in = (
+            _parse_expiry(data.get("tokenExpirationTime"))
+            or SimpliTVDefaults.TOKEN_LIFETIME_SECONDS
+        )
 
         return BaseAuthToken(
             access_token=token_value,
             token_type="token",
-            expires_in=SimpliTVDefaults.TOKEN_LIFETIME_SECONDS,
+            expires_in=expires_in,
             issued_at=time.time(),
         )
 
@@ -206,39 +303,72 @@ class SimpliTVAuth:
         """
         Seam for credentials held by the host's settings_manager.
 
-        TODO(host): the template expects a fallback to stored
-        credentials, but the settings_manager accessor name is not
-        known here and is deliberately not guessed. Implement against
-        the real base API; return None when nothing is stored.
+        TODO(host): implement against the real base API; return None
+        when nothing is stored.
         """
         return None
 
+    # ------------------------------------------------------------------
+    # Device list / registration
+    # ------------------------------------------------------------------
+
     def _list_devices(self) -> list:
+        """
+        GET /v1/Devices/GetDevices. Returns the raw device list (may be
+        empty; that is not an error).
+
+        with_token() runs outside transport_errors so a login failure
+        keeps its own type.
+        """
         url = self.with_token(
             self.config.get_devices_url(),
             {"platformCodename": self.config.platform_codename},
         )
-        resp = self.http_manager.get(url, headers=self.build_headers())
-        return resp.json().get("devices") or []
+        with transport_errors("GetDevices"):
+            resp = self.http_manager.get(
+                url, headers=self.config.get_api_headers()
+            )
+            devices = resp.json().get("devices")
+        return devices if isinstance(devices, list) else []
 
-    def _register_device(self) -> None:
-        logger.info(
-            f"simpliTV[{self.country}]: no registered device on the "
-            f"account, registering one"
+    def _register_device(self, device_key: str) -> None:
+        """
+        Register a device key with the server.
+
+        Payload matches the browser capture for RegisterDevice. The
+        response shape is not verified, so only an explicit
+        `result.success == false` is treated as a refusal; anything
+        else is accepted and the caller's GetDevices read-back decides
+        whether registration actually happened.
+        """
+        logger.debug(
+            f"simpliTV[{self.country}]: registering device "
+            f"{_mask(device_key)}"
         )
         payload = {
-            "deviceKey": _generate_device_key(),
-            "deviceName": SimpliTVDefaults.DEVICE_NAME,
-            "generalDeviceType": SimpliTVDefaults.DEVICE_GENERAL_TYPE,
-            "operatingSystem": SimpliTVDefaults.DEVICE_OS,
             "platformCodename": self.config.platform_codename,
-            "pushToken": "",
-            "userAgent": self.config.user_agent,
+            "deviceKey": device_key,
             "userToken": self.get_access_token(),
+            "pushToken": "",
+            "generalDeviceType": SimpliTVDefaults.DEVICE_GENERAL_TYPE,
+            "deviceName": SimpliTVDefaults.DEVICE_NAME,
+            "browserVersion": SimpliTVDefaults.DEVICE_BROWSER_VERSION,
+            "userAgent": self.config.user_agent,
+            "operatingSystem": SimpliTVDefaults.DEVICE_OS,
             "versionOs": SimpliTVDefaults.DEVICE_OS_VERSION,
         }
-        self.http_manager.post(
-            self.config.register_device_url(),
-            json=payload,
-            headers=self.build_headers(),
-        )
+        with transport_errors("RegisterDevice"):
+            resp = self.http_manager.post(
+                self.config.register_device_url(),
+                json=payload,
+                headers=self.build_headers(),
+            )
+        try:
+            data = resp.json()
+        except ValueError:
+            return  # empty / non-JSON body: rely on the read-back
+        result = data.get("result") if isinstance(data, dict) else None
+        if isinstance(result, dict) and result.get("success") is False:
+            raise AuthError(
+                f"simpliTV: RegisterDevice refused (response: {data!r})"
+            )

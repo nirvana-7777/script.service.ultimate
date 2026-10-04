@@ -11,13 +11,28 @@ and this manager mirrors both:
    caller supplies epg_id (the programme codename, an EPG broadcast_id,
    or a prog: id).
 
-2. Restart from the beginning. The addon plays the *live* manifest, which
-   carries a 3 hour DVR window, and seeks
-   (window - age - margin) seconds into it. A manifest URL cannot express
-   a seek, so this is exposed separately as get_restart_manifest(),
-   returning (url, seek_seconds). get_catchup_manifest never answers a
-   restart request with a bare live URL: the ABC can only hand back a
-   URL, and the caller would silently play live.
+2. Restart from the beginning. The addon plays the *live* manifest,
+   which carries a DVR window, and seeks
+   (window - age - margin) seconds into it. A manifest URL cannot
+   express a seek, so this is exposed separately as
+   get_restart_manifest(), returning (url, seek_seconds).
+   get_catchup_manifest never answers a restart request with a bare live
+   URL: the ABC can only hand back a URL, and the caller would silently
+   play live.
+
+DVR window
+----------
+The window is per-channel and advertised in the AcquireContent
+response as AdditionalInfo.Epg_TimeshiftSeconds (the browser log shows
+7200, 10800 and 14400 across channels). get_restart_manifest reads
+that value from the channel manager's AcquireContent response. If the
+field is missing, the smallest observed window (2h) is used, so a seek
+can never land outside the real window.
+
+The ABC exposes catchup_window_hours as a single integer, which cannot
+express a per-channel value. It returns the same smallest observed
+window as the conservative answer: a host that trusts it will only
+offer replays the shortest channel allows.
 
 Contract
 --------
@@ -31,7 +46,7 @@ from typing import List, Optional, Tuple
 
 from ...base.errors import BadRequestError, NotFoundError
 from ...base.managers import CatchupManager
-from ...base.models import DRMConfig
+from ...base.models.drm_config import DRMConfig
 
 from .channel_manager import (
     parse_catchup_id,
@@ -39,6 +54,11 @@ from .channel_manager import (
     programme_codename_from_epg_id,
 )
 from .constants import SimpliTVDefaults
+
+
+# Smallest timeshift window observed across channels (7200s = 2h). Used
+# as catchup_window_hours and as the per-channel fallback.
+_MIN_TIMESHIFT_HOURS = 2
 
 
 class SimpliTVCatchupManager(CatchupManager):
@@ -67,7 +87,15 @@ class SimpliTVCatchupManager(CatchupManager):
 
     @property
     def catchup_window_hours(self) -> int:
-        return SimpliTVDefaults.CATCHUP_WINDOW_HOURS
+        """
+        Conservative global window, in hours.
+
+        The API advertises per-channel windows (2h, 3h, 4h); the ABC
+        only exposes a single integer, so the smallest observed value
+        is returned. get_restart_manifest uses the real per-channel
+        value.
+        """
+        return _MIN_TIMESHIFT_HOURS
 
     # ------------------------------------------------------------------
     # Abstract method
@@ -118,6 +146,10 @@ class SimpliTVCatchupManager(CatchupManager):
         start_time is not given. None when the start is in the future,
         outside the window (less the safety margin), or the channel has
         no manifest.
+
+        The window is read from AcquireContent's
+        AdditionalInfo.Epg_TimeshiftSeconds for the channel, with the
+        2h minimum as fallback.
         """
         codename, embedded = _channel_and_ts(content_id)
         if start_time <= 0 and embedded:
@@ -125,7 +157,12 @@ class SimpliTVCatchupManager(CatchupManager):
         if start_time <= 0 or self._channels is None:
             return None
 
-        window = SimpliTVDefaults.CATCHUP_WINDOW_HOURS * 3600
+        try:
+            acquire = self._channels.acquire_content(codename)
+        except NotFoundError:
+            return None
+
+        window = _timeshift_seconds(acquire)
         margin = SimpliTVDefaults.CATCHUP_SEEK_MARGIN_SECONDS
         age = int(time.time()) - start_time
         if age < 0 or age >= window - margin:
@@ -156,7 +193,7 @@ class SimpliTVCatchupManager(CatchupManager):
         """
         DRM for catchup: the programme's own (epg_id) when replaying,
         otherwise the channel's live DRM (restart plays the live
-        stream). Scheme selection stays in the channel manager.
+        stream).
         """
         codename, _ = _channel_and_ts(content_id)
         if self._channels is None:
@@ -180,3 +217,19 @@ def _channel_and_ts(content_id: str) -> Tuple[str, Optional[int]]:
     raise BadRequestError(
         f"simpliTV: not a catchup/live id: {content_id!r}"
     )
+
+
+def _timeshift_seconds(acquire: dict) -> int:
+    """
+    Read AdditionalInfo.Epg_TimeshiftSeconds from an AcquireContent
+    response. Accepts an int or a numeric string; a missing or
+    non-positive value falls back to the 2h minimum.
+    """
+    info = acquire.get("AdditionalInfo") or {}
+    try:
+        seconds = int(info.get("Epg_TimeshiftSeconds"))
+    except (TypeError, ValueError):
+        seconds = 0
+    if seconds > 0:
+        return seconds
+    return _MIN_TIMESHIFT_HOURS * 3600

@@ -21,16 +21,26 @@ Manifest and DRM are folded into this manager because both arrive in one
 AcquireContent response (README: DRM shares state with the manifest step,
 so it folds). The response is cached briefly so the manifest and DRM
 steps of one playback share a single request.
+
+Format selection
+----------------
+The AcquireContent response carries DASH (Type 9) and/or HLS (Type 2)
+entries. Protected content prefers DASH (inputstream.adaptive needs it
+for Widevine/PlayReady; PSSH extraction is more reliable). Unprotected
+content prefers HLS, which is what the CDN has always served the addon.
+prefer_dash() runs only when a protected asset offers no DASH entry.
 """
 
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ...base.errors import BadRequestError, NotFoundError
 from ...base.managers import ChannelManager
 from ...base.models import Channel
-from ...base.models.drm_models import DRMConfig, DRMSystem, LicenseConfig
+from ...base.models.drm_config import DRMConfig
+from ...base.models.drm_systems import DRMSystem
+from ...base.models.license_config import LicenseConfig
 from ...base.utils.logger import logger
 
 from .constants import SimpliTVDefaults
@@ -86,13 +96,13 @@ class SimpliTVChannelManager(ChannelManager):
         """
         Return the channel list.
 
-        The tile endpoint yields only codenames (the existing addon reads
-        nothing else from it, and only from the first group), so names
-        and logos are derived locally -- see logos.py. EPG metadata is
-        not fetched here; that keeps this call independent of EPG
-        availability.
+        The tile endpoint yields only codenames, so names and logos are
+        derived locally -- see logos.py. EPG metadata is not fetched
+        here; that keeps this call independent of EPG availability.
+
+        NOTE: token is in the body (auth_body), not a header. The
+        `$headers` query string is baked into channel_tiles_url().
         """
-        # NOTE: token is in the body (auth_body), not a header.
         body = self.auth.auth_body({
             "isParentalControlEnabled": "false",
             "platformCodename": self.config.platform_codename,
@@ -135,13 +145,14 @@ class SimpliTVChannelManager(ChannelManager):
         """
         Return the manifest for a live:, rec: or prog: content id.
 
-        DRM-protected streams are rewritten to DASH (what
-        inputstream.adaptive needs); unprotected streams keep the HLS URL
-        the API returned.
+        Protected content prefers DASH, unprotected content prefers
+        HLS. If a protected asset has no DASH entry, prefer_dash() is
+        applied to the URL that was selected.
 
-        The returned URL does NOT contain the API token (it was only used
-        for the AcquireContent request), and manifest/segment requests
-        need just a User-Agent -- see get_channel_manifest_headers().
+        The returned URL does NOT contain the API token (it was only
+        used for the AcquireContent request), and manifest/segment
+        requests need just a User-Agent -- see
+        SimpliTVConfig.get_stream_headers().
         """
         codename = codename_from_playable_id(content_id)
 
@@ -150,30 +161,37 @@ class SimpliTVChannelManager(ChannelManager):
         acquire = self.acquire_content(codename, refresh=True)
 
         try:
-            manifest_url = acquire["MediaFiles"][0]["Formats"][0]["Url"]
+            formats = acquire["MediaFiles"][0]["Formats"]
         except (KeyError, IndexError, TypeError):
             raise NotFoundError(
-                f"simpliTV: no manifest in AcquireContent for {codename!r}"
+                f"simpliTV: no media files in AcquireContent for "
+                f"{codename!r}"
             )
 
-        if acquire.get("DrmInfo"):
+        protected = bool(acquire.get("DrmInfo"))
+        manifest_url, fmt_type = _select_format(formats, protected=protected)
+        if not manifest_url:
+            raise NotFoundError(
+                f"simpliTV: no manifest URL in AcquireContent for "
+                f"{codename!r}"
+            )
+
+        # Protected asset without a DASH entry: rewrite to the DASH
+        # equivalent. Never applied to unprotected content.
+        if protected and fmt_type != SimpliTVDefaults.FORMAT_TYPE_DASH:
             manifest_url = prefer_dash(manifest_url)
         return manifest_url
 
     # ------------------------------------------------------------------
     # Player request headers
     # ------------------------------------------------------------------
-    # The base layer's method names for these hooks were not available
-    # when this was written; the names below follow the review of the
-    # package. If the base calls different names, rename accordingly --
-    # until then these are simply unused.
 
     def get_channel_manifest_headers(self, content_id: str, **kw) -> dict:
-        """User-Agent only -- see SimpliTVConfig.get_stream_headers()."""
+        """User-Agent + Origin -- see SimpliTVConfig.get_stream_headers()."""
         return self.config.get_stream_headers()
 
     def get_segment_headers(self, content_id: str, **kw) -> dict:
-        """User-Agent only: the CDN does not authenticate segments."""
+        """User-Agent + Origin: the CDN does not authenticate segments."""
         return self.config.get_stream_headers()
 
     # ------------------------------------------------------------------
@@ -184,56 +202,90 @@ class SimpliTVChannelManager(ChannelManager):
         self, content_id: str, **kw
     ) -> List[DRMConfig]:
         """
-        Return DRM for a live:, rec: or prog: content id.
+        Return DRM configs for a live:, rec: or prog: content id.
+
+        Both Widevine (priority 1) and PlayReady (priority 2) are
+        returned when the AcquireContent response advertises them.
+        inputstream.adaptive selects whichever CDM the platform
+        actually supports, so the priority ordering is safe on a
+        PlayReady-only device. FairPlay is ignored: Kodi cannot play
+        it.
 
         Reads the response cached by get_channel_manifest when it is
-        still fresh, otherwise fetches it.
+        still fresh, otherwise fetches it. Unprotected content returns
+        [] (per the None-vs-exception rule).
         """
         codename = codename_from_playable_id(content_id)
         acquire = self.acquire_content(codename)
 
         drm_info = acquire.get("DrmInfo") or []
         if not drm_info:
-            # Unprotected content is not a failure: [] per the
-            # None-vs-exception rule.
             return []
 
-        wanted = (
-            SimpliTVDefaults.DRM_INDEX_PLAYREADY
-            if self.config.prefer_playready
-            else SimpliTVDefaults.DRM_INDEX_WIDEVINE
-        )
-        if wanted < len(drm_info):
-            index = wanted
-        else:
-            # Requested scheme isn't offered; some assets are
-            # single-scheme, so use what is there.
-            index = 0
-        system = (
-            DRMSystem.PLAYREADY
-            if index == SimpliTVDefaults.DRM_INDEX_PLAYREADY
-            else DRMSystem.WIDEVINE
-        )
+        # Index by DrmSystem string, not position: the server may add
+        # or reorder systems.
+        by_system: Dict[str, dict] = {}
+        for entry in drm_info:
+            name = entry.get("DrmSystem")
+            if name and name not in by_system:
+                by_system[name] = entry
 
-        entry = drm_info[index]
-        license_url = entry.get("LicenseServerUrl")
-        if not license_url:
-            return []
+        configs: List[DRMConfig] = []
+
+        widevine = by_system.get(SimpliTVDefaults.DRM_SYSTEM_WIDEVINE)
+        if widevine and widevine.get("LicenseServerUrl"):
+            configs.append(self._build_drm_config(
+                system=DRMSystem.WIDEVINE,
+                priority=SimpliTVDefaults.DRM_PRIORITY_WIDEVINE,
+                entry=widevine,
+            ))
+
+        playready = by_system.get(SimpliTVDefaults.DRM_SYSTEM_PLAYREADY)
+        if playready and playready.get("LicenseServerUrl"):
+            configs.append(self._build_drm_config(
+                system=DRMSystem.PLAYREADY,
+                priority=SimpliTVDefaults.DRM_PRIORITY_PLAYREADY,
+                entry=playready,
+            ))
+
+        return configs
+
+    def _build_drm_config(
+        self,
+        *,
+        system: DRMSystem,
+        priority: int,
+        entry: dict,
+    ) -> DRMConfig:
+        """
+        Build one DRMConfig from a single DrmInfo entry.
+
+        The challenge custom data is passed *raw* (base64) in the
+        `drmchallengecustomdata` header, matching the browser capture.
+        It is deliberately not URL-quoted here.
+
+        UNVERIFIED: whether the host's LicenseConfig / inputstream
+        .adaptive serialisation of req_headers preserves `+`, `/` and
+        `=` unchanged cannot be determined from this package. Check on
+        a real device (a mangled value shows up as a licence-server
+        4xx); if it is altered, the quoting belongs in LicenseConfig,
+        not here.
+
+        The licence body is the raw CDM challenge, injected by ISA via
+        the {CHA-RAW} placeholder (see SimpliTVDefaults.REQ_DATA_CHA_RAW).
+        """
         challenge = entry.get("DrmChallengeCustomData")
 
-        return [
-            DRMConfig(
-                system=system,
-                priority=1,
-                license=LicenseConfig(
-                    server_url=license_url,
-                    req_headers=self.config.get_license_headers(challenge),
-                    # Body = the raw CDM challenge (the addon's R{SSM}).
-                    req_data="{CHA-RAW}",
-                    use_http_get_request=False,
-                ),
-            )
-        ]
+        return DRMConfig(
+            system=system,
+            priority=priority,
+            license=LicenseConfig(
+                server_url=entry["LicenseServerUrl"],
+                req_headers=self.config.get_license_headers(challenge),
+                req_data=SimpliTVDefaults.REQ_DATA_CHA_RAW,
+                use_http_get_request=False,
+            ),
+        )
 
     # ------------------------------------------------------------------
     # AcquireContent (shared with SimpliTVCatchupManager via this class)
@@ -244,6 +296,11 @@ class SimpliTVChannelManager(ChannelManager):
     ) -> Dict[str, Any]:
         """
         GET /Player/AcquireContent for a codename.
+
+        The request carries the token, the device key, the platform
+        codename, and a millisecond cache-buster `t=` -- all in the
+        query string. There is NO `$headers` parameter on this
+        endpoint.
 
         Responses are cached for PLAYBACK_CACHE_TTL seconds so the
         manifest and DRM steps of one playback make one request;
@@ -257,15 +314,13 @@ class SimpliTVChannelManager(ChannelManager):
         logger.debug(
             f"simpliTV: AcquireContent {codename!r} (refresh={refresh})"
         )
-        # NOTE: token is in the URL (via with_token), not a header. It
-        # authenticates THIS request only; the manifest URL returned in
-        # the response does not carry it.
         url = self.auth.with_token(
             self.config.acquire_content_url(),
             {
                 "platformCodename": self.config.platform_codename,
                 "deviceKey": self.auth.get_device_key(),
                 "codename": codename,
+                "t": int(time.time() * 1000),
             },
         )
         with transport_errors(f"AcquireContent for {codename!r}"):
@@ -313,6 +368,41 @@ class SimpliTVChannelManager(ChannelManager):
 
 
 # ----------------------------------------------------------------------
+# AcquireContent format selection
+# ----------------------------------------------------------------------
+
+def _select_format(
+    formats: List[dict], *, protected: bool
+) -> Tuple[Optional[str], Optional[int]]:
+    """
+    Return (manifest URL, format Type) from a Formats array.
+
+    Protected content prefers DASH (Type 9), then HLS (Type 2).
+    Unprotected content prefers HLS, then DASH. The first entry with a
+    URL is a final fallback (its Type is returned as-is, possibly
+    None). Array order is never assumed.
+    """
+    if protected:
+        order = (
+            SimpliTVDefaults.FORMAT_TYPE_DASH,
+            SimpliTVDefaults.FORMAT_TYPE_HLS,
+        )
+    else:
+        order = (
+            SimpliTVDefaults.FORMAT_TYPE_HLS,
+            SimpliTVDefaults.FORMAT_TYPE_DASH,
+        )
+    for wanted in order:
+        for fmt in formats:
+            if fmt.get("Type") == wanted and fmt.get("Url"):
+                return fmt["Url"], wanted
+    for fmt in formats:
+        if fmt.get("Url"):
+            return fmt["Url"], fmt.get("Type")
+    return None, None
+
+
+# ----------------------------------------------------------------------
 # Content-id grammar -- module scope so every manager can import the
 # parsers without circular dependencies. All raise BadRequestError on
 # malformed input; the router does not catch it.
@@ -352,8 +442,8 @@ def parse_catchup_id(content_id: str):
     """
     Return (channel codename, start_ts) from catchup:<channel>@<unix_ts>.
 
-    The @<ts> suffix is required -- a bare catchup:<channel> is a grammar
-    error, not a live id in disguise.
+    The @<ts> suffix is required -- a bare catchup:<channel> is a
+    grammar error, not a live id in disguise.
     """
     rest = _strip_prefix(
         content_id, SimpliTVDefaults.CATCHUP_PREFIX, "catchup"
@@ -392,8 +482,8 @@ def codename_from_playable_id(content_id: str) -> str:
 def programme_codename_from_epg_id(epg_id: str) -> str:
     """
     Programme codename from whatever the host passes as epg_id: an EPG
-    broadcast_id (simplitv:<channel>:<start>:<programme>), a prog: id, or
-    the bare programme codename.
+    broadcast_id (simplitv:<channel>:<start>:<programme>), a prog: id,
+    or the bare programme codename.
     """
     if not epg_id:
         raise BadRequestError("simpliTV: empty epg_id")
