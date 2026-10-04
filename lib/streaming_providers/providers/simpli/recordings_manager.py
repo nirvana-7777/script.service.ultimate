@@ -15,10 +15,16 @@ Recording identity (kept strictly separate from content identity):
 This manager does not implement get_manifest -- do not add a parallel
 manifest path here.
 
-get_recordings() returns SimpliTVChannel objects whose channel_id is the
-content_id and whose recording_id carries the provider's id. Only
-recordings whose recording_status is "Recorded" are playable; "Scheduled"
-and "Failed" are listed but must not be played.
+get_recordings() returns SimpliTVChannel objects whose content_id is the
+"rec:..." id and whose recording_id carries the provider's id. Only
+recordings whose recording_status is "Recorded" are playable;
+"Scheduled" and "Failed" are listed but must not be played.
+
+Note on construction: the base Content dataclass declares `content_id`
+and a required `provider` field. `Channel.channel_id` is a property
+that proxies to `content_id`, but dataclass __init__ bypasses
+properties, so SimpliTVChannel is built with `content_id=` and
+`provider=`.
 
 Scheduling needs a *programme* codename (the EPG tile's own codename),
 not a channel codename: pass prog:<programme codename>.
@@ -191,11 +197,19 @@ class SimpliTVRecordingsManager(RecordingsManager):
     # ------------------------------------------------------------------
 
     def _rec_to_channel(self, rec: dict) -> SimpliTVChannel:
+        """
+        Map one GetRecordings entry to SimpliTVChannel.
+
+        content_id is "rec:<programme codename>" (the id used to play
+        the recording); recording_id is the provider's id (the id used
+        to delete it). They are different namespaces.
+        """
         programme = rec.get("program") or {}
         codename = programme.get("codename", "")
         return SimpliTVChannel(
-            channel_id=f"{SimpliTVDefaults.RECORDING_PREFIX}{codename}",
             name=programme.get("title", codename),
+            content_id=f"{SimpliTVDefaults.RECORDING_PREFIX}{codename}",
+            provider=SimpliTVDefaults.PROVIDER_NAME,
             codename=codename,
             current_programme=programme.get("title", ""),
             current_start=programme.get("start", ""),

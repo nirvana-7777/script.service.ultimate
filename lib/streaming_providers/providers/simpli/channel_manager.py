@@ -29,6 +29,14 @@ entries. Protected content prefers DASH (inputstream.adaptive needs it
 for Widevine/PlayReady; PSSH extraction is more reliable). Unprotected
 content prefers HLS, which is what the CDN has always served the addon.
 prefer_dash() runs only when a protected asset offers no DASH entry.
+
+Content construction
+--------------------
+The base Content dataclass declares `content_id` (not `channel_id`)
+and a required `provider` field. `Channel` exposes a `channel_id`
+*property* that proxies to `content_id`, but dataclass __init__ does
+not go through properties, so SimpliTVChannel instances must be built
+with `content_id=` and `provider=` directly.
 """
 
 import threading
@@ -125,12 +133,19 @@ class SimpliTVChannelManager(ChannelManager):
             channels.append(self._channel_from_codename(codename))
         return channels
 
-    @staticmethod
-    def _channel_from_codename(codename: str) -> SimpliTVChannel:
+    def _channel_from_codename(self, codename: str) -> SimpliTVChannel:
+        """
+        Build a SimpliTVChannel for a live codename.
+
+        Uses `content_id` and `provider` because those are the dataclass
+        fields (see Content); the `channel_id` property on Channel is
+        read/write sugar that __init__ does not consult.
+        """
         name = channel_name_from_codename(codename)
         return SimpliTVChannel(
-            channel_id=f"{SimpliTVDefaults.LIVE_PREFIX}{codename}",
             name=name,
+            content_id=f"{SimpliTVDefaults.LIVE_PREFIX}{codename}",
+            provider=SimpliTVDefaults.PROVIDER_NAME,
             codename=codename,
             logo_url=logo_for_name(name),
         )

@@ -11,7 +11,8 @@ and fill in the stubs. Read this file first — it explains the contract.
 - Token caching and session persistence (in your Auth class, if you have one).
 - Capability flags (`implements_vod`, `implements_epg`, `implements_recordings`,
   ...) — derived from whether you wire up the corresponding manager.
-- Shared error types, shared `VodPage` shape, shared `Channel` base.
+- Shared error types, shared `VodPage` shape, shared `Content`/`Channel`
+  data model.
 
 ## What you implement
 
@@ -134,6 +135,202 @@ The plugin name is derived from the class name:
 `your`. If your class name is non-standard the derived name will be
 wrong — pick a class name whose lowercase form (minus the word
 "provider") matches your intended plugin name.
+
+## Models
+
+The base package provides `Content` (the base dataclass) and its
+subclass `Channel`. Both are dataclasses, and providers build on them
+rather than replacing them.
+
+### `Content` — the base dataclass
+
+`Content` holds every field that all provider content shares: name,
+id, provider, manifest URLs, DRM placeholders, metadata, pricing.
+`Channel` extends it with channel-specific fields. See
+`base/models/content.py` and `base/models/channel.py` for the full
+field list.
+
+**Key fields and how to set them:**
+
+- `manifest: Optional[str]` — the static manifest URL, when the
+  provider has one. Set directly, or via `set_static_manifest(url)`.
+- `manifest_script: Optional[str]` — for dynamic manifests, provider-
+  specific parameters fetched at request time. Set via
+  `set_dynamic_manifest(params)`.
+- `session_manifest: bool` — True when the manifest must be fetched
+  per-session. Mutually exclusive with `manifest` in practice: if
+  `session_manifest=True` and `manifest` is also set, `Channel`'s
+  `_validate_fields` logs a warning and the static URL is ignored.
+- `streaming_format: Optional[str]` — `"dash"`, `"hls"`, or None.
+  Serialized as `"StreamingFormat"` in `to_dict()`.
+
+**Do not set both `manifest` and `manifest_script` and expect both to
+be used.** They are alternatives. If the provider fetches the manifest
+per-session, use `set_dynamic_manifest` and leave `manifest` None.
+
+**Serialization key convention.** `to_dict()` emits TitleCase keys
+(`Name`, `Id`, `Provider`, `Manifest`, `StreamingFormat`, ...). A
+subclass adding fields via `result["YourField"] = ...` must match this
+convention — TitleCase, no underscores. Downstream consumers expect
+uniform keys.
+
+### `Channel` — the base channel dataclass
+
+`Channel` extends `Content` with `channel_number`, `is_radio`, and
+`catchup_hours`. It also provides:
+
+**Three factory classmethods — use these, don't construct directly:**
+
+    Channel.create_live_channel(name, channel_id, provider, **kwargs)
+    Channel.create_vod_channel(name, content_id, provider, **kwargs)
+    Channel.create_radio_channel(name, channel_id, provider, **kwargs)
+
+Each sets `mode` and `content_type` (and `is_radio`/`quality` for
+radio) correctly, so the resulting object never trips the
+`__post_init__` consistency warnings. The factories use `cls(...)`, so
+a subclass `SimpliTVChannel.create_live_channel(...)` returns a
+`SimpliTVChannel`, not a base `Channel`. Subclasses should use the
+inherited factories rather than construct directly.
+
+**Note the parameter-name inconsistency:** `create_live_channel` and
+`create_radio_channel` take `channel_id`, while `create_vod_channel`
+takes `content_id`. All three set the dataclass field `content_id`
+internally. If you call `create_vod_channel(channel_id=...)` you get
+`TypeError`. Pass positionally or use the right keyword.
+
+**`__post_init__` mutates `content_type` and `quality` for radio.** If
+`is_radio=True` and `content_type="LIVE"`, the base class rewrites the
+content_type to `"RADIO"` and quality to `"AUDIO"`. This happens in the
+base class, so a subclass that sets these differently must account for
+it (or pass `content_type` and `quality` explicitly and skip the
+`is_radio=True` path). See `channel.py`'s `__post_init__`.
+
+**`__post_init__` also logs warnings for inconsistent fields.** A
+`Channel` with `mode="vod"` and `content_type="LIVE"` gets a warning,
+not an exception. Same for `session_manifest=True` combined with a
+static `manifest`. These are advisory — the code runs — but they
+indicate a likely provider bug. Check the logs during development; a
+clean startup log with no `Channel ...:` warnings is the goal.
+
+**`detect_and_set_radio()` is heuristic and mutates in place.** It
+looks at `name`, `quality`, `description`, and `genre` for radio
+indicators and sets `is_radio=True` if any match. Providers whose
+channel classification is authoritative (from an API field) should set
+`is_radio` at construction and not call this method. Providers whose
+classification comes from names or metadata can call it after
+construction.
+
+### Subclassing `Channel`
+
+A provider that carries extra per-channel fields subclasses `Channel`
+and adds them. MoveTV, Discovery, HRTi, and simpliTV all do this.
+
+Rules:
+
+1. **Call `super().to_dict()` and add fields in TitleCase.** The base
+   serializer emits TitleCase; subclasses must match.
+
+2. **Keep the base field names and defaults.** Add new fields at the
+   end with sensible defaults, so existing construction patterns
+   (positional or keyword) don't break.
+
+3. **Do not remove or rename base fields.** Downstream consumers read
+   `channel_id` / `content_id`, `name`, `manifest`, and the other base
+   fields. If the provider needs a differently-named field, add it as
+   a new field rather than renaming.
+
+4. **Use the inherited factory methods.** `YourChannel.create_live_channel(...)`
+   returns a `YourChannel` because the factories use `cls(...)`. Do not
+   override them unless you need to change what they set.
+
+Example:
+
+    @dataclass
+    class YourChannel(Channel):
+        codename: str = ""
+        recording_id: str = ""
+        recording_status: str = ""
+
+        def to_dict(self) -> Dict[str, Any]:
+            result = super().to_dict()
+            result["Codename"] = self.codename
+            result["RecordingId"] = self.recording_id
+            result["RecordingStatus"] = self.recording_status
+            return result
+
+### The `StreamingChannel` alias
+
+`base/models/channel.py` ends with:
+
+    StreamingChannel = Channel
+
+`StreamingChannel` and `Channel` are the same class. Providers and
+consumers may import either name; both refer to the same type.
+Do not treat them as distinct classes — `isinstance(x, StreamingChannel)`
+and `isinstance(x, Channel)` are identical checks.
+
+### `StreamingMode` and `ContentType` are not Enums
+
+`base/models/content.py` defines them as plain classes with string
+class attributes:
+
+    class StreamingMode:
+        LIVE = "live"
+        VOD = "vod"
+
+    class ContentType:
+        LIVE = "LIVE"
+        VOD = "VOD"
+        SERIES = "SERIES"
+        MOVIE = "MOVIE"
+        RADIO = "RADIO"
+
+Consequences:
+
+- Compare with `==`, not `is`. `channel.mode == StreamingMode.LIVE`
+  works; `channel.mode is StreamingMode.LIVE` is fragile (string
+  interning makes it usually work, but not guaranteed).
+- `isinstance(x, StreamingMode)` never works. There is no instance of
+  `StreamingMode` — it's a namespace, not a type.
+- Do not `import Enum` and try to `StreamingMode.LIVE.value`. The
+  attribute is already a string.
+
+If you find yourself wanting stricter typing, use the string values
+directly (`"live"`, `"vod"`, `"LIVE"`, ...). The classes exist for
+readability and autocomplete, not type enforcement.
+
+### `AuthToken` subclasses
+
+`BaseAuthToken` is an ABC with an abstract `to_dict()`, so it cannot be
+instantiated directly. Every provider whose `_perform_authentication()`
+returns a `BaseAuthToken` needs a concrete subclass — usually tiny:
+
+    @dataclass
+    class YourAuthToken(BaseAuthToken):
+        def to_dict(self) -> Dict[str, Any]:
+            return {
+                "access_token": self.access_token,
+                "token_type": self.token_type,
+                "expires_in": self.expires_in,
+                "issued_at": self.issued_at,
+                "refresh_token": self.refresh_token,
+                "refresh_expires_in": self.refresh_expires_in,
+                "auth_level": self.auth_level.value,
+                "credential_type": self.credential_type,
+            }
+
+If the provider doesn't persist tokens, `to_dict()` is never called at
+runtime — but it still must exist, because the ABC requires it. Provide
+a real implementation so that a future change to persist tokens works
+without a follow-up edit.
+
+### `Credentials` subclasses (optional)
+
+Only needed when the provider's login payload isn't the usual
+`{username, password}` shape. HRTi's `grant_access` takes
+`{Username, Password, OperatorReferenceId}`, so it has a custom
+`HRTiCredentials(UserPasswordCredentials)` with a `to_auth_payload()`
+override. Most providers use `UserPasswordCredentials` directly.
 
 ## The manager ABCs
 
@@ -450,8 +647,7 @@ Only one of them participates in `_route` for the prefix, and the
 choice is which manager owns the manifest fetch. The provider's
 `get_manifest` is the authoritative declaration of that choice.
 
-Do not give the same prefix two router branches. Two branches for the
-same prefix means two code paths for the same content, and they will
+Do not give the same prefix two router branches. Two branches for thesame prefix means two code paths for the same content, and they will
 drift.
 
 ### Sentinels for unused ABC parameters
@@ -792,49 +988,6 @@ Decide whether persistence is worth the complexity. Providers with
 cheap re-auth should skip it. Providers whose auth flow is expensive
 (multi-step, has a rate limit, or requires user interaction like a
 device code) should persist.
-
-## Models
-
-Two kinds of custom models exist across the providers:
-
-**`Channel` subclasses (optional).** A provider whose channels carry
-extra metadata (logo, current programme, recording id) subclasses
-`Channel` and calls `super().to_dict()` in its override. MoveTV,
-Discovery, HRTi, and simpliTV all do this. If your channels can be
-expressed with the base fields, skip the subclass.
-
-**`AuthToken` subclasses (required whenever the auth class returns a
-`BaseAuthToken`).** `BaseAuthToken` is an ABC with an abstract
-`to_dict()`, so it cannot be instantiated directly. Every provider
-whose `_perform_authentication()` returns a `BaseAuthToken` needs a
-concrete subclass. The subclass is usually tiny — often just a
-`to_dict()` that emits the base fields plus provider-specific ones:
-
-    @dataclass
-    class YourAuthToken(BaseAuthToken):
-        def to_dict(self) -> Dict[str, Any]:
-            return {
-                "access_token": self.access_token,
-                "token_type": self.token_type,
-                "expires_in": self.expires_in,
-                "issued_at": self.issued_at,
-                "refresh_token": self.refresh_token,
-                "refresh_expires_in": self.refresh_expires_in,
-                "auth_level": self.auth_level.value,
-                "credential_type": self.credential_type,
-            }
-
-If the provider doesn't persist tokens, `to_dict()` is never called at
-runtime — but it still must exist, because the ABC requires it. Provide
-a real implementation anyway (as above) so that a future change to
-persist tokens works without a follow-up edit.
-
-**`Credentials` subclasses (optional).** Only needed when the provider's
-login payload isn't the usual `{username, password}` shape. HRTi's
-`grant_access` takes `{Username, Password, OperatorReferenceId}`, so it
-has a custom `HRTiCredentials(UserPasswordCredentials)` with a
-`to_auth_payload()` override. Most providers use
-`UserPasswordCredentials` directly.
 
 ## DRM
 

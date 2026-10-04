@@ -12,6 +12,19 @@ provider needs a concrete subclass. The simpliTV token is a plain opaque
 UUID with no refresh flow, so to_dict() is only the storage contract
 required by BaseAuthenticator._save_session(); the provider does not
 persist sessions.
+
+Field-name notes
+----------------
+Content declares `content_id` (not `channel_id`) and `provider` as
+required fields. Channel adds a `channel_id` *property* that proxies to
+`content_id`, but dataclass __init__ assigns to declared fields
+directly and does not invoke properties -- constructors must therefore
+use `content_id=` and `provider=`.
+
+Content already declares `logo_url`. It is deliberately NOT re-declared
+here: re-declaring a parent dataclass field in a subclass shadows it and
+can reorder the generated __init__ parameters. Inheriting it is the
+correct behaviour.
 """
 
 from dataclasses import dataclass
@@ -55,20 +68,19 @@ class SimpliTVChannel(Channel):
     """
     A live channel or a recording.
 
-    Live channels: channel_id is "live:<codename>", `codename` is the
+    Live channels: content_id is "live:<codename>", `codename` is the
     channel codename, `recording_id` is empty. Names and logos are
     derived from the codename (see logos.py).
 
-    Recordings: channel_id is "rec:<programme codename>" (the content_id
-    used to play the recording), `codename` is that programme codename,
-    and `recording_id` is the provider's recording id (what
+    Recordings: content_id is "rec:<programme codename>" (the id used
+    to play the recording), `codename` is that programme codename, and
+    `recording_id` is the provider's recording id (what
     delete_recording takes). The two are different namespaces and must
     not be conflated. `recording_status` is "Recorded", "Scheduled" or
     "Failed"; only "Recorded" is playable.
     """
 
     codename: str = ""
-    logo_url: str = ""
     current_programme: str = ""
     current_start: str = ""
     current_stop: str = ""
@@ -81,7 +93,6 @@ class SimpliTVChannel(Channel):
     def to_dict(self) -> Dict[str, Any]:
         result = super().to_dict()
         result["Codename"] = self.codename
-        result["LogoUrl"] = self.logo_url
         result["CurrentProgramme"] = self.current_programme
         result["CurrentStart"] = self.current_start
         result["CurrentStop"] = self.current_stop
