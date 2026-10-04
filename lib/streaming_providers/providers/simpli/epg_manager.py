@@ -37,7 +37,12 @@ from urllib.parse import quote
 
 from ...base.errors import ServerError
 from ...base.managers import EpgManager
-from ...base.models.epg_models import EPGEntry, EPGProgramDetails
+from ...base.models.epg_models import (
+    EPGEntry,
+    EPGFlags,
+    EPGGenre,
+    EPGProgramDetails,
+)
 from ...base.utils.logger import logger
 
 from .constants import SimpliTVDefaults
@@ -433,12 +438,93 @@ def _first_image_url(images: Any) -> Optional[str]:
     return None
 
 
+def _as_int(value: Any) -> Optional[int]:
+    """int(value) or None; never raises."""
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _positive_int(value: Any) -> Optional[int]:
+    """Season/episode style numbers: EPGEntry wants >= 1 or None."""
+    n = _as_int(value)
+    return n if n is not None and n > 0 else None
+
+
+def _year_from(value: Any) -> Optional[int]:
+    """
+    Production year from tile["date"], which may be a plain year or a
+    full ISO date (shape unverified). EPGEntry.year is an int, so a
+    string must never leak through.
+    """
+    n = _as_int(value)
+    if n is not None:
+        return n if 1800 <= n <= 2100 else None
+    if isinstance(value, str):
+        dt = parse_iso(value.strip())
+        if dt is not None and 1800 <= dt.year <= 2100:
+            return dt.year
+    return None
+
+
+def _genre_names(categories: Any) -> List[str]:
+    """
+    Names of the tile's genre / subcategory categories, main genre
+    first, de-duplicated. Same typeCodename values the old EPG parser
+    used ("genre", "subcategory"); other category types are ignored.
+    """
+    if not isinstance(categories, list):
+        return []
+    names: List[str] = []
+    for wanted in ("genre", "subcategory"):
+        for cat in categories:
+            if not isinstance(cat, dict):
+                continue
+            name = cat.get("name")
+            if cat.get("typeCodename") == wanted and name and name not in names:
+                names.append(name)
+    return names
+
+
+def _people_by_role(people: Any) -> Tuple[List[str], List[str]]:
+    """
+    Split tile["people"] into (cast, directors).
+
+    The name key is unverified: this code reads `fullName` while the
+    old EPG parser read `name`, so both are accepted. `role` (old
+    parser) is used to pull directors out when present; anything that
+    is not a director counts as cast.
+    """
+    cast: List[str] = []
+    directors: List[str] = []
+    for p in people if isinstance(people, list) else []:
+        if not isinstance(p, dict):
+            continue
+        name = (p.get("fullName") or p.get("name") or "").strip()
+        if not name:
+            continue
+        role = str(p.get("role") or "").lower()
+        (directors if "director" in role else cast).append(name)
+    return cast, directors
+
+
 def _summarise_tile(tile: Dict[str, Any]) -> Dict[str, Any]:
-    """Compact per-programme summary kept in the tile cache."""
+    """
+    Compact per-programme summary kept in the tile cache. Everything
+    the grid needs from GetTiles is taken here, so no extra requests
+    are made for genre / season / subtitle.
+    """
     return {
         "title": tile.get("title") or "",
         "description": tile.get("description") or "",
         "icon": _first_image_url(tile.get("images")),
+        "episode_name": tile.get("subTitle") or "",
+        "genres": _genre_names(tile.get("categories")),
+        "season_number": _positive_int(tile.get("seasonNumber")),
+        "is_series": bool(tile.get("seriesId")),
     }
 
 
@@ -473,6 +559,14 @@ def _programme_to_entry(
     carries no title, description or images; those come from `tile`.
     When no title is available the programme codename is used, so the
     grid is never blank.
+
+    broadcast_id is the shared int encoding (provider hash + event
+    hash), NOT a string: EPGEntry validates it as an int and the
+    catchup path recovers the provider from it.
+
+    EPGEntry validates on construction (end after start, ...). One bad
+    programme must not take the whole channel's EPG down, so a failed
+    construction skips that programme.
     """
     start = _parse_iso_to_unix(
         programme.get("from") or programme.get("start")
@@ -494,40 +588,70 @@ def _programme_to_entry(
         or "(no title)"
     )
 
-    return EPGEntry(
-        broadcast_id=(
-            f"{SimpliTVDefaults.BROADCAST_ID_PREFIX}{channel_codename}:"
-            f"{start}:{programme.get('codename', '')}"
-        ),
-        title=title,
-        description=tile.get("description") or "",
-        start=start,
-        end=end,
-        icon=tile.get("icon"),
-        program_id=programme.get("id"),
-    )
+    genres = tile.get("genres") or None
+    flags = EPGFlags.IS_SERIES if tile.get("is_series") else None
+
+    try:
+        return EPGEntry(
+            broadcast_id=EPGEntry.encode_broadcast_id(
+                SimpliTVDefaults.PROVIDER_NAME, channel_codename, start
+            ),
+            title=title,
+            description=tile.get("description") or "",
+            start=start,
+            end=end,
+            icon=tile.get("icon"),
+            program_id=programme.get("id"),
+            episode_name=tile.get("episode_name") or None,
+            genres=genres,
+            # Kodi shows genre_description when genre is USE_STRING; no
+            # DVB-SI mapping exists for simpliTV's category names yet.
+            genre=EPGGenre.USE_STRING if genres else None,
+            genre_description=", ".join(genres) if genres else None,
+            season_number=tile.get("season_number"),
+            flags=flags,
+        )
+    except (ValueError, TypeError) as e:
+        logger.debug(
+            f"simpliTV: skipping invalid programme "
+            f"{programme.get('id')!r}: {e}"
+        )
+        return None
 
 
 def _tile_to_program_details(tile: Dict[str, Any]) -> EPGProgramDetails:
     """
     Map a /v2/Tile/GetTiles tile to the shared EPGProgramDetails shape.
 
-    Season/episode numbers, countries and genres are on the tile but
-    not in the shared shape; extend EPGProgramDetails first (template
-    rule) rather than inventing kwargs here.
+    EPGProgramDetails already carries genres, season/episode numbers,
+    country_of_origin and series_id, so no base-model change is needed
+    for those.
+
+    Left out until verified against a raw tile: episode_number (the old
+    parser stored `episodeId` as the number, but the name suggests an
+    id), poster / backdrop (need the image `role` values), and
+    cast_details.
     """
-    people = tile.get("people")
-    cast = [
-        p["fullName"]
-        for p in (people if isinstance(people, list) else [])
-        if isinstance(p, dict) and p.get("fullName")
+    cast, directors = _people_by_role(tile.get("people"))
+
+    countries = tile.get("countries")
+    country_of_origin = [
+        c["name"]
+        for c in (countries if isinstance(countries, list) else [])
+        if isinstance(c, dict) and c.get("name")
     ]
+    series_id = tile.get("seriesId")
 
     return EPGProgramDetails(
         program_id=tile.get("id", ""),
         description=tile.get("description", ""),
         episode_name=tile.get("subTitle", ""),
-        year=tile.get("date") or None,
+        year=_year_from(tile.get("date")),
         icon=_first_image_url(tile.get("images")),
-        cast=cast,
+        cast=cast or None,
+        directors=directors or None,
+        genres=_genre_names(tile.get("categories")) or None,
+        season_number=_positive_int(tile.get("seasonNumber")),
+        country_of_origin=country_of_origin or None,
+        series_id=str(series_id) if series_id else None,
     )
