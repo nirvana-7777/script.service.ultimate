@@ -27,8 +27,7 @@ On first use:
      authoritative check (the RegisterDevice response shape is not
      verified).
 
-The key is cached in-process only. The settings_manager accessor names
-are host-specific and are not guessed. A process restart therefore hits
+The key is cached in-process only. A process restart therefore hits
 GetDevices again, which returns the already-registered device.
 
 Error handling: network / JSON failures in the device calls are wrapped
@@ -49,8 +48,20 @@ operation. CredentialManager.load_credentials handles both the
 country-nested format ({"simpli": {"at": {...}}}) and the flat format
 ({"simpli": {...}}), so an existing flat credentials.json works
 unchanged.
+
+Authenticate request shape
+--------------------------
+The browser sends the Authenticate body as JSON text but with
+Content-Type: text/plain (NOT application/json). The server returns a
+different, token-less response when it sees application/json. The body
+is therefore sent as a raw string (data=...) with Content-Type
+text/plain set explicitly for this call, matching the browser capture.
+
+Everything else on the API uses Content-Type: application/json, so
+this override applies only to Authenticate.
 """
 
+import json
 import secrets
 import threading
 import time
@@ -268,6 +279,15 @@ class SimpliTVAuth:
     # ------------------------------------------------------------------
 
     def _perform_authentication(self) -> BaseAuthToken:
+        """
+        Log in and return a BaseAuthToken.
+
+        IMPORTANT: the request body is sent as a raw JSON *string* with
+        Content-Type: text/plain, matching the browser capture. When the
+        same body is sent as application/json, the server responds 200
+        with a short token-less body. Do not switch this to json=...
+        without re-verifying against the live endpoint.
+        """
         creds = self._resolve_credentials()
         logger.debug(f"simpliTV[{self.country}]: logging in")
 
@@ -278,15 +298,39 @@ class SimpliTVAuth:
             "login": creds["username"],
             "password": creds["password"],
         }
+
+        headers = self.build_headers()
+        # Override Content-Type for this call only. The API accepts the
+        # JSON body as text/plain; application/json yields a different,
+        # token-less response.
+        headers["Content-Type"] = "text/plain"
+
+        body = json.dumps(payload)
+        logger.debug(
+            f"simpliTV[{self.country}]: Authenticate request "
+            f"(Content-Type=text/plain, {len(body)} bytes)"
+        )
+
         resp = self.http_manager.post(
             self.config.authenticate_url(),
-            json=payload,
-            headers=self.build_headers(),
+            data=body,
+            headers=headers,
         )
         data = resp.json()
+
         token_value = data.get("token")
         if not token_value:
-            raise AuthError("simpliTV: no token in authenticate response")
+            # Log the response shape on failure so the cause is visible
+            # without another round trip. Never log the token itself.
+            keys = list(data.keys()) if isinstance(data, dict) else type(data).__name__
+            logger.error(
+                f"simpliTV[{self.country}]: no token in authenticate "
+                f"response (top-level keys: {keys!r})"
+            )
+            raise AuthError(
+                f"simpliTV: no token in authenticate response "
+                f"(keys={keys!r})"
+            )
 
         expires_in = (
             _parse_expiry(data.get("tokenExpirationTime"))

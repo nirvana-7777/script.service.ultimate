@@ -14,10 +14,10 @@ class SimpliTVDefaults:
     PROVIDER_LOGO = "https://files.app.simplitv.at/files/orf1-hd-bunt.png"
 
     # --- Endpoints / hosts ---------------------------------------------
-    # Confirmed against the browser capture: the API host is
-    # api.app.austrostream.at (multi-tenant; simpliTV is the
-    # X-Tenant-Codename: simpli tenant). The web app itself lives on
-    # streaming.simpli.at, NOT streaming.simpli.at.
+    # The API host is api.app.austrostream.at (multi-tenant). The
+    # browser capture sends X-Tenant-Codename: simplitv -- note the "tv",
+    # which differs from PROVIDER_NAME. The web app lives on
+    # streaming.simpli.at.
     BASE_URL = "https://api.app.austrostream.at"
     WEBSITE = "https://streaming.simpli.at"
 
@@ -64,7 +64,12 @@ class SimpliTVDefaults:
 
     # --- Platform / device identity ------------------------------------
     PLATFORM_CODENAME = "www"
-    TENANT_CODENAME = "simpli"
+
+    # NOTE: the tenant codename is "simplitv" (with the "tv"), matching
+    # X-Tenant-Codename in the browser capture. It is NOT the same as
+    # PROVIDER_NAME ("simpli"), which is the internal registry key and
+    # the credentials.json key.
+    TENANT_CODENAME = "simplitv"
     RESOURCE_LANGUAGE_CONTEXT = "de"
 
     DEVICE_NAME = "Firefox"
@@ -172,6 +177,11 @@ class SimpliTVConfig:
         The simpliTV token is NOT a header (see auth.py): it is passed
         as a URL query parameter or body field. These are the base
         headers the browser sends alongside every API call.
+
+        NOTE: Content-Type here is application/json;charset=utf-8,
+        which is correct for most endpoints. Authenticate is the
+        exception: it needs Content-Type: text/plain even though the
+        body is JSON. That override lives in auth.py.
         """
         return {
             "User-Agent": self.user_agent,

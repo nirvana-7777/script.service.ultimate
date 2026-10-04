@@ -542,6 +542,16 @@ Minimal no-auth stub:
         def invalidate(self):
             pass
 
+        # Credential methods are no-ops for a no-auth provider.
+        def has_credentials(self):
+            return True
+
+        def set_credentials(self, username, password):
+            return False
+
+        def clear_credentials(self):
+            return False
+
 Wire it as `self.auth = YourNoAuth()` in `_build_auth()`. The manager
 ABCs' isinstance check passes (all three required methods are present),
 and `build_headers()` returns whatever static headers the provider
@@ -595,6 +605,121 @@ signatures — a mismatched signature will not be caught here. A warning
 from this check means the `auth` object is missing one of the three
 required methods; it is not fatal, but it usually means a wiring
 mistake.
+
+### Credentials — how they get loaded, saved, and re-checked
+
+The `AuthProtocol` names the three *token* methods. It does not name the
+*credential* methods, because credentials only exist for providers that
+have them. But every provider that has credentials must implement the
+credential surface correctly, or the auth class works only when the
+caller passes credentials directly at construction — which never happens
+in the real runtime. This is the failure mode most likely to slip
+through a naive implementation: the provider instantiates cleanly,
+`_build_auth` returns an object, and then the first `get_access_token()`
+raises `CredentialsError` because nothing ever populated the
+credentials.
+
+The three credential methods:
+
+    has_credentials() -> bool
+        Return True if this auth can authenticate right now — i.e.
+        credentials are available from the constructor argument, the
+        settings manager, or a fallback that always succeeds.
+        Called by the UI and the registry to decide whether the
+        provider is usable.
+
+    set_credentials(username, password) -> bool
+        Persist credentials via
+        settings_manager.save_provider_credentials(provider_name,
+        UserPasswordCredentials(username, password), country).
+        Called by the settings UI when the user enters credentials.
+        Return True on success.
+
+    clear_credentials() -> bool
+        Clear stored credentials via
+        settings_manager.clear_provider_credentials(...) or
+        credential_manager.delete_credentials(provider_name, country).
+        Also call self.invalidate() to drop the cached token.
+        Return True on success.
+
+**Credentials source priority, checked in this order:**
+
+1. **Constructor argument.** The provider's `_build_auth()` passes
+   `credentials=self._credentials`, which is non-None only when the
+   caller constructed the provider with explicit credentials. This is
+   the case for CLI tools and tests, not for the runtime UI flow.
+2. **Settings manager.** `settings_manager.get_provider_credentials(
+   provider_name, country)` reads the stored credentials that the
+   settings UI wrote via `set_credentials`. **This is the path the
+   runtime actually uses.** If your auth class doesn't call this, the
+   provider can never authenticate from the UI.
+3. **Fallback.** Providers with anonymous or free access return a
+   fallback credentials object from `get_fallback_credentials()` (as
+   `BaseAuthenticator` does). The fallback is what lets the auth class
+   succeed even when the user hasn't configured anything — useful for
+   providers that offer a limited anonymous tier.
+
+**Re-read credentials on every authenticate, not just at construction.**
+A user can store credentials through the UI at any time after the
+provider was constructed. If your auth class caches
+`self._credentials = None` at construction and never re-reads, the
+provider stays broken until the app restarts. The pattern from
+`BaseAuthenticator` is:
+
+    def _ensure_credentials(self) -> bool:
+        # 1. If current credentials are valid, keep them.
+        if self._credentials and self._credentials.validate():
+            return True
+        # 2. Otherwise try the settings manager, in case the user just
+        #    stored them.
+        fresh = self._load_credentials_from_manager()
+        if fresh and fresh.validate():
+            self._credentials = fresh
+            return True
+        # 3. Otherwise try the fallback.
+        self._credentials = self.get_fallback_credentials()
+        return self._credentials is not None and self._credentials.validate()
+
+Call `_ensure_credentials()` at the start of `_perform_authentication()`,
+before building the login payload. This makes the auth class work
+whether credentials were supplied at construction, stored by the UI
+before first use, or stored by the UI after the provider was already
+running.
+
+**Reference.** The full pattern lives in
+`base/auth/base_auth.py`:
+`_load_credentials_from_manager`, `_ensure_credentials`,
+`save_credentials`, `clear_stored_credentials`, `has_stored_credentials`.
+Read them before writing your auth class. They are the contract even
+though they are not part of the protocol.
+
+**Providers with no user credentials** (anonymous-only, static-key,
+free):
+
+* `has_credentials()` returns `True` unconditionally.
+* `set_credentials()` and `clear_credentials()` are no-ops returning
+  `False` (there is nothing to store).
+* `_ensure_credentials()` in `_perform_authentication` is not needed —
+  the login flow doesn't depend on stored credentials.
+
+### Per-authenticate credential flow
+
+A correct `_perform_authentication()` looks like this:
+
+    def _perform_authentication(self):
+        if not self._ensure_credentials():
+            raise CredentialsError(
+                f"no credentials available for {self.provider_name}"
+            )
+        payload = self._build_login_payload(self._credentials)
+        resp = self.http_manager.post(
+            self._login_url(), json=payload, headers=self.build_headers()
+        )
+        return self._create_token_from_response(resp.json())
+
+The critical piece is `_ensure_credentials()`. Without it, the auth
+class silently depends on the caller having passed credentials — which
+the registry never does.
 
 ## DRM
 
