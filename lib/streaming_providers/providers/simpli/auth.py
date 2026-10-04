@@ -34,6 +34,21 @@ GetDevices again, which returns the already-registered device.
 Error handling: network / JSON failures in the device calls are wrapped
 in ServerError by transport_errors(); typed provider errors (AuthError
 etc.) pass through unchanged.
+
+Credential loading
+------------------
+Credentials are looked up in two places, in order:
+
+  1. An injected settings_manager (if the host passes one) via
+     get_provider_credentials(provider, country).
+  2. CredentialManager directly, which reads credentials.json.
+
+The host's provider registry instantiates providers without a
+settings_manager, so path (2) is the one that fires in normal
+operation. CredentialManager.load_credentials handles both the
+country-nested format ({"simpli": {"at": {...}}}) and the flat format
+({"simpli": {...}}), so an existing flat credentials.json works
+unchanged.
 """
 
 import secrets
@@ -301,11 +316,65 @@ class SimpliTVAuth:
 
     def _load_stored_credentials(self):
         """
-        Seam for credentials held by the host's settings_manager.
+        Load credentials for this provider from the host.
 
-        TODO(host): implement against the real base API; return None
-        when nothing is stored.
+        Priority:
+          1. An injected settings_manager, via
+             get_provider_credentials(provider, country). The host's
+             provider registry currently instantiates providers WITHOUT
+             a settings_manager, so this path is usually a no-op -- but
+             honouring it keeps this provider compatible with any host
+             that does inject one.
+          2. CredentialManager directly, which reads credentials.json.
+             CredentialManager.load_credentials tries the country-nested
+             path first and then falls back to the flat path, so both
+             {"simpli": {"at": {...}}} and {"simpli": {...}} work.
+
+        Returns a BaseCredentials instance (or a dict, if a host
+        implementation returns one) on success, else None.
         """
+        provider = SimpliTVDefaults.PROVIDER_NAME
+
+        # 1. settings_manager (may be None).
+        sm = self.settings_manager
+        if sm is not None and hasattr(sm, "get_provider_credentials"):
+            try:
+                creds = sm.get_provider_credentials(provider, self.country)
+                if creds is not None:
+                    logger.debug(
+                        f"simpliTV: loaded credentials via settings_manager "
+                        f"for {provider}[{self.country}]"
+                    )
+                    return creds
+            except Exception as e:
+                logger.debug(
+                    f"simpliTV: settings_manager.get_provider_credentials "
+                    f"failed for {provider}: {e}"
+                )
+
+        # 2. CredentialManager (credentials.json).
+        try:
+            from ...base.auth.credential_manager import CredentialManager
+
+            creds = CredentialManager().load_credentials(
+                provider, self.country
+            )
+            if creds is not None:
+                logger.debug(
+                    f"simpliTV: loaded credentials via CredentialManager "
+                    f"for {provider}[{self.country}]"
+                )
+                return creds
+            logger.debug(
+                f"simpliTV: no stored credentials found for "
+                f"{provider}[{self.country}]"
+            )
+        except Exception as e:
+            logger.debug(
+                f"simpliTV: CredentialManager lookup failed for "
+                f"{provider}: {e}"
+            )
+
         return None
 
     # ------------------------------------------------------------------
