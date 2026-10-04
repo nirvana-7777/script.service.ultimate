@@ -46,7 +46,7 @@ from typing import List, Optional, Tuple
 
 from ...base.errors import BadRequestError, NotFoundError
 from ...base.managers import CatchupManager
-from ...base.models.drm_config import DRMConfig
+from ...base.models.drm.drm_config import DRMConfig
 
 from .channel_manager import (
     parse_catchup_id,

@@ -38,9 +38,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from ...base.errors import BadRequestError, NotFoundError
 from ...base.managers import ChannelManager
 from ...base.models import Channel
-from ...base.models.drm_config import DRMConfig
-from ...base.models.drm_systems import DRMSystem
-from ...base.models.license_config import LicenseConfig
+from ...base.models.drm.drm_config import DRMConfig
+from ...base.models.drm.drm_systems import DRMSystem
+from ...base.models.drm.license_config import LicenseConfig
 from ...base.utils.logger import logger
 
 from .constants import SimpliTVDefaults
