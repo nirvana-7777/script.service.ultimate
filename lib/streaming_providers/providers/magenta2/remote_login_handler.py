@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from ...base.network import HTTPManager
 from ...base.ui import NotificationFactory, NotificationInterface, NotificationResult
 from ...base.utils.logger import logger
-from .constants import DEFAULT_PLATFORM, DEFAULT_REQUEST_TIMEOUT, GRANT_TYPES, MAGENTA2_PLATFORMS
+from .constants import DEFAULT_PLATFORM, DEFAULT_REQUEST_TIMEOUT, GRANT_TYPES, MAGENTA2_PLATFORMS, render_user_agent
 
 
 @dataclass
@@ -73,7 +73,9 @@ class RemoteLoginHandler:
 
         # FIX: Get platform config correctly
         self.platform_config = MAGENTA2_PLATFORMS[DEFAULT_PLATFORM]
-        self.user_agent = self.platform_config["user_agent"]
+        # The platform config has no static "user_agent" key - the UA is
+        # rendered from the platform's templates via render_user_agent().
+        self.user_agent = render_user_agent(DEFAULT_PLATFORM)
 
         # Get or create notifier with http_manager
         if notifier:
