@@ -1,1 +1,3 @@
 .aider*
+*.pyc
+__pycache__/
