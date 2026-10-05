@@ -11,7 +11,8 @@ Endpoints:
 
   * POST /v2/Tile/GetTiles -- tile details by id. Called in batches to
     enrich the programmes FilterProgramTiles returned. Only a compact
-    summary (title, description, icon) is cached per id, and the cache
+    summary (title, description, icon, subtitle, genres, season/episode,
+    ratings, credits) is cached per id, and the cache
     is size-bounded. Ids the server did not return are cached as empty
     so they are not re-requested on every call. The summaries used for
     one request are collected locally, so cache eviction can never
@@ -29,6 +30,8 @@ Windows are fetched in day-sized chunks (as the addon does) and cached
 briefly, so per-channel callers don't re-download the grid.
 """
 
+import html
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -42,6 +45,7 @@ from ...base.models.epg_models import (
     EPGFlags,
     EPGGenre,
     EPGProgramDetails,
+    PersonData,
 )
 from ...base.utils.logger import logger
 
@@ -53,6 +57,36 @@ _TILE_BATCH = 500
 # Upper bound on cached tile summaries; the oldest half is dropped when
 # exceeded.
 _TILE_CACHE_MAX = 50000
+# Credits per role kept in the cached grid summary (get_program_details
+# returns everyone). Keeps the cache compact for large ensemble casts.
+_MAX_GRID_PEOPLE = 15
+
+# seriesType "time-based" tiles (news, magazines, ...) carry the YEAR as
+# seasonNumber and a running broadcast counter as episodeNumber (e.g.
+# S2026 / E602). Kodi would render that literally, so by default such
+# numbering is dropped. Set True to pass the raw values through.
+KEEP_TIME_BASED_NUMBERING = False
+
+# "04.10.2026 16:00." -- the API's placeholder subTitle for programmes
+# that have no episode title.
+_SUBTITLE_PLACEHOLDER = re.compile(
+    r"^\d{1,2}\.\d{1,2}\.\d{4}(?: \d{1,2}:\d{2}(?::\d{2})?)?\.?$"
+)
+_TAG_RE = re.compile(r"<[^>]+>")
+
+# tile["people"][i]["roleCodename"] -> credit bucket. "actor", "writer"
+# and "creator" are verified against real tiles; the others are the
+# expected codenames and are unverified. Unknown roles end up in
+# "contributors" rather than being mislabelled as cast.
+_ROLE_BUCKET = {
+    "actor": "cast",
+    "writer": "writers",
+    "director": "directors",
+    "producer": "producers",
+    "presenter": "presenter",
+    "composer": "composers",
+    "creator": "contributors",
+}
 
 
 class SimpliTVEpgManager(EpgManager):
@@ -140,7 +174,7 @@ class SimpliTVEpgManager(EpgManager):
         tile = self._fetch_tiles([program_id]).get(program_id)
         if not tile:
             return None
-        return _tile_to_program_details(tile)
+        return _tile_to_program_details(tile, program_id)
 
     # ------------------------------------------------------------------
     # Available-days window
@@ -489,42 +523,194 @@ def _genre_names(categories: Any) -> List[str]:
     return names
 
 
-def _people_by_role(people: Any) -> Tuple[List[str], List[str]]:
+def _pick_image(images: Any, role: str) -> Optional[str]:
     """
-    Split tile["people"] into (cast, directors).
+    URL of the best image with the given `role` ("photo", "poster",
+    "photo-details", "still"). A tile repeats the same photo in several
+    sizes; prefer the entry flagged isMain, then type "large".
+    """
+    if not isinstance(images, list):
+        return None
+    cands = [
+        i for i in images
+        if isinstance(i, dict) and i.get("role") == role and i.get("url")
+    ]
+    if not cands:
+        return None
+    best = (
+        next((i for i in cands if i.get("isMain")), None)
+        or next((i for i in cands if i.get("type") == "large"), None)
+        or cands[0]
+    )
+    return best["url"]
 
-    The name key is unverified: this code reads `fullName` while the
-    old EPG parser read `name`, so both are accepted. `role` (old
-    parser) is used to pull directors out when present; anything that
-    is not a director counts as cast.
+
+def _season_episode(tile: Dict[str, Any]) -> Tuple[Optional[int], Optional[int]]:
     """
-    cast: List[str] = []
-    directors: List[str] = []
+    (season, episode) as 1-based ints, or (None, None).
+
+    Time-based tiles (and tiles whose season equals the production
+    year) carry year / broadcast-counter values, not real numbering;
+    see KEEP_TIME_BASED_NUMBERING.
+    """
+    season = _positive_int(tile.get("seasonNumber"))
+    episode = _positive_int(tile.get("episodeNumber"))
+    if not KEEP_TIME_BASED_NUMBERING:
+        if tile.get("seriesType") == "time-based":
+            return None, None
+        year = _year_from(tile.get("date"))
+        if season is not None and year is not None and season == year:
+            return None, None
+    return season, episode
+
+
+def _episode_name(tile: Dict[str, Any]) -> Optional[str]:
+    """subTitle, unless it is the API's date/time placeholder."""
+    name = str(tile.get("subTitle") or tile.get("subtitle") or "").strip()
+    if not name or _SUBTITLE_PLACEHOLDER.match(name):
+        return None
+    return name
+
+
+def _paragraphs(text: Any) -> List[str]:
+    """Plain-text paragraphs of an HTML-ish description, de-duplicated."""
+    raw = re.sub(r"<br\s*/?>", "\n", str(text or ""), flags=re.IGNORECASE)
+    raw = html.unescape(_TAG_RE.sub("", raw))
+    seen = set()
+    out: List[str] = []
+    for para in (x.strip() for x in raw.split("\n")):
+        if para and para not in seen:
+            seen.add(para)
+            out.append(para)
+    return out
+
+
+def _descriptions(tile: Dict[str, Any]) -> Tuple[str, str]:
+    """
+    (description, plot_outline). `description` is a long text of the
+    form "<episode synopsis><br /><br /><series blurb>" and sometimes
+    repeats the same paragraph twice; tags are stripped and repeats
+    dropped. The outline is shortDescription, left empty when it adds
+    nothing over the description.
+    """
+    short = (
+        " ".join(_paragraphs(tile.get("shortDescription")))
+        or " ".join(_paragraphs(tile.get("tinyDescription")))
+    )
+    description = "\n\n".join(_paragraphs(tile.get("description"))) or short
+    return description, ("" if short == description else short)
+
+
+def _star_rating(value: Any) -> Optional[int]:
+    """imdbRating (0-10 float) -> EPGEntry.star_rating (0-10 int)."""
+    if isinstance(value, bool):
+        return None
+    try:
+        rating = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not 0 < rating <= 10:
+        return None
+    return int(rating + 0.5)
+
+
+def _person_name(p: Dict[str, Any]) -> str:
+    """fullName (may have a leading space), else first + last name."""
+    name = str(p.get("fullName") or "").strip()
+    if not name:
+        name = (
+            f"{p.get('firstName') or ''} {p.get('lastName') or ''}"
+        ).strip()
+    return name or str(p.get("name") or "").strip()
+
+
+def _split_people(people: Any) -> Dict[str, List[Dict[str, str]]]:
+    """
+    Group tile["people"] by credit bucket (see _ROLE_BUCKET), keeping
+    API order and dropping repeats. Each item is {"id", "name", "role"}
+    where `role` is functionDescription (empty when the API has none).
+    """
+    out: Dict[str, List[Dict[str, str]]] = {}
+    seen = set()
     for p in people if isinstance(people, list) else []:
         if not isinstance(p, dict):
             continue
-        name = (p.get("fullName") or p.get("name") or "").strip()
+        name = _person_name(p)
         if not name:
             continue
-        role = str(p.get("role") or "").lower()
-        (directors if "director" in role else cast).append(name)
-    return cast, directors
+        role = str(p.get("roleCodename") or p.get("role") or "").lower()
+        bucket = _ROLE_BUCKET.get(role)
+        if bucket is None:
+            bucket = "directors" if "director" in role else "contributors"
+        if (bucket, name) in seen:
+            continue
+        seen.add((bucket, name))
+        out.setdefault(bucket, []).append({
+            "id": str(p.get("id") or p.get("codename") or name),
+            "name": name,
+            "role": str(p.get("functionDescription") or "").strip(),
+        })
+    return out
+
+
+def _names(
+    buckets: Dict[str, List[Dict[str, str]]], bucket: str
+) -> Optional[List[str]]:
+    return [x["name"] for x in buckets.get(bucket, [])] or None
+
+
+def _person_data(
+    buckets: Dict[str, List[Dict[str, str]]], bucket: str
+) -> Optional[List[PersonData]]:
+    return [
+        PersonData(
+            id=x["id"],
+            name=x["name"],
+            roles=[x["role"]] if x["role"] else None,
+        )
+        for x in buckets.get(bucket, [])
+    ] or None
 
 
 def _summarise_tile(tile: Dict[str, Any]) -> Dict[str, Any]:
     """
     Compact per-programme summary kept in the tile cache. Everything
     the grid needs from GetTiles is taken here, so no extra requests
-    are made for genre / season / subtitle.
+    are made for genre / season / subtitle / credits.
     """
+    description, outline = _descriptions(tile)
+    season, episode = _season_episode(tile)
+    title = str(tile.get("title") or "").strip()
+    original = str(
+        tile.get("orginalTitle")  # sic: the API's spelling
+        or tile.get("originalTitle")
+        or ""
+    ).strip()
+
+    buckets = _split_people(tile.get("people"))
+    people: Dict[str, List[str]] = {}
+    for bucket in ("cast", "directors", "writers", "producers"):
+        names = _names(buckets, bucket)
+        if names:
+            people[bucket] = names[:_MAX_GRID_PEOPLE]
+
     return {
-        "title": tile.get("title") or "",
-        "description": tile.get("description") or "",
-        "icon": _first_image_url(tile.get("images")),
-        "episode_name": tile.get("subTitle") or "",
+        "title": title,
+        "original_title": original if original and original != title else "",
+        "description": description,
+        "plot_outline": outline,
+        "icon": _pick_image(tile.get("images"), "photo")
+        or _first_image_url(tile.get("images")),
+        "episode_name": _episode_name(tile) or "",
         "genres": _genre_names(tile.get("categories")),
-        "season_number": _positive_int(tile.get("seasonNumber")),
+        "year": _year_from(tile.get("date")),
+        "season_number": season,
+        "episode_number": episode,
+        "parental_rating": _as_int(tile.get("ageRating")),
+        "star_rating": _star_rating(tile.get("imdbRating")),
         "is_series": bool(tile.get("seriesId")),
+        "is_live": bool(tile.get("isLive") or tile.get("isLiveEvent")),
+        "people": people,
     }
 
 
@@ -589,7 +775,12 @@ def _programme_to_entry(
     )
 
     genres = tile.get("genres") or None
-    flags = EPGFlags.IS_SERIES if tile.get("is_series") else None
+    flags = EPGFlags.UNDEFINED
+    if tile.get("is_series"):
+        flags |= EPGFlags.IS_SERIES
+    if tile.get("is_live"):
+        flags |= EPGFlags.IS_LIVE
+    people = tile.get("people") or {}
 
     try:
         return EPGEntry(
@@ -602,14 +793,24 @@ def _programme_to_entry(
             end=end,
             icon=tile.get("icon"),
             program_id=programme.get("id"),
+            plot_outline=tile.get("plot_outline") or None,
             episode_name=tile.get("episode_name") or None,
+            original_title=tile.get("original_title") or None,
+            year=tile.get("year"),
+            cast=people.get("cast") or None,
+            directors=people.get("directors") or None,
+            writers=people.get("writers") or None,
+            producers=people.get("producers") or None,
             genres=genres,
             # Kodi shows genre_description when genre is USE_STRING; no
             # DVB-SI mapping exists for simpliTV's category names yet.
             genre=EPGGenre.USE_STRING if genres else None,
             genre_description=", ".join(genres) if genres else None,
             season_number=tile.get("season_number"),
-            flags=flags,
+            episode_number=tile.get("episode_number"),
+            star_rating=tile.get("star_rating"),
+            parental_rating=tile.get("parental_rating"),
+            flags=flags or None,
         )
     except (ValueError, TypeError) as e:
         logger.debug(
@@ -619,20 +820,25 @@ def _programme_to_entry(
         return None
 
 
-def _tile_to_program_details(tile: Dict[str, Any]) -> EPGProgramDetails:
+def _tile_to_program_details(
+    tile: Dict[str, Any], program_id: Optional[str] = None
+) -> EPGProgramDetails:
     """
     Map a /v2/Tile/GetTiles tile to the shared EPGProgramDetails shape.
 
-    EPGProgramDetails already carries genres, season/episode numbers,
-    country_of_origin and series_id, so no base-model change is needed
-    for those.
+    Absent values are None, never "": merge_content() overlays every
+    non-None field onto the grid entry, so an empty string would wipe
+    a value the entry already has (and an empty program_id would fail
+    its mismatch check).
 
-    Left out until verified against a raw tile: episode_number (the old
-    parser stored `episodeId` as the number, but the name suggests an
-    id), poster / backdrop (need the image `role` values), and
-    cast_details.
+    Not mapped (no verified source in the tile): imdb_number,
+    release_date (`date` is only a year), trailer, provider_vod_id.
+    `backdrop` is taken from the "photo-details" image: the role is
+    verified, its use as a backdrop is an assumption.
     """
-    cast, directors = _people_by_role(tile.get("people"))
+    description, _ = _descriptions(tile)
+    season, episode = _season_episode(tile)
+    buckets = _split_people(tile.get("people"))
 
     countries = tile.get("countries")
     country_of_origin = [
@@ -641,17 +847,33 @@ def _tile_to_program_details(tile: Dict[str, Any]) -> EPGProgramDetails:
         if isinstance(c, dict) and c.get("name")
     ]
     series_id = tile.get("seriesId")
+    images = tile.get("images")
 
     return EPGProgramDetails(
-        program_id=tile.get("id", ""),
-        description=tile.get("description", ""),
-        episode_name=tile.get("subTitle", ""),
+        program_id=str(tile.get("id") or program_id or ""),
+        description=description or None,
+        episode_name=_episode_name(tile),
         year=_year_from(tile.get("date")),
-        icon=_first_image_url(tile.get("images")),
-        cast=cast or None,
-        directors=directors or None,
-        genres=_genre_names(tile.get("categories")) or None,
-        season_number=_positive_int(tile.get("seasonNumber")),
-        country_of_origin=country_of_origin or None,
+        icon=_pick_image(images, "photo") or _first_image_url(images),
+        poster=_pick_image(images, "poster"),
+        backdrop=_pick_image(images, "photo-details"),
+        cast=_names(buckets, "cast"),
+        directors=_names(buckets, "directors"),
+        writers=_names(buckets, "writers"),
+        producers=_names(buckets, "producers"),
+        presenter=_names(buckets, "presenter"),
+        composers=_names(buckets, "composers"),
+        contributors=_names(buckets, "contributors"),
+        cast_details=_person_data(buckets, "cast"),
+        directors_details=_person_data(buckets, "directors"),
+        writers_details=_person_data(buckets, "writers"),
+        producers_details=_person_data(buckets, "producers"),
+        presenter_details=_person_data(buckets, "presenter"),
         series_id=str(series_id) if series_id else None,
+        genres=_genre_names(tile.get("categories")) or None,
+        parental_rating=_as_int(tile.get("ageRating")),
+        duration=_as_int(tile.get("durationSeconds")),
+        season_number=season,
+        episode_number=episode,
+        country_of_origin=country_of_origin or None,
     )
