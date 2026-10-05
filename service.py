@@ -1292,6 +1292,166 @@ class UltimateService:
 
         return m3u_content
 
+    @staticmethod
+    def _provider_needs_headers(provider_instance, channel_id: str) -> bool:
+        """
+        True if playing this channel requires manifest or segment headers
+        (auth tokens etc.) — the same two provider calls
+        fetch_manifest_for_rewriter makes at playback time. A raw upstream
+        URL in an M3U carries no headers, so such channels would 403.
+
+        Matches fetch_manifest_for_rewriter exactly: no catchup kwargs (only
+        live is emitted) and no country (not known at playlist time). Do not
+        add either here without also changing what the raw path emits.
+
+        Deliberately lets exceptions propagate: "could not determine" must
+        not be read as "no headers needed". Callers skip the channel.
+        """
+        return bool(
+            provider_instance.get_manifest_headers(channel_id)
+            or provider_instance.get_segment_headers(channel_id)
+        )
+
+    def _generate_m3u_noproxy_raw_content(self, providers=None):
+        """
+        Like _generate_m3u_content(no_proxy=True), but resolves each channel's
+        upstream manifest URL at generation time and writes it straight into
+        the playlist, removing the /stream/index.mpd redirect hop.
+
+        STRICT: a channel that cannot safely be served by a bare upstream URL
+        is SKIPPED, never downgraded to the redirect URL. Skipped when:
+          - the provider has requires_manifest_context (manifest not usable
+            standalone), or
+          - manifest/segment headers are required (the M3U carries no auth), or
+            that could not be determined, or
+          - the manifest URL could not be resolved / is empty.
+
+        Catchup attributes are intentionally NOT emitted: catchup_type
+        "append" would append ?start_time=...&end_time=... to the raw
+        upstream live URL, which the upstream does not understand (the
+        redirect route is what translates it).
+
+        Deliberately UNCACHED — raw URLs can carry short-lived tokens.
+
+        Returns:
+            (m3u_content, channels_included, channels_skipped)
+        """
+        m3u_content = "#EXTM3U\n"
+
+        if providers is None:
+            providers_to_process = self.manager.list_providers()
+        else:
+            providers_to_process = (
+                [providers] if isinstance(providers, str) else providers
+            )
+
+        total_included = 0
+        total_skipped = 0
+
+        for provider_name, provider_label, channels in self._iter_m3u_provider_channels(providers_to_process):
+            included = 0
+            provider_skip_reason = None
+            try:
+                provider_instance = self.manager.get_provider(provider_name)
+                if provider_instance is None:
+                    provider_skip_reason = "provider resolved to None"
+                elif getattr(provider_instance, "requires_manifest_context", False):
+                    provider_skip_reason = "provider requires manifest context"
+
+                if provider_skip_reason is None:
+                    for channel in channels:
+                        channel_id = channel.channel_id
+
+                        # Cheap check first, expensive manifest resolution last.
+                        try:
+                            if self._provider_needs_headers(provider_instance, channel_id):
+                                logger.debug(
+                                    f"noproxy/raw: skipping {provider_name}/{channel_id} — headers required"
+                                )
+                                continue
+                        except Exception as hdr_err:
+                            logger.warning(
+                                f"noproxy/raw: header check failed for "
+                                f"{provider_name}/{channel_id}: {hdr_err} — skipping"
+                            )
+                            continue
+
+                        try:
+                            manifest_url = self.manager.get_channel_manifest(
+                                provider_name=provider_name, channel_id=channel_id
+                            )
+                        except Exception as url_err:
+                            logger.warning(
+                                f"noproxy/raw: could not resolve manifest URL for "
+                                f"{provider_name}/{channel_id}: {url_err} — skipping"
+                            )
+                            continue
+
+                        if not manifest_url:
+                            logger.warning(
+                                f"noproxy/raw: empty manifest URL for "
+                                f"{provider_name}/{channel_id} — skipping"
+                            )
+                            continue
+
+                        # DRM lookup done here, not via drm_directives=None:
+                        # _build_m3u_entry_header swallows lookup errors and
+                        # would emit a keyless (undecryptable) entry. Strict
+                        # like the checks above — same as
+                        # _generate_m3u_proxied_filtered_content, which also
+                        # skips a channel whose DRM lookup raises.
+                        try:
+                            drm_configs = self.manager.get_channel_drm_configs(
+                                provider_name=provider_name, channel_id=channel_id
+                            )
+                        except Exception as drm_err:
+                            logger.warning(
+                                f"noproxy/raw: DRM lookup failed for "
+                                f"{provider_name}/{channel_id}: {drm_err} — skipping"
+                            )
+                            continue
+
+                        m3u_content += self._build_m3u_entry_header(
+                            provider_name, channel,
+                            provider_label=provider_label,
+                            drm_directives=(
+                                self._generate_drm_directives(drm_configs)
+                                if drm_configs else ""
+                            ),
+                            include_catchup=False,
+                        )
+                        m3u_content += f"{manifest_url}\n"
+                        included += 1
+
+            except Exception as provider_err:
+                logger.warning(
+                    f"noproxy/raw: failed to process provider '{provider_name}': {provider_err}"
+                )
+
+            skipped = len(channels) - included
+            total_included += included
+            total_skipped += skipped
+
+            if provider_skip_reason:
+                logger.warning(
+                    f"noproxy/raw: provider '{provider_name}' skipped entirely "
+                    f"({provider_skip_reason}) — {skipped} channels omitted"
+                )
+            elif included == 0 and skipped > 0:
+                logger.warning(
+                    f"noproxy/raw: provider '{provider_name}' contributed 0 of "
+                    f"{skipped} channels (all need headers or failed to resolve)"
+                )
+            elif skipped:
+                logger.info(
+                    f"noproxy/raw: provider '{provider_name}': {included} included, {skipped} skipped"
+                )
+
+        logger.info(
+            f"noproxy/raw M3U: included {total_included} channels, skipped {total_skipped}"
+        )
+        return m3u_content, total_included, total_skipped
+
     def _generate_m3u_proxied_filtered_all(self, save_to_cache: bool = False) -> str:
         """Internal method to generate filtered decrypted M3U for all providers."""
         logger.info("Generating filtered decrypted M3U playlist for all providers")
@@ -1556,6 +1716,35 @@ class UltimateService:
         response.headers["Content-Disposition"] = f'attachment; filename="{provider}_playlist_noproxy.m3u8"'
 
         return m3u_content
+
+    def _serve_m3u_noproxy_raw(self, providers, filename: str) -> str:
+        """Shared body of the noproxy/raw public wrappers: generate, set headers."""
+        m3u_content, included, skipped = self._generate_m3u_noproxy_raw_content(providers=providers)
+
+        response.content_type = "audio/x-mpegurl; charset=utf-8"
+        response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+        # Raw upstream URLs may embed short-lived tokens: keep clients and
+        # intermediaries from caching the playlist either.
+        response.headers["Cache-Control"] = "no-store"
+        # Skips are otherwise invisible to the client (a shorter playlist).
+        response.headers["X-M3U-Channels-Included"] = str(included)
+        response.headers["X-M3U-Channels-Skipped"] = str(skipped)
+
+        return m3u_content
+
+    def generate_m3u_noproxy_raw_all(self) -> str:
+        """
+        Public wrapper: clientdrm M3U with raw upstream manifest URLs (no
+        redirect hop) for all providers. Backs "/api/m3u/noproxy/raw".
+        Deliberately UNCACHED — see _generate_m3u_noproxy_raw_content.
+        """
+        logger.info("Generating noproxy/raw M3U playlist for all providers")
+        return self._serve_m3u_noproxy_raw(None, "playlist_noproxy_raw.m3u8")
+
+    def generate_m3u_noproxy_raw_provider(self, provider: str) -> str:
+        """Public wrapper: noproxy/raw M3U for a single provider. Uncached."""
+        logger.info(f"Generating noproxy/raw M3U playlist for provider '{provider}'")
+        return self._serve_m3u_noproxy_raw(provider, f"{provider}_playlist_noproxy_raw.m3u8")
 
     def generate_m3u_proxied_ffmpeg_fast(self, providers=None) -> str:
         """Public wrapper for fast ffmpeg-decrypted M3U generation."""

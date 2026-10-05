@@ -27,6 +27,7 @@ FALLBACK_WARN_INTERVAL_SECONDS = 60 * 60
 # visible to clients and when debugging (the URL is the same either way).
 M3U_MODE_PLAIN = "plain"
 M3U_MODE_CLIENTDRM_FALLBACK = "clientdrm-fallback"
+M3U_MODE_NOPROXY_RAW = "noproxy-raw"
 
 
 def setup_m3u_routes(app, manager, service):
@@ -355,6 +356,35 @@ def setup_m3u_routes(app, manager, service):
         return _handle_m3u_route(
             lambda: service.generate_m3u_noproxy_provider(provider, save_to_cache=True),
             log_ctx=f"/api/providers/{provider}/m3u/noproxy/generate",
+        )
+
+    # ── No-proxy / raw-URL playlists (deliberately UNCACHED) ──────────────
+    # clientdrm M3U with the raw upstream manifest URL written directly into
+    # each entry — no /stream/index.mpd redirect hop. Strict: channels that
+    # need headers or manifest context are skipped, not downgraded (counts
+    # are exposed via X-M3U-Channels-Included / -Skipped). Uncached, unlike
+    # /api/m3u/noproxy: raw URLs may carry short-lived tokens. Hence no
+    # /generate variants either — there is nothing to regenerate.
+    # Unlike /api/m3u/noproxy, entries carry no catchup attributes: the raw
+    # upstream live URL can't take the start/end times the redirect route
+    # translates.
+
+    @app.route("/api/m3u/noproxy/raw")
+    def get_m3u_all_noproxy_raw():
+        """Generates clientdrm M3U with raw upstream manifest URLs. No caching."""
+        response.headers["X-M3U-Mode"] = M3U_MODE_NOPROXY_RAW
+        return _handle_m3u_route(
+            lambda: service.generate_m3u_noproxy_raw_all(),
+            log_ctx="/api/m3u/noproxy/raw",
+        )
+
+    @app.route("/api/providers/<provider>/m3u/noproxy/raw")
+    def get_m3u_provider_noproxy_raw(provider):
+        """Generates clientdrm M3U with raw upstream manifest URLs for a provider. No caching."""
+        response.headers["X-M3U-Mode"] = M3U_MODE_NOPROXY_RAW
+        return _handle_m3u_route(
+            lambda: service.generate_m3u_noproxy_raw_provider(provider),
+            log_ctx=f"/api/providers/{provider}/m3u/noproxy/raw",
         )
 
     # ── ffmpeg-piped playlist (deliberately UNCACHED) ─────────────────────
