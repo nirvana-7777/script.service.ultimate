@@ -5,7 +5,7 @@ import os
 import sys
 import threading
 import time
-from urllib.parse import parse_qsl, urlencode
+from urllib.parse import parse_qsl, quote, urlencode
 from typing import Optional
 import requests
 
@@ -733,6 +733,8 @@ class UltimateService:
             provider_label=None,
             drm_directives=None,
             include_catchup=True,
+            manifest_headers_encoded=None,
+            segment_headers_encoded=None,
     ) -> str:
         """
         Build the #EXTINF (+ optional KODIPROP) block for one channel, without
@@ -767,6 +769,14 @@ class UltimateService:
                              window — used by the ffmpeg-piped variant, which
                              is intentionally live-only (existing behavior,
                              preserved rather than changed here).
+            manifest_headers_encoded / segment_headers_encoded:
+                             Already-encoded header strings (see
+                             _encode_kodiprop_headers); None/"" = nothing to
+                             emit. This builder never calls the provider.
+                             Headers are an inputstream.adaptive feature, so
+                             emitting them also emits a bare
+                             "#KODIPROP:inputstream=inputstream.adaptive" when
+                             the DRM directives didn't already include it.
         """
         channel_id = channel.channel_id
         channel_name = channel.name
@@ -817,6 +827,18 @@ class UltimateService:
                 )
         elif drm_directives:
             entry_content += drm_directives
+
+        if manifest_headers_encoded or segment_headers_encoded:
+            if "#KODIPROP:inputstream=inputstream.adaptive\n" not in entry_content:
+                entry_content += "#KODIPROP:inputstream=inputstream.adaptive\n"
+            if manifest_headers_encoded:
+                entry_content += (
+                    f"#KODIPROP:inputstream.adaptive.manifest_headers={manifest_headers_encoded}\n"
+                )
+            if segment_headers_encoded:
+                entry_content += (
+                    f"#KODIPROP:inputstream.adaptive.stream_headers={segment_headers_encoded}\n"
+                )
 
         return entry_content
 
@@ -1293,24 +1315,31 @@ class UltimateService:
         return m3u_content
 
     @staticmethod
-    def _provider_needs_headers(provider_instance, channel_id: str) -> bool:
+    def _encode_kodiprop_headers(headers) -> Optional[str]:
         """
-        True if playing this channel requires manifest or segment headers
-        (auth tokens etc.) — the same two provider calls
-        fetch_manifest_for_rewriter makes at playback time. A raw upstream
-        URL in an M3U carries no headers, so such channels would 403.
+        Encode a header dict as the URL-encoded "k=v&k=v" value that
+        inputstream.adaptive expects for manifest_headers / stream_headers.
 
-        Matches fetch_manifest_for_rewriter exactly: no catchup kwargs (only
-        live is emitted) and no country (not known at playlist time). Do not
-        add either here without also changing what the raw path emits.
+        Returns:
+            ""   — nothing to send (None or empty mapping)
+            str  — the encoded headers
+            None — not representable (not a mapping, empty/non-string name,
+                   non-string value). Callers skip the channel: a half-sent
+                   header set means an auth failure with no useful log.
 
-        Deliberately lets exceptions propagate: "could not determine" must
-        not be read as "no headers needed". Callers skip the channel.
+        quote (%20) rather than urlencode's default quote_plus ('+'): the
+        value is decoded by Kodi, not by a form parser, so spaces must be
+        %20. Encoding also guarantees a header value can never contain a
+        raw newline that would break the single KODIPROP line.
         """
-        return bool(
-            provider_instance.get_manifest_headers(channel_id)
-            or provider_instance.get_segment_headers(channel_id)
-        )
+        if not headers:
+            return "" if headers is None or isinstance(headers, dict) else None
+        if not isinstance(headers, dict):
+            return None
+        for name, value in headers.items():
+            if not isinstance(name, str) or not name or not isinstance(value, str):
+                return None
+        return urlencode(headers, quote_via=quote)
 
     def _generate_m3u_noproxy_raw_content(self, providers=None):
         """
@@ -1318,20 +1347,27 @@ class UltimateService:
         upstream manifest URL at generation time and writes it straight into
         the playlist, removing the /stream/index.mpd redirect hop.
 
-        STRICT: a channel that cannot safely be served by a bare upstream URL
-        is SKIPPED, never downgraded to the redirect URL. Skipped when:
-          - the provider has requires_manifest_context (manifest not usable
-            standalone), or
-          - manifest/segment headers are required (the M3U carries no auth), or
-            that could not be determined, or
-          - the manifest URL could not be resolved / is empty.
+        Headers: the provider's manifest and segment headers are emitted as
+        inputstream.adaptive.manifest_headers / .stream_headers KODIPROPs
+        (activating inputstream.adaptive for the entry if DRM didn't already).
+        They are looked up AFTER the manifest URL, as at playback time —
+        a provider may establish its session/token while resolving the URL.
+        Lookup mirrors fetch_manifest_for_rewriter: no catchup kwargs (only
+        live is emitted), no country (unknown at playlist time).
+
+        A channel is SKIPPED, never downgraded to the redirect URL, when:
+          - the provider has requires_manifest_context, or
+          - the manifest URL could not be resolved / is empty, or
+          - the header lookup raised or the headers are not encodable, or
+          - the DRM lookup raised.
 
         Catchup attributes are intentionally NOT emitted: catchup_type
         "append" would append ?start_time=...&end_time=... to the raw
         upstream live URL, which the upstream does not understand (the
         redirect route is what translates it).
 
-        Deliberately UNCACHED — raw URLs can carry short-lived tokens.
+        Deliberately UNCACHED — raw URLs and header tokens can both be
+        short-lived. Never log header values.
 
         Returns:
             (m3u_content, channels_included, channels_skipped)
@@ -1362,20 +1398,6 @@ class UltimateService:
                     for channel in channels:
                         channel_id = channel.channel_id
 
-                        # Cheap check first, expensive manifest resolution last.
-                        try:
-                            if self._provider_needs_headers(provider_instance, channel_id):
-                                logger.debug(
-                                    f"noproxy/raw: skipping {provider_name}/{channel_id} — headers required"
-                                )
-                                continue
-                        except Exception as hdr_err:
-                            logger.warning(
-                                f"noproxy/raw: header check failed for "
-                                f"{provider_name}/{channel_id}: {hdr_err} — skipping"
-                            )
-                            continue
-
                         try:
                             manifest_url = self.manager.get_channel_manifest(
                                 provider_name=provider_name, channel_id=channel_id
@@ -1394,12 +1416,30 @@ class UltimateService:
                             )
                             continue
 
+                        try:
+                            manifest_headers = provider_instance.get_manifest_headers(channel_id)
+                            segment_headers = provider_instance.get_segment_headers(channel_id)
+                        except Exception as hdr_err:
+                            logger.warning(
+                                f"noproxy/raw: header lookup failed for "
+                                f"{provider_name}/{channel_id}: {hdr_err} — skipping"
+                            )
+                            continue
+
+                        manifest_hdr_enc = self._encode_kodiprop_headers(manifest_headers)
+                        segment_hdr_enc = self._encode_kodiprop_headers(segment_headers)
+                        if manifest_hdr_enc is None or segment_hdr_enc is None:
+                            logger.warning(
+                                f"noproxy/raw: headers not encodable for "
+                                f"{provider_name}/{channel_id} — skipping"
+                            )
+                            continue
+
                         # DRM lookup done here, not via drm_directives=None:
                         # _build_m3u_entry_header swallows lookup errors and
                         # would emit a keyless (undecryptable) entry. Strict
-                        # like the checks above — same as
-                        # _generate_m3u_proxied_filtered_content, which also
-                        # skips a channel whose DRM lookup raises.
+                        # like _generate_m3u_proxied_filtered_content, which
+                        # also skips a channel whose DRM lookup raises.
                         try:
                             drm_configs = self.manager.get_channel_drm_configs(
                                 provider_name=provider_name, channel_id=channel_id
@@ -1419,6 +1459,8 @@ class UltimateService:
                                 if drm_configs else ""
                             ),
                             include_catchup=False,
+                            manifest_headers_encoded=manifest_hdr_enc,
+                            segment_headers_encoded=segment_hdr_enc,
                         )
                         m3u_content += f"{manifest_url}\n"
                         included += 1
@@ -1440,7 +1482,7 @@ class UltimateService:
             elif included == 0 and skipped > 0:
                 logger.warning(
                     f"noproxy/raw: provider '{provider_name}' contributed 0 of "
-                    f"{skipped} channels (all need headers or failed to resolve)"
+                    f"{skipped} channels (all failed to resolve or encode)"
                 )
             elif skipped:
                 logger.info(

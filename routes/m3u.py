@@ -360,10 +360,14 @@ def setup_m3u_routes(app, manager, service):
 
     # ── No-proxy / raw-URL playlists (deliberately UNCACHED) ──────────────
     # clientdrm M3U with the raw upstream manifest URL written directly into
-    # each entry — no /stream/index.mpd redirect hop. Strict: channels that
-    # need headers or manifest context are skipped, not downgraded (counts
-    # are exposed via X-M3U-Channels-Included / -Skipped). Uncached, unlike
-    # /api/m3u/noproxy: raw URLs may carry short-lived tokens. Hence no
+    # each entry — no /stream/index.mpd redirect hop. Provider manifest/
+    # segment headers are emitted as inputstream.adaptive KODIPROPs. Strict:
+    # channels that need manifest context or whose URL/headers/DRM can't be
+    # resolved are skipped, not downgraded (counts are exposed via
+    # X-M3U-Channels-Included / -Skipped). The playlist therefore carries
+    # provider auth headers in clear text — keep this endpoint off untrusted
+    # networks. Uncached, unlike /api/m3u/noproxy: raw URLs and header
+    # tokens may be short-lived. Hence no
     # /generate variants either — there is nothing to regenerate.
     # Unlike /api/m3u/noproxy, entries carry no catchup attributes: the raw
     # upstream live URL can't take the start/end times the redirect route
