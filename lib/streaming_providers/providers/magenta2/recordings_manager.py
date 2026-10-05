@@ -44,6 +44,7 @@ from ...base.utils.logger import logger
 
 from .constants import (
     PVR_DEFAULT_PAGE_LIMIT,
+    PVR_DELETE_RECORDING_FOR_LISTING_PATH,
     PVR_GET_RECORDINGS_PATH,
     PVR_MAX_PAGE_LIMIT,
     PVR_RECORDINGS_PATH,
@@ -144,22 +145,68 @@ class RecordingsManager(PvrHttpMixin):
         """
         Permanently delete a recording on the nPVR backend.
 
+        The recording_id received from the PVR client is the MPX playback GUID
+        (content_id). Deletion is performed with HTTP DELETE on
+        ``/delete-recording-for-listing/{listingGuid}`` (confirmed to return
+        202 Accepted) - the documented ``/recordings/{id}`` path 404s for every
+        known identifier.
+
         Args:
-            recording_id: The recording's ``id`` field (not externalRecordingId).
+            recording_id: The recording's content_id (MPX GUID).
 
         Raises:
-            RuntimeError: When the API returns a non-200/204 status or the
-                          ``auth_headers_callback`` is not configured.
-            KeyError:     When the recording does not exist (404).
+            RuntimeError: When the recording cannot be resolved or the API
+                          returns a non-success status.
         """
         pvr_base_url = self._get_pvr_base_url()
-        url = f"{pvr_base_url}{PVR_RECORDINGS_PATH}/{recording_id}"
 
+        listing_guid = self._resolve_listing_guid(recording_id)
+        if not listing_guid:
+            raise RuntimeError(
+                f"{self._provider}: cannot delete recording '{recording_id}' - "
+                "no matching listing GUID found"
+            )
+
+        url = f"{pvr_base_url}{PVR_DELETE_RECORDING_FOR_LISTING_PATH}/{listing_guid}"
         status_code = self._delete(url)
         logger.info(
             f"{self._provider}: Deleted recording '{recording_id}' "
-            f"[HTTP {status_code}]"
+            f"(listing '{listing_guid}') [HTTP {status_code}]"
         )
+
+    def _resolve_listing_guid(self, recording_id: str) -> str:
+        """
+        Resolve the listing GUID for the recording the PVR client refers to.
+
+        The client sends content_id (MPX playback GUID); the delete endpoint
+        needs the recording's ``listing.guid``. Fetch the raw recordings and
+        match on the playback GUID (or the internal/external recording ids).
+        """
+        try:
+            pvr_base_url = self._get_pvr_base_url()
+            url = f"{pvr_base_url}{PVR_GET_RECORDINGS_PATH}"
+            params = {
+                "limit": PVR_MAX_PAGE_LIMIT,
+                "offset": 1,
+                "byRecordingStatus": "|".join(PVR_RECORDING_STATUSES_ALL),
+            }
+            data = self._get(url, params) or {}
+            for raw in data.get("recordings", []):
+                if not raw:
+                    continue
+                internal_id = raw.get("id", "")
+                external_id = raw.get("externalRecordingId", "")
+                mpx_guid = PvrHelpers.extract_mpx_guid(raw.get("playbackUrl"))
+                if recording_id in (internal_id, external_id, mpx_guid):
+                    listing = raw.get("listing") or {}
+                    if isinstance(listing, dict):
+                        return listing.get("guid") or ""
+        except Exception as exc:
+            logger.warning(
+                f"{self._provider}: could not resolve listing guid for "
+                f"'{recording_id}': {exc}"
+            )
+        return ""
 
     def get_recording_manifest(self, recording_id: str) -> Optional[str]:
         """
@@ -320,7 +367,6 @@ class RecordingsManager(PvrHttpMixin):
             content_id=effective_content_id,
             name=title,
             provider=self._provider,
-            # descriptions
             description=description,
             plot=plot,
             plot_outline=plot_outline,

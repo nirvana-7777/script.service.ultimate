@@ -373,6 +373,10 @@ VOD_PREFIX_MOVIE_SH = "GN_SH"
 PVR_GET_RECORDINGS_PATH = "/get-recordings"
 PVR_RECORDINGS_PATH = "/recordings"
 
+# recordings are deleted with HTTP DELETE on this listing-GUID-based path (returns 202 Accepted), 
+# NOT via DELETE /recordings/{id} (which 404s for every identifier).
+PVR_DELETE_RECORDING_FOR_LISTING_PATH = "/delete-recording-for-listing"
+
 # Default and maximum page sizes for the nPVR get-recordings endpoint
 PVR_DEFAULT_PAGE_LIMIT = 500
 PVR_MAX_PAGE_LIMIT = 500
