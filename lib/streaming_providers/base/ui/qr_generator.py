@@ -43,9 +43,10 @@ def generate_qr_code_png(data: str, size: int = 512) -> Optional[bytes]:
         # Generate image using pure Python PNG backend
         img = qr.make_image(image_factory=PyPNGImage, fill_color="black", back_color="white")
 
-        # Convert to PNG bytes
+        # Convert to PNG bytes. PyPNGImage.save() always writes PNG and does
+        # not accept a `format` kwarg (unlike PIL), so it must be omitted here.
         buffer = io.BytesIO()
-        img.save(buffer, format="PNG")
+        img.save(buffer)
         png_data = buffer.getvalue()
 
         return png_data
