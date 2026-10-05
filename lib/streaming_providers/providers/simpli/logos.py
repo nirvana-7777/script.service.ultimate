@@ -125,7 +125,6 @@ _CODENAME_ALIASES = {
     "wedo-true-stories": "WEDO TRUE STORIES",
     "bibeltv-hd": "BIBELTV",
     "hopetvhd": "HOPETV",
-    "kronehit-tv": "KRONEHIT TV",
     "schlager-deluxe": "SCHLAGER DELUXE",
     "melodietv": "MELODIETV",
     "deutsches-musikfernsehen": "DEUTSCHES MUSIKFERNSEHEN",
@@ -136,12 +135,7 @@ _CODENAME_ALIASES = {
     "playboy-tv": "PLAYBOY TV",
     "hustler-tv": "HUSTLER TV",
     "dorcel-tv": "DORCEL TV",
-    "radio-bremen-hd": "RADIO BREMEN",
-    "ard-alpha-hd": "ARD ALPHA",
     "bfs": "BFS",
-    "mtvaustriahd": "MTV AUSTRIA",
-    "k-tv": "K-TV",
-    "k-tv": "K-T-V",
 }
 
 
@@ -307,7 +301,6 @@ LOGO_MAP = {
     "K-T-V": "https://files.app.simplitv.at/files/k-tv-bunt.png",
     "K-TV": "https://files.app.simplitv.at/files/k-tv-bunt.png",
     "DELUXEMUSIC AUSTRIA": "https://files.app.simplitv.at/files/deluxe-music-hd-bunt.png",
-    "STARPARADISES TV": "https://files.app.simplitv.at/files/starparadies.png",
 }
 
 
