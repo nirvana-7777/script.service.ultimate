@@ -17,6 +17,12 @@ requests~=2.32.5
 Unidecode~=1.3.7
 PyYAML~=6.0.3
 
+# QR-code login (magenta2 SAM3 remote login). pypng provides qrcode's pure
+# Python PNG backend so no Pillow/system image libs are required in the
+# standalone/Docker runtime.
+qrcode>=7.4
+pypng>=0.0.21
+
 # Optional but recommended
 aiohttp>=3.8.5
 cryptography>=41.0.4
