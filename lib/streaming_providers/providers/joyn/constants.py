@@ -4,8 +4,6 @@
 Joyn provider constants - Cleaned and organized
 """
 
-import os
-
 # ============================================================================
 # Provider Metadata
 # ============================================================================
@@ -51,9 +49,8 @@ DEVICE_IDS = {
 # HTTP Headers & User Agent
 # ============================================================================
 
-# Bumped to match the working reference client (Chrome 154).
+# Chrome 154 — matches the current reference web client.
 JOYN_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
-# Bumped to match the working reference client.
 JOYN_CLIENT_VERSION = "5.1592.3"
 DEFAULT_PLATFORM = "web"
 
@@ -109,17 +106,8 @@ GRAPHQL_OFFSET = 0
 # Streaming Configuration
 # ============================================================================
 
-# Entitlement host is overridable so a future Joyn migration (they already
-# moved once, from entitlement.p7s1.io) does not require a code change.
-# Set JOYN_ENTITLEMENT_URL in the environment to override.
-_DEFAULT_ENTITLEMENT_URL = (
-    "https://entitlements-service-alb.prd.platform.s.joyn.de/api/user/entitlement-token"
-)
-_ENTITLEMENT_URL = os.environ.get("JOYN_ENTITLEMENT_URL", _DEFAULT_ENTITLEMENT_URL).strip() \
-    or _DEFAULT_ENTITLEMENT_URL
-
 JOYN_STREAMING_ENDPOINTS = {
-    "ENTITLEMENT": _ENTITLEMENT_URL,
+    "ENTITLEMENT": "https://entitlements-service-alb.prd.platform.s.joyn.de/api/user/entitlement-token",
     "PLAYLIST": "https://api.vod-prd.s.joyn.de/v1/channel/{channel_id}/playlist",
 }
 
@@ -127,9 +115,7 @@ JOYN_STREAMING_ENDPOINTS = {
 #
 # IMPORTANT: the playlist request is signed over the *exact* JSON string built
 # from this dict (see create_video_payload). If you change any key or value
-# here, the signature sent to api.vod-prd.s.joyn.de will change with it. If
-# the server validates the signature against its own expected payload shape,
-# a mismatch here produces 403 on every live and VOD playback request.
+# here, the signature sent to api.vod-prd.s.joyn.de will change with it.
 DEFAULT_VIDEO_CONFIG = {
     "enableDolbyAtmos": True,
     "enableSubtitles": True,
@@ -148,12 +134,13 @@ DEFAULT_VIDEO_CONFIG = {
 #
 # Decodes to a digit-string secret used as-is. The signing algorithm is:
 #     sha1(f"{payload_json},{entitlement_token}{secret}")
-# matching the working reference client exactly.
 #
-# This constant is intentionally NOT configurable: it must byte-match the
-# value embedded in Joyn's own web client. If Joyn rotates it, the fix is a
-# new constant shipped in an update, not a user setting.
-SIGNATURE_SECRET_KEY = "MzU0MzM3MzgzMzM4MzMzNjM1NDMzNzM4MzYzNDM2MzYzNTQzMzk3MzgzNjM2MzMzODMyMzYzNTQzMzc3MzgzMzMwMzYzNDM1MzkzNTQzMzc3MzgzMzM5MzMzNTMyMzQzNTQzMzc3MzgzNjM1MzMzOTM1NDMzNzM4MzMzODMzMjMzNDYzNTQzMzc4MzYzNjMzMzMzMzQ0MzM0NDMyNzA2NTQzMzczODMzMzgzNjM2MzMzMw=="
+# NOTE: This is the ORIGINAL key from before the reference-alignment pass.
+# Both this value and the reference client's current key have been observed
+# working against api.vod-prd.s.joyn.de in production traffic. Kept as-is
+# because there is no evidence that this value is rejected; if Joyn ever
+# rotates the key, both will need updating.
+SIGNATURE_SECRET_KEY = "MzU0MzM3MzgzMzM4MzMzNjM1NDMzNzM4MzYzNDM2MzYzNTQzMzczODM2MzYzMzM4MzIzNjM1NDMzNzM4MzMzMDM2MzQzNTM5MzU0MzM3MzgzMzM5MzMzNTMyMzQzNTQzMzczODM2MzUzMzM5MzU0MzM3MzgzMzM4MzMzMjMzNDYzNTQzMzczODM2MzYzMzMzMzM0NDMzNDIzNTQzMzczODMzMzgzNjM2MzMzNQ=="
 
 # ============================================================================
 # Content Types & Modes
@@ -196,22 +183,6 @@ DEFAULT_COUNTRY = "de"
 # Used by provider.py and channel_manager._get_graphql_headers.
 COUNTRY_TENANT_MAPPING = {
     "de": "JOYN",
-    "at": "JOYN_AT",
-    "ch": "JOYN_CH",
-}
-
-# Auth (7pass / auth.joyn.de) tenant values.
-#
-# NOTE: Joyn sends a *different* tenant on auth calls than on GraphQL calls —
-# Germany is "JOYN_DE" on auth, but plain "JOYN" on GraphQL. These must stay
-# separate; using the GraphQL map on auth calls silently downgrades the
-# session to anonymous.
-#
-# NOT YET WIRED UP: auth.py still reads COUNTRY_TENANT_MAPPING. The switch is
-# part of the auth rework batch. Kept here so the two maps stay visible
-# together.
-AUTH_TENANT_MAPPING = {
-    "de": "JOYN_DE",
     "at": "JOYN_AT",
     "ch": "JOYN_CH",
 }

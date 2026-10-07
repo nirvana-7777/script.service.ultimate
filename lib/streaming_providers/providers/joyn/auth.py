@@ -33,6 +33,18 @@ from .constants import (
 )
 
 
+class JoynMfaRequiredException(Exception):
+    """
+    Raised when the account has two-factor authentication enabled.
+
+    Joyn's login flow redirects to an MFA challenge page (signin.7pass.de/.../mfa)
+    instead of completing with an OAuth code. Since the challenge cannot be
+    satisfied without user interaction in this provider, the only viable fix is
+    for the user to disable MFA in their Joyn account settings.
+    """
+    pass
+
+
 @dataclass
 class JoynCredentials(ClientCredentials):
     """Joyn-specific credentials for client credentials flow (anonymous auth)"""
@@ -407,9 +419,14 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
         """Complete Joyn login flow matching the exact sequence observed from working traffic.
 
         Joyn does not implement real PKCE (code_verifier is always sent empty in the
-        redeem-token call) and does not use a verification-srv/initiate + device-fingerprint
-        mechanism. The client_id used for consent-accept and redeem-token is the one the
-        server itself embeds in the web-login redirect URL, not a fixed platform constant.
+        redeem-token call). The client_id used for consent-accept and redeem-token is
+        the one the server itself embeds in the web-login redirect URL, not a fixed
+        platform constant.
+
+        Accounts with two-factor authentication enabled will be redirected to an MFA
+        challenge page (signin.7pass.de/.../mfa) instead of receiving an OAuth code.
+        We cannot satisfy that challenge without user interaction, so we raise
+        JoynMfaRequiredException with an actionable message.
         """
         try:
             logger.debug("Starting Joyn login flow")
@@ -517,46 +534,34 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
             logger.debug(f"Extracted request_id: {request_id}")
 
-            # 2. Language/registration-setup check
+            # 2. Language/registration-setup check (non-fatal probe)
             try:
-                r = _request(
+                _request(
                     "GET",
                     f"https://auth.7pass.de/registration-setup-srv/public/list?acceptlanguage=undefined&requestId={request_id}",
                 )
-                try:
-                    logger.debug(f"[probe] registration-setup response: {r.json()}")
-                except Exception:
-                    logger.debug(f"[probe] registration-setup (non-JSON): {r.text[:400]}")
             except Exception as e:
                 logger.debug(f"registration-setup failed (non-fatal): {e}")
 
-            # 3. Check whether the email exists — capture and log the body
+            # 3. Check whether the email exists (non-fatal probe)
             try:
-                r = _request(
+                _request(
                     "POST",
                     f"https://auth.7pass.de/users-srv/user/checkexists/{request_id}",
                     json={"email": username, "requestId": request_id},
                     content_type="application/json",
                 )
-                try:
-                    logger.debug(f"[probe] checkexists response: {r.json()}")
-                except Exception:
-                    logger.debug(f"[probe] checkexists (non-JSON): {r.text[:600]}")
             except Exception as e:
                 logger.debug(f"checkexists failed (non-fatal): {e}")
 
-            # 4. Configured verification methods list — capture and log the body
+            # 4. Configured verification methods list (non-fatal probe)
             try:
-                r = _request(
+                _request(
                     "POST",
                     "https://auth.7pass.de/verification-srv/v2/setup/public/configured/list",
                     json={"email": username, "request_id": request_id},
                     content_type="application/json",
                 )
-                try:
-                    logger.debug(f"[probe] configured/list response: {r.json()}")
-                except Exception:
-                    logger.debug(f"[probe] configured/list (non-JSON): {r.text[:600]}")
             except Exception as e:
                 logger.debug(f"verification-srv failed (non-fatal): {e}")
 
@@ -572,13 +577,27 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 content_type="application/x-www-form-urlencoded",
                 allow_redirects=True,
             )
-            logger.debug(f"[probe] login redirect final URL: {login_response.url}")
-            logger.debug(f"[probe] login response headers: {dict(login_response.headers)}")
 
             _check_cf(login_response)
             final_url = login_response.url
             parsed = urlparse(final_url)
             params = parse_qs(parsed.query)
+
+            # 5a. MFA detection. Accounts with 2FA enabled get redirected to
+            #     signin.7pass.de/<tenant>/joyn/login/mfa instead of completing
+            #     the OAuth flow with a `code`. We cannot satisfy the challenge
+            #     without user interaction, so fail with an actionable message.
+            if "signin.7pass.de" in final_url and "/mfa" in final_url:
+                logger.error(
+                    "Joyn account has two-factor authentication enabled. "
+                    "The provider cannot complete MFA challenges — please disable "
+                    "MFA in your Joyn account settings to use this provider."
+                )
+                raise JoynMfaRequiredException(
+                    "Two-factor authentication is enabled on this Joyn account. "
+                    "Please disable MFA in your Joyn account settings "
+                    "(https://www.joyn.de/account) to use this provider."
+                )
 
             # 6. Handle consent if the server didn't return a code directly
             if params.get("code") is None:
@@ -587,7 +606,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
                 if sub and track_id:
                     logger.debug(f"Accepting consent for sub={sub}")
-                    consent_response = _request(
+                    _request(
                         "POST",
                         "https://auth.7pass.de/consent-management-srv/consent/scope/accept",
                         json={
@@ -597,58 +616,6 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                         },
                         content_type="application/json",
                     )
-                    # DEBUG: capture what consent returns — this is where status_id may live
-                    logger.debug(f"[probe] consent final URL: {consent_response.url}")
-                    logger.debug(f"[probe] consent response status: {consent_response.status_code}")
-                    logger.debug(f"[probe] consent response headers: {dict(consent_response.headers)}")
-                    logger.debug(f"[probe] consent response body: {consent_response.text[:1000]}")
-
-                    # ================================================================
-                    # >>> INSERT THE PROBE BLOCK HERE <<<
-                    #     Right after consent succeeds, before precheck/continue.
-                    # ================================================================
-                    probe_status_id = None
-                    probe_urls = [
-                        ("POST", "https://auth.7pass.de/verification-srv/v2/setup/public/initiate"),
-                        ("POST", "https://auth.7pass.de/verification-srv/v2/setup/public/status"),
-                        ("GET", f"https://auth.7pass.de/verification-srv/v2/setup/public/status/{request_id}"),
-                        ("POST", "https://auth.7pass.de/verification-srv/v2/status"),
-                        ("GET", f"https://auth.7pass.de/users-srv/user/status/{request_id}"),
-                        ("GET", f"https://auth.7pass.de/users-srv/user/{request_id}"),
-                        ("POST", "https://auth.7pass.de/users-srv/user/status"),
-                    ]
-                    for m, u in probe_urls:
-                        try:
-                            if m == "GET":
-                                r = _request("GET", u, allow_redirects=False)
-                            else:
-                                r = _request(
-                                    "POST", u,
-                                    json={"email": username, "requestId": request_id,
-                                          "request_id": request_id, "track_id": track_id},
-                                    content_type="application/json",
-                                    allow_redirects=False,
-                                )
-                            logger.debug(f"[probe] {m} {u} -> {r.status_code} {r.text[:400]}")
-                            if r.status_code == 200:
-                                try:
-                                    j = r.json()
-                                    sid = (
-                                            j.get("status_id") or j.get("statusId")
-                                            or (j.get("data") or {}).get("status_id")
-                                            or (j.get("data") or {}).get("statusId")
-                                    )
-                                    if sid:
-                                        logger.info(f"[probe] FOUND status_id={sid} via {m} {u}")
-                                        probe_status_id = sid
-                                        break
-                                except Exception:
-                                    pass
-                        except Exception as e:
-                            logger.debug(f"[probe] {m} {u} failed: {e}")
-                    # ================================================================
-                    # >>> END PROBE BLOCK <<<
-                    # ================================================================
 
                     try:
                         continue_response = _request(
@@ -709,6 +676,8 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
         except WafBlockedException:
             raise
+        except JoynMfaRequiredException:
+            raise
         except Exception as e:
             logger.error(f"Joyn login flow failed: {e}")
             raise
@@ -716,6 +685,10 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
     def authenticate_with_fallback(self, username: str, password: str) -> Dict[str, Any]:
         try:
             return self._perform_oauth_authorization_code_flow(username, password)
+        except JoynMfaRequiredException:
+            # MFA is a permanent, user-actionable condition — do not fall back
+            # to anonymous silently, or the user will think they're logged in.
+            raise
         except WafBlockedException as e:
             logger.warning(f"{self.provider_name}: WAF block detected ({e}), trying remote login")
             try:
