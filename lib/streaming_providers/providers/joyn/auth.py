@@ -572,6 +572,8 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 content_type="application/x-www-form-urlencoded",
                 allow_redirects=True,
             )
+            logger.debug(f"[probe] login redirect final URL: {login_response.url}")
+            logger.debug(f"[probe] login response headers: {dict(login_response.headers)}")
 
             _check_cf(login_response)
             final_url = login_response.url
@@ -585,7 +587,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
                 if sub and track_id:
                     logger.debug(f"Accepting consent for sub={sub}")
-                    _request(
+                    consent_response = _request(
                         "POST",
                         "https://auth.7pass.de/consent-management-srv/consent/scope/accept",
                         json={
@@ -595,6 +597,11 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                         },
                         content_type="application/json",
                     )
+                    # DEBUG: capture what consent returns — this is where status_id may live
+                    logger.debug(f"[probe] consent final URL: {consent_response.url}")
+                    logger.debug(f"[probe] consent response status: {consent_response.status_code}")
+                    logger.debug(f"[probe] consent response headers: {dict(consent_response.headers)}")
+                    logger.debug(f"[probe] consent response body: {consent_response.text[:1000]}")
 
                     # ================================================================
                     # >>> INSERT THE PROBE BLOCK HERE <<<
