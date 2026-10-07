@@ -331,6 +331,19 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
         return payload
 
+    def should_upgrade_token(self, token) -> bool:
+        # Joyn's login flow is rate-limited and locks the account on repeated
+        # failures. If the token hasn't been upgraded on the first attempt,
+        # don't keep retrying during this process lifetime.
+        if getattr(self, "_joyn_upgrade_attempted", False):
+            return False
+        # Only attempt upgrade if we have user credentials
+        from ...base.auth.credentials import UserPasswordCredentials
+        if not isinstance(self.credentials, UserPasswordCredentials):
+            return False
+        self._joyn_upgrade_attempted = True
+        return True
+
     def _get_token_exchange_endpoint(self, **kwargs) -> str:
         return self.oauth_token_endpoint
 
