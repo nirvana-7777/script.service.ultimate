@@ -8,6 +8,8 @@ methods (headers, DRM defaults, search no-ops) come for free.
 
 Design rules
 ------------
+* All managers share one constructor contract, implemented once in the
+  private ManagerBase (managers/_base.py).
 * Constructors take four required collaborators -- http_manager, auth,
   country, config -- plus keyword-only extras (caches, collaborators).
 * Managers never hold a reference to the provider. Shared state is passed
@@ -30,12 +32,17 @@ conventions documented in the template.
 
 Manager list
 ------------
-Three required capabilities:
-    ChannelManager
-    VodManager        (providers without a browseable catalogue return None)
-    EpgManager        (providers without EPG return None)
+All seven managers are OPTIONAL (see providers/_template/README.md): a
+provider wires the ones its service offers and returns None from the other
+_build_*() factories. A VOD-only provider has no ChannelManager; a
+metadata-only provider may have just an EpgManager.
 
-Four optional capabilities -- providers implement the ones they support:
+Core capabilities:
+    ChannelManager    (live channels, channel manifest / DRM)
+    VodManager        (browseable catalogue)
+    EpgManager        (guide data)
+
+Four further capabilities -- providers implement the ones they support:
     RecordingsManager  (cloud / network PVR)
     FavoritesManager    (user bookmarks on programs / channels)
     BookmarksManager    (resume position)

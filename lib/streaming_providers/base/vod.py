@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Iterator, List, Optional, Union
 
 from .models.vod import VodCategory, VodItem
+from .utils.logger import logger
 
 
 VodEntry = Union[VodCategory, VodItem]
@@ -102,8 +103,7 @@ def normalize_vod_result(result) -> VodPage:
         )
     if isinstance(result, list):
         return VodPage(entries=result)
-    import logging
-    logging.getLogger(__name__).warning(
+    logger.warning(
         f"normalize_vod_result: unexpected type {type(result).__name__}; "
         f"returning empty page"
     )

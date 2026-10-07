@@ -19,6 +19,22 @@ class AccessType(Enum):
     SVOD_PPV = "svod_ppv"  # Subscription + extra PPV surcharge
 
 
+def _as_comparable(now: datetime, bound: datetime) -> datetime:
+    """
+    Make ``now`` comparable with ``bound``.
+
+    Python refuses to compare naive and timezone-aware datetimes. Upstream
+    APIs usually deliver aware valid_from/valid_until values, while the
+    default "now" was naive, so is_active() raised TypeError. A naive value
+    is interpreted as local wall-clock time.
+    """
+    if (now.tzinfo is None) == (bound.tzinfo is None):
+        return now
+    if bound.tzinfo is not None:
+        return now.astimezone()                      # naive now -> aware (local)
+    return now.astimezone().replace(tzinfo=None)     # aware now -> naive local
+
+
 @dataclass
 class PricePoint:
     """A specific price for a region/quality/time period."""
@@ -42,9 +58,9 @@ class PricePoint:
     def is_active(self, at: Optional[datetime] = None) -> bool:
         """Check if this price point is currently valid."""
         now = at or datetime.now()
-        if self.valid_from and now < self.valid_from:
+        if self.valid_from and _as_comparable(now, self.valid_from) < self.valid_from:
             return False
-        if self.valid_until and now > self.valid_until:
+        if self.valid_until and _as_comparable(now, self.valid_until) > self.valid_until:
             return False
         return True
 

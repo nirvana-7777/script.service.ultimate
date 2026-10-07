@@ -3,20 +3,62 @@
 Core provider registry handling discovery, metadata, and lifecycle management.
 """
 
+import threading
 from typing import Any, Dict, List, Optional
 
 from .provider import StreamingProvider
 from .utils.logger import logger
 
+_CAPABILITY_NAMES = (
+    "channels", "vod", "epg", "recordings", "favorites", "bookmarks",
+    "catchup", "drm",
+)
+
+
+def _collect_capabilities(instance: Optional[StreamingProvider]) -> Optional[Dict[str, bool]]:
+    """
+    Read the derived ``implements_*`` flags of a live provider instance.
+
+    Capabilities are instance-level (they come from which managers the
+    provider wired), so they are only known once the provider exists, i.e.
+    for ENABLED providers. Returns None when there is no instance or the
+    provider exposes no boolean flags (e.g. an old-style provider).
+    """
+    if instance is None:
+        return None
+    caps: Dict[str, bool] = {}
+    for name in _CAPABILITY_NAMES:
+        try:
+            value = getattr(instance, f"implements_{name}")
+        except Exception:  # a property may raise on a half-built provider
+            continue
+        if isinstance(value, bool):
+            caps[name] = value
+    return caps or None
+
 
 class ProviderMetadata:
     """Metadata for a provider instance with lazy initialization."""
 
-    def __init__(self, plugin_class, country: str, enabled: bool = False):
+    def __init__(
+        self,
+        plugin_class,
+        country: str,
+        enabled: bool = False,
+        instance_name: Optional[str] = None,
+    ):
         self.plugin_class = plugin_class
         self.country = country.lower()
         self.enabled = enabled
         self.instance: Optional[StreamingProvider] = None
+        # The registry key this metadata is stored under. When given, it
+        # becomes ``name`` so to_dict()["name"] always resolves in
+        # get_provider(); otherwise the name is derived from the class name
+        # and the two can drift apart.
+        self._instance_name = instance_name
+        # Guards lazy create/destroy: two threads asking for the same
+        # provider must not build (and authenticate) two instances.
+        self._lock = threading.RLock()
         self._extract_metadata()
 
     def _extract_metadata(self):
@@ -55,27 +97,36 @@ class ProviderMetadata:
             for auth_type in self.supported_auth_types
         )
 
+        if self._instance_name:
+            self.name = self._instance_name
+
     def create_instance(self) -> Optional[StreamingProvider]:
         """Lazily create provider instance if enabled"""
         if not self.enabled:
             return None
 
-        if self.instance is None:
-            try:
-                logger.info(f"Creating instance for provider: {self.name}")
-                self.instance = self.plugin_class(country=self.country)
-                logger.debug(f"Successfully created instance for {self.name}")
-            except Exception as e:
-                logger.error(f"Failed to create instance for {self.name}: {e}")
-                self.instance = None
+        with self._lock:
+            if self.instance is None:
+                try:
+                    logger.info(f"Creating instance for provider: {self.name}")
+                    self.instance = self.plugin_class(country=self.country)
+                    logger.debug(f"Successfully created instance for {self.name}")
+                except Exception:
+                    # logger.exception keeps the traceback: a missing
+                    # provider_name, a bad manager wiring (ConfigurationError)
+                    # or an import error otherwise shows up as one cryptic
+                    # line and the provider silently vanishes from the UI.
+                    logger.exception(f"Failed to create instance for {self.name}")
+                    self.instance = None
 
-        return self.instance
+            return self.instance
 
     def destroy_instance(self):
         """Clean up provider instance"""
-        if self.instance:
-            logger.debug(f"Destroying instance for provider: {self.name}")
-            self.instance = None
+        with self._lock:
+            if self.instance:
+                logger.debug(f"Destroying instance for provider: {self.name}")
+                self.instance = None
 
     def set_enabled(self, enabled: bool):
         """Update enabled status and manage instance accordingly"""
@@ -99,6 +150,7 @@ class ProviderMetadata:
             "logo": self.logo,
             "is_multi_country": self.is_multi_country,
             "supported_countries": self.supported_countries,
+            "capabilities": _collect_capabilities(self.instance),
         }
 
 
@@ -125,6 +177,7 @@ class M3UGroupMetadata:
         self.country = country.lower()
         self.enabled = enabled
         self.instance: Optional[StreamingProvider] = None
+        self._lock = threading.RLock()
 
         # Extract metadata from class
         self._extract_metadata()
@@ -161,28 +214,30 @@ class M3UGroupMetadata:
         if not self.enabled:
             return None
 
-        if self.instance is None:
-            try:
-                logger.info(f"Creating M3U group instance: {self.name} (group: {self.group})")
+        with self._lock:
+            if self.instance is None:
+                try:
+                    logger.info(f"Creating M3U group instance: {self.name} (group: {self.group})")
 
-                # Create instance with group filter - __init__ will handle proxy setup
-                self.instance = self.plugin_class(
-                    country=self.country,
-                    group_filter=self.group
-                )
+                    # Create instance with group filter - __init__ will handle proxy setup
+                    self.instance = self.plugin_class(
+                        country=self.country,
+                        group_filter=self.group
+                    )
 
-                logger.debug(f"Successfully created instance for M3U group: {self.name}")
-            except Exception as e:
-                logger.error(f"Failed to create M3U group instance {self.name}: {e}")
-                self.instance = None
+                    logger.debug(f"Successfully created instance for M3U group: {self.name}")
+                except Exception:
+                    logger.exception(f"Failed to create M3U group instance {self.name}")
+                    self.instance = None
 
-        return self.instance
+            return self.instance
 
     def destroy_instance(self):
         """Clean up provider instance"""
-        if self.instance:
-            logger.debug(f"Destroying M3U group instance: {self.name}")
-            self.instance = None
+        with self._lock:
+            if self.instance:
+                logger.debug(f"Destroying M3U group instance: {self.name}")
+                self.instance = None
 
     def set_enabled(self, enabled: bool):
         """Update enabled status and manage instance accordingly"""
@@ -206,6 +261,7 @@ class M3UGroupMetadata:
             "logo": self.logo,
             "is_multi_country": self.is_multi_country,
             "supported_countries": self.supported_countries,
+            "capabilities": _collect_capabilities(self.instance),
             # M3U-specific fields
             "group": self.group,
             "type": "m3u_group",
@@ -260,7 +316,9 @@ class ProviderRegistry:
                     instance_name = f"{plugin_name}_{country}"
                     enabled = self._is_provider_enabled(plugin_name, country)
 
-                    metadata = ProviderMetadata(plugin_class, country, enabled)
+                    metadata = ProviderMetadata(
+                        plugin_class, country, enabled, instance_name=instance_name
+                    )
                     self.provider_metadata[instance_name] = metadata
                     discovered.append(instance_name)
 
@@ -272,7 +330,9 @@ class ProviderRegistry:
                 instance_name = plugin_name
                 enabled = self._is_provider_enabled(plugin_name)
 
-                metadata = ProviderMetadata(plugin_class, default_country, enabled)
+                metadata = ProviderMetadata(
+                    plugin_class, default_country, enabled, instance_name=instance_name
+                )
                 self.provider_metadata[instance_name] = metadata
                 discovered.append(instance_name)
 
@@ -405,6 +465,9 @@ class ProviderRegistry:
             return False
 
         try:
+            # Drop the registry's reference first: if re-creation fails we
+            # must not keep serving the instance the metadata already forgot.
+            self.providers.pop(provider_name, None)
             metadata.destroy_instance()
             new_instance = metadata.create_instance()
             if new_instance:

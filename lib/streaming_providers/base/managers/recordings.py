@@ -20,13 +20,14 @@ Return-value conventions
 get_recordings returns [] when the provider has no recordings. Callers
 should treat an empty list as "no recordings", not as an error.
 
-delete_recording raises KeyError when the recording does not exist, and
-ProviderError subclasses (usually ServerError / EntitlementError) on
-transport or permission failures. Returning silently on a failed delete
-would hide real errors.
+delete_recording raises ItemNotFoundError (also a KeyError) when the
+recording does not exist, and ProviderError subclasses (usually ServerError
+/ EntitlementError / OperationFailedError) on transport or permission
+failures. Returning silently on a failed delete would hide real errors.
 
 schedule_recording is optional -- the ABC provides a default that raises
-NotImplementedYetError. Providers that support scheduling override it.
+UnsupportedOperationError, and supports_scheduling is False. Providers that
+support scheduling override both.
 
 Recording identity
 ------------------
@@ -38,16 +39,15 @@ that distinction is preserved.
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from typing import Any, List
 
-from ..errors import NotImplementedYetError
+from ..errors import UnsupportedOperationError
 from ..models import Channel
-from ..protocols import AuthProtocol
-from ..utils.logger import logger
+from ._base import ManagerBase
 
 
-class RecordingsManager(ABC):
+class RecordingsManager(ManagerBase):
     """
     Abstract base for provider recordings managers.
 
@@ -72,28 +72,9 @@ class RecordingsManager(ABC):
 
     Providers that need a recording's manifest should implement the
     routing in their provider's get_manifest, not by adding a
-    get_manifest method here. See providers/simpli/provider.py for
-    the pattern.
+    get_manifest method here. See the simpliTV provider's provider.py
+    for the pattern.
     """
-
-    def __init__(
-        self,
-        *,
-        http_manager: Any,
-        auth: AuthProtocol,
-        country: str,
-        config: Any,
-    ) -> None:
-        if not isinstance(auth, AuthProtocol):
-            logger.warning(
-                f"{self.__class__.__name__}: auth does not match AuthProtocol "
-                f"(missing one of get_access_token / build_headers / "
-                f"invalidate). Got {type(auth).__name__}."
-            )
-        self.http_manager = http_manager
-        self.auth = auth
-        self.country = country
-        self.config = config
 
     # ------------------------------------------------------------------
     # Routing
@@ -143,14 +124,26 @@ class RecordingsManager(ABC):
         Delete a recording.
 
         Raises:
-            KeyError:      if the recording does not exist.
-            ProviderError: on transport / permission / server failure.
+            ItemNotFoundError: if the recording does not exist (also a
+                               KeyError).
+            ProviderError:     on transport / permission / server failure.
         """
         raise NotImplementedError
 
     # ------------------------------------------------------------------
     # Concrete -- optional
     # ------------------------------------------------------------------
+
+    @property
+    def supports_scheduling(self) -> bool:
+        """
+        True when schedule_recording() is implemented. Default False.
+
+        Providers that override schedule_recording MUST also override this
+        to return True, so callers can gate the UI instead of catching
+        UnsupportedOperationError.
+        """
+        return False
 
     def schedule_recording(self, content_id: str, **kw: Any) -> Any:
         """
@@ -161,10 +154,11 @@ class RecordingsManager(ABC):
         indicating success. The ABC does not constrain the shape
         because there is no shared one across providers.
 
-        Default raises NotImplementedYetError. Providers that support
-        scheduling override this.
+        Default raises UnsupportedOperationError (a NotImplementedYetError
+        subclass, so old handlers still match). "Not supported by this
+        provider" is not the same as "planned, not done yet". Providers
+        that support scheduling override this AND supports_scheduling.
         """
-        raise NotImplementedYetError(
-            f"{self.__class__.__name__}.schedule_recording is not "
-            f"implemented"
+        raise UnsupportedOperationError(
+            f"{self.__class__.__name__} does not support schedule_recording"
         )

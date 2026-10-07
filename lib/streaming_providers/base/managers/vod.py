@@ -10,6 +10,7 @@ Public interface
     get_vod_manifest(content_id, **kw)                 -> Optional[str]      [abstract]
     search_vod(query, cursor=None, page_size=24, **kw) -> VodPage            [concrete]
     get_vod_manifest_headers(content_id, **kw)         -> Dict[str, str]     [concrete]
+    get_segment_headers(content_id, **kw)              -> Dict[str, str]     [concrete]
     get_vod_drm(content_id, **kw)                      -> List[DRMConfig]    [concrete]
 
 content_id grammar
@@ -24,9 +25,9 @@ documents it here. The base class does not parse content_id. Examples:
 
 Constructor contract
 --------------------
-Four required keyword-only collaborators. No **kwargs. Subclasses accept
-extra keyword-only args explicitly and call super().__init__ with only
-the four required. A typo at a call site becomes an immediate TypeError.
+Four required keyword-only collaborators (see ManagerBase). No **kwargs.
+Subclasses accept extra keyword-only args explicitly and call
+super().__init__ with only the four required.
 
 Return-value conventions
 ------------------------
@@ -37,36 +38,16 @@ propagate as exceptions from base.errors.
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from typing import Any, Dict, List, Optional
 
 from ..models import DRMConfig
-from ..protocols import AuthProtocol
-from ..utils.logger import logger
 from ..vod import VodPage
+from ._base import ManagerBase
 
 
-class VodManager(ABC):
+class VodManager(ManagerBase):
     """Abstract base for provider VOD managers."""
-
-    def __init__(
-        self,
-        *,
-        http_manager: Any,
-        auth: AuthProtocol,
-        country: str,
-        config: Any,
-    ) -> None:
-        if not isinstance(auth, AuthProtocol):
-            logger.warning(
-                f"{self.__class__.__name__}: auth does not match AuthProtocol "
-                f"(missing one of get_access_token / build_headers / "
-                f"invalidate). Got {type(auth).__name__}."
-            )
-        self.http_manager = http_manager
-        self.auth = auth
-        self.country = country
-        self.config = config
 
     # ------------------------------------------------------------------
     # Routing
@@ -78,6 +59,7 @@ class VodManager(ABC):
 
         Default: True. Override in providers whose VOD content_ids have a
         distinguishable grammar (e.g. start with "details_" or "clip_").
+        Cheap, I/O-free PRE-FILTER: False means the manager is never asked.
         """
         return True
 
@@ -122,6 +104,18 @@ class VodManager(ABC):
     ) -> Dict[str, str]:
         """Headers for the manifest request. Default: auth headers."""
         return self.auth.build_headers()
+
+    def get_segment_headers(
+        self, content_id: str, **kw: Any
+    ) -> Dict[str, str]:
+        """
+        Headers for segment requests. Default: manifest headers.
+
+        Mirrors ChannelManager.get_segment_headers so the orchestrator can
+        ask any routed manager for segment headers. Override for providers
+        with token-bound segment URLs.
+        """
+        return self.get_vod_manifest_headers(content_id, **kw)
 
     def get_vod_drm(
         self, content_id: str, **kw: Any

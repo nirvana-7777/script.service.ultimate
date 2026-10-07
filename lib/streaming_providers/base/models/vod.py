@@ -124,8 +124,10 @@ class VodCategory:
     # of reconstructing it from content_id, which loses query params.
     fetch_url: Optional[str] = None
 
-    # Cached slug (computed lazily if not set)
-    _slug: Optional[str] = field(default=None, repr=False)
+    # Cached slug (computed lazily). init=False / compare=False: it is a
+    # cache, not state -- two equal categories must compare equal whether or
+    # not .slug was accessed, and it must not be an __init__ parameter.
+    _slug: Optional[str] = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self):
         """Validate and clean up required fields."""
@@ -218,8 +220,8 @@ class VodItem(Content):
     # False → full broadcast recording  (videoType == "STANDALONE_EVENT" etc.)
     is_highlight: bool = False
 
-    # Cached slug
-    _slug: Optional[str] = field(default=None, repr=False)
+    # Cached slug (see VodCategory._slug)
+    _slug: Optional[str] = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self):
         """Validate and clean up required fields."""

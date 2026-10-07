@@ -2,12 +2,26 @@
 DRM-specific Exception Classes
 
 Custom exceptions for better error handling and debugging in DRM operations.
+
+All of them descend from DRMError, which is a ConfigurationError and
+therefore a ProviderError (base/errors.py). A caller that handles
+``ProviderError`` now also catches DRM configuration problems; before this
+change DRMError derived from plain Exception and slipped past every
+``except ProviderError`` handler.
 """
 
+from ...errors import ConfigurationError
 
-class DRMError(Exception):
-    """Base exception for all DRM-related errors"""
-    pass
+
+class DRMError(ConfigurationError):
+    """Base exception for all DRM-related errors.
+
+    ``message`` is optional so call sites that raise a bare
+    ``InvalidPSSHError()`` keep working (ProviderError itself requires one).
+    """
+
+    def __init__(self, message: str = "", **kw) -> None:
+        super().__init__(message, **kw)
 
 
 class InvalidPSSHError(DRMError):

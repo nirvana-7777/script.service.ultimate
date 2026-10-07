@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional
 
 from .drm import DRMConfig
 from .pricing import AccessType, PricePoint, Pricing
@@ -68,34 +68,44 @@ class Content:
     # Pricing (None = UNKNOWN, NOT FREE)
     pricing: Optional[Pricing] = None
 
-    def __post_init__(self):
-        """Validate pricing and mode consistency."""
+    def _pricing_mode_problems(self) -> List[str]:
+        """
+        Pricing-vs-mode inconsistencies, as human-readable strings.
+
+        Only combinations that are unambiguous are constrained:
+            PPV_LIVE                       -> mode must be "live"
+            TVOD_RENTAL / TVOD_PURCHASE    -> mode must be "vod"
+        AVOD, PPV_REPLAY and SVOD_PPV used to be forced to "live". That made
+        every ad-supported on-demand item and every PPV replay (the VodItem
+        docstring's own "past sports event") fail at construction, because
+        VodItem normalises mode to "vod" before validating. Those access
+        types describe how content is MONETISED, not how it is delivered, so
+        they no longer constrain the mode.
+        """
         if not self.pricing:
-            return
-
-        # Define mode mappings
-        live_types: Set[AccessType] = {
-            AccessType.PPV_LIVE,
-            AccessType.PPV_REPLAY,
-            AccessType.SVOD_PPV,
-            AccessType.AVOD
-        }
-        vod_types: Set[AccessType] = {
-            AccessType.TVOD_RENTAL,
-            AccessType.TVOD_PURCHASE
-        }
-
-        # Check mode consistency
-        if self.pricing.access_type in live_types and self.mode != StreamingMode.LIVE:
-            raise ValueError(
-                f"Content '{self.name}' has {self.pricing.access_type.value} pricing "
+            return []
+        access = self.pricing.access_type
+        problems: List[str] = []
+        if access == AccessType.PPV_LIVE and self.mode != StreamingMode.LIVE:
+            problems.append(
+                f"Content '{self.name}' has {access.value} pricing "
                 f"but mode is '{self.mode}' (expected '{StreamingMode.LIVE}')"
             )
-        elif self.pricing.access_type in vod_types and self.mode != StreamingMode.VOD:
-            raise ValueError(
-                f"Content '{self.name}' has {self.pricing.access_type.value} pricing "
+        elif (
+            access in (AccessType.TVOD_RENTAL, AccessType.TVOD_PURCHASE)
+            and self.mode != StreamingMode.VOD
+        ):
+            problems.append(
+                f"Content '{self.name}' has {access.value} pricing "
                 f"but mode is '{self.mode}' (expected '{StreamingMode.VOD}')"
             )
+        return problems
+
+    def __post_init__(self):
+        """Validate pricing and mode consistency (strict: raises)."""
+        problems = self._pricing_mode_problems()
+        if problems:
+            raise ValueError(problems[0])
 
     # --- Pricing Properties ---
 
@@ -226,6 +236,8 @@ class Content:
             "ContentType": self.content_type,
             "Country": self.country,
             "Language": self.language,
+            "Description": self.description,
+            "Genre": self.genre,
             "StreamingFormat": self.streaming_format,
             "LicenseUrl": self.license_url,
             "CertificateUrl": self.certificate_url,

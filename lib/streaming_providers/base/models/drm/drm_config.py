@@ -4,8 +4,8 @@ DRM Configuration Model
 Main configuration class that combines DRM system, PSSH data, and license config.
 """
 
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, replace
+from typing import Dict, Optional, Sequence
 
 from .drm_systems import DRMSystem
 from .license_config import LicenseConfig
@@ -214,3 +214,65 @@ class DRMConfig:
         return (
             f"<DRMConfig({self.system.name}, priority={self.priority}, {has_license})>"
         )
+
+
+# ---------------------------------------------------------------------------
+# Multi-DRM helpers
+# ---------------------------------------------------------------------------
+
+def validate_drm_set(configs: Sequence[DRMConfig]) -> None:
+    """
+    Validate a set of DRMConfig objects that will be sent to ISA together.
+
+    Checks each config (DRMConfig.validate) and that no two configs share a
+    priority. The factories (create_widevine, create_playready, ...) all
+    default to priority=1, so a naive [widevine, playready] list is INVALID
+    until priorities are assigned -- see merge_drm_configs(auto_priority=True).
+
+    Raises:
+        LicenseConfigError: on any invalid config or duplicate priority.
+    """
+    seen: Dict[int, DRMConfig] = {}
+    for cfg in configs:
+        cfg.validate()
+        if cfg.priority in seen:
+            raise LicenseConfigError(
+                f"{cfg.system.name} and {seen[cfg.priority].system.name} "
+                f"share priority {cfg.priority}; each DRM needs a unique "
+                f"priority (lower number = higher priority)."
+            )
+        seen[cfg.priority] = cfg
+
+
+def merge_drm_configs(
+    configs: Sequence[DRMConfig], *, auto_priority: bool = False
+) -> dict:
+    """
+    Merge several DRMConfig objects into ONE inputstream.adaptive.drm dict.
+
+    Args:
+        configs: DRM configs in preference order (first = most preferred).
+        auto_priority: Renumber priorities 1..n in the given order (on
+            copies; the inputs are not mutated). Without it the configs
+            must already carry unique priorities.
+
+    Raises:
+        LicenseConfigError: invalid config, duplicate priority, or the same
+            DRM system listed twice. (A config with pre_init_data must keep
+            priority=1; auto_priority will trip that rule if it is not first.)
+    """
+    items = list(configs)
+    if auto_priority:
+        items = [replace(c, priority=i) for i, c in enumerate(items, start=1)]
+    validate_drm_set(items)
+
+    merged: dict = {}
+    for cfg in items:
+        entry = cfg.to_dict()
+        clash = set(entry) & set(merged)
+        if clash:
+            raise LicenseConfigError(
+                f"DRM system listed twice: {sorted(clash)}"
+            )
+        merged.update(entry)
+    return merged

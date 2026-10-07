@@ -5,12 +5,13 @@ Data classes for DRM license configuration, including server URLs,
 certificates, headers, and unwrapper parameters.
 """
 
+import base64
 import json
 import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, Optional, Union
-from urllib.parse import urlencode, unquote
+from urllib.parse import quote, urlencode
 
 from .utils import safe_base64_decode, safe_base64_encode, normalize_key_id
 from .exceptions import LicenseConfigError
@@ -149,15 +150,17 @@ class LicenseConfig:
                     norm_kid = normalize_key_id(kid)
                     norm_key = key.lower().replace("-", "")
                     normalized_keyids[norm_kid] = norm_key
-                except Exception:
-                    pass
+                except Exception as e:
+                    # Previously swallowed: a bad pair vanished silently,
+                    # keyids ended up empty and validate() still passed.
+                    raise LicenseConfigError(
+                        f"Invalid ClearKey entry (kid={kid!r}): {e}"
+                    ) from e
             self.keyids = normalized_keyids
 
     @staticmethod
     def _is_base64(s: str) -> bool:
         """Check if string appears to be base64 encoded."""
-        import base64
-        import re
         # Base64 pattern: only valid chars, length multiple of 4
         if not re.match(r'^[A-Za-z0-9+/]*={0,2}$', s):
             return False
@@ -166,6 +169,21 @@ class LicenseConfig:
             return True
         except Exception:
             return False
+
+    @staticmethod
+    def _split_flags(value: Optional[str]) -> list:
+        """Split a comma-separated flag string ("base64,urlenc") into tokens."""
+        return [t.strip().lower() for t in (value or "").split(",") if t.strip()]
+
+    @classmethod
+    def _validate_flag_list(cls, name: str, value: Optional[str], enum_cls) -> None:
+        allowed = {m.value for m in enum_cls}
+        for token in cls._split_flags(value):
+            if token not in allowed:
+                raise LicenseConfigError(
+                    f"Invalid {name} flag '{token}'. "
+                    f"Allowed: {', '.join(sorted(allowed))}"
+                )
 
     def validate(self) -> None:
         """
@@ -199,6 +217,17 @@ class LicenseConfig:
                 "req_headers must be a URL-encoded string after normalization — "
                 "this indicates _normalize_headers was not called. "
                 "Construct via the normal dataclass constructor to ensure normalization."
+            )
+
+        self._validate_flag_list("wrapper", self.wrapper, WrapperType)
+        self._validate_flag_list("unwrapper", self.unwrapper, UnwrapperType)
+        if (
+            set(self._split_flags(self.unwrapper)) & {"json", "xml"}
+            and self.unwrapper_params is None
+        ):
+            raise LicenseConfigError(
+                "unwrapper_params is required when unwrapper includes "
+                "'json' or 'xml'."
             )
 
         if self.keyids:
@@ -272,7 +301,7 @@ class LicenseConfig:
 
         # Case 1: Already a dict
         if isinstance(headers, dict):
-            return urlencode(headers)
+            return self._encode_headers(headers)
 
         # Case 2: String input
         if isinstance(headers, str):
@@ -285,20 +314,22 @@ class LicenseConfig:
                 try:
                     header_dict = json.loads(headers)
                     if isinstance(header_dict, dict):
-                        return urlencode(header_dict)
+                        return self._encode_headers(header_dict)
                 except json.JSONDecodeError as e:
                     raise LicenseConfigError(
                         f"Invalid JSON in req_headers: {e}"
                     ) from e
 
-            # Already URL-encoded: contains '=' and at least one '&' or ';'
-            if "=" in headers and ("&" in headers or ";" in headers):
+            # "Key: Value" plain text: a ':' appears before any '='.
+            if self._looks_plain(headers):
+                return self._parse_plain_headers(headers)
+
+            # URL-encoded "k=v[&k=v...]". A SINGLE pair is valid too (the
+            # class docstring's own example is one pair, which the old
+            # '&'/';' requirement rejected).
+            if "=" in headers:
                 self._validate_urlencoded_headers(headers)
                 return headers
-
-            # "Key: Value" plain-text format (no '=' present)
-            if ":" in headers and "=" not in headers:
-                return self._parse_plain_headers(headers)
 
             raise LicenseConfigError(
                 f"Invalid req_headers format: '{headers}'. "
@@ -309,6 +340,25 @@ class LicenseConfig:
         raise LicenseConfigError(
             f"req_headers must be dict, string, or None, got {type(headers).__name__}"
         )
+
+    @staticmethod
+    def _looks_plain(headers: str) -> bool:
+        """True when ``headers`` is "Key: Value" text rather than "k=v"."""
+        colon = headers.find(":")
+        equals = headers.find("=")
+        return colon != -1 and (equals == -1 or colon < equals)
+
+    @staticmethod
+    def _encode_headers(header_dict: Dict[str, str]) -> str:
+        """
+        URL-encode a header dict.
+
+        quote_via=quote with safe="" gives "%20" for spaces and "%2F" for
+        "/" (as documented), where the default quote_plus wrote "+" for
+        spaces. TODO(device-verify): confirm ISA decodes "+" and "%20" alike;
+        "%20" is the unambiguous choice either way.
+        """
+        return urlencode(header_dict, quote_via=quote, safe="")
 
     @staticmethod
     def _validate_urlencoded_headers(headers: str) -> None:
@@ -334,20 +384,22 @@ class LicenseConfig:
             key, value = pair.split("=", 1)
             if not key.strip():
                 raise LicenseConfigError(f"Empty header key in pair: '{pair}'")
-            try:
-                unquote(value)  # Raises if the percent-encoding is broken
-            except Exception as e:
+            # unquote() never raises, so the old try/except validated nothing.
+            if re.search(r"%(?![0-9A-Fa-f]{2})", pair):
                 raise LicenseConfigError(
-                    f"Header value is not properly URL-encoded: '{value}'"
-                ) from e
+                    f"Header value has a malformed percent-escape: '{pair}'"
+                )
 
     @staticmethod
     def _parse_plain_headers(headers: str) -> str:
         """
         Convert ``"Key: Value"`` lines to a URL-encoded string.
 
-        Lines may be separated by newlines, carriage-returns, semicolons,
-        or commas.  Blank lines are silently skipped.
+        Headers are separated by newlines / carriage-returns, or by a ';' or
+        ',' that is followed by another "Name:" token. A comma or semicolon
+        inside a value ("Mozilla/5.0 (KHTML, like Gecko)", "text/html;q=0.9")
+        does NOT split. Blank lines are skipped; a header with an empty value
+        is kept (it used to be dropped silently).
 
         Example::
 
@@ -364,7 +416,7 @@ class LicenseConfig:
             LicenseConfigError: If any non-blank line lacks a ``':'``.
         """
         header_dict: Dict[str, str] = {}
-        for line in re.split(r"[\n\r;,]+", headers):
+        for line in re.split(r"[\n\r]+|[;,]\s*(?=[A-Za-z0-9_\-]+\s*:)", headers):
             line = line.strip()
             if not line:
                 continue
@@ -375,9 +427,10 @@ class LicenseConfig:
             key, value = line.split(":", 1)
             key = key.strip()
             value = value.strip()
-            if key and value:
-                header_dict[key] = value
-        return urlencode(header_dict)
+            if not key:
+                raise LicenseConfigError(f"Empty header name in line: '{line}'")
+            header_dict[key] = value
+        return LicenseConfig._encode_headers(header_dict)
 
     def to_dict(self) -> dict:
         """

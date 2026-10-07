@@ -22,36 +22,16 @@ epg_window returns (past_days, future_days). (0, 0) means no EPG support.
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..models.epg_models import EPGEntry, EPGProgramDetails
-from ..protocols import AuthProtocol
-from ..utils.logger import logger
+from ._base import ManagerBase
 
 
-class EpgManager(ABC):
+class EpgManager(ManagerBase):
     """Abstract base for provider EPG managers."""
-
-    def __init__(
-        self,
-        *,
-        http_manager: Any,
-        auth: AuthProtocol,
-        country: str,
-        config: Any,
-    ) -> None:
-        if not isinstance(auth, AuthProtocol):
-            logger.warning(
-                f"{self.__class__.__name__}: auth does not match AuthProtocol "
-                f"(missing one of get_access_token / build_headers / "
-                f"invalidate). Got {type(auth).__name__}."
-            )
-        self.http_manager = http_manager
-        self.auth = auth
-        self.country = country
-        self.config = config
 
     # ------------------------------------------------------------------
     # Capability

@@ -13,10 +13,10 @@ Public interface
 
 Constructor contract
 --------------------
-Four required keyword-only collaborators. Subclasses that need extra state
-declare additional keyword-only args and store them on self AFTER calling
-super().__init__. The base does NOT accept **kwargs -- a typo at a call
-site becomes an immediate TypeError, which is what you want.
+Four required keyword-only collaborators (see ManagerBase). Subclasses that
+need extra state declare additional keyword-only args and store them on
+self AFTER calling super().__init__. The base does NOT accept **kwargs -- a
+typo at a call site becomes an immediate TypeError, which is what you want.
 
 Return-value conventions
 ------------------------
@@ -27,38 +27,15 @@ failures propagate as exceptions from base.errors.
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from typing import Any, Dict, List, Optional
 
 from ..models import Channel, DRMConfig
-from ..protocols import AuthProtocol
-from ..utils.logger import logger
+from ._base import ManagerBase
 
 
-class ChannelManager(ABC):
+class ChannelManager(ManagerBase):
     """Abstract base for provider channel managers."""
-
-    def __init__(
-        self,
-        *,
-        http_manager: Any,
-        auth: AuthProtocol,
-        country: str,
-        config: Any,
-    ) -> None:
-        # Sanity check the Auth collaborator against the runtime_checkable
-        # protocol. isinstance on a runtime_checkable Protocol only verifies
-        # method presence, not signatures -- that's the intended check here.
-        if not isinstance(auth, AuthProtocol):
-            logger.warning(
-                f"{self.__class__.__name__}: auth does not match AuthProtocol "
-                f"(missing one of get_access_token / build_headers / "
-                f"invalidate). Got {type(auth).__name__}."
-            )
-        self.http_manager = http_manager
-        self.auth = auth
-        self.country = country
-        self.config = config
 
     # ------------------------------------------------------------------
     # Routing
@@ -71,7 +48,8 @@ class ChannelManager(ABC):
         Default: True. Override in providers whose channel content_ids have
         a distinguishable grammar (e.g. numeric-only for live channels).
         The orchestrator uses this to route get_manifest / get_drm without
-        a wasted request to the wrong manager.
+        a wasted request to the wrong manager. It is a cheap, I/O-free
+        PRE-FILTER: False means the manager is never asked.
         """
         return True
 

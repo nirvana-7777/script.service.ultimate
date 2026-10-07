@@ -182,6 +182,25 @@ class NotFoundError(ProviderError):
     """
 
 
+class ItemNotFoundError(NotFoundError, KeyError):
+    """A user-scoped item (recording, favorite, bookmark) does not exist.
+
+    Raised by delete_recording / remove_favorite / delete_bookmark when the
+    id is not currently stored. It is deliberately BOTH a NotFoundError
+    (uniform ProviderError handling) and a KeyError (the pre-existing
+    convention documented on the Provider*Mixin classes), so callers can
+    migrate from ``except KeyError`` to ``except ItemNotFoundError`` at
+    their own pace. Do not confuse with "this manager doesn't handle that
+    content_id", which is a None / [] return value.
+    """
+
+    def __str__(self) -> str:
+        # KeyError.__str__ would repr() the message (extra quotes).
+        if len(self.args) == 1:
+            return str(self.args[0])
+        return Exception.__str__(self)
+
+
 class BadRequestError(ProviderError):
     """400 -- the request was malformed for the endpoint called.
 
@@ -220,8 +239,29 @@ class NotImplementedYetError(ProviderError):
     """Feature captured but not yet wired up."""
 
 
+class UnsupportedOperationError(NotImplementedYetError):
+    """The provider does not support this operation (and will not).
+
+    Distinct in meaning from NotImplementedYetError ("planned, not done").
+    Subclasses it so existing handlers keep working. Prefer checking the
+    capability flag (e.g. RecordingsManager.supports_scheduling) before
+    calling, and treat this as the safety net.
+    """
+
+
 class ConfigurationError(ProviderError):
     """Provider is misconfigured."""
+
+
+class OperationFailedError(ProviderError, RuntimeError):
+    """A write operation was rejected or failed on the provider backend.
+
+    Raised by add_favorite / remove_favorite / update_bookmark /
+    delete_bookmark / delete_recording on backend refusal or failure. Also a
+    RuntimeError so existing ``except RuntimeError`` handlers keep working.
+    Prefer a more specific subclass of ProviderError (ServerError,
+    EntitlementError, ...) when the cause is known.
+    """
 
 
 # ---------------------------------------------------------------------------

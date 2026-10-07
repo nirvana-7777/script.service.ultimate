@@ -16,14 +16,19 @@ Return-value conventions
 ------------------------
 get_bookmarks returns [] when the user has no bookmarks. Not an error.
 
-update_bookmark raises RuntimeError if the provider rejects the write
+update_bookmark raises OperationFailedError if the provider rejects the write
 (e.g. content inaccessible, backend error). It is called on every
 playback stop / pause, so providers should tolerate a write that
 overwrites the same position with a no-op rather than failing.
 
-delete_bookmark raises KeyError if no bookmark exists for content_id,
-so callers can distinguish "already gone" from "successfully deleted".
-The base ProviderBookmarksMixin documents the same rule.
+delete_bookmark raises ItemNotFoundError if no bookmark exists for
+content_id, so callers can distinguish "already gone" from "successfully
+deleted". The base ProviderBookmarksMixin documents the same rule (as
+KeyError; ItemNotFoundError is a KeyError subclass).
+
+ItemNotFoundError is both a NotFoundError (ProviderError) and a KeyError, and
+OperationFailedError is both a ProviderError and a RuntimeError, so handlers
+written against the old KeyError / RuntimeError convention keep working.
 
 Caller guidance
 ---------------
@@ -35,35 +40,15 @@ they are given.
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from typing import Any, List, Optional
 
 from ..models.bookmark import Bookmark, ContentType
-from ..protocols import AuthProtocol
-from ..utils.logger import logger
+from ._base import ManagerBase
 
 
-class BookmarksManager(ABC):
+class BookmarksManager(ManagerBase):
     """Abstract base for provider bookmarks managers."""
-
-    def __init__(
-        self,
-        *,
-        http_manager: Any,
-        auth: AuthProtocol,
-        country: str,
-        config: Any,
-    ) -> None:
-        if not isinstance(auth, AuthProtocol):
-            logger.warning(
-                f"{self.__class__.__name__}: auth does not match AuthProtocol "
-                f"(missing one of get_access_token / build_headers / "
-                f"invalidate). Got {type(auth).__name__}."
-            )
-        self.http_manager = http_manager
-        self.auth = auth
-        self.country = country
-        self.config = config
 
     # ------------------------------------------------------------------
     # Abstract
@@ -94,7 +79,8 @@ class BookmarksManager(ABC):
         Called on playback stop / pause, so should be tolerant of
         repeated writes to the same position (a no-op write is fine).
 
-        Raises RuntimeError if the provider rejects the write.
+        Raises OperationFailedError (also a RuntimeError) if the provider
+        rejects the write.
         """
         raise NotImplementedError
 
@@ -104,7 +90,8 @@ class BookmarksManager(ABC):
         Delete a bookmark.
 
         Raises:
-            KeyError:     if no bookmark exists for content_id.
-            RuntimeError: on backend failure.
+            ItemNotFoundError:    if no bookmark exists for content_id
+                                  (also a KeyError).
+            OperationFailedError: on backend failure (also a RuntimeError).
         """
         raise NotImplementedError

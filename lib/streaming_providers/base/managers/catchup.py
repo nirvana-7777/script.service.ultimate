@@ -9,6 +9,7 @@ Public interface
     get_catchup_manifest(content_id, start_time, end_time=None, ...)
                                                         -> Optional[str]   [abstract]
     get_catchup_manifest_headers(...)                   -> Dict[str,str]   [concrete]
+    get_catchup_segment_headers(...)                    -> Dict[str,str]   [concrete]
     get_catchup_drm(...)                                -> List[DRMConfig] [concrete]
 
 Constructor contract
@@ -30,8 +31,8 @@ get_catchup_drm returns [] when catchup shares DRM with live (the
 common case), or a provider-specific list when catchup uses different
 DRM.
 
-Return the manifest of the live stream
---------------------------------------
+What a catchup manifest is (and is not)
+----------------------------------------
 The catchup manifest is a *modified* live manifest URL (with time
 parameters) for providers like Magenta and MoveTV, or a distinct URL
 for providers whose catchup is served from a different origin. This
@@ -60,35 +61,15 @@ when the ABC accepts None. Pass None.
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from typing import Any, Dict, List, Optional
 
 from ..models import DRMConfig
-from ..protocols import AuthProtocol
-from ..utils.logger import logger
+from ._base import ManagerBase
 
 
-class CatchupManager(ABC):
+class CatchupManager(ManagerBase):
     """Abstract base for provider catchup managers."""
-
-    def __init__(
-        self,
-        *,
-        http_manager: Any,
-        auth: AuthProtocol,
-        country: str,
-        config: Any,
-    ) -> None:
-        if not isinstance(auth, AuthProtocol):
-            logger.warning(
-                f"{self.__class__.__name__}: auth does not match AuthProtocol "
-                f"(missing one of get_access_token / build_headers / "
-                f"invalidate). Got {type(auth).__name__}."
-            )
-        self.http_manager = http_manager
-        self.auth = auth
-        self.country = country
-        self.config = config
 
     # ------------------------------------------------------------------
     # Capability
@@ -164,6 +145,25 @@ class CatchupManager(ABC):
         Override when catchup requires additional or different headers.
         """
         return self.auth.build_headers()
+
+    def get_catchup_segment_headers(
+        self,
+        content_id: str,
+        start_time: int,
+        end_time: Optional[int] = None,
+        epg_id: Optional[str] = None,
+        **kw: Any,
+    ) -> Dict[str, str]:
+        """
+        Headers for catchup segment requests.
+
+        Default: the catchup manifest headers. Mirrors
+        ChannelManager.get_segment_headers; override for providers whose
+        catchup segments need different or token-bound headers.
+        """
+        return self.get_catchup_manifest_headers(
+            content_id, start_time, end_time, epg_id, **kw
+        )
 
     def get_catchup_drm(
         self,

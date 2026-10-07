@@ -18,13 +18,17 @@ Return-value conventions
 get_favorites returns [] when the user has no favorites or the provider
 does not support favorites. Not an error.
 
-add_favorite returns the created Favorite. Raises RuntimeError on
+add_favorite returns the created Favorite. Raises OperationFailedError on
 rejection (e.g. provider's backend refuses the operation).
 
-remove_favorite raises KeyError if the content_id is not currently
-favorited, and RuntimeError on backend failure. Deleting a
-non-existent favorite is a KeyError -- consistent with
-FavoritesManager's counterpart in ProviderFavoritesMixin.
+remove_favorite raises ItemNotFoundError if the content_id is not currently
+favorited, and OperationFailedError on backend failure. Deleting a
+non-existent favorite is an ItemNotFoundError -- which is also a KeyError,
+consistent with ProviderFavoritesMixin.
+
+ItemNotFoundError is both a NotFoundError (ProviderError) and a KeyError, and
+OperationFailedError is both a ProviderError and a RuntimeError, so handlers
+written against the old KeyError / RuntimeError convention keep working.
 
 Provider guidance
 -----------------
@@ -36,35 +40,15 @@ them (PROGRAM, CHANNEL, CLIP, LIVE, EVENT).
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from typing import Any, List, Optional
 
 from ..models.favorite import Favorite, FavoriteType
-from ..protocols import AuthProtocol
-from ..utils.logger import logger
+from ._base import ManagerBase
 
 
-class FavoritesManager(ABC):
+class FavoritesManager(ManagerBase):
     """Abstract base for provider favorites managers."""
-
-    def __init__(
-        self,
-        *,
-        http_manager: Any,
-        auth: AuthProtocol,
-        country: str,
-        config: Any,
-    ) -> None:
-        if not isinstance(auth, AuthProtocol):
-            logger.warning(
-                f"{self.__class__.__name__}: auth does not match AuthProtocol "
-                f"(missing one of get_access_token / build_headers / "
-                f"invalidate). Got {type(auth).__name__}."
-            )
-        self.http_manager = http_manager
-        self.auth = auth
-        self.country = country
-        self.config = config
 
     # ------------------------------------------------------------------
     # Abstract
@@ -91,7 +75,8 @@ class FavoritesManager(ABC):
         """
         Add a favorite.
 
-        Raises RuntimeError if the provider refuses the operation.
+        Raises OperationFailedError (also a RuntimeError) if the provider
+        refuses the operation.
         """
         raise NotImplementedError
 
@@ -101,8 +86,9 @@ class FavoritesManager(ABC):
         Remove a favorite.
 
         Raises:
-            KeyError:     if content_id is not currently favorited.
-            RuntimeError: on backend failure.
+            ItemNotFoundError:    if content_id is not currently favorited
+                                  (also a KeyError).
+            OperationFailedError: on backend failure (also a RuntimeError).
         """
         raise NotImplementedError
 

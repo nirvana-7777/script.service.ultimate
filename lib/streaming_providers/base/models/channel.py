@@ -34,6 +34,12 @@ class Channel(Content):
                 f"Channel {self.name} ({self.content_id}): "
                 f"session_manifest=True but manifest URL is set - manifest will be ignored"
             )
+        # Content.__post_init__ is deliberately NOT called: it raises on
+        # pricing/mode mismatches, and Channel's documented contract is
+        # "advisory warnings, the code runs" (one bad upstream channel must
+        # not kill the whole channel list). VodItem stays strict.
+        for problem in self._pricing_mode_problems():
+            logger.warning(f"Channel {self.name} ({self.content_id}): {problem}")
 
     # Backward compatibility alias
     @property

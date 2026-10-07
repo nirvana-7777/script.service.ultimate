@@ -88,42 +88,37 @@ class WafBlockedException(Exception):
     pass
 
 class SessionAwareHTTPManager:
-    """Wraps http_manager to provide session-like cookie handling while maintaining proxy support"""
+    """
+    Thin wrapper over HTTPManager for OAuth flows: shared headers and
+    operation="auth" (so proxy scope honours ProxyScope.authentication).
+
+    Cookies are handled entirely by the underlying requests.Session cookie
+    jar. Never set a 'Cookie' header manually here — doing so overrides
+    requests' own cookie handling and drops intermediate-redirect cookies
+    (e.g. Joyn's `status_id`), which breaks multi-step OAuth flows.
+
+    The `headers` dict is merged into every request; per-call headers win
+    over session-level ones.
+    """
 
     def __init__(self, http_manager):
         self.http_manager = http_manager
-        self.cookies: Dict[str, str] = {}
         self.headers: Dict[str, str] = {}
 
+    def _prepare(self, kwargs):
+        kwargs.setdefault("operation", "auth")
+        merged = {**self.headers, **(kwargs.get("headers") or {})}  # per-call wins
+        if merged:
+            kwargs["headers"] = merged
+        else:
+            kwargs.pop("headers", None)
+        return kwargs
+
     def get(self, url: str, **kwargs):
-        """GET request with cookie handling"""
-        headers = kwargs.get("headers", {}).copy()
-        headers.update(self.headers)
-        if self.cookies:
-            cookie_str = "; ".join([f"{k}={v}" for k, v in self.cookies.items()])
-            headers["Cookie"] = cookie_str
-        kwargs["headers"] = headers
-        response = self.http_manager.get(url, operation="oauth", **kwargs)
-        self._update_cookies_from_response(response)
-        return response
+        return self.http_manager.get(url, **self._prepare(kwargs))
 
     def post(self, url: str, **kwargs):
-        """POST request with cookie handling"""
-        headers = kwargs.get("headers", {}).copy()
-        headers.update(self.headers)
-        if self.cookies:
-            cookie_str = "; ".join([f"{k}={v}" for k, v in self.cookies.items()])
-            headers["Cookie"] = cookie_str
-        kwargs["headers"] = headers
-        response = self.http_manager.post(url, operation="oauth", **kwargs)
-        self._update_cookies_from_response(response)
-        return response
-
-    def _update_cookies_from_response(self, response):
-        """Extract and update cookies from response"""
-        if hasattr(response, "cookies"):
-            for cookie in response.cookies:
-                self.cookies[cookie.name] = cookie.value
+        return self.http_manager.post(url, **self._prepare(kwargs))
 
 
 # OAuth2RemoteLoginMixin comes first so its methods take precedence over any
@@ -519,11 +514,10 @@ class BaseOAuth2Authenticator(OAuth2RemoteLoginMixin, BaseAuthenticator):
     def _create_oauth_session(self) -> SessionAwareHTTPManager:
         """Create a session-aware HTTP manager for OAuth flows"""
         session = SessionAwareHTTPManager(self.http_manager)
-        session.headers.update({
-            "User-Agent": self.config.user_agent,
-            "Referer": getattr(self.config, "base_website", ""),
-            "Origin": getattr(self.config, "base_website", ""),
-        })
+        base = getattr(self.config, "base_website", "")
+        session.headers["User-Agent"] = self.config.user_agent
+        if base:
+            session.headers.update({"Referer": base, "Origin": base})
         return session
 
     # ========================================================================

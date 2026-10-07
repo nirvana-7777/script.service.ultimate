@@ -9,7 +9,8 @@ import json
 import time
 import urllib.parse
 from base64 import b64decode
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from ...base.models import DRMConfig, DRMSystem, LicenseConfig, StreamingChannel
 from ...base.provider import AuthType
@@ -41,7 +42,13 @@ from .constants import (
     MODE_VOD,
     SIGNATURE_SECRET_KEY,
 )
-from .models import JoynChannel, JoynError, JoynEntitlementError, PlaybackRestrictedException, SubscriptionRequiredException
+from .models import (
+    JoynChannel,
+    JoynError,
+    JoynEntitlementError,
+    PlaybackRestrictedException,
+    SubscriptionRequiredException,
+)
 
 
 def create_video_payload(config: Optional[Dict] = None, compact: bool = True) -> str:
@@ -78,6 +85,10 @@ class JoynChannelManager:
         self._cache_timestamp: float = 0.0
         self._cache_ttl: int = 300  # 5 minutes
 
+        # channel_id -> resolved_id (usually "<id>-hd"). Populated lazily by
+        # get_channel_entitlement_token so we don't re-probe on every playback.
+        self._resolved_channel_variants: Dict[str, str] = {}
+
         logger.info(f"[JoynChannelManager] Initialised for country={provider.country}")
 
     @property
@@ -108,6 +119,10 @@ class JoynChannelManager:
             self._cache_timestamp = time.time()
         return self._channels_cache or []
 
+    # ========================================================================
+    # HEADERS
+    # ========================================================================
+
     def _get_graphql_headers(self) -> Dict[str, str]:
         return self.provider._build_provider_headers(
             base_headers=JOYN_GRAPHQL_BASE_HEADERS,
@@ -133,10 +148,307 @@ class JoynChannelManager:
                 "joyn-distribution-tenant": self.distribution_tenant,
                 "joyn-platform": self.platform,
                 "joyn-b2b-context": "UNKNOWN",
-                "joyn-client-os": "UNKNOWN",  # Restored missing header
+                "joyn-client-os": "UNKNOWN",
                 "origin": JOYN_DOMAINS.get(self.country, JOYN_DOMAINS["de"]),
             },
         )
+
+    def _get_entitlement_headers(self) -> Dict[str, str]:
+        """
+        Headers for the entitlement host.
+
+        Entitlement lives on a *separate* host from the Joyn GraphQL/streaming
+        APIs and does not accept the joyn-* header set. Sending a minimal
+        header set (Authorization + Content-Type + UA) matches the working
+        reference client.
+
+        The bearer is fetched via the authenticator (not read from
+        provider.bearer_token), so a long-running session picks up refreshes
+        automatically instead of sending a stale token.
+        """
+        token = ""
+        if self.authenticator is not None:
+            try:
+                token = self.authenticator.get_bearer_token() or ""
+            except Exception as e:
+                logger.warning(f"Could not obtain bearer for entitlement call: {e}")
+
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0",
+        }
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        return headers
+
+    def get_manifest_headers(self, content_id: str, **kwargs) -> Dict[str, str]:
+        # The CDN-served manifest URL is self-authorizing; sending the Joyn
+        # provider bearer token to the CDN causes:
+        #   400 InvalidArgument: Unsupported Authorization Type
+        # so we deliberately omit Authorization here.
+        return self.provider._build_provider_headers(
+            base_headers={},
+            auth_type=AuthType.NONE,
+            provider_headers={
+                "User-Agent": JOYN_USER_AGENT,
+                "Origin": JOYN_DOMAINS.get(self.country, JOYN_DOMAINS["de"]),
+            },
+        )
+
+    # ========================================================================
+    # ENTITLEMENT
+    # ========================================================================
+
+    def get_entitlement_token(self, content_id: str, content_type: str = CONTENT_TYPE_LIVE) -> str:
+        headers = self._get_entitlement_headers()
+        payload = {"content_id": content_id, "content_type": content_type}
+        url = JOYN_STREAMING_ENDPOINTS["ENTITLEMENT"]
+        host = urlparse(url).netloc
+
+        try:
+            response = self.http_manager.post(
+                url,
+                operation="auth",
+                headers=headers,
+                json_data=payload,
+                timeout=DEFAULT_REQUEST_TIMEOUT,
+            )
+
+            if response.status_code == 400:
+                try:
+                    error_data = response.json()
+                    if isinstance(error_data, list) and len(error_data) > 0:
+                        error = error_data[0]
+                        code = error.get("code", "UNKNOWN")
+                        msg = error.get("msg", "No error message provided")
+                        if code == ERROR_CODES["PLAYBACK_RESTRICTED"]:
+                            raise PlaybackRestrictedException(
+                                f"Playback restricted for {content_id}: {msg}"
+                            )
+                        elif code == ERROR_CODES["BUSINESS_MODEL_NOT_SUITABLE"]:
+                            raise SubscriptionRequiredException(
+                                f"Subscription required for {content_id} ({code}): {msg}"
+                            )
+                        else:
+                            raise JoynEntitlementError(
+                                f"Entitlement error for {content_id} ({code}): {msg}"
+                            )
+                except (json.JSONDecodeError, KeyError, IndexError) as e:
+                    logger.warning(
+                        f"Entitlement 400 for {content_id} from {host}: "
+                        f"failed to parse error body: {e}"
+                    )
+                    raise JoynEntitlementError(
+                        f"Bad response for {content_id} (400), failed to parse error: {e}"
+                    )
+
+            if response.status_code >= 400:
+                logger.warning(
+                    f"Entitlement failed for {content_id} (type={content_type}): "
+                    f"HTTP {response.status_code} from {host}"
+                )
+                response.raise_for_status()
+
+            data = response.json()
+            # Working reference accepts either key; keep both for compatibility.
+            token = data.get("entitlement_token") or data.get("token")
+            if not token:
+                logger.warning(
+                    f"Entitlement response for {content_id} from {host} "
+                    f"had no entitlement_token: keys={list(data.keys())}"
+                )
+                raise JoynEntitlementError(f"No entitlement_token in response for {content_id}")
+            return token
+
+        except PlaybackRestrictedException:
+            raise
+        except SubscriptionRequiredException:
+            raise
+        except JoynEntitlementError:
+            raise
+        except Exception as e:
+            raise JoynEntitlementError(f"Error getting entitlement token for {content_id}: {e}")
+
+    def get_channel_entitlement_token(self, channel_id: str) -> Tuple[str, str]:
+        """
+        Resolve entitlement for a live channel, trying the -hd variant first.
+
+        Joyn's live channels are indexed with an "-hd" suffix at the
+        entitlement service; asking for the bare slug returns no token for
+        HD-only streams. Mirrors the working reference's retry order.
+
+        Results are cached per original channel_id so the extra probe only
+        happens once per channel per process.
+
+        Returns:
+            (resolved_channel_id, entitlement_token)
+
+        Raises:
+            PlaybackRestrictedException / SubscriptionRequiredException for
+            account/rights errors (terminal — not retried on the other variant).
+            JoynEntitlementError if neither variant yields a token.
+        """
+        # Fast path: we already know which variant works for this channel.
+        cached_resolved = self._resolved_channel_variants.get(channel_id)
+        if cached_resolved:
+            try:
+                token = self.get_entitlement_token(
+                    content_id=cached_resolved, content_type=CONTENT_TYPE_LIVE
+                )
+                if token:
+                    return cached_resolved, token
+            except (PlaybackRestrictedException, SubscriptionRequiredException):
+                # Rights changed since we cached — let it propagate.
+                raise
+            except JoynEntitlementError:
+                # Cached variant no longer works; drop it and re-probe below.
+                logger.debug(f"Cached variant {cached_resolved} no longer resolves; re-probing")
+                self._resolved_channel_variants.pop(channel_id, None)
+
+        candidates: List[str] = []
+        if channel_id.endswith("-sd"):
+            candidates.append(channel_id[:-3] + "-hd")
+        elif not channel_id.endswith("-hd"):
+            candidates.append(channel_id + "-hd")
+        candidates.append(channel_id)
+
+        last_error: Optional[Exception] = None
+        for cid in candidates:
+            try:
+                token = self.get_entitlement_token(
+                    content_id=cid, content_type=CONTENT_TYPE_LIVE
+                )
+                if token:
+                    self._resolved_channel_variants[channel_id] = cid
+                    return cid, token
+            except (PlaybackRestrictedException, SubscriptionRequiredException):
+                # Rights errors are terminal — do not retry the next candidate.
+                raise
+            except JoynEntitlementError as e:
+                last_error = e
+                continue
+
+        raise last_error or JoynEntitlementError(
+            f"No entitlement token for {channel_id} (tried {candidates})"
+        )
+
+    # ========================================================================
+    # PLAYLIST / MANIFEST / DRM
+    # ========================================================================
+
+    def get_channel_playlist(
+        self,
+        channel_id: str,
+        entitlement_token: str,
+        video_config: Optional[Dict] = None,
+    ) -> Dict:
+        video_payload = create_video_payload(video_config)
+        signature = build_signature(entitlement_token, video_payload)
+
+        url = JOYN_STREAMING_ENDPOINTS["PLAYLIST"].format(channel_id=channel_id)
+        url += f"?signature={signature}"
+
+        headers = JOYN_API_BASE_HEADERS.copy()
+        headers["Authorization"] = f"Bearer {entitlement_token}"
+
+        try:
+            response = self.http_manager.post(
+                url,
+                operation="manifest",
+                headers=headers,
+                data=video_payload,
+                timeout=DEFAULT_REQUEST_TIMEOUT,
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            # Let our custom entitlement exceptions bubble up untouched so callers
+            # (and the UI layer) can distinguish "needs subscription" / "not allowed
+            # here" from a generic network failure instead of seeing everything as
+            # a flat JoynError.
+            if isinstance(
+                e,
+                (PlaybackRestrictedException, SubscriptionRequiredException, JoynEntitlementError),
+            ):
+                raise
+            raise JoynError(f"Error getting playlist for {channel_id}: {e}")
+
+    def get_manifest(
+        self,
+        content_id: str,
+        content_type: str = CONTENT_TYPE_LIVE,
+        video_config: Optional[Dict] = None,
+        **kwargs,
+    ) -> Optional[str]:
+        try:
+            if content_type == CONTENT_TYPE_LIVE:
+                resolved_id, entitlement_token = self.get_channel_entitlement_token(content_id)
+            else:
+                entitlement_token = self.get_entitlement_token(
+                    content_id=content_id, content_type=content_type
+                )
+                resolved_id = content_id
+            playlist_data = self.get_channel_playlist(resolved_id, entitlement_token, video_config)
+            return playlist_data.get("manifestUrl")
+        except Exception as e:
+            logger.error(f"Error getting manifest for channel {content_id}: {e}")
+            return None
+
+    def _build_drm_config(self, playlist_data: Dict) -> Optional[DRMConfig]:
+        """Build a DRMConfig object from a playlist response.
+
+        The license endpoint authenticates via the token embedded in the URL's
+        signature query param — no Authorization header is sent. We include
+        Origin and User-Agent to satisfy Cloudflare WAF requirements, matching
+        captured browser traffic.
+        """
+        license_url = playlist_data.get("licenseUrl")
+        if not license_url:
+            return None
+
+        return DRMConfig(
+            system=DRMSystem.WIDEVINE,
+            priority=1,
+            license=LicenseConfig(
+                server_url=license_url,
+                server_certificate=playlist_data.get("certificateUrl"),
+                req_headers=json.dumps({
+                    "User-Agent": JOYN_USER_AGENT,
+                    "Origin": JOYN_DOMAINS.get(self.country, JOYN_DOMAINS["de"]),
+                    "Content-Type": DRM_REQUEST_HEADERS["Content-Type"],
+                }),
+                req_data="{CHA-RAW}",
+                use_http_get_request=False,
+            ),
+        )
+
+    def get_drm(
+        self,
+        content_id: str,
+        content_type: str = CONTENT_TYPE_LIVE,
+        video_config: Optional[Dict] = None,
+        **kwargs,
+    ) -> List[DRMConfig]:
+        try:
+            if content_type == CONTENT_TYPE_LIVE:
+                resolved_id, entitlement_token = self.get_channel_entitlement_token(content_id)
+            else:
+                entitlement_token = self.get_entitlement_token(
+                    content_id=content_id, content_type=content_type
+                )
+                resolved_id = content_id
+            playlist_data = self.get_channel_playlist(resolved_id, entitlement_token, video_config)
+
+            drm_config = self._build_drm_config(playlist_data)
+            return [drm_config] if drm_config else []
+        except Exception as e:
+            logger.error(f"Error getting DRM configs for channel {content_id}: {e}")
+            return []
+
+    # ========================================================================
+    # CHANNEL FETCHING
+    # ========================================================================
 
     def get_channels(
         self,
@@ -229,162 +541,17 @@ class JoynChannelManager:
                 if stream_data.get("eventStream", False):
                     joyn_channel.raw_data["is_event_stream"] = True
 
-                channels.append(joyn_channel.to_streaming_channel(provider_name=self.provider.provider_name))
+                channels.append(
+                    joyn_channel.to_streaming_channel(provider_name=self.provider.provider_name)
+                )
             except Exception as e:
                 logger.warning(f"Error processing channel data: {e}")
 
         return channels
 
-    def get_entitlement_token(self, content_id: str, content_type: str = CONTENT_TYPE_LIVE) -> str:
-        headers = self.get_api_headers()
-        payload = {"content_id": content_id, "content_type": content_type}
-
-        try:
-            response = self.http_manager.post(
-                JOYN_STREAMING_ENDPOINTS["ENTITLEMENT"],
-                operation="auth",
-                headers=headers,
-                json_data=payload,
-                timeout=DEFAULT_REQUEST_TIMEOUT,
-            )
-
-            if response.status_code == 400:
-                try:
-                    error_data = response.json()
-                    if isinstance(error_data, list) and len(error_data) > 0:
-                        error = error_data[0]
-                        code = error.get("code", "UNKNOWN")
-                        msg = error.get("msg", "No error message provided")
-                        if code == ERROR_CODES["PLAYBACK_RESTRICTED"]:
-                            raise PlaybackRestrictedException(f"Playback restricted for {content_id}: {msg}")
-                        elif code == ERROR_CODES["BUSINESS_MODEL_NOT_SUITABLE"]:
-                            raise SubscriptionRequiredException(
-                                f"Subscription required for {content_id} ({code}): {msg}")
-                        else:
-                            raise JoynEntitlementError(f"Entitlement error for {content_id} ({code}): {msg}")
-                except (json.JSONDecodeError, KeyError, IndexError) as e:
-                    raise JoynEntitlementError(f"Bad response for {content_id} (400), failed to parse error: {e}")
-
-            response.raise_for_status()
-            data = response.json()
-            return data["entitlement_token"]
-
-        except PlaybackRestrictedException:
-            raise
-        except JoynEntitlementError:
-            raise
-        except KeyError:
-            raise JoynEntitlementError(f"No entitlement_token in response for {content_id}")
-        except Exception as e:
-            raise JoynEntitlementError(f"Error getting entitlement token for {content_id}: {e}")
-
-    def get_channel_playlist(
-        self,
-        channel_id: str,
-        entitlement_token: str,
-        video_config: Optional[Dict] = None,
-    ) -> Dict:
-        video_payload = create_video_payload(video_config)
-        signature = build_signature(entitlement_token, video_payload)
-
-        url = JOYN_STREAMING_ENDPOINTS["PLAYLIST"].format(channel_id=channel_id)
-        url += f"?signature={signature}"
-
-        headers = JOYN_API_BASE_HEADERS.copy()
-        headers["Authorization"] = f"Bearer {entitlement_token}"
-
-        try:
-            response = self.http_manager.post(
-                url,
-                operation="manifest",
-                headers=headers,
-                data=video_payload,
-                timeout=DEFAULT_REQUEST_TIMEOUT,
-            )
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            # Let our custom entitlement exceptions bubble up untouched so callers
-            # (and the UI layer) can distinguish "needs subscription" / "not allowed
-            # here" from a generic network failure instead of seeing everything as
-            # a flat JoynError.
-            if isinstance(e, (PlaybackRestrictedException, SubscriptionRequiredException, JoynEntitlementError)):
-                raise
-            raise JoynError(f"Error getting playlist for {channel_id}: {e}")
-
-    def get_manifest(
-        self,
-        content_id: str,
-        content_type: str = CONTENT_TYPE_LIVE,
-        video_config: Optional[Dict] = None,
-        **kwargs,
-    ) -> Optional[str]:
-        try:
-            entitlement_token = self.get_entitlement_token(content_id=content_id, content_type=content_type)
-            playlist_data = self.get_channel_playlist(content_id, entitlement_token, video_config)
-            return playlist_data.get("manifestUrl")
-        except Exception as e:
-            logger.error(f"Error getting manifest for channel {content_id}: {e}")
-            return None
-
-    def get_manifest_headers(self, content_id: str, **kwargs) -> Dict[str, str]:
-        # The CDN-served manifest URL is self-authorizing; sending the Joyn
-        # provider bearer token to the CDN causes:
-        #   400 InvalidArgument: Unsupported Authorization Type
-        # so we deliberately omit Authorization here.
-        return self.provider._build_provider_headers(
-            base_headers={},
-            auth_type=AuthType.NONE,
-            provider_headers={
-                "User-Agent": JOYN_USER_AGENT,
-                "Origin": JOYN_DOMAINS.get(self.country, JOYN_DOMAINS["de"]),
-            },
-        )
-
-    def _build_drm_config(self, playlist_data: Dict) -> Optional[DRMConfig]:
-        """Build a DRMConfig object from a playlist response.
-
-        The license endpoint authenticates via the token embedded in the URL's
-        signature query param — no Authorization header is sent. We include
-        Origin and User-Agent to satisfy Cloudflare WAF requirements, matching
-        captured browser traffic.
-        """
-        license_url = playlist_data.get("licenseUrl")
-        if not license_url:
-            return None
-
-        return DRMConfig(
-            system=DRMSystem.WIDEVINE,
-            priority=1,
-            license=LicenseConfig(
-                server_url=license_url,
-                server_certificate=playlist_data.get("certificateUrl"),
-                req_headers=json.dumps({
-                    "User-Agent": JOYN_USER_AGENT,
-                    "Origin": JOYN_DOMAINS.get(self.country, JOYN_DOMAINS["de"]),
-                    "Content-Type": DRM_REQUEST_HEADERS["Content-Type"],
-                }),
-                req_data="{CHA-RAW}",
-                use_http_get_request=False,
-            ),
-        )
-
-    def get_drm(
-        self,
-        content_id: str,
-        content_type: str = CONTENT_TYPE_LIVE,
-        video_config: Optional[Dict] = None,
-        **kwargs,
-    ) -> List[DRMConfig]:
-        try:
-            entitlement_token = self.get_entitlement_token(content_id=content_id, content_type=content_type)
-            playlist_data = self.get_channel_playlist(content_id, entitlement_token, video_config)
-
-            drm_config = self._build_drm_config(playlist_data)
-            return [drm_config] if drm_config else []
-        except Exception as e:
-            logger.error(f"Error getting DRM configs for channel {content_id}: {e}")
-            return []
+    # ========================================================================
+    # ENRICHMENT
+    # ========================================================================
 
     def enrich_channel_data(
         self,
@@ -394,8 +561,18 @@ class JoynChannelManager:
     ) -> Optional[StreamingChannel]:
         try:
             content_type = kwargs.get("content_type", channel.content_type)
-            entitlement_token = self.get_entitlement_token(content_id=channel.channel_id, content_type=content_type)
-            playlist_data = self.get_channel_playlist(channel.channel_id, entitlement_token, video_config)
+            if content_type == CONTENT_TYPE_LIVE:
+                resolved_id, entitlement_token = self.get_channel_entitlement_token(
+                    channel.channel_id
+                )
+            else:
+                entitlement_token = self.get_entitlement_token(
+                    content_id=channel.channel_id, content_type=content_type
+                )
+                resolved_id = channel.channel_id
+            playlist_data = self.get_channel_playlist(
+                resolved_id, entitlement_token, video_config
+            )
 
             manifest_url = playlist_data.get("manifestUrl")
             if not manifest_url:
@@ -430,11 +607,17 @@ class JoynChannelManager:
 
             while retries < max_retries and not success and not is_restricted:
                 try:
-                    entitlement_token = self.get_entitlement_token(
-                        content_id=channel.channel_id, content_type=channel.content_type
-                    )
+                    if channel.content_type == CONTENT_TYPE_LIVE:
+                        resolved_id, entitlement_token = self.get_channel_entitlement_token(
+                            channel.channel_id
+                        )
+                    else:
+                        entitlement_token = self.get_entitlement_token(
+                            content_id=channel.channel_id, content_type=channel.content_type
+                        )
+                        resolved_id = channel.channel_id
                     playlist_data = self.get_channel_playlist(
-                        channel.channel_id, entitlement_token, video_config
+                        resolved_id, entitlement_token, video_config
                     )
 
                     manifest_url = playlist_data.get("manifestUrl")
@@ -450,8 +633,11 @@ class JoynChannelManager:
                         success = True
                     else:
                         raise JoynError("No manifestUrl in response")
-                except PlaybackRestrictedException as e:
-                    logger.warning(f"Playback restricted for {channel.name}: {e}")
+                except (PlaybackRestrictedException, SubscriptionRequiredException) as e:
+                    # Both are terminal, per-account/rights failures — do not retry.
+                    logger.warning(
+                        f"Playback restricted/subscription-required for {channel.name}: {e}"
+                    )
                     is_restricted = True
                 except Exception as e:
                     retries += 1
@@ -460,5 +646,8 @@ class JoynChannelManager:
                     else:
                         logger.error(f"Failed to get streaming data for {channel.name}: {e}")
 
-        logger.info(f"Streaming data population complete: {len(successful_channels)}/{len(channels)}")
+        logger.info(
+            f"Streaming data population complete: "
+            f"{len(successful_channels)}/{len(channels)}"
+        )
         return successful_channels

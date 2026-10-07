@@ -1,5 +1,34 @@
 # Provider template
 
+> **v2 NOTICE (ManagedProvider) -- read first.**
+> New providers should subclass `ManagedProvider`
+> (`base/managed_provider.py`, itself a `StreamingProvider`) instead of copying
+> the v1 boilerplate. The sections below describe the v1 shape; where they
+> disagree with the v2 template (`provider.py` in this directory), v2 wins:
+>
+> * Capability flags, `_route()`, default `get_manifest` / `get_drm`, header,
+>   channel and EPG delegation are inherited. Call `self._init_managers()` at
+>   the end of `__init__`.
+> * `implements_epg` = EPG manager present AND `epg_window != (0, 0)`;
+>   `implements_catchup` = catchup manager present AND `supports_catchup`.
+>   (v1 said "manager is not None" for every flag.)
+> * `get_drm(content_id, drm_variant=None, content_type=None, **kw)` -- the
+>   second positional argument is `drm_variant`, as on `StreamingProvider`.
+>   (v1 documented `get_drm(content_id, content_type=None)`.)
+> * DRM architecture is declared: `_build_drm()` (dedicated) or
+>   `DRM_IN_MANAGERS = True` (folded). Not both.
+> * The legacy mixins do NOT delegate to `self.epg` / `self.recordings` /
+>   ...: the v1 claim "no delegation needed" is wrong for EPG (verified) and
+>   unverified for the others. See docs/provider-v2/TODO.md item M-1.
+> * Errors: `ItemNotFoundError` (a `KeyError`) and `OperationFailedError`
+>   (a `RuntimeError`) replace bare `KeyError` / `RuntimeError`;
+>   `UnsupportedOperationError` replaces `NotImplementedYetError` for
+>   "this provider will never support it".
+> * Multiple DRMs need unique priorities: `merge_drm_configs(...,
+>   auto_priority=True)` in `models/drm/drm_config.py`.
+>
+> Open items and the full change log: `docs/provider-v2/`.
+
 Copy this directory to `providers/{your_provider}/`, rename the classes,
 and fill in the stubs. Read this file first — it explains the contract.
 
@@ -1071,9 +1100,10 @@ New providers using the dedicated-manager architecture implement
 folded architecture override `get_channel_drm` and/or `get_vod_drm` and
 leave `get_drm_configs` alone.
 
-`StreamingProvider.get_drm(content_id, content_type=None)` is the public
-method callers use; it dispatches to whichever architecture the provider
-chose.
+`get_drm(content_id, drm_variant=None, content_type=None, **kw)` is the
+public method callers use (v1 providers: `get_drm(content_id,
+content_type=None)` -- see the v2 notice at the top); it dispatches to
+whichever architecture the provider chose.
 
 ### content_type hint semantics
 
