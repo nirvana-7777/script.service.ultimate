@@ -63,7 +63,7 @@ class ProviderMetadata:
 
     def _extract_metadata(self):
         """Extract static metadata from provider class without instantiation"""
-        self.plugin_name = self.plugin_class.__name__.lower().replace("provider", "")
+        self.plugin_name = self.plugin_class.get_plugin_key()
 
         # Check if provider supports multiple countries
         supports_multiple = self.plugin_class.supports_multiple_countries()
