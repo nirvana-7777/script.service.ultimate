@@ -5,9 +5,9 @@ RecordingsManager ABC.
 Public interface
 ----------------
     handles_recording_id(recording_id)                  -> bool            [concrete]
-    get_recordings(**kw)                                -> List[Channel]   [abstract]
+    get_recordings(**kw)                                -> List[Recording] [abstract]
     delete_recording(recording_id, **kw)                -> None            [abstract]
-    schedule_recording(content_id, **kw)                -> Channel|bool    [concrete, optional]
+    schedule_recording(content_id, **kw)                -> Recording|bool  [concrete, optional]
 
 Constructor contract
 --------------------
@@ -43,7 +43,7 @@ from abc import abstractmethod
 from typing import Any, List
 
 from ..errors import UnsupportedOperationError
-from ..models import Channel
+from ..models.recording import Recording
 from ._base import ManagerBase
 
 
@@ -97,7 +97,7 @@ class RecordingsManager(ManagerBase):
     # ------------------------------------------------------------------
 
     @abstractmethod
-    def get_recordings(self, **kw: Any) -> List[Channel]:
+    def get_recordings(self, **kw: Any) -> List[Recording]:
         """
         Return recordings for the authenticated user.
 
@@ -105,16 +105,17 @@ class RecordingsManager(ManagerBase):
         NotFoundError for "no recordings" -- that is a valid empty
         result, not a missing resource.
 
-        Recording objects are returned as Channel instances (or a
-        Channel subclass carrying extra fields such as recording_id,
-        start/stop times, and the underlying content_id). The base
-        Channel shape is preserved because downstream callers expect a
-        content_id and a name.
+        Items MUST be models.recording.Recording (or a subclass).
+        RecordingOperations filters on ``Recording.is_deleted`` and the
+        legacy mixin is typed List[Recording]; a bare Channel has no
+        ``is_deleted`` and breaks that filter.
 
-        Providers whose recordings are conceptually distinct from their
-        channels (e.g. cloud-PVR recordings that store their own
-        programme metadata) should subclass Channel with the extra
-        fields they need, and document them in the subclass's docstring.
+        ``include_deleted`` arrives in **kw (RecordingOperations always
+        passes it). Honour it when the backend can list deleted items;
+        otherwise ignore it -- the caller filters again.
+
+        Providers whose recordings carry extra fields subclass Recording and
+        document them in the subclass's docstring.
         """
         raise NotImplementedError
 
@@ -150,7 +151,7 @@ class RecordingsManager(ManagerBase):
         Schedule a recording of content_id.
 
         Optional. Return value is provider-specific: some providers
-        return the created recording (a Channel), others return a bool
+        return the created recording (a Recording), others return a bool
         indicating success. The ABC does not constrain the shape
         because there is no shared one across providers.
 

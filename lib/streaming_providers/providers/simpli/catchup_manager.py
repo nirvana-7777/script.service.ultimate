@@ -29,10 +29,12 @@ that value from the channel manager's AcquireContent response. If the
 field is missing, the smallest observed window (2h) is used, so a seek
 can never land outside the real window.
 
-The ABC exposes catchup_window_hours as a single integer, which cannot
-express a per-channel value. It returns the same smallest observed
-window as the conservative answer: a host that trusts it will only
-offer replays the shortest channel allows.
+The ABC exposes catchup_window_hours as the provider-wide MAXIMUM (the
+backend's validate_catchup_request uses it without knowing the channel),
+and catchup_window_for_channel() as the per-channel value. The per-channel
+limit is enforced here: get_restart_manifest() returns None for a start
+outside the channel's own window, so a 4h global value never lets a 2h
+channel seek outside its DVR window.
 
 Contract
 --------
@@ -42,7 +44,7 @@ swallowed). end_time is ignored: the API has no end bound.
 """
 
 import time
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from ...base.errors import BadRequestError, NotFoundError
 from ...base.managers import CatchupManager
@@ -56,9 +58,12 @@ from .channel_manager import (
 from .constants import SimpliTVDefaults
 
 
-# Smallest timeshift window observed across channels (7200s = 2h). Used
-# as catchup_window_hours and as the per-channel fallback.
+# Timeshift windows observed across channels: 7200 s (2h), 10800 s (3h),
+# 14400 s (4h). The minimum is the per-channel fallback; the maximum is the
+# provider-wide catchup_window_hours. Set _MAX_TIMESHIFT_HOURS back to
+# _MIN_TIMESHIFT_HOURS to restore the previous conservative global value.
 _MIN_TIMESHIFT_HOURS = 2
+_MAX_TIMESHIFT_HOURS = 4
 
 
 class SimpliTVCatchupManager(CatchupManager):
@@ -88,14 +93,27 @@ class SimpliTVCatchupManager(CatchupManager):
     @property
     def catchup_window_hours(self) -> int:
         """
-        Conservative global window, in hours.
-
-        The API advertises per-channel windows (2h, 3h, 4h); the ABC
-        only exposes a single integer, so the smallest observed value
-        is returned. get_restart_manifest uses the real per-channel
-        value.
+        Provider-wide window in hours: the largest observed per-channel
+        window (4h). Per-channel limits are enforced in
+        get_restart_manifest(); see catchup_window_for_channel().
         """
-        return _MIN_TIMESHIFT_HOURS
+        return _MAX_TIMESHIFT_HOURS
+
+    def catchup_window_for_channel(self, content_id: str) -> int:
+        """
+        This channel's DVR window in hours (AcquireContent
+        AdditionalInfo.Epg_TimeshiftSeconds, floored), or the 2h minimum
+        when it cannot be determined. Costs at most one cached
+        AcquireContent call (PLAYBACK_CACHE_TTL).
+        """
+        if self._channels is None:
+            return _MIN_TIMESHIFT_HOURS
+        try:
+            codename, _ = _channel_and_ts(content_id)
+            acquire = self._channels.acquire_content(codename)
+        except (BadRequestError, NotFoundError):
+            return _MIN_TIMESHIFT_HOURS
+        return max(1, _timeshift_seconds(acquire) // 3600)
 
     # ------------------------------------------------------------------
     # Abstract method
@@ -181,6 +199,32 @@ class SimpliTVCatchupManager(CatchupManager):
     # ------------------------------------------------------------------
     # Concrete overrides
     # ------------------------------------------------------------------
+
+    def get_catchup_manifest_headers(
+        self,
+        content_id: str,
+        start_time: int,
+        end_time: Optional[int] = None,
+        epg_id: Optional[str] = None,
+        **kw,
+    ) -> Dict[str, str]:
+        """
+        Player headers: User-Agent + Origin, as for live (see
+        SimpliTVConfig.get_stream_headers()). The ABC default would send
+        the API headers (JSON Content-Type, tenant, Referer) to the CDN.
+        """
+        return self.config.get_stream_headers()
+
+    def get_catchup_segment_headers(
+        self,
+        content_id: str,
+        start_time: int,
+        end_time: Optional[int] = None,
+        epg_id: Optional[str] = None,
+        **kw,
+    ) -> Dict[str, str]:
+        """Segment headers: same as the manifest headers (CDN, no token)."""
+        return self.config.get_stream_headers()
 
     def get_catchup_drm(
         self,

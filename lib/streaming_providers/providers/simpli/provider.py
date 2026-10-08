@@ -2,11 +2,13 @@
 """
 simpliTV orchestrator.
 
-Owns shared resources (http_manager, caches, auth, managers) and
-exposes the public StreamingProvider interface.
+Owns shared resources (http_manager, caches, auth) and builds the
+managers; everything that is identical across manager-based providers
+(capability flags, content-id routing, manifest/DRM/header/EPG delegation,
+the legacy recordings/catchup surface) lives in ManagedProvider.
 
-Subclasses the existing StreamingProvider. Does NOT subclass any new
-base class. Authentication is lazy -- no network I/O in __init__.
+Subclasses ManagedProvider (itself a StreamingProvider). Authentication
+is lazy -- no network I/O in __init__.
 
 Manager wiring
 --------------
@@ -19,20 +21,19 @@ Manager wiring
     favorites  -> None
     bookmarks  -> None
     catchup    -> SimpliTVCatchupManager     (catchup: ids; borrows channels)
-    drm        -> None                       (folded into channels)
+    drm        -> None                       (DRM_IN_MANAGERS = True)
 
 The catchup manager is built after the channel manager because it takes
-the channel manager as a collaborator. No other manager has
-cross-dependencies.
+the channel manager as a collaborator (_init_managers builds in
+dependency order). No other manager has cross-dependencies.
 
-Routing
--------
-_route is used only by get_manifest and get_drm -- the methods whose
-input is an opaque content_id with several possible owners. The channel
-manager owns live:, rec: and prog:; the catchup manager owns catchup:.
-For catchup: the router parses the @<ts> suffix and hands the manager a
-plain (content_id, start_time, end_time=None) triple. Malformed ids
-raise BadRequestError and are not swallowed.
+What stays here
+---------------
+Only grammar that belongs to simpliTV: the catchup:<channel>@<ts> id.
+get_manifest and get_drm hand catchup: ids to the catchup manager (the
+@<ts> suffix is parsed here into start_time); every other id goes to
+ManagedProvider's router. Malformed ids raise BadRequestError and are not
+swallowed.
 
 Restart-from-beginning cannot be expressed as a manifest URL (it needs a
 player-side seek), so it has its own method: get_restart().
@@ -41,19 +42,24 @@ Catchup windows
 ---------------
 The DVR window is per-channel (AdditionalInfo.Epg_TimeshiftSeconds in
 the AcquireContent response: 2h, 3h or 4h in the browser capture).
-SimpliTVCatchupManager reads the per-channel value inside
-get_restart_manifest. Its catchup_window_hours property returns the
-conservative minimum (2h) because the ABC can only express a single
-integer.
+SimpliTVCatchupManager.catchup_window_hours is the provider-wide maximum
+(what the backend's validate_catchup_request sees), and
+catchup_window_for_channel() / get_restart_manifest() apply the real
+per-channel value.
+
+Headers
+-------
+HEADERS_FROM_MANAGERS = True: manifest and segment requests carry the
+managers' headers (User-Agent + Origin, SimpliTVConfig.get_stream_headers).
+The previous provider returned {} because it never overrode
+get_manifest_headers, which made those manager hooks dead code. Set the
+flag to False to restore the old {}.
 """
 
-from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple
+from typing import ClassVar, Dict, List, Optional, Tuple
 
-from ...base.errors import NotFoundError
-from ...base.managers import ChannelManager, VodManager
+from ...base.managed_provider import ManagedProvider
 from ...base.models.proxy_models import ProxyConfig
-from ...base.protocols import DrmManagerProtocol
-from ...base.provider import StreamingProvider
 
 from .auth import SimpliTVAuth
 from .catchup_manager import SimpliTVCatchupManager
@@ -62,8 +68,13 @@ from .constants import SimpliTVConfig, SimpliTVDefaults
 from .epg_manager import SimpliTVEpgManager
 from .recordings_manager import SimpliTVRecordingsManager
 
+# Only the provider is public: provider discovery (streaming_providers/
+# __init__.py) takes the first StreamingProvider subclass it finds in the
+# package namespace, and ManagedProvider must never be that one.
+__all__ = ["SimpliTVProvider"]
 
-class SimpliTVProvider(StreamingProvider):
+
+class SimpliTVProvider(ManagedProvider):
     """simpli streaming provider."""
 
     PROVIDER_LABEL: ClassVar[str] = "simpli"
@@ -71,15 +82,15 @@ class SimpliTVProvider(StreamingProvider):
     SUPPORTED_AUTH_TYPES: ClassVar[List[str]] = ["user_credentials"]
     SUPPORTED_COUNTRIES: ClassVar[List[str]] = ["AT"]
 
+    # Manifest and DRM share one /Player/AcquireContent response, so DRM is
+    # served by SimpliTVChannelManager.get_channel_drm (no _build_drm()).
+    DRM_IN_MANAGERS: ClassVar[bool] = True
+    HEADERS_FROM_MANAGERS: ClassVar[bool] = True
+
     @property
     def provider_name(self) -> str:
         """Return the provider name (matches the directory / registry key)."""
         return SimpliTVDefaults.PROVIDER_NAME   # "simpli"
-
-    # Only "live" and "vod" narrow the folded DRM search; anything else
-    # (None, "event", "catchup", a typo) tries both domains.
-    _LIVE_ONLY_CONTENT_TYPES = frozenset({"live"})
-    _VOD_ONLY_CONTENT_TYPES = frozenset({"vod"})
 
     def __init__(
         self,
@@ -111,15 +122,8 @@ class SimpliTVProvider(StreamingProvider):
         self._playback_cache: Dict = {}
         self._recordings_cache: Dict = {}
 
-        # 4. Managers, in dependency order. Catchup needs channels.
-        self.channels = self._build_channels()
-        self.vod = self._build_vod()
-        self.epg = self._build_epg()
-        self.recordings = self._build_recordings()
-        self.favorites = self._build_favorites()
-        self.bookmarks = self._build_bookmarks()
-        self.catchup = self._build_catchup()
-        self.drm = self._build_drm()
+        # 4. Managers, in dependency order (catchup needs channels).
+        self._init_managers()
 
     # ------------------------------------------------------------------
     # Factory methods
@@ -144,11 +148,6 @@ class SimpliTVProvider(StreamingProvider):
             playback_cache=self._playback_cache,
         )
 
-    def _build_vod(self):
-        # No browseable VOD catalogue: content is live, catchup, or
-        # recordings.
-        return None
-
     def _build_epg(self):
         return SimpliTVEpgManager(
             http_manager=self.http_manager,
@@ -166,12 +165,6 @@ class SimpliTVProvider(StreamingProvider):
             recordings_cache=self._recordings_cache,
         )
 
-    def _build_favorites(self):
-        return None  # no favorites endpoint
-
-    def _build_bookmarks(self):
-        return None  # no bookmarks / resume endpoint
-
     def _build_catchup(self):
         if self.channels is None:
             return None
@@ -183,89 +176,11 @@ class SimpliTVProvider(StreamingProvider):
             channels=self.channels,
         )
 
-    def _build_drm(self) -> Optional[DrmManagerProtocol]:
-        # Folded into SimpliTVChannelManager -- the manifest and DRM
-        # share one /Player/AcquireContent response.
-        return None
+    # _build_vod / _build_favorites / _build_bookmarks / _build_drm:
+    # inherited (None): no catalogue, favorites, bookmarks; DRM is folded.
 
     # ------------------------------------------------------------------
-    # Capability flags
-    # ------------------------------------------------------------------
-
-    @property
-    def implements_channels(self) -> bool:
-        return self.channels is not None
-
-    @property
-    def implements_vod(self) -> bool:
-        return self.vod is not None
-
-    @property
-    def implements_epg(self) -> bool:
-        return self.epg is not None
-
-    @property
-    def implements_recordings(self) -> bool:
-        return self.recordings is not None
-
-    @property
-    def implements_favorites(self) -> bool:
-        return self.favorites is not None
-
-    @property
-    def implements_bookmarks(self) -> bool:
-        return self.bookmarks is not None
-
-    @property
-    def implements_catchup(self) -> bool:
-        return self.catchup is not None
-
-    @property
-    def implements_drm(self) -> bool:
-        if self.drm is not None:
-            return True
-        folded_channels = (
-            self.channels is not None
-            and type(self.channels).get_channel_drm
-            is not ChannelManager.get_channel_drm
-        )
-        folded_vod = (
-            self.vod is not None
-            and type(self.vod).get_vod_drm
-            is not VodManager.get_vod_drm
-        )
-        return folded_channels or folded_vod
-
-    # ------------------------------------------------------------------
-    # Router
-    # ------------------------------------------------------------------
-
-    def _route(self, content_id: str, attempts: List[Tuple[Any, Callable]]):
-        """
-        Try managers in order, skipping those whose handles_content_id()
-        rejects the id. Used only by get_manifest / get_drm.
-
-        NotFoundError is remembered and re-raised if nobody else
-        resolves the id ("existed but is gone" vs "nobody handles it").
-        BadRequestError is not caught: a malformed id surfaces.
-        """
-        last_not_found: Optional[NotFoundError] = None
-        for manager, call in attempts:
-            if manager is None or not manager.handles_content_id(content_id):
-                continue
-            try:
-                result = call(manager)
-            except NotFoundError as e:
-                last_not_found = e
-                continue
-            if result:
-                return result
-        if last_not_found is not None:
-            raise last_not_found
-        return None
-
-    # ------------------------------------------------------------------
-    # Manifest routing
+    # catchup: ids (simpliTV-specific grammar)
     # ------------------------------------------------------------------
 
     def get_manifest(self, content_id: str, **kw) -> Optional[str]:
@@ -288,13 +203,34 @@ class SimpliTVProvider(StreamingProvider):
             return self.catchup.get_catchup_manifest(
                 content_id, start_ts, None, **kw
             )
+        return super().get_manifest(content_id, **kw)
 
-        return self._route(content_id, [
-            (self.channels, lambda m: m.get_channel_manifest(
-                content_id, **kw
-            )),
-            (self.vod, lambda m: m.get_vod_manifest(content_id, **kw)),
-        ])
+    def get_drm(
+        self,
+        content_id: str,
+        drm_variant: Optional[str] = None,
+        content_type: Optional[str] = None,
+        **kw,
+    ) -> List:
+        """
+        DRM for the given content.
+
+        catchup: ids go to the catchup manager, which forwards to the
+        channel manager's DRM (the programme's own when replaying, the
+        channel's live DRM when restarting). Everything else is
+        ManagedProvider's folded-DRM routing.
+        """
+        if content_id.startswith(SimpliTVDefaults.CATCHUP_PREFIX):
+            if self.catchup is None:
+                return []
+            _, start_ts = parse_catchup_id(content_id)  # raises if bad
+            if drm_variant is not None:
+                kw["drm_variant"] = drm_variant
+            configs = self.catchup.get_catchup_drm(
+                content_id, start_ts, None, **kw
+            )
+            return self._validate_drm(content_id, configs)
+        return super().get_drm(content_id, drm_variant, content_type, **kw)
 
     def get_restart(
         self, content_id: str, start_time: int = 0, **kw
@@ -306,59 +242,8 @@ class SimpliTVProvider(StreamingProvider):
         channel's DVR window) or None when the programme began outside
         that window. The window is per-channel (see "Catchup windows"
         above). The caller must seek; the URL alone plays live.
+        start_time=0 means "use the @<ts> embedded in a catchup: id".
         """
         if self.catchup is None:
             return None
         return self.catchup.get_restart_manifest(content_id, start_time)
-
-    # ------------------------------------------------------------------
-    # DRM routing
-    # ------------------------------------------------------------------
-
-    def get_drm(
-        self,
-        content_id: str,
-        content_type: Optional[str] = None,
-        **kw,
-    ) -> List:
-        """
-        DRM for the given content.
-
-        content_type is an optional narrowing hint ("live"/"vod" only;
-        anything else tries both). catchup: ids go to the catchup
-        manager, which forwards to the channel manager's DRM.
-        """
-        if self.drm is not None:
-            return self.drm.get_drm_configs(
-                content_id, content_type=content_type, **kw
-            )
-
-        if content_id.startswith(SimpliTVDefaults.CATCHUP_PREFIX):
-            if self.catchup is None:
-                return []
-            _, start_ts = parse_catchup_id(content_id)  # raises if bad
-            return self.catchup.get_catchup_drm(
-                content_id, start_ts, None, **kw
-            )
-
-        attempts: List[Tuple[Any, Callable]] = []
-        if content_type not in self._VOD_ONLY_CONTENT_TYPES:
-            attempts.append(
-                (self.channels, lambda m: m.get_channel_drm(
-                    content_id, **kw
-                ))
-            )
-        if content_type not in self._LIVE_ONLY_CONTENT_TYPES:
-            attempts.append(
-                (self.vod, lambda m: m.get_vod_drm(content_id, **kw))
-            )
-        return self._route(content_id, attempts) or []
-
-    # ------------------------------------------------------------------
-    # Channels
-    # ------------------------------------------------------------------
-
-    def get_channels(self, **kw):
-        if self.channels is None:
-            return []
-        return self.channels.get_channels(**kw)

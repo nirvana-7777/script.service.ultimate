@@ -78,6 +78,26 @@ class ProviderMetadataMixin:
         return cls.SUPPORTED_COUNTRIES.copy()
 
     @classmethod
+    def get_plugin_key(cls) -> str:
+        """
+        The key this class is registered under in AVAILABLE_PROVIDERS (the
+        provider package's directory name, e.g. "simpli").
+
+        Falls back to the class-name derivation ("SimpliTVProvider" ->
+        "simplitv") only when the class is not registered (e.g. unit tests).
+        The derivation used to be the only source and disagreed with the
+        registry key for renamed providers.
+        """
+        try:
+            from ... import AVAILABLE_PROVIDERS  # lazy: package init imports us
+        except ImportError:
+            AVAILABLE_PROVIDERS = {}
+        for key, klass in AVAILABLE_PROVIDERS.items():
+            if klass is cls:
+                return key
+        return cls.__name__.lower().replace("provider", "")
+
+    @classmethod
     def get_all_possible_instances(cls) -> List[Dict[str, Any]]:
         """
         Get metadata for all possible instances of this provider.
@@ -91,7 +111,7 @@ class ProviderMetadataMixin:
             for country in cls.SUPPORTED_COUNTRIES:
                 instances.append(
                     {
-                        "plugin": cls.__name__.lower().replace("provider", ""),
+                        "plugin": cls.get_plugin_key(),
                         "country": country.upper(),
                         "label": cls.get_static_label(country),
                         "requires_country_suffix": True,
@@ -101,7 +121,7 @@ class ProviderMetadataMixin:
             # Single-country provider
             instances.append(
                 {
-                    "plugin": cls.__name__.lower().replace("provider", ""),
+                    "plugin": cls.get_plugin_key(),
                     "country": "DE",  # Default country for single-country providers
                     "label": cls.get_static_label(),
                     "requires_country_suffix": False,

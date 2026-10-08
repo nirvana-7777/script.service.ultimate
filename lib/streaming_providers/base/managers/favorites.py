@@ -35,7 +35,7 @@ Provider guidance
 Favorites can be content of any type: a channel, a programme, a clip,
 a series. The content_id is whatever the provider uses to identify the
 favorited item. FavoriteType on the returned Favorite distinguishes
-them (PROGRAM, CHANNEL, CLIP, LIVE, EVENT).
+them (PROGRAM, CLIP, LIVE, EVENT).
 """
 
 from __future__ import annotations

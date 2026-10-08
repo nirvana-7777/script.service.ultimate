@@ -15,16 +15,15 @@ Recording identity (kept strictly separate from content identity):
 This manager does not implement get_manifest -- do not add a parallel
 manifest path here.
 
-get_recordings() returns SimpliTVChannel objects whose content_id is the
-"rec:..." id and whose recording_id carries the provider's id. Only
-recordings whose recording_status is "Recorded" are playable;
-"Scheduled" and "Failed" are listed but must not be played.
+get_recordings() returns SimpliTVRecording objects (a Recording
+subclass, so RecordingOperations can read `is_deleted`) whose content_id
+is the "rec:..." id and whose remote_id carries the provider's id. Only
+recordings whose remote_status is "Recorded" are playable; "Scheduled"
+and "Failed" are listed but must not be played.
 
-Note on construction: the base Content dataclass declares `content_id`
-and a required `provider` field. `Channel.channel_id` is a property
-that proxies to `content_id`, but dataclass __init__ bypasses
-properties, so SimpliTVChannel is built with `content_id=` and
-`provider=`.
+Clients only hold the content_id (Recording.recording_id aliases it), so
+delete_recording accepts the "rec:<codename>" id as well as the provider's
+recordingId and resolves the former through GetRecordings.
 
 Scheduling needs a *programme* codename (the EPG tile's own codename),
 not a channel codename: pass prog:<programme codename>.
@@ -32,15 +31,15 @@ not a channel codename: pass prog:<programme codename>.
 
 from typing import Dict, List, Optional
 
-from ...base.errors import BadRequestError
+from ...base.errors import BadRequestError, ItemNotFoundError
 from ...base.managers import RecordingsManager
-from ...base.models import Channel
+from ...base.models.recording import Recording, RecordingStatus
 from ...base.utils.logger import logger
 
 from .channel_manager import parse_programme_id
 from .constants import SimpliTVDefaults
-from .helpers import transport_errors
-from .models import SimpliTVChannel
+from .helpers import parse_iso, transport_errors
+from .models import SimpliTVRecording
 
 
 class SimpliTVRecordingsManager(RecordingsManager):
@@ -69,9 +68,18 @@ class SimpliTVRecordingsManager(RecordingsManager):
     # Abstract methods
     # ------------------------------------------------------------------
 
-    def get_recordings(self, **kw) -> List[Channel]:
+    def get_recordings(self, **kw) -> List[Recording]:
         """
-        Return all NPvR recordings across every page ([] if none).
+        Return all NPvR recordings ([] if none).
+
+        `include_deleted` (passed by RecordingOperations in **kw) is
+        ignored: the API has no deleted state.
+        """
+        return list(self._fetch_recordings())
+
+    def _fetch_recordings(self) -> List[SimpliTVRecording]:
+        """
+        All NPvR recordings across every page.
 
         The page index base is unverified (the addon's own paging is
         broken and limit=99999 normally returns everything in one page),
@@ -79,7 +87,7 @@ class SimpliTVRecordingsManager(RecordingsManager):
         de-duplicated by recording id: a page that adds nothing new ends
         the walk instead of looping or returning duplicates.
         """
-        found: Dict[str, SimpliTVChannel] = {}
+        found: Dict[str, SimpliTVRecording] = {}
         page = 0
         while True:
             # NOTE: GetRecordings names the token parameter `tokenValue`;
@@ -108,12 +116,12 @@ class SimpliTVRecordingsManager(RecordingsManager):
 
             added = 0
             for rec in data.get("recordings", []):
-                channel = self._rec_to_channel(rec)
-                key = channel.recording_id or (
-                    f"{channel.codename}:{channel.current_start}"
+                recording = self._rec_to_recording(rec)
+                key = recording.remote_id or (
+                    f"{recording.codename}:{recording.current_start}"
                 )
                 if key not in found:
-                    found[key] = channel
+                    found[key] = recording
                     added += 1
 
             page += 1
@@ -129,20 +137,29 @@ class SimpliTVRecordingsManager(RecordingsManager):
 
     def delete_recording(self, recording_id: str, **kw) -> None:
         """
-        Delete a recording by recording_id.
+        Delete a recording.
+
+        recording_id is either the provider's recordingId or the
+        "rec:<programme codename>" content id (what clients hold); the
+        latter is resolved through GetRecordings.
 
         Raises:
-            KeyError:    if the recording does not exist / was not deleted.
+            ItemNotFoundError: (also a KeyError) if the recording does not
+                         exist / was not deleted.
             ProviderError subclasses: on transport / backend failure
                          (typed errors such as AuthError pass through).
         """
         if not recording_id:
-            raise KeyError("simpliTV: empty recording_id")
+            raise ItemNotFoundError("simpliTV: empty recording_id")
+
+        remote_id = recording_id
+        if recording_id.startswith(SimpliTVDefaults.RECORDING_PREFIX):
+            remote_id = self._remote_id_for(recording_id)
 
         # NOTE: token is in the body (auth_body), not a header.
         body = self.auth.auth_body({
             "platformCodename": self.config.platform_codename,
-            "recordingId": recording_id,
+            "recordingId": remote_id,
         })
         with transport_errors("delete_recording"):
             resp = self.http_manager.post(
@@ -155,14 +172,30 @@ class SimpliTVRecordingsManager(RecordingsManager):
         # The API answers 200 with success:false for "not found";
         # silently returning would hide real backend errors.
         if not (data.get("result") or {}).get("success", False):
-            raise KeyError(
+            raise ItemNotFoundError(
                 f"simpliTV: recording {recording_id!r} not deleted "
                 f"(response: {data!r})"
             )
 
+    def _remote_id_for(self, content_id: str) -> str:
+        """Provider recordingId for a rec:<codename> content id."""
+        with transport_errors("resolve recording id"):
+            recordings = self._fetch_recordings()
+        for recording in recordings:
+            if recording.content_id == content_id and recording.remote_id:
+                return recording.remote_id
+        raise ItemNotFoundError(
+            f"simpliTV: no recording with id {content_id!r}"
+        )
+
     # ------------------------------------------------------------------
     # Optional override -- scheduling
     # ------------------------------------------------------------------
+
+    @property
+    def supports_scheduling(self) -> bool:
+        """schedule_recording() is implemented (prog:<codename> ids)."""
+        return True
 
     def schedule_recording(self, content_id: str, **kw) -> bool:
         """
@@ -196,24 +229,44 @@ class SimpliTVRecordingsManager(RecordingsManager):
     # Internal
     # ------------------------------------------------------------------
 
-    def _rec_to_channel(self, rec: dict) -> SimpliTVChannel:
+    def _rec_to_recording(self, rec: dict) -> SimpliTVRecording:
         """
-        Map one GetRecordings entry to SimpliTVChannel.
+        Map one GetRecordings entry to SimpliTVRecording.
 
         content_id is "rec:<programme codename>" (the id used to play
-        the recording); recording_id is the provider's id (the id used
+        the recording); remote_id is the provider's id (the id used
         to delete it). They are different namespaces.
         """
         programme = rec.get("program") or {}
         codename = programme.get("codename", "")
-        return SimpliTVChannel(
+        start_raw = programme.get("start", "")
+        stop_raw = programme.get("stop", "")
+        start, stop = parse_iso(start_raw), parse_iso(stop_raw)
+        duration = (
+            int((stop - start).total_seconds())
+            if start and stop and stop > start
+            else None
+        )
+        raw_status = rec.get("status", "")
+        return SimpliTVRecording(
             name=programme.get("title", codename),
             content_id=f"{SimpliTVDefaults.RECORDING_PREFIX}{codename}",
             provider=SimpliTVDefaults.PROVIDER_NAME,
+            status=_STATUS_MAP.get(raw_status, RecordingStatus.PENDING),
+            recording_time=start,
+            duration_seconds=duration,
             codename=codename,
-            current_programme=programme.get("title", ""),
-            current_start=programme.get("start", ""),
-            current_stop=programme.get("stop", ""),
-            recording_id=rec.get("recordingId", ""),
-            recording_status=rec.get("status", ""),
+            remote_id=rec.get("recordingId", ""),
+            remote_status=raw_status,
+            current_start=start_raw,
+            current_stop=stop_raw,
         )
+
+
+# API status -> RecordingStatus. Unknown values stay PENDING (not playable,
+# not claimed to have failed).
+_STATUS_MAP = {
+    "Recorded": RecordingStatus.COMPLETED,
+    "Scheduled": RecordingStatus.PENDING,
+    "Failed": RecordingStatus.FAILED,
+}

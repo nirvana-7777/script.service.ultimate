@@ -5,6 +5,7 @@ CatchupManager ABC.
 Public interface
 ----------------
     catchup_window_hours                                -> int             [concrete]
+    catchup_window_for_channel(content_id)              -> int             [concrete]
     supports_catchup                                    -> bool            [concrete]
     get_catchup_manifest(content_id, start_time, end_time=None, ...)
                                                         -> Optional[str]   [abstract]
@@ -27,9 +28,13 @@ catchup manifest for the given content and window. It does NOT raise
 NotFoundError -- "no catchup for this content" is a valid result, and
 callers fall back to the live manifest.
 
-get_catchup_drm returns [] when catchup shares DRM with live (the
-common case), or a provider-specific list when catchup uses different
-DRM.
+get_catchup_drm returns [] when the provider has no catchup-specific DRM
+configuration, or a provider-specific list when catchup uses its own DRM.
+[] does NOT mean "same as live": ManagedProvider turns [] into
+NotImplementedError, which the DRM pipeline
+(drm_operations.get_catchup_content_drm_configs) reads as "extract the PSSH
+from the catchup manifest itself". Providers whose catchup is encrypted
+exactly like live set ManagedProvider.CATCHUP_DRM_FROM_LIVE = True.
 
 What a catchup manifest is (and is not)
 ----------------------------------------
@@ -78,11 +83,21 @@ class CatchupManager(ManagerBase):
     @property
     def catchup_window_hours(self) -> int:
         """
-        Return the catchup window in hours.
+        Provider-wide catchup window in hours (the MAXIMUM over all
+        channels). Default 0 means no catchup. Providers override.
 
-        Default 0 means no catchup. Providers override.
+        This feeds the legacy provider.catchup_window, which the backend
+        uses to gate catchup and to validate request age without knowing
+        the channel. Per-channel windows go in catchup_window_for_channel().
         """
         return 0
+
+    def catchup_window_for_channel(self, content_id: str) -> int:
+        """
+        Catchup window in hours for one channel. Default: the provider-wide
+        window. Override when windows differ per channel (simpliTV: 2/3/4 h).
+        """
+        return self.catchup_window_hours
 
     @property
     def supports_catchup(self) -> bool:
@@ -176,8 +191,11 @@ class CatchupManager(ManagerBase):
         """
         DRM for catchup content.
 
-        Default: []. Most providers' catchup shares DRM with live (the
-        caller falls back to the channel manager's DRM), or has no DRM.
+        Default: [] = no catchup-specific DRM configuration. ManagedProvider
+        raises NotImplementedError for [], so the DRM pipeline extracts the
+        PSSH from the catchup manifest (also the right outcome for clear
+        streams). It does NOT fall back to live DRM unless the provider sets
+        CATCHUP_DRM_FROM_LIVE = True.
 
         Providers whose catchup uses a distinct DRM configuration
         (different license URL, different PSSH) override this.

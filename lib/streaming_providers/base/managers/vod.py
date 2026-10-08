@@ -25,9 +25,9 @@ documents it here. The base class does not parse content_id. Examples:
 
 Constructor contract
 --------------------
-Four required keyword-only collaborators (see ManagerBase). No **kwargs.
-Subclasses accept extra keyword-only args explicitly and call
-super().__init__ with only the four required.
+Four required keyword-only collaborators. No **kwargs. Subclasses accept
+extra keyword-only args explicitly and call super().__init__ with only
+the four required. A typo at a call site becomes an immediate TypeError.
 
 Return-value conventions
 ------------------------
@@ -59,7 +59,6 @@ class VodManager(ManagerBase):
 
         Default: True. Override in providers whose VOD content_ids have a
         distinguishable grammar (e.g. start with "details_" or "clip_").
-        Cheap, I/O-free PRE-FILTER: False means the manager is never asked.
         """
         return True
 
@@ -108,13 +107,7 @@ class VodManager(ManagerBase):
     def get_segment_headers(
         self, content_id: str, **kw: Any
     ) -> Dict[str, str]:
-        """
-        Headers for segment requests. Default: manifest headers.
-
-        Mirrors ChannelManager.get_segment_headers so the orchestrator can
-        ask any routed manager for segment headers. Override for providers
-        with token-bound segment URLs.
-        """
+        """Headers for segment requests. Default: VOD manifest headers."""
         return self.get_vod_manifest_headers(content_id, **kw)
 
     def get_vod_drm(

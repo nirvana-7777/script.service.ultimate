@@ -32,6 +32,7 @@ from typing import Any, Dict
 
 from ...base.auth.base_auth import BaseAuthToken
 from ...base.models import Channel
+from ...base.models.recording import Recording
 
 
 @dataclass
@@ -101,4 +102,46 @@ class SimpliTVChannel(Channel):
         result["IsCatchupEnabled"] = self.is_catchup_enabled
         result["RecordingId"] = self.recording_id
         result["RecordingStatus"] = self.recording_status
+        return result
+
+@dataclass
+class SimpliTVRecording(Recording):
+    """
+    One NPvR recording.
+
+    Inherits Recording (not Channel): RecordingOperations filters on
+    `is_deleted`, and the legacy mixin is typed List[Recording].
+
+    Ids (two namespaces):
+        content_id  "rec:<programme codename>" -- plays the recording
+                    (get_manifest / get_drm) AND is what clients hold, since
+                    Recording.recording_id is an alias of content_id.
+        remote_id   the provider's recordingId -- what DeleteRecording takes.
+                    SimpliTVRecordingsManager.delete_recording accepts either.
+
+    remote_status is the raw API status ("Recorded", "Scheduled",
+    "Failed"); `status` is the mapped RecordingStatus. Only "Recorded" is
+    playable. to_dict() keeps the keys the former SimpliTVChannel-based
+    recordings emitted (Codename, RecordingId, RecordingStatus,
+    CurrentStart, CurrentStop).
+    """
+
+    codename: str = ""
+    remote_id: str = ""
+    remote_status: str = ""
+    current_start: str = ""
+    current_stop: str = ""
+
+    @property
+    def is_playable(self) -> bool:
+        return self.remote_status == "Recorded"
+
+    def to_dict(self) -> Dict[str, Any]:
+        result = super().to_dict()
+        result["Codename"] = self.codename
+        result["CurrentProgramme"] = self.name
+        result["CurrentStart"] = self.current_start
+        result["CurrentStop"] = self.current_stop
+        result["RecordingId"] = self.remote_id
+        result["RecordingStatus"] = self.remote_status
         return result

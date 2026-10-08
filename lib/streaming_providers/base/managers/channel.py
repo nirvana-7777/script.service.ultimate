@@ -13,10 +13,10 @@ Public interface
 
 Constructor contract
 --------------------
-Four required keyword-only collaborators (see ManagerBase). Subclasses that
-need extra state declare additional keyword-only args and store them on
-self AFTER calling super().__init__. The base does NOT accept **kwargs -- a
-typo at a call site becomes an immediate TypeError, which is what you want.
+Four required keyword-only collaborators. Subclasses that need extra state
+declare additional keyword-only args and store them on self AFTER calling
+super().__init__. The base does NOT accept **kwargs -- a typo at a call
+site becomes an immediate TypeError, which is what you want.
 
 Return-value conventions
 ------------------------
@@ -48,8 +48,7 @@ class ChannelManager(ManagerBase):
         Default: True. Override in providers whose channel content_ids have
         a distinguishable grammar (e.g. numeric-only for live channels).
         The orchestrator uses this to route get_manifest / get_drm without
-        a wasted request to the wrong manager. It is a cheap, I/O-free
-        PRE-FILTER: False means the manager is never asked.
+        a wasted request to the wrong manager.
         """
         return True
 

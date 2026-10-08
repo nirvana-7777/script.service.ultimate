@@ -119,6 +119,17 @@ class SimpliTVEpgManager(EpgManager):
         """
         return self._fetch_available_window()
 
+    @property
+    def implements_epg(self) -> bool:
+        """
+        Always True. The ABC derives this from epg_window != (0, 0), but
+        epg_window here is a (cached) GetAvailableDays request, and the
+        flag is read on every get_epg call and in the registry listing.
+        The window is informational and never (0, 0) (it falls back to
+        the EPG_PAST_DAYS / EPG_FUTURE_DAYS constants).
+        """
+        return True
+
     # ------------------------------------------------------------------
     # get_epg / get_epg_grid
     # ------------------------------------------------------------------
