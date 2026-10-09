@@ -229,7 +229,8 @@ class SimpliTVRecordingsManager(RecordingsManager):
     # Internal
     # ------------------------------------------------------------------
 
-    def _rec_to_recording(self, rec: dict) -> SimpliTVRecording:
+    @staticmethod
+    def _rec_to_recording(rec: dict) -> SimpliTVRecording:
         """
         Map one GetRecordings entry to SimpliTVRecording.
 

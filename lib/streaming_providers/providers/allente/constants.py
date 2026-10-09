@@ -23,6 +23,9 @@ from ..globals import get_user_agent
 class AllenteDefaults:
     """Default values for the Allente provider."""
 
+    # Registry key / directory name / credential + session key.
+    PROVIDER_NAME = "allente"
+
     ALLENTE_LOGO = "https://imgix-images-cdn.3ready.cc/e2dbff8f-a707-4d34-b7f5-856e45193f3c/logo_white_big.png"
 
     # ------------------------------------------------------------------
@@ -199,6 +202,22 @@ class AllenteConfig:
     def content_domain(self) -> str:
         # SE-only in v1; the fallback keeps old persisted configs working.
         return AllenteDefaults.CONTENT_DOMAIN_BY_COUNTRY.get(self.country, "DTH-SE")
+
+    def stream_headers(self) -> dict:
+        """
+        Headers for the MPD and segment fetches (CDN, not Zulu).
+
+        Akamai fronts stream-live-01.allente.tv and rejects requests
+        without a whitelisted origin/referer (it answers with an "Access
+        Denied" HTML page). The CDN advertises access-control-allow-origin: *
+        for CORS, but that is a browser-level policy -- the actual gate is
+        enforced at the edge based on these headers.
+        """
+        return {
+            "origin": AllenteDefaults.TV_WEB_ORIGIN,
+            "referer": AllenteDefaults.TV_WEB_REFERER,
+            "user-agent": self.user_agent,
+        }
 
     def zulu_headers(self, access_token: Optional[str] = None) -> dict:
         return AllenteHeaders.zulu_headers(
