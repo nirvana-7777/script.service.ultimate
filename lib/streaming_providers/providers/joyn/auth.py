@@ -129,12 +129,6 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
         self.country = country
         self.platform = platform
-        # The shared config. Set BEFORE super().__init__: the base class may touch
-        # properties (oauth_redirect_uri, ...) that read it.
-        self._config = config if config is not None else JoynConfig(
-            country=country, platform=platform
-        )
-        self.distribution_tenant = self._config.distribution_tenant
 
         # Cache for flow parameters
         self._sso_endpoints_cache = None
@@ -156,6 +150,18 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             http_manager=http_manager,
             proxy_config=proxy_config,
         )
+
+        # CRITICAL ORDERING: BaseOAuth2Authenticator.__init__ sets self._config = None.
+        # Anything assigned to self._config (or self.config, which writes _config)
+        # BEFORE super().__init__ is silently discarded. Assign the shared JoynConfig
+        # AFTER, and set it through the base's `config` property so the base's own
+        # methods (which read self.config.user_agent, self.config.base_website,
+        # self.config.get_base_headers, ...) find it too.
+        self._joyn_config = config if config is not None else JoynConfig(
+            country=country, platform=platform
+        )
+        self.config = self._joyn_config  # sets self._config via the property setter
+        self.distribution_tenant = self._joyn_config.distribution_tenant
 
         # Load or generate persistent device ID
         self._device_id = self._load_or_generate_device_id()
