@@ -1,369 +1,199 @@
 # streaming_providers/providers/joyn/provider.py
 # -*- coding: utf-8 -*-
 """
-Joyn Provider - Pure Orchestrator
-Wires together authentication, channel, and VOD managers
+Joyn provider — orchestrator only.
+
+The provider owns the SHARED resources and BUILDS the managers. Everything
+identical across providers is inherited from ManagedProvider. What stays here:
+
+  * identity ClassVars
+  * __init__ wiring: config -> http_manager -> authenticator -> session ->
+    entitlement helper -> caches -> _init_managers()
+  * _build_channels / _build_vod
+  * _clear_caches (the session's on_invalidate hook)
+
+Why BOTH `self.authenticator` and `self.auth` exist: `self.auth` (JoynSession) is
+what the managers use. `self.authenticator` (the raw JoynAuthenticator) is kept
+because ProviderAuthMixin._build_provider_headers reaches for
+`self.authenticator.get_bearer_token()` directly — shared with v1 providers.
+Managers never use it.
+
+DRM_IN_MANAGERS = True: manifest and DRM come from the same /playlist call, so
+both managers override get_*_drm (built by drm.build_widevine_config) and share a
+playout cache with their manifest method.
+
+HEADERS_FROM_MANAGERS = True: the CDN set differs from the API set (no bearer);
+the manager header hooks return the right set per call.
+
+Known limitations (README §18):
+  * A ProxyConfig only affects Python-side HTTPManager traffic. Licence, manifest
+    and segment requests are made by inputstream.adaptive inside Kodi.
+  * The 7pass login flow uses its own requests session inside the authenticator.
 """
 
-from dataclasses import dataclass
-from typing import ClassVar, Dict, List, Optional, Tuple, Union
-from datetime import datetime
+from typing import ClassVar, Dict, List, Optional
 
-from ...base.models import DRMConfig, StreamingChannel, Event, ContentType
+from ...base.managed_provider import ManagedProvider
 from ...base.models.proxy_models import ProxyConfig
-from ...base.provider import StreamingProvider
-from ...base.utils.logger import logger
+
 from .auth import JoynAuthenticator
 from .channel_manager import JoynChannelManager
+from .config import JoynConfig
+from .constants import JOYN_LOGO, PROVIDER_NAME, SUPPORTED_COUNTRIES
+from .entitlement import JoynEntitlement
+from .session import JoynSession
 from .vod_manager import JoynVodManager
-from .epg_manager import JoynEpgManager
-from .catchup_manager import JoynCatchupManager
-from .constants import (
-    DEFAULT_PLATFORM,
-    DEFAULT_REQUEST_TIMEOUT,
-    DEFAULT_MAX_RETRIES,
-    JOYN_USER_AGENT,
-    JOYN_LOGO,
-    SUPPORTED_COUNTRIES,
-    COUNTRY_TENANT_MAPPING,
-    DEFAULT_EPG_WINDOW_HOURS,
-)
-from ...base.models.vod import VodCategory, VodItem
+
+# Only the provider is public. Discovery takes the FIRST StreamingProvider
+# subclass in the package namespace; ManagedProvider must never appear here.
+__all__ = ["JoynProvider"]
 
 
-@dataclass
-class JoynConfig:
-    """Configuration dataclass for Joyn Provider"""
-    country: str = "de"
-    platform: str = DEFAULT_PLATFORM
-    config_dir: Optional[str] = None
-    proxy_config: Optional[ProxyConfig] = None
-    proxy_url: Optional[str] = None
-    timeout: int = DEFAULT_REQUEST_TIMEOUT
-    max_retries: int = DEFAULT_MAX_RETRIES
-
-
-class JoynProvider(StreamingProvider):
-    """
-    Joyn streaming provider - Pure orchestrator
-    """
-
+class JoynProvider(ManagedProvider):
     PROVIDER_LABEL: ClassVar[str] = "Joyn"
+    PROVIDER_LOGO: ClassVar[str] = JOYN_LOGO
     SUPPORTED_AUTH_TYPES: ClassVar[List[str]] = [
         "client_credentials",
         "user_credentials",
     ]
-    PROVIDER_LOGO: ClassVar[str] = JOYN_LOGO
     SUPPORTED_COUNTRIES: ClassVar[List[str]] = SUPPORTED_COUNTRIES
+
+    # Folded DRM (see module docstring). ManagedProvider refuses this flag
+    # together with a non-None _build_drm().
+    DRM_IN_MANAGERS: ClassVar[bool] = True
+
+    # Manager header hooks return the CDN set (no bearer); without this flag
+    # they would be dead code and the CDN would receive the API headers.
+    HEADERS_FROM_MANAGERS: ClassVar[bool] = True
 
     def __init__(
             self,
+            country: str = "DE",
             config: Optional[JoynConfig] = None,
-            **kwargs,
+            proxy_config: Optional[ProxyConfig] = None,
+            proxy_url: Optional[str] = None,
+            config_dir: Optional[str] = None,
     ):
-        """
-        Initialize Joyn provider
+        super().__init__(country=country)
+        self.country = self.country.lower()
+        if self.country not in SUPPORTED_COUNTRIES:
+            raise NotImplementedError(
+                f"Joyn does not support country {country!r} "
+                f"(supported: {', '.join(SUPPORTED_COUNTRIES)})"
+            )
 
-        Args:
-            config: JoynConfig dataclass. If None, will construct from kwargs.
-        """
-        # Backward compatibility: construct config from kwargs if not provided
+        # 1. ONE config object, shared by every layer — including the
+        # authenticator. Re-derive every country-dependent field: the caller's
+        # config may have been built for another country.
         if config is None:
-            config = JoynConfig(**kwargs)
+            config = JoynConfig(country=self.country)
+        else:
+            config.country = self.country  # setter keeps everything in sync
+        self.provider_config = config
 
-        if not self.validate_country(config.country):
-            supported = ", ".join(self.SUPPORTED_COUNTRIES)
-            raise ValueError(f"Unsupported country: {config.country}. Joyn supports: {supported}")
-
-        super().__init__(country=config.country)
-
-        self.config = config
-        self.platform = config.platform
-        self.distribution_tenant = COUNTRY_TENANT_MAPPING.get(config.country, "JOYN")
-
-        # 1. SETUP HTTP MANAGER
+        # 2. HTTP manager.
         self.http_manager = self._setup_http_manager(
-            provider_name="joyn",
-            proxy_config=config.proxy_config,
-            proxy_url=config.proxy_url,
-            config_dir=config.config_dir,
-            user_agent=JOYN_USER_AGENT,
-            timeout=config.timeout,
-            max_retries=config.max_retries,
+            provider_name=PROVIDER_NAME,
+            proxy_config=proxy_config,
+            proxy_url=proxy_url,
+            config_dir=config_dir,
+            user_agent=self.provider_config.user_agent,
+            timeout=self.provider_config.timeout,
+            max_retries=self.provider_config.max_retries,
         )
 
-        # 2. SETUP AUTHENTICATION
+        # 3. Auth (two attributes on purpose — see module docstring).
         self.authenticator = JoynAuthenticator(
-            country=config.country,
-            platform=config.platform,
-            config_dir=config.config_dir,
+            country=self.country,
+            platform=self.provider_config.platform,
+            config_dir=config_dir,
             http_manager=self.http_manager,
-            proxy_config=self.http_manager.config.proxy_config,
+            proxy_config=proxy_config,  # the raw ctor argument (may be None)
+            config=self.provider_config,
+        )
+        self.auth = JoynSession(
+            authenticator=self.authenticator,
+            config=self.provider_config,
+            on_invalidate=self._clear_caches,
         )
 
-        # 3. SETUP MANAGERS
-        self.channel_manager = JoynChannelManager(provider=self)
-        self.vod_manager = JoynVodManager(provider=self)
-        self.epg_manager = JoynEpgManager(provider=self)
-        self.catchup_manager = JoynCatchupManager(provider=self)
+        # 4. Provider-owned caches, borrowed by managers by reference.
+        self._playout_cache: Dict = {}
+        self._entitlement_cache: Dict = {}
 
-        # Initial authentication
-        try:
-            self.bearer_token = self.authenticator.get_bearer_token()
-        except Exception as e:
-            logger.warning(f"Could not authenticate during initialization: {e}")
-            self.bearer_token = None
+        # 5. Entitlement helper, shared by both managers via keyword extra.
+        self._entitlement = JoynEntitlement(
+            http_manager=self.http_manager,
+            auth=self.auth,
+            config=self.provider_config,
+            cache=self._entitlement_cache,
+        )
 
-    # ============================================================================
-    # PROVIDER PROPERTIES
-    # ============================================================================
+        # 6. Managers, in dependency order. self.channels is the ChannelManager
+        # from here on — never assign a list to it. No eager login: the first
+        # caller that needs a token logs in through self.auth.
+        self._init_managers()
+
+    # ------------------------------------------------------------------
+    # Cache lifecycle (session.on_invalidate)
+    # ------------------------------------------------------------------
+
+    def _clear_caches(self) -> None:
+        """Drop everything that is specific to the account / token.
+
+        Registered as JoynSession's on_invalidate callback, so it runs on every
+        credential change. Defensive about construction order: it can only be
+        invoked after __init__, but the managers are optional by design.
+        """
+        self._playout_cache.clear()
+        entitlement = getattr(self, "_entitlement", None)
+        if entitlement is not None:
+            entitlement.clear()
+        vod = getattr(self, "vod", None)
+        if vod is not None and hasattr(vod, "clear_cache"):
+            vod.clear_cache()
+
+    # ------------------------------------------------------------------
+    # Manager factories
+    # ------------------------------------------------------------------
+
+    def _build_channels(self):
+        return JoynChannelManager(
+            http_manager=self.http_manager,
+            auth=self.auth,
+            country=self.country,
+            config=self.provider_config,
+            entitlement=self._entitlement,
+            playout_cache=self._playout_cache,
+        )
+
+    def _build_vod(self):
+        return JoynVodManager(
+            http_manager=self.http_manager,
+            auth=self.auth,
+            country=self.country,
+            config=self.provider_config,
+            entitlement=self._entitlement,
+        )
+
+    # No _build_epg, no _build_catchup: Joyn does not have them. A provider
+    # without a capability simply has no manager.
+
+    # ------------------------------------------------------------------
+    # Provider-specific id grammar
+    # ------------------------------------------------------------------
+    # None the router cannot express: live ids are bare slugs, VOD ids are
+    # a_/b_/c_/d_/block-<n>/paths — both managers decide through ids.is_vod_id().
 
     @property
     def provider_name(self) -> str:
-        return "joyn"
+        return PROVIDER_NAME
 
-    @property
-    def provider_label(self) -> str:
-        country_map = {
-            "de": "Joyn Germany",
-            "at": "Joyn Austria",
-            "ch": "Joyn Switzerland",
-        }
-        return country_map.get(self.config.country, f"Joyn ({self.config.country.upper()})")
-
-    @property
-    def provider_logo(self) -> str:
-        return self.PROVIDER_LOGO
-
-    @property
-    def supported_auth_types(self) -> List[str]:
-        return self.SUPPORTED_AUTH_TYPES
-
-    @property
-    def uses_dynamic_manifests(self) -> bool:
-        return False
-
-    @property
-    def implements_epg(self) -> bool:
-        return self.epg_manager.implements_epg
-
-    @property
-    def epg_window(self) -> Tuple[int, int]:
-        return self.epg_manager.epg_window
-
-    @property
-    def implements_vod(self) -> bool:
-        return self.vod_manager.implements_vod
-
-    @property
-    def catchup_window(self) -> int:
-        return self.catchup_manager.catchup_window
-
-    @property
-    def supports_catchup(self) -> bool:
-        return self.catchup_manager.supports_catchup
-
-    # ============================================================================
-    # DELEGATED METHODS
-    # ============================================================================
-
-    def authenticate(self, **kwargs) -> str:
-        self.bearer_token = self.authenticator.get_bearer_token(
-            force_refresh=kwargs.get("force_refresh", False)
-        )
-        return self.bearer_token
-
-    def refresh_authentication(self) -> str:
-        self.bearer_token = self.authenticator.get_bearer_token(force_refresh=True)
-        return self.bearer_token
-
-    def get_channels(
-            self,
-            time_window_hours: int = DEFAULT_EPG_WINDOW_HOURS,
-            fetch_manifests: bool = False,
-            populate_streaming_data: bool = True,
-            **kwargs,
-    ) -> List[StreamingChannel]:
-        return self.channel_manager.get_channels(
-            time_window_hours=time_window_hours,
-            fetch_manifests=fetch_manifests,
-            populate_streaming_data=populate_streaming_data,
-            **kwargs,
-        )
-
-    def get_events(
-            self,
-            start_time: Optional[datetime] = None,
-            end_time: Optional[datetime] = None,
-            **kwargs,
-    ) -> List[Event]:
-        return self.epg_manager.get_events(start_time, end_time, **kwargs)
-
-    def get_epg(
-            self,
-            channel_id: str,
-            start_time: Optional[datetime] = None,
-            end_time: Optional[datetime] = None,
-            **kwargs,
-    ) -> List:
-        return self.epg_manager.get_epg(channel_id, start_time, end_time, **kwargs)
-
-    def get_epg_grid(
-            self,
-            start_time: Optional[datetime] = None,
-            end_time: Optional[datetime] = None,
-            channel_ids: Optional[List[str]] = None,
-            **kwargs,
-    ) -> Dict[str, List]:
-        return self.epg_manager.get_epg_grid(start_time, end_time, channel_ids, **kwargs)
-
-    def get_program_details(self, program_id: str, **kwargs) -> Optional[Dict]:
-        return self.epg_manager.get_program_details(program_id, **kwargs)
-
-    # ============================================================================
-    # ROUTING HELPER
-    # ============================================================================
-
-    def _is_vod_content(self, content_id: str, content_type: str = ContentType.LIVE) -> bool:
-        """
-        Route to the VOD manager if content_id matches VOD patterns, rather than
-        guessing off a bare "_" in content_id (which breaks the moment a live
-        channel slug picks up an underscore).
-
-        VOD IDs: a_/b_/c_/d_ prefixed asset ids, "block-" lazy-block ids, or
-        browsable paths (contain "/") and block ids (contain ":") as used by
-        JoynVodManager._is_block_id / get_vod_category.
-        Live channel IDs are plain slugs, e.g. "sat1-de".
-        """
-        if content_type == ContentType.VOD:
-            return True
-        return (
-            content_id.startswith(("a_", "b_", "c_", "d_", "block-")) or
-            "/" in content_id or
-            ":" in content_id
-        )
-
-    # ============================================================================
-    # MANIFEST/PLAYBACK METHODS
-    # ============================================================================
-
-    def get_manifest(
-            self,
-            content_id: str,
-            content_type: str = ContentType.LIVE,
-            video_config: Optional[Dict] = None,
-            **kwargs,
-    ) -> Optional[str]:
-        """
-        Get manifest URL - routes to VOD or Channel manager based on content_id.
-        """
-        if self._is_vod_content(content_id, content_type):
-            return self.vod_manager.get_vod_manifest(content_id, video_config, **kwargs)
-
-        return self.channel_manager.get_manifest(
-            content_id=content_id,
-            content_type=content_type,
-            video_config=video_config,
-            **kwargs,
-        )
-
-    def get_manifest_headers(self, content_id: str, **kwargs) -> Dict[str, str]:
-        """Get manifest headers"""
-        return self.channel_manager.get_manifest_headers(content_id, **kwargs)
-
-    def get_drm(
-            self,
-            content_id: str,
-            content_type: str = ContentType.LIVE,
-            video_config: Optional[Dict] = None,
-            **kwargs,
-    ) -> List[DRMConfig]:
-        """
-        Get DRM configurations - routes to VOD or Channel manager based on content_id.
-        """
-        if self._is_vod_content(content_id, content_type):
-            return self.vod_manager.get_vod_drm(content_id, video_config, **kwargs)
-
-        return self.channel_manager.get_drm(
-            content_id=content_id,
-            content_type=content_type,
-            video_config=video_config,
-            **kwargs,
-        )
-
-    def enrich_channel_data(
-            self,
-            channel: StreamingChannel,
-            video_config: Optional[Dict] = None,
-            **kwargs,
-    ) -> Optional[StreamingChannel]:
-        return self.channel_manager.enrich_channel_data(channel, video_config, **kwargs)
-
-    def populate_streaming_data(
-            self,
-            channels: List[StreamingChannel],
-            video_config: Optional[Dict] = None,
-            max_retries: int = DEFAULT_MAX_RETRIES,
-    ) -> List[StreamingChannel]:
-        return self.channel_manager.populate_streaming_data(channels, video_config, max_retries)
-
-    def get_dynamic_manifest_params(self, channel: StreamingChannel, **kwargs) -> Optional[str]:
-        return None
-
-    def get_vod_category(self, content_id: str = "", **kwargs) -> List[Union[VodCategory, VodItem]]:
-        return self.vod_manager.get_vod_category(content_id, **kwargs)
-
-    def search_vod(
-            self,
-            query: str,
-            cursor: Optional[str] = None,
-            page_size: int = 24,
-            **kwargs,
-    ) -> Dict:
-        return self.vod_manager.search(query, cursor, page_size, **kwargs)
-
-    def get_vod_item_details(self, content_id: str, **kwargs) -> Optional[Dict]:
-        # VodItem inherits from Content, which provides to_dict() — there is no
-        # to_vod_item() method, so the previous dataclasses.asdict(item.to_vod_item(...))
-        # call raised AttributeError on every invocation.
-        item = self.vod_manager.get_content_details(content_id, **kwargs)
-        if item:
-            return item.to_dict()
-        return None
-
-    def get_vod_manifest(
-            self,
-            content_id: str,
-            video_config: Optional[Dict] = None,
-            **kwargs,
-    ) -> Optional[str]:
-        return self.vod_manager.get_vod_manifest(content_id, video_config, **kwargs)
-
-    def get_vod_drm(
-            self,
-            content_id: str,
-            video_config: Optional[Dict] = None,
-            **kwargs,
-    ) -> List[DRMConfig]:
-        return self.vod_manager.get_vod_drm(content_id, video_config, **kwargs)
-
-    def get_vod_manifest_with_headers(
-            self,
-            content_id: str,
-            video_config: Optional[Dict] = None,
-            **kwargs,
-    ) -> Tuple[Optional[str], Dict[str, str]]:
-        return self.vod_manager.get_vod_manifest_with_headers(content_id, video_config, **kwargs)
-
-    def to_output_format(self, channels: List[StreamingChannel] = None) -> Dict:
-        if channels is None:
-            channels = self.channel_manager.channels if self.channel_manager else []
-        return {
-            "Provider": self.provider_name,
-            "Country": self.config.country,
-            "Channels": [channel.to_dict() for channel in channels],
-        }
-
-    def to_json(self, channels: List[StreamingChannel] = None, indent: int = 2) -> str:
-        import json
-        return json.dumps(self.to_output_format(channels), indent=indent, ensure_ascii=False)
+    # ------------------------------------------------------------------
+    # Credentials API (settings UI) — deliberately NOT added
+    # ------------------------------------------------------------------
+    # The migration pack found no caller of set_user_credentials /
+    # get_auth_details / get_last_auth_error for Joyn. If the settings UI grows
+    # one: build credentials -> assign -> self.auth.invalidate() (clears memory +
+    # persisted token, resets backoff, runs _clear_caches) -> ONE login -> persist
+    # only on success.

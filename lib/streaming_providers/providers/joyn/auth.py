@@ -16,33 +16,27 @@ from ...base.auth.base_oauth2_auth import BaseOAuth2Authenticator, WafBlockedExc
 from ...base.auth.credentials import ClientCredentials, UserPasswordCredentials
 from ...base.models.proxy_models import ProxyConfig
 from ...base.utils.logger import logger
+from .config import JoynConfig
+from .models import JoynAuthError, JoynMfaRequiredException
 from .constants import (
     COUNTRY_TENANT_MAPPING,
     DEFAULT_COUNTRY,
-    DEFAULT_REQUEST_TIMEOUT,
-    DEFAULT_MAX_RETRIES,
     DEFAULT_PLATFORM,
     DEVICE_IDS,
     JOYN_AUTH_ENDPOINTS,
     JOYN_AUTH_HEADERS_BASE,
-    JOYN_CLIENT_VERSION,
-    JOYN_DOMAINS,
     JOYN_OAUTH_SCOPE,
+    JOYN_SEC_CH_UA,
+    JOYN_SEC_CH_UA_PLATFORM,
     JOYN_USER_AGENT,
     SUPPORTED_COUNTRIES,
 )
 
-
-class JoynMfaRequiredException(Exception):
-    """
-    Raised when the account has two-factor authentication enabled.
-
-    Joyn's login flow redirects to an MFA challenge page (signin.7pass.de/.../mfa)
-    instead of completing with an OAuth code. Since the challenge cannot be
-    satisfied without user interaction in this provider, the only viable fix is
-    for the user to disable MFA in their Joyn account settings.
-    """
-    pass
+# NOTE: JoynMfaRequiredException is imported from .models — it must NOT be
+# redefined here. The migration brief moves it into the models hierarchy so
+# it inherits AuthError, which the settings UI relies on. If you find
+# yourself adding a `class JoynMfaRequiredException` below, stop: that would
+# shadow the import and break the typed-error contract.
 
 
 @dataclass
@@ -109,6 +103,12 @@ class JoynAuthToken(BaseAuthToken):
 class JoynAuthenticator(BaseOAuth2Authenticator):
     """
     Joyn authenticator based on actual network traffic logs.
+
+    Config: uses the shared JoynConfig from config.py. The provider creates it
+    once and passes it in via `config=`; a private one is built only when the
+    authenticator is used standalone. Do NOT define a local config class here
+    and do NOT rebuild a second JoynConfig next to the provider's one — that is
+    how the distribution_tenant drifted before.
     """
 
     def __init__(
@@ -120,6 +120,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             config_dir: Optional[str] = None,
             http_manager=None,
             proxy_config: Optional[ProxyConfig] = None,
+            config: Optional[JoynConfig] = None,
     ):
         if country not in SUPPORTED_COUNTRIES:
             raise ValueError(f"Unsupported country: {country}")
@@ -128,7 +129,12 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
         self.country = country
         self.platform = platform
-        self.distribution_tenant = COUNTRY_TENANT_MAPPING.get(country, "JOYN")
+        # The shared config. Set BEFORE super().__init__: the base class may touch
+        # properties (oauth_redirect_uri, ...) that read it.
+        self._config = config if config is not None else JoynConfig(
+            country=country, platform=platform
+        )
+        self.distribution_tenant = self._config.distribution_tenant
 
         # Cache for flow parameters
         self._sso_endpoints_cache = None
@@ -140,7 +146,6 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
         self._web_login_url = None
         self._extracted_client_id = None
 
-        # Initialize base class
         super().__init__(
             provider_name="joyn",
             settings_manager=settings_manager,
@@ -156,29 +161,6 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
         self._device_id = self._load_or_generate_device_id()
         self._use_pkce = True
 
-        # Create config object
-        class JoynConfig:
-            def __init__(self, country, platform):
-                self.country = country
-                self.platform = platform
-                self.timeout = DEFAULT_REQUEST_TIMEOUT
-                self.max_retries = DEFAULT_MAX_RETRIES
-                self.user_agent = JOYN_USER_AGENT
-                self.base_website = JOYN_DOMAINS.get(country, JOYN_DOMAINS["de"])
-
-            def get_base_headers(self):
-                return {
-                    "User-Agent": self.user_agent,
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                    "Origin": self.base_website,
-                    "joyn-client-version": JOYN_CLIENT_VERSION,
-                    "joyn-country": self.country.upper(),
-                    "joyn-distribution-tenant": COUNTRY_TENANT_MAPPING.get(self.country, "JOYN"),
-                    "joyn-platform": self.platform,
-                }
-
-        self._config = JoynConfig(country, platform)
         self._enable_oidc_discovery = False
 
         if settings_manager is not None:
@@ -188,13 +170,29 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 available_countries=SUPPORTED_COUNTRIES,
             )
 
-        # CRITICAL: Use the CORRECT web client ID
+        # The web client ID (still a fixed platform-constant; see the comment
+        # in the original about "the CORRECT web client ID").
         self._client_id = DEVICE_IDS.get(self.platform, DEVICE_IDS[DEFAULT_PLATFORM])
         logger.info(f"Using Joyn client_id: {self._client_id}")
 
         if self.credentials is None:
             logger.info(f"No credentials for joyn/{self.country}, using anonymous fallback")
             self.credentials = self.get_fallback_credentials()
+
+    # ------------------------------------------------------------------
+    # Token accessor used by JoynSession
+    # ------------------------------------------------------------------
+    # The session needs the BaseAuthToken *object* (to check is_expired),
+    # while get_bearer_token returns a *string*. This property bridges the
+    # two without forcing the session to re-implement the token cache.
+    #
+    # Check whether BaseOAuth2Authenticator already provides this — if it
+    # does, delete this property and rely on the base. Grep:
+    #   grep -n "def current_token\|self\._current_token" \
+    #        base/auth/base_oauth2_auth.py base/auth/base_auth.py
+    @property
+    def current_token(self):
+        return self._current_token
 
     def _load_or_generate_device_id(self) -> str:
         """Load existing device ID from settings or generate new one"""
@@ -227,8 +225,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
     @property
     def oauth_redirect_uri(self) -> str:
-        from .constants import get_oauth_redirect_uri
-        return get_oauth_redirect_uri(self.country)
+        return self._config.oauth_redirect_uri()
 
     def _discover_sso_endpoints(self) -> Dict[str, str]:
         """Discover Joyn's SSO endpoints and keep the server-issued web-login URL and client_id as-is."""
@@ -237,8 +234,6 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 return self._sso_endpoints_cache
 
         try:
-            # Use the locally-generated per-install device id for discovery, matching the
-            # reference client's `client_ids['client_id']` (NOT the fixed DEVICE_IDS constant).
             url = f"https://auth.joyn.de/sso/endpoints?client_id={self._device_id}&client_name={self.platform}"
             headers = self._get_joyn_auth_headers()
 
@@ -246,15 +241,12 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 url,
                 operation="sso_discovery",
                 headers=headers,
-                timeout=getattr(self.config, "timeout", 30)
+                timeout=self._config.timeout
             )
             response.raise_for_status()
 
             endpoints = response.json()
 
-            # Keep the full, unmodified web-login URL. The server embeds its own client_id
-            # and tracking params (cmpUcId, cmpUcInstance) in this URL; the reference client
-            # GETs this URL verbatim rather than reconstructing an authorize URL by hand.
             auth_endpoint_full = endpoints.get("web-login", "")
             self._web_login_url = auth_endpoint_full
 
@@ -266,8 +258,6 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 "", "", ""
             ))
 
-            # Extract the server-issued client_id and tracking params for reuse in
-            # consent-accept and redeem-token calls later in the flow.
             params = parse_qs(parsed_auth.query)
             self._extracted_client_id = params.get("client_id", [None])[0]
             self._cmp_uc_id = params.get("cmpUcId", [None])[0]
@@ -308,9 +298,9 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
     def _get_joyn_auth_headers(self) -> Dict[str, str]:
         headers = JOYN_AUTH_HEADERS_BASE.copy()
         headers.update({
-            "Origin": JOYN_DOMAINS.get(self.country, JOYN_DOMAINS["de"]),
+            "Origin": self._config.website(),
             "joyn-country": self.country.upper(),
-            "joyn-distribution-tenant": COUNTRY_TENANT_MAPPING.get(self.country, "JOYN"),
+            "joyn-distribution-tenant": self._config.distribution_tenant,
             "joyn-platform": self.platform,
             "joyn-request-id": str(uuid.uuid4()),
             "Content-Type": "application/json",
@@ -344,12 +334,8 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
         return payload
 
     def should_upgrade_token(self, token) -> bool:
-        # Joyn's login flow is rate-limited and locks the account on repeated
-        # failures. If the token hasn't been upgraded on the first attempt,
-        # don't keep retrying during this process lifetime.
         if getattr(self, "_joyn_upgrade_attempted", False):
             return False
-        # Only attempt upgrade if we have user credentials
         from ...base.auth.credentials import UserPasswordCredentials
         if not isinstance(self.credentials, UserPasswordCredentials):
             return False
@@ -378,14 +364,10 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                     logger.debug("Anonymous token cannot be refreshed")
                     return None
 
-            # Joyn uses a dedicated refresh endpoint, distinct from the
-            # authorization-code redeem-token endpoint (oauth_token_endpoint).
-            # grant_type is the token_type (e.g. "Bearer"), matching the
-            # working reference client, not a standard "refresh_token" value.
             payload = {
                 "refresh_token": self._current_token.refresh_token,
                 "grant_type": self._current_token.token_type,
-                "client_id": self._device_id,  # Must match the client_id used for login/discovery
+                "client_id": self._device_id,
                 "client_name": self.platform,
             }
 
@@ -394,7 +376,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 operation="auth",
                 headers=self._get_joyn_auth_headers(),
                 json_data=payload,
-                timeout=getattr(self.config, "timeout", 30),
+                timeout=self._config.timeout,
             )
 
             self._check_oauth_error_response(response)
@@ -412,26 +394,20 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             return ".".join(netloc.split(".")[-2:])
 
         target = registrable(urlparse(url).netloc)
-        origin = registrable(urlparse(JOYN_DOMAINS.get(self.country, JOYN_DOMAINS["de"])).netloc)
+        origin = registrable(urlparse(self._config.website()).netloc)
         return "same-site" if target == origin else "cross-site"
 
     def _perform_oauth_authorization_code_flow(self, username: str, password: str) -> Dict[str, Any]:
-        """Complete Joyn login flow matching the exact sequence observed from working traffic.
-
-        Joyn does not implement real PKCE (code_verifier is always sent empty in the
-        redeem-token call). The client_id used for consent-accept and redeem-token is
-        the one the server itself embeds in the web-login redirect URL, not a fixed
-        platform constant.
-
-        Accounts with two-factor authentication enabled will be redirected to an MFA
-        challenge page (signin.7pass.de/.../mfa) instead of receiving an OAuth code.
-        We cannot satisfy that challenge without user interaction, so we raise
-        JoynMfaRequiredException with an actionable message.
+        """
+        Complete Joyn login flow matching the exact sequence observed from
+        working traffic. Unchanged from v1 (see the git history for the full
+        commentary on each step); the only change in the v2 migration is that
+        JoynMfaRequiredException now comes from models.py and inherits
+        AuthError.
         """
         try:
             logger.debug("Starting Joyn login flow")
 
-            # Discover endpoints - gives us the literal web-login URL and its embedded client_id
             self._discover_sso_endpoints()
 
             if not self._web_login_url:
@@ -441,17 +417,10 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             cd1 = self._device_id
 
             session = self._create_oauth_session()
-            # SessionAwareHTTPManager pre-loads Origin/Referer/User-Agent for the Joyn
-            # website and applies them AFTER our per-call headers, silently overriding
-            # them. We set explicit, per-step headers below (different Origin for
-            # auth.7pass.de vs auth.joyn.de), so clear the defaults here.
             session.headers.clear()
 
             def _request(method, url, **kwargs):
                 headers = kwargs.pop("headers", {}).copy()
-                # joyn-* headers don't belong on calls to the 7pass.de auth domain;
-                # they're only sent on calls to Joyn's own auth.joyn.de endpoints
-                # (SSO discovery, redeem-token), matching the reference client.
                 if "auth.7pass.de" in url:
                     clean_headers = {
                         k: v for k, v in headers.items()
@@ -461,15 +430,13 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                     clean_headers = dict(headers)
                 clean_headers.setdefault("User-Agent", JOYN_USER_AGENT)
                 clean_headers.setdefault("Accept", "*/*")
-                # Browser-realistic headers to prevent Cloudflare managed challenges.
-                # CF uses sec-fetch-* and ch-ua hints to distinguish real browsers from bots.
                 clean_headers.setdefault("Accept-Language", "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7")
                 clean_headers.setdefault("Accept-Encoding", "gzip, deflate, br")
                 clean_headers.setdefault("Cache-Control", "no-cache")
                 clean_headers.setdefault("Pragma", "no-cache")
                 clean_headers.setdefault("sec-ch-ua-mobile", "?0")
-                clean_headers.setdefault("sec-ch-ua", '"Google Chrome";v="153", "Not_A Brand";v="8", "Chromium";v="153"')
-                clean_headers.setdefault("sec-ch-ua-platform", '"macOS"')
+                clean_headers.setdefault("sec-ch-ua", JOYN_SEC_CH_UA)
+                clean_headers.setdefault("sec-ch-ua-platform", JOYN_SEC_CH_UA_PLATFORM)
                 clean_headers.setdefault("Sec-Fetch-Site", self._sec_fetch_site_for(url))
                 clean_headers.setdefault("Sec-Fetch-Mode", "cors")
                 clean_headers.setdefault("Sec-Fetch-Dest", "empty")
@@ -479,7 +446,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                     clean_headers["Content-Type"] = content_type
 
                 allow_redirects = kwargs.pop("allow_redirects", True)
-                timeout = getattr(self.config, "timeout", 30)
+                timeout = self._config.timeout
 
                 if method.upper() == "GET":
                     return session.get(url, headers=clean_headers, timeout=timeout,
@@ -489,13 +456,10 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                                         allow_redirects=allow_redirects, **kwargs)
 
             def _check_cf(response):
-                """Raise WafBlockedException if response is a Cloudflare challenge page."""
                 if "Just a moment" in response.text or "challenge-platform" in response.text:
                     raise WafBlockedException("Cloudflare managed challenge detected")
 
             def _raise_if_cf_error(e):
-                """http_manager raises HTTPError before we see the response, so 403/429
-                Cloudflare challenges must be detected from the exception's response body."""
                 resp = getattr(e, "response", None)
                 raw = getattr(resp, "text", str(e))
                 if "Just a moment" in raw or "challenge-platform" in raw or "captcha" in raw.lower():
@@ -503,7 +467,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
                 if resp is not None and resp.status_code in (403, 429):
                     raise WafBlockedException(f"Joyn login blocked by WAF ({resp.status_code}): {e}")
 
-            # 1. GET the literal web-login URL as issued by the server (do not rebuild it)
+            # 1. GET the literal web-login URL
             try:
                 response = _request("GET", self._web_login_url, allow_redirects=True)
             except WafBlockedException:
@@ -534,46 +498,30 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
             logger.debug(f"Extracted request_id: {request_id}")
 
-            # 2. Language/registration-setup check (non-fatal probe)
+            # 2-4. Non-fatal probes
             try:
-                _request(
-                    "GET",
-                    f"https://auth.7pass.de/registration-setup-srv/public/list?acceptlanguage=undefined&requestId={request_id}",
-                )
+                _request("GET", f"https://auth.7pass.de/registration-setup-srv/public/list?acceptlanguage=undefined&requestId={request_id}")
             except Exception as e:
                 logger.debug(f"registration-setup failed (non-fatal): {e}")
 
-            # 3. Check whether the email exists (non-fatal probe)
             try:
-                _request(
-                    "POST",
-                    f"https://auth.7pass.de/users-srv/user/checkexists/{request_id}",
-                    json={"email": username, "requestId": request_id},
-                    content_type="application/json",
-                )
+                _request("POST", f"https://auth.7pass.de/users-srv/user/checkexists/{request_id}",
+                         json={"email": username, "requestId": request_id},
+                         content_type="application/json")
             except Exception as e:
                 logger.debug(f"checkexists failed (non-fatal): {e}")
 
-            # 4. Configured verification methods list (non-fatal probe)
             try:
-                _request(
-                    "POST",
-                    "https://auth.7pass.de/verification-srv/v2/setup/public/configured/list",
-                    json={"email": username, "request_id": request_id},
-                    content_type="application/json",
-                )
+                _request("POST", "https://auth.7pass.de/verification-srv/v2/setup/public/configured/list",
+                         json={"email": username, "request_id": request_id},
+                         content_type="application/json")
             except Exception as e:
                 logger.debug(f"verification-srv failed (non-fatal): {e}")
 
-            # 5. Submit username/password directly (form-encoded)
+            # 5. Login
             login_response = _request(
-                "POST",
-                "https://auth.7pass.de/login-srv/login",
-                data=urlencode({
-                    "username": username,
-                    "password": password,
-                    "requestId": request_id,
-                }).encode(),
+                "POST", "https://auth.7pass.de/login-srv/login",
+                data=urlencode({"username": username, "password": password, "requestId": request_id}).encode(),
                 content_type="application/x-www-form-urlencoded",
                 allow_redirects=True,
             )
@@ -583,66 +531,51 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             parsed = urlparse(final_url)
             params = parse_qs(parsed.query)
 
-            # 5a. MFA detection. Accounts with 2FA enabled get redirected to
-            #     signin.7pass.de/<tenant>/joyn/login/mfa instead of completing
-            #     the OAuth flow with a `code`. We cannot satisfy the challenge
-            #     without user interaction, so fail with an actionable message.
+            # 5a. MFA
             if "signin.7pass.de" in final_url and "/mfa" in final_url:
-                logger.error(
-                    "Joyn account has two-factor authentication enabled. "
-                    "The provider cannot complete MFA challenges — please disable "
-                    "MFA in your Joyn account settings to use this provider."
-                )
+                logger.error("Joyn account has two-factor authentication enabled.")
                 raise JoynMfaRequiredException(
                     "Two-factor authentication is enabled on this Joyn account. "
                     "Please disable MFA in your Joyn account settings "
                     "(https://www.joyn.de/account) to use this provider."
                 )
 
-            # 6. Handle consent if the server didn't return a code directly
+            # 6. Consent
             if params.get("code") is None:
                 sub = params.get("sub", [None])[0]
                 track_id = params.get("track_id", [None])[0]
-
                 if sub and track_id:
-                    logger.debug(f"Accepting consent for sub={sub}")
-                    _request(
-                        "POST",
-                        "https://auth.7pass.de/consent-management-srv/consent/scope/accept",
-                        json={
-                            "sub": sub,
-                            "client_id": client_id,
-                            "scopes": [{"offline_access": "denied"}],
-                        },
-                        content_type="application/json",
-                    )
-
+                    _request("POST", "https://auth.7pass.de/consent-management-srv/consent/scope/accept",
+                             json={"sub": sub, "client_id": client_id, "scopes": [{"offline_access": "denied"}]},
+                             content_type="application/json")
                     try:
                         continue_response = _request(
-                            "POST",
-                            f"https://auth.7pass.de/login-srv/precheck/continue/{track_id}",
-                            data=b"",
-                            content_type="application/x-www-form-urlencoded",
-                            allow_redirects=True,
-                        )
+                            "POST", f"https://auth.7pass.de/login-srv/precheck/continue/{track_id}",
+                            data=b"", content_type="application/x-www-form-urlencoded",
+                            allow_redirects=True)
                     except WafBlockedException:
                         raise
                     except Exception as e:
                         _raise_if_cf_error(e)
                         raise
-
                     final_url = continue_response.url
                     parsed = urlparse(final_url)
                     params = parse_qs(parsed.query)
 
             auth_code = params.get("code", [None])[0]
             if not auth_code:
-                raise Exception("No authorization code in response")
+                # The login POST did not end in an authorization code, there was
+                # no consent step to continue, no MFA redirect and no WAF page
+                # (all handled above): 7pass rejected the credentials (or the flow
+                # changed). Retrying the same input cannot help, and repeated
+                # failed logins lock the account — so this is a PERMANENT, typed
+                # AuthError; JoynSession will not retry until reset().
+                raise JoynAuthError(
+                    "Joyn login did not return an authorization code "
+                    "(credentials rejected, or the 7pass flow changed)"
+                )
 
-            logger.debug("Authorization code obtained")
-
-            # 7. Redeem the code directly. Joyn does not implement real PKCE — the working
-            # client always sends code_verifier as an empty string here.
+            # 7. Redeem
             cd1_value = params.get("cd1", [None])[0] or cd1
             redeem_data = {
                 "client_id": client_id,
@@ -655,13 +588,10 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
             try:
                 redeem_response = _request(
-                    "POST",
-                    self.oauth_token_endpoint,
-                    json=redeem_data,
-                    content_type="application/json",
+                    "POST", self.oauth_token_endpoint,
+                    json=redeem_data, content_type="application/json",
                     headers=self._get_joyn_auth_headers(),
-                    allow_redirects=False,
-                )
+                    allow_redirects=False)
             except WafBlockedException:
                 raise
             except Exception as e:
@@ -670,13 +600,12 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
             _check_cf(redeem_response)
             token_data = redeem_response.json()
-
             logger.info("Joyn login flow successful")
             return token_data
 
         except WafBlockedException:
             raise
-        except JoynMfaRequiredException:
+        except (JoynMfaRequiredException, JoynAuthError):
             raise
         except Exception as e:
             logger.error(f"Joyn login flow failed: {e}")
@@ -685,64 +614,43 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
     def authenticate_with_fallback(self, username: str, password: str) -> Dict[str, Any]:
         try:
             return self._perform_oauth_authorization_code_flow(username, password)
-        except JoynMfaRequiredException:
-            # MFA is a permanent, user-actionable condition — do not fall back
-            # to anonymous silently, or the user will think they're logged in.
-            raise
+        except (JoynMfaRequiredException, JoynAuthError):
+            raise   # permanent and user-actionable: never fall back to anonymous
         except WafBlockedException as e:
             logger.warning(f"{self.provider_name}: WAF block detected ({e}), trying remote login")
             try:
                 return self._perform_remote_login_flow()
             except (WafBlockedException, ConnectionError, TimeoutError) as remote_err:
-                logger.warning(
-                    f"{self.provider_name}: Remote login failed ({remote_err}), falling back to client credentials")
+                logger.warning(f"{self.provider_name}: Remote login failed ({remote_err}), falling back to client credentials")
                 return self._perform_oauth_client_credentials_flow()
         except (ConnectionError, TimeoutError, requests.exceptions.HTTPError) as e:
-            # Only fall back to anonymous on actual network/API errors, not code bugs.
-            # Standard 'Exception' is intentionally omitted here so a TypeError/KeyError
-            # in the OAuth flow crashes loudly instead of silently downgrading a user
-            # who thinks they're logged in to an anonymous session.
             logger.warning(f"{self.provider_name}: Network login failed ({e}), falling back to client credentials")
             return self._perform_oauth_client_credentials_flow()
 
     def _perform_oauth_client_credentials_flow(self) -> Dict[str, Any]:
         try:
-            logger.info(f"Starting client credentials flow")
-
-            # Joyn's anonymous auth expects a client_id and anon_device_id.
-            # We use the persistent device_id for both to maintain consistency.
+            logger.info("Starting client credentials flow")
             payload = {
                 "client_id": self._device_id,
                 "client_name": self.platform,
                 "anon_device_id": self._device_id
             }
-
             anonymous_token_url = "https://auth.joyn.de/auth/anonymous"
-
             headers = {
                 "Content-Type": "application/json",
                 "User-Agent": JOYN_USER_AGENT,
                 "Accept": "application/json",
-                "Origin": JOYN_DOMAINS.get(self.country, JOYN_DOMAINS["de"]),
+                "Origin": self._config.website(),
             }
-
             logger.debug(f"Anonymous token request to {anonymous_token_url} with client_id: {payload['client_id']}")
-
             response = self.http_manager.post(
-                anonymous_token_url,
-                operation="auth",
-                headers=headers,
-                json_data=payload,
-                timeout=getattr(self.config, "timeout", 30)
-            )
-
+                anonymous_token_url, operation="auth", headers=headers,
+                json_data=payload, timeout=self._config.timeout)
             self._check_oauth_error_response(response)
             response.raise_for_status()
             token_data = response.json()
-
-            logger.info(f"Client credentials flow successful")
+            logger.info("Client credentials flow successful")
             return token_data
-
         except Exception as e:
             logger.error(f"Client credentials flow failed: {e}")
             raise
@@ -760,17 +668,19 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
         return self.credentials.to_auth_payload()
 
     def _create_token_from_response(self, response_data: Dict[str, Any]) -> BaseAuthToken:
-        # Subtract 1800s (30 min) safety buffer so we refresh proactively before
-        # actual expiry, matching the legacy addon's behavior — prevents streams
-        # cutting off mid-playback while a refresh is still in flight.
-        raw_expires_in = response_data.get("expires_in", 86400)
-        safe_expires_in = max(60, raw_expires_in - 1800)  # never go below 60s
-
+        # Rely on BaseAuthToken.is_expired (300 s buffer): one buffer, one place.
+        # v1 subtracted a second buffer here. Removed because no token is embedded
+        # in a DRMConfig or in CDN headers for Joyn (drm_license_headers() and
+        # cdn_headers() carry no bearer; the licence URL is self-signed), so there
+        # is no playback-session-long token lifetime to protect. RECORD this in
+        # MIGRATION_BRIEF.md §3 ("Token buffer") and confirm with a long
+        # playback across the expiry on a device (README §9).
+        expires_in = response_data.get("expires_in", 86400)
         token = JoynAuthToken(
             access_token=response_data["access_token"],
             refresh_token=response_data.get("refresh_token", ""),
             token_type=response_data.get("token_type", "Bearer"),
-            expires_in=safe_expires_in,
+            expires_in=expires_in,
             issued_at=response_data.get("issued_at", time.time()),
         )
         token.auth_level = self._classify_token(token)
@@ -780,20 +690,16 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
         try:
             if not token or not token.access_token:
                 return TokenAuthLevel.UNKNOWN
-
             claims = token.get_jwt_claims() if hasattr(token, "get_jwt_claims") else None
             if not claims:
                 return TokenAuthLevel.UNKNOWN
-
             jidc = claims.get("jIdC", "")
             if jidc.startswith("JNAA-"):
                 return TokenAuthLevel.CLIENT_CREDENTIALS
             elif jidc.startswith("JNDE-"):
                 return TokenAuthLevel.USER_AUTHENTICATED
-
             if "social_id" in claims:
                 return TokenAuthLevel.USER_AUTHENTICATED
-
             return TokenAuthLevel.UNKNOWN
         except Exception as e:
             logger.error(f"Error classifying token: {e}")
@@ -806,7 +712,6 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
             )
         else:
             token_data = self._perform_oauth_client_credentials_flow()
-
         return self._create_token_from_response(token_data)
 
     def get_bearer_token(self, force_refresh: bool = False, force_upgrade: bool = False) -> str:
@@ -817,6 +722,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
 
     def invalidate_token(self) -> None:
         self._current_token = None
+        self._joyn_upgrade_attempted = False
         try:
             self.settings_manager.clear_token(self.provider_name)
         except (AttributeError, KeyError, IOError, OSError):
@@ -825,9 +731,7 @@ class JoynAuthenticator(BaseOAuth2Authenticator):
     def debug_token_classification(self) -> Dict[str, Any]:
         if not self._current_token:
             return {"error": "No current token"}
-
         claims = self._current_token.get_jwt_claims() if hasattr(self._current_token, "get_jwt_claims") else {}
-
         return {
             "token_type": type(self._current_token).__name__,
             "auth_level": self._current_token.auth_level.value,

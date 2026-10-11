@@ -8,6 +8,9 @@ Joyn provider constants - Cleaned and organized
 # Provider Metadata
 # ============================================================================
 
+# The one id: directory name == registry key == provider_name == credentials key.
+PROVIDER_NAME = "joyn"
+
 JOYN_LOGO = "https://upload.wikimedia.org/wikipedia/de/thumb/7/74/Joyn_%28Streaminganbieter%29_logo.svg/2560px-Joyn_%28Streaminganbieter%29_logo.svg.png"
 
 # ============================================================================
@@ -50,7 +53,20 @@ DEVICE_IDS = {
 # ============================================================================
 
 # Chrome 154 — matches the current reference web client.
-JOYN_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
+# The User-Agent AND the client hints (sec-ch-ua*) are derived from the same
+# values: the Cloudflare WAF in front of 7pass / the license host compares them,
+# and a UA that says "Chrome 154 / Windows" next to hints that say "Chrome 153 /
+# macOS" is a classic bot signature. Bump JOYN_BROWSER_MAJOR, nothing else.
+JOYN_BROWSER_MAJOR = "154"
+JOYN_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    f"(KHTML, like Gecko) Chrome/{JOYN_BROWSER_MAJOR}.0.0.0 Safari/537.36"
+)
+JOYN_SEC_CH_UA = (
+    f'"Google Chrome";v="{JOYN_BROWSER_MAJOR}", "Not_A Brand";v="8", '
+    f'"Chromium";v="{JOYN_BROWSER_MAJOR}"'
+)
+JOYN_SEC_CH_UA_PLATFORM = '"Windows"'
 JOYN_CLIENT_VERSION = "5.1592.3"
 DEFAULT_PLATFORM = "web"
 
@@ -109,6 +125,7 @@ GRAPHQL_OFFSET = 0
 JOYN_STREAMING_ENDPOINTS = {
     "ENTITLEMENT": "https://entitlements-service-alb.prd.platform.s.joyn.de/api/user/entitlement-token",
     "PLAYLIST": "https://api.vod-prd.s.joyn.de/v1/channel/{channel_id}/playlist",
+    "ASSET_PLAYLIST": "https://api.vod-prd.s.joyn.de/v1/asset/{asset_id}/playlist",
 }
 
 # Default video configuration for playlist requests.
@@ -157,6 +174,17 @@ DEFAULT_LIVESTREAM_TYPES = ["EVENT", "LINEAR", "ON_DEMAND"]
 
 MODE_LIVE = "live"
 MODE_VOD = "vod"
+
+# ----------------------------------------------------------------------------
+# Content-id grammar (parsed in ONE place: ids.py)
+#   live:  bare channel slugs            "sat1-de", "sat1-de-hd"
+#   VOD:   a_<id>   playable video asset  (what the asset playlist wants)
+#          b_<id>   movie, c_<id> season, d_<id> episode
+#          block-<n> lazy landing-page block
+#          anything containing "/" (browse path) or ":" (v1 block-id form)
+# A live id never starts with these prefixes and never contains "/" or ":".
+# ----------------------------------------------------------------------------
+VOD_ID_PREFIXES = ("a_", "b_", "c_", "d_", "block-")
 
 # ============================================================================
 # Error Codes
@@ -222,6 +250,21 @@ DRM_LICENSE_HEADERS_BASE = {
 DEFAULT_REQUEST_TIMEOUT = 30
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_EPG_WINDOW_HOURS = 3
+
+# ============================================================================
+# Cache Configuration
+# ============================================================================
+
+# Manifest and DRM share one playlist call per zap. Five seconds is long
+# enough for the two backend calls (get_manifest and get_drm arrive within
+# milliseconds of each other in the DRM pipeline), short enough that a
+# channel switch does not see a stale manifest URL.
+PLAYOUT_CACHE_TTL = 5.0
+
+# Entitlement tokens are short-lived; the token itself is not cached (the
+# entitlement service has its own session concept), but the *resolution*
+# of a channel id to its "-hd" variant is cached for the process lifetime
+# in JoynEntitlement._resolved_channel_variants.
 
 # ============================================================================
 # Channel Configuration

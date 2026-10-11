@@ -1,85 +1,104 @@
 # streaming_providers/providers/joyn/models.py
+# -*- coding: utf-8 -*-
+"""
+Joyn provider-local models and exception hierarchy.
+
+The exceptions now subclass the base `errors` types so the backend's typed-
+error handling (§8 of the template README) recognises them:
+
+    JoynError                       (base for provider-local)
+    ├── JoynAuthError               AuthError
+    ├── JoynEntitlementError        EntitlementError
+    │   ├── PlaybackRestrictedException
+    │   └── SubscriptionRequiredException
+    └── JoynMfaRequiredException    AuthError  (permanent, user-actionable)
+
+`JoynChannel` is unchanged in shape from v1. `from_api_data` is renamed to
+`from_api_response` to match the template's naming; the only caller is the
+channel manager.
+
+`JoynPlayout` is new: it is what the playout cache stores, so the manifest and
+DRM methods share one entitlement + playlist call per zap. Before this, the
+two methods issued the entitlement call twice.
+"""
+
 import json
 from dataclasses import dataclass, field
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
+from ...base.errors import AuthError, EntitlementError, ProviderError
 from ...base.models import StreamingChannel
 
 
 # ============================================================================
-# Exception Hierarchy
+# Exception hierarchy
 # ============================================================================
 
-class JoynError(Exception):
-    """Base exception for all Joyn provider errors."""
-    pass
+class JoynError(ProviderError):
+    """Base for provider-local errors that don't fit a base category."""
 
-class JoynAuthError(JoynError):
-    """Authentication specific errors."""
-    pass
 
-class JoynEntitlementError(JoynError):
-    """Entitlement and rights management errors."""
-    pass
+class JoynAuthError(JoynError, AuthError):
+    """Authentication-specific errors that are not the raw flow's exceptions."""
+
+
+class JoynEntitlementError(JoynError, EntitlementError):
+    """Entitlement and rights management errors (untyped)."""
+
 
 class PlaybackRestrictedException(JoynEntitlementError):
-    """
-    Exception raised when content playback is restricted
-    """
-    pass
+    """The account is not permitted to play this content."""
+
 
 class SubscriptionRequiredException(JoynEntitlementError):
-    """Raised when content requires a subscription tier (e.g. PLUS) the account doesn't hold."""
-    pass
+    """The content requires a subscription tier the account does not hold."""
 
+
+class JoynMfaRequiredException(JoynError, AuthError):
+    """
+    Raised when the account has two-factor authentication enabled.
+
+    Joyn's login flow redirects to an MFA challenge page
+    (signin.7pass.de/.../mfa) instead of completing with an OAuth code. The
+    challenge cannot be satisfied without user interaction, so the only
+    viable fix is for the user to disable MFA in their Joyn account settings.
+    """
+
+
+# ============================================================================
+# Channel model (unchanged from v1)
+# ============================================================================
 
 @dataclass
 class JoynChannel:
-    """
-    Represents a Joyn channel with all necessary streaming data
-    """
+    """A Joyn live channel with all the streaming data the manager needs."""
 
-    # Core identification
     name: str
     channel_id: str
-
-    # Visual elements
     logo_url: Optional[str] = None
-
-    # Streaming configuration
-    mode: str = "live"  # "live" or "vod"
+    mode: str = "live"
     session_manifest: bool = False
     manifest: Optional[str] = None
     manifest_script: Optional[str] = None
-
-    # CDM (Content Decryption Module) settings
     cdm_type: Optional[str] = None
     use_cdm: bool = True
-    cdm: Optional[str] = None  # Usually "pid={pid}"
+    cdm: Optional[str] = None
     cdm_mode: str = "external"
-
-    # Video settings
     video: str = "best"
     on_demand: bool = True
     speed_up: bool = True
-
-    # Additional metadata
-    content_type: str = "LIVE"  # 'LIVE' or 'VOD'
+    content_type: str = "LIVE"
     description: Optional[str] = None
     genre: Optional[str] = None
     language: str = "de"
     country: str = "DE"
-
-    # Streaming data
     license_url: Optional[str] = None
     certificate_url: Optional[str] = None
     streaming_format: Optional[str] = None
-
-    # Internal tracking
     raw_data: Dict = field(default_factory=dict)
 
     @classmethod
-    def from_api_data(cls, api_data: Dict, **kwargs) -> "JoynChannel":
+    def from_api_response(cls, api_data: Dict, **kwargs) -> "JoynChannel":
         channel = cls(
             name=api_data.get("title", "Unknown Channel"),
             channel_id=api_data.get("id", ""),
@@ -94,11 +113,11 @@ class JoynChannel:
     def set_streaming_data(
         self,
         manifest: str,
-        cdm_type: str = None,
-        pid: str = None,
-        license_url: str = None,
-        certificate_url: str = None,
-        streaming_format: str = None,
+        cdm_type: Optional[str] = None,
+        pid: Optional[str] = None,
+        license_url: Optional[str] = None,
+        certificate_url: Optional[str] = None,
+        streaming_format: Optional[str] = None,
     ) -> None:
         self.manifest = manifest
         if cdm_type:
@@ -111,21 +130,6 @@ class JoynChannel:
             self.certificate_url = certificate_url
         if streaming_format:
             self.streaming_format = streaming_format
-
-    def set_logo(self, logo_url: str) -> None:
-        self.logo_url = logo_url
-
-    def set_metadata(self, description: str = None, genre: str = None) -> None:
-        if description:
-            self.description = description
-        if genre:
-            self.genre = genre
-
-    def is_live(self) -> bool:
-        return self.content_type == "LIVE" and self.mode == "live"
-
-    def is_vod(self) -> bool:
-        return self.content_type == "VOD" or self.mode == "vod"
 
     def to_streaming_channel(self, provider_name: str = "joyn") -> StreamingChannel:
         return StreamingChannel(
@@ -174,8 +178,36 @@ class JoynChannel:
     def to_json(self, indent: int = 2) -> str:
         return json.dumps(self.to_dict(), indent=indent, ensure_ascii=False)
 
-    def __str__(self) -> str:
-        return f"JoynChannel(name='{self.name}', id='{self.channel_id}', type='{self.content_type}')"
 
-    def __repr__(self) -> str:
-        return self.__str__()
+# ============================================================================
+# Playout model (new — the cache entry shared by manifest and DRM)
+# ============================================================================
+
+@dataclass
+class JoynPlayout:
+    """
+    The result of one playlist call: everything both `get_channel_manifest`
+    and `get_channel_drm` need, so they share a single network round-trip
+    per zap (five seconds of cache, matching PLAYOUT_CACHE_TTL).
+    """
+
+    manifest_url: str
+    entitlement_token: str
+    license_url: Optional[str] = None
+    certificate_url: Optional[str] = None
+    streaming_format: str = "dash"
+
+    @classmethod
+    def from_playlist_response(
+        cls, data: Dict[str, Any], entitlement_token: str
+    ) -> "JoynPlayout":
+        manifest_url = data.get("manifestUrl")
+        if not manifest_url:
+            raise ValueError("playlist response is missing manifestUrl")
+        return cls(
+            manifest_url=manifest_url,
+            entitlement_token=entitlement_token,
+            license_url=data.get("licenseUrl"),
+            certificate_url=data.get("certificateUrl"),
+            streaming_format=data.get("streamingFormat", "dash"),
+        )
