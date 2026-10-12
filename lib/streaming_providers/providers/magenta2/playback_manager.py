@@ -9,8 +9,8 @@ Responsibilities
   (avoiding a SMIL round-trip for channels already fetched by get_channels).
 - Build Widevine licence URLs directly for live channels using lib_theplatform.
 - Delegate VOD and recording manifest/DRM requests to SmilManager.
-- Serve catchup manifests by appending ``dvr_window_length`` to the cached
-  live manifest URL — no separate SMIL fetch required.
+- Serve catchup manifests by appending ``begin``/``end`` to the cached live
+  manifest URL — no separate SMIL fetch required.
 - Inject ``smil_base_url`` from the recording-URL cache so callers (e.g.
   DRMOperations) only need to pass a ``content_id``.
 
@@ -19,16 +19,15 @@ callbacks passed at construction time.  All caches belong to ChannelManager.
 
 Catchup routing
 ---------------
-Magenta2 catchup is DVR-based: the live DASH manifest URL is reused with a
-``dvr_window_length`` query parameter (in seconds) that tells the CDN how far
-back the sliding window should reach.  Example:
+Magenta2 catchup reuses the live DASH manifest URL with ``begin``/``end``
+query parameters (basic-ISO UTC) bounding the requested programme window.  The
+Broadpeak origin then serves a static, programme-bounded manifest
+(mediaPresentationDuration == programme length), so no manifest rewriting is
+needed.  ``end`` is clamped to now so a running programme never requests beyond
+the live edge.  Example:
 
     Live:    https://svc45.…/zdf_hd/DASH/index.mpd?AppVersion=…
-    Catchup: https://svc45.…/zdf_hd/DASH/index.mpd?AppVersion=…&dvr_window_length=14400
-
-The window length is derived from the provider's ``catchup_window`` property
-(hours) and is passed in as ``dvr_window_seconds`` from the caller, or falls
-back to ``DVR_WINDOW_SECONDS_DEFAULT`` (4 h = 14 400 s).
+    Catchup: https://svc45.…/zdf_hd/DASH/index.mpd?AppVersion=…&begin=20261011T104300&end=20261011T111500
 
 DRM for catchup is identical to live — the same Widevine licence URL applies —
 so ``get_drm`` routes catchup requests through the same fast-path as live.
@@ -38,11 +37,13 @@ If the live manifest URL is not yet cached when a catchup request arrives,
 SmilManager is NOT used for catchup on this provider.
 """
 import base64
+import time
 from typing import Callable, Dict, List, Optional
 from urllib.parse import urlencode, urlparse, urlunparse, parse_qs
 
 from ...base.models import DRMConfig
 from ...base.utils.logger import logger
+from ...base.utils.timestamp_converter import TimestampConverter
 from .constants import CONTENT_TYPE_LIVE, MAGENTA2_FALLBACK_ACCOUNT_URI
 from .endpoint_manager import EndpointManager
 from .config_models import ProviderConfig
@@ -53,10 +54,6 @@ from ..lib_theplatform import (
     build_licence_url,
     build_widevine_drm_config,
 )
-
-# Default DVR window: 4 hours in seconds.  Matches provider.catchup_window = 4.
-DVR_WINDOW_SECONDS_DEFAULT: int = 4 * 3600  # 14 400
-DVR_WINDOW_PARAM: str = "dvr_window_length"
 
 
 class PlaybackManager:
@@ -133,7 +130,7 @@ class PlaybackManager:
         Routing logic
         ~~~~~~~~~~~~~
         1. **Catchup** (``start_time`` + ``end_time`` present in kwargs):
-           Appends ``dvr_window_length`` to the cached live manifest URL.
+           Appends ``begin``/``end`` to the cached live manifest URL.
            No SMIL round-trip.  The live cache is populated on demand if empty.
         2. **Live** (``content_type == CONTENT_TYPE_LIVE``, no time window):
            Served directly from the ChannelManager cache when available.
@@ -202,29 +199,24 @@ class PlaybackManager:
         self, content_id: str, start_time: int, end_time: int, drm_variant: Optional[str] = "auto", **kwargs
     ) -> Optional[str]:
         """
-        Return a catchup manifest URL for *channel_id*.
+        Return a catchup manifest URL for *content_id*.
 
-        Builds the DVR URL from the cached live manifest by appending
-        ``dvr_window_length``.  ``start_time`` and ``end_time`` are accepted
-        for interface compatibility but are not used — Magenta2 catchup is a
-        sliding DVR window, not a fixed time-range VOD asset.
+        Appends ``begin``/``end`` (the requested programme window) to the cached
+        live manifest URL. The Broadpeak origin then serves a static, programme-
+        bounded manifest (mediaPresentationDuration == programme length), so no
+        client- or backend-side manifest rewriting is needed. ``end`` is clamped
+        to now so a still-running programme does not request beyond the live edge.
 
         Parameters
         ----------
-        channel_id:
+        content_id:
             The live channel content_id (same key used in the live cache).
         start_time:
-            Unix timestamp (seconds) of the catchup window start.  Accepted
-            for API compatibility; not forwarded to the CDN.
+            Unix timestamp (seconds) of the catchup window start.
         end_time:
-            Unix timestamp (seconds) of the catchup window end.  Accepted
-            for API compatibility; not forwarded to the CDN.
-        dvr_window_seconds:
-            Optional override (via kwargs) for the DVR window length in
-            seconds.  Defaults to ``DVR_WINDOW_SECONDS_DEFAULT`` (14 400).
+            Unix timestamp (seconds) of the catchup window end.
         """
-        dvr_seconds: int = kwargs.get("dvr_window_seconds", DVR_WINDOW_SECONDS_DEFAULT)
-        return self._build_dvr_manifest_url(content_id, dvr_seconds)
+        return self._build_begin_end_manifest_url(content_id, start_time, end_time)
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
@@ -243,77 +235,52 @@ class PlaybackManager:
 
     def _get_catchup_manifest(self, content_id: str, kwargs: Dict) -> Optional[str]:
         """
-        Build a DVR manifest URL for a catchup request arriving via
-        ``get_manifest``.
-
-        Extracts an optional ``dvr_window_seconds`` override from kwargs;
-        otherwise derives the window from ``end_time - start_time`` when both
-        are present, capped at ``DVR_WINDOW_SECONDS_DEFAULT``.
+        Build a programme-bounded catchup manifest URL for a catchup request
+        arriving via ``get_manifest`` (``start_time``/``end_time`` in kwargs).
         """
-        # Prefer an explicit override; otherwise derive from the requested
-        # time window so the DVR slider covers at least the requested range.
-        if "dvr_window_seconds" in kwargs:
-            dvr_seconds: int = kwargs["dvr_window_seconds"]
-        else:
-            start_time: int = kwargs["start_time"]
-            end_time: int = kwargs["end_time"]
-            requested_window = end_time - start_time
-            # Never request a window smaller than the requested range, but
-            # cap at the provider default to avoid oversized requests.
-            dvr_seconds = max(
-                min(requested_window, DVR_WINDOW_SECONDS_DEFAULT),
-                DVR_WINDOW_SECONDS_DEFAULT,
-            )
-
+        start_time: int = kwargs["start_time"]
+        end_time: int = kwargs["end_time"]
         logger.debug(
             f"get_manifest: catchup request for {content_id} "
-            f"(start={kwargs['start_time']}, end={kwargs['end_time']}, "
-            f"dvr_window_seconds={dvr_seconds})"
+            f"(start={start_time}, end={end_time})"
         )
-        return self._build_dvr_manifest_url(content_id, dvr_seconds)
+        return self._build_begin_end_manifest_url(content_id, start_time, end_time)
 
-    def _build_dvr_manifest_url(self, content_id: str, dvr_seconds: int) -> Optional[str]:
+    def _build_begin_end_manifest_url(
+        self, content_id: str, start_time: int, end_time: int
+    ) -> Optional[str]:
         """
-        Retrieve the cached live manifest URL for *content_id* and append
-        (or replace) the ``dvr_window_length`` query parameter.
+        Retrieve the cached live manifest URL for *content_id* and append the
+        ``begin``/``end`` programme window (basic-ISO UTC). ``end`` is clamped to
+        now so a running programme never requests beyond the live edge.
 
-        Returns ``None`` if the channel is not found in the live cache even
-        after attempting to populate it.
+        Returns ``None`` if the channel is not found in the live cache even after
+        attempting to populate it.
         """
         self._ensure_live_cache()
 
         live_url = self._channel_manager._live_manifest_cache.get(content_id)
         if not live_url:
             logger.error(
-                f"_build_dvr_manifest_url: no live manifest cached for {content_id}; "
+                f"_build_begin_end_manifest_url: no live manifest cached for {content_id}; "
                 "cannot build catchup URL"
             )
             return None
 
-        dvr_url = self._append_dvr_param(live_url, dvr_seconds)
-        logger.debug(
-            f"_build_dvr_manifest_url: {content_id} → {dvr_url}"
+        end_time = min(int(end_time), int(time.time()))
+        begin_iso = TimestampConverter.epoch_to_iso(
+            int(start_time), format_type="basic", as_utc=True
         )
-        return dvr_url
+        end_iso = TimestampConverter.epoch_to_iso(end_time, format_type="basic", as_utc=True)
 
-    @staticmethod
-    def _append_dvr_param(url: str, dvr_seconds: int) -> str:
-        """
-        Return *url* with ``dvr_window_length=<dvr_seconds>`` set in the query
-        string.  Any pre-existing ``dvr_window_length`` value is replaced so
-        that repeated calls are idempotent.
-        """
-        parsed = urlparse(url)
-        # Parse existing query parameters, preserving all existing keys.
-        # parse_qs returns lists; rebuild as a flat dict for urlencode.
+        parsed = urlparse(live_url)
         existing: Dict[str, List[str]] = parse_qs(parsed.query, keep_blank_values=True)
-        # Replace (or add) the DVR param — overwrite any existing value.
-        existing[DVR_WINDOW_PARAM] = [str(dvr_seconds)]
-        new_query = urlencode(
-            {k: v[0] for k, v in existing.items()},
-            safe="",
-        )
-        return urlunparse(parsed._replace(query=new_query))
+        existing["begin"] = [begin_iso]
+        existing["end"] = [end_iso]
+        new_query = urlencode({k: v[0] for k, v in existing.items()}, safe="")
+        catchup_url = urlunparse(parsed._replace(query=new_query))
+        logger.debug(f"_build_begin_end_manifest_url: {content_id} → {catchup_url}")
+        return catchup_url
 
     def _ensure_live_cache(self) -> None:
         """
