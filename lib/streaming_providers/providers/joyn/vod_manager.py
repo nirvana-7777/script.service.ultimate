@@ -35,13 +35,16 @@ only a result or a typed failure is valid. Typed `ProviderError`s (AuthError,
 RateLimitError, GeoBlockError, EntitlementError, NotFoundError, ...) ALWAYS
 propagate unchanged; only untyped exceptions are wrapped in `ServerError`.
 Only `ServerError`s are retried.
+
+GraphQL URLs: every operation is built through `graphql.build_url(key, ...)`.
+The hashes and operation names live in `constants.GRAPHQL_QUERY_HASHES` /
+`constants.GRAPHQL_OPERATIONS`; there is no local copy in this file.
 """
 
 import functools
 import json
 import re
 import time
-import urllib.parse
 from typing import Any, Dict, List, Optional, Union
 
 from ...base.errors import NotFoundError, ProviderError, ServerError
@@ -55,11 +58,11 @@ from ...base.vod import VodPage
 from .drm import build_widevine_config
 from .ids import is_vod_id
 from .signing import build_signature, create_video_payload, video_config_fingerprint
+from .graphql import build_url
 from .constants import (
     CONTENT_TYPE_VOD,
     DEFAULT_MAX_RETRIES,
     DEFAULT_REQUEST_TIMEOUT,
-    JOYN_GRAPHQL_BASE_URL,
     JOYN_STREAMING_ENDPOINTS,
     JOYN_USER_AGENT,
 )
@@ -68,44 +71,6 @@ from .models import (
     PlaybackRestrictedException,
     SubscriptionRequiredException,
 )
-
-# ============================================================================
-# GraphQL query hashes (VOD-specific; live hashes live in constants.py)
-# ============================================================================
-
-VOD_GRAPHQL_HASHES = {
-    "NAVIGATION": "818622ff5afe143664241034ba0c537650ec9a2eeae4d568830b47d8de605b7e",
-    "LANDING_PAGE": "5838ac6b328cda91a70da264d5be09d4735cf95de8d9ee00cec60e77fcc3df08",
-    "LANDING_BLOCKS": "1655591f83b0dc1508ad4d52c5f37f72d410f48ad08c3e5f2de8622f86a21c68",
-    "GET_ME_STATE": "55ebb3812b45628017ee6c7f36f0b88a94e9778b9f11ad8a6fc05849182c07ec",
-    "LIVE_LANE": "51659c62d4e4a6628d1e512190a3b0659486478b12be494875bef5a83dcb79ed",
-    "HERO_RESUME": "d3b7e480f593ba4866598f8cfe95185b3e400fcff112c026dc4e1b5ad4b0d537",
-    "COLLECTION_QUERY": "bdf4e08de65351750eefb2165a58af50c9e4b3526b78cd75e2066df2bc7ec8d8",
-    "PAGE_OVERVIEW_GENRE": "37ba6d0dde470df3f8999d49bcd24bc5c72b8e7192768026d82447c664c6ab7f",
-    "SEASON": "ee2396bb1b7c9f800e5cefd0b341271b7213fceb4ebe18d5a30dab41d703009f",
-    "MOVIE_DETAIL": "9ae6bcd8c45a5e350438d1cc415a022fe053e938c93438509f60ae3abb425fa7",
-    "PLAYABLE_ASSET": "e2db6e6f9090f14848d3989920a1342f6813099c65ee7faef1e334f23e390970",
-    # Recovered from the legacy addon's const.py (SEARCH.HASH) — not captured
-    # independently from live traffic like the hashes above, so keep an eye on
-    # this if Joyn ever rotates persisted-query hashes.
-    "SEARCH": "bb2bab6cbe17321d7eddd5006e7f40765faedd79790b193a59d83f4640694856",
-}
-
-GRAPHQL_OPERATIONS = {
-    "NAVIGATION": "Navigation",
-    "LANDING_PAGE": "LandingPageClient",
-    "LANDING_BLOCKS": "LandingBlocks",
-    "GET_ME_STATE": "GetMeState",
-    "LIVE_LANE": "LiveLane",
-    "HERO_RESUME": "HeroLandingResumePositionsWithToken",
-    "COLLECTION_QUERY": "PageOverviewCollectionQuery",
-    "PAGE_OVERVIEW_GENRE": "PageOverviewGenre",
-    "SEASON": "Season",
-    "MOVIE_DETAIL": "PageMovieDetailStatic",
-    "PLAYABLE_ASSET": "PlayableAssetWithToken",
-    # Legacy const.py names this operation "SearchQ", not "Search".
-    "SEARCH": "SearchQ",
-}
 
 
 def ttl_cache(ttl_seconds: int = 300):
@@ -196,9 +161,6 @@ class JoynVodManager(VodManager):
         self._cache: Dict[str, Dict[str, Any]] = {}
         self._cache_ttl: int = 300
 
-        self._query_hashes = VOD_GRAPHQL_HASHES
-        self._operations = GRAPHQL_OPERATIONS
-
         self._user_state: Optional[Dict[str, Any]] = None
         self._has_plus = False
 
@@ -245,36 +207,18 @@ class JoynVodManager(VodManager):
         search, season under an account)" — we then ask the session for a
         token and set joyn-user-state=code=R_A. When False, the query is
         anonymous and the reference client sends A_A.
+
+        Unlike the channel/EPG managers' header builder (which uses ensure()
+        and degrades to anonymous), this one RAISES on a permanent login
+        failure: a user-scoped query is meaningless without a session, and
+        the failure must surface so the user can act on it (README §8).
         """
         token: Optional[str] = None
         if authenticated:
-            # RAISES a typed error if no session can be had (README §8) instead of
-            # silently degrading to an anonymous request.
             token = self.auth.get_access_token()
         return self.config.graphql_headers(
             token=token, authenticated=token is not None
         )
-
-    @staticmethod
-    def _build_graphql_url(
-        operation_name: str,
-        query_hash: str,
-        variables: Optional[Dict] = None,
-    ) -> str:
-        base_url = JOYN_GRAPHQL_BASE_URL
-        params = {
-            "operationName": operation_name,
-            "enable_user_location": "true",
-            "watch_assistant_variant": "true",
-        }
-        if variables:
-            params["variables"] = json.dumps(variables, separators=(",", ":"))
-        extensions = {"persistedQuery": {"version": 1, "sha256Hash": query_hash}}
-        params["extensions"] = json.dumps(extensions, separators=(",", ":"))
-        query_string = "&".join(
-            f"{k}={urllib.parse.quote(v)}" for k, v in params.items()
-        )
-        return f"{base_url}?{query_string}"
 
     # ========================================================================
     # PATH / ID CLASSIFICATION HELPERS
@@ -306,10 +250,7 @@ class JoynVodManager(VodManager):
 
     def get_navigation(self) -> Dict[str, Any]:
         with transport_errors("vod_navigation", "Joyn"):
-            url = self._build_graphql_url(
-                operation_name=self._operations["NAVIGATION"],
-                query_hash=self._query_hashes["NAVIGATION"],
-            )
+            url = build_url("NAVIGATION")
             headers = self._get_graphql_headers(authenticated=False)
             response = self.http_manager.get(
                 url,
@@ -423,11 +364,7 @@ class JoynVodManager(VodManager):
             if not path.startswith("/"):
                 path = f"/{path}"
             variables = {"first": first, "path": path, "offset": offset}
-            url = self._build_graphql_url(
-                operation_name=self._operations["PAGE_OVERVIEW_GENRE"],
-                query_hash=self._query_hashes["PAGE_OVERVIEW_GENRE"],
-                variables=variables,
-            )
+            url = build_url("PAGE_OVERVIEW_GENRE", variables)
             headers = self._get_graphql_headers(authenticated=authenticated)
             response = self.http_manager.get(
                 url, operation="vod_genre_page", headers=headers,
@@ -538,11 +475,7 @@ class JoynVodManager(VodManager):
             if not path.startswith("/"):
                 path = f"/{path}"
             variables = {"path": path}
-            url = self._build_graphql_url(
-                operation_name=self._operations["MOVIE_DETAIL"],
-                query_hash=self._query_hashes["MOVIE_DETAIL"],
-                variables=variables,
-            )
+            url = build_url("MOVIE_DETAIL", variables)
             headers = self._get_graphql_headers(authenticated=authenticated)
             response = self.http_manager.get(
                 url, operation="vod_movie_detail", headers=headers,
@@ -586,11 +519,7 @@ class JoynVodManager(VodManager):
                 "id": season_id, "first": first,
                 "licenseFilter": license_filter, "offset": offset,
             }
-            url = self._build_graphql_url(
-                operation_name=self._operations["SEASON"],
-                query_hash=self._query_hashes["SEASON"],
-                variables=variables,
-            )
+            url = build_url("SEASON", variables)
             headers = self._get_graphql_headers(authenticated=authenticated)
             response = self.http_manager.get(
                 url, operation="vod_season", headers=headers,
@@ -649,11 +578,7 @@ class JoynVodManager(VodManager):
                 "first": first, "offset": offset, "blockId": block_id,
                 "hasToken": has_token,
             }
-            url = self._build_graphql_url(
-                operation_name=self._operations["COLLECTION_QUERY"],
-                query_hash=self._query_hashes["COLLECTION_QUERY"],
-                variables=variables,
-            )
+            url = build_url("COLLECTION_QUERY", variables)
             headers = self._get_graphql_headers(authenticated=authenticated)
             response = self.http_manager.get(
                 url, operation="vod_collection", headers=headers,
@@ -703,11 +628,7 @@ class JoynVodManager(VodManager):
             if not path.startswith("/"):
                 path = f"/{path}"
             variables = {"path": path, "variation": variation}
-            url = self._build_graphql_url(
-                operation_name=self._operations["LANDING_PAGE"],
-                query_hash=self._query_hashes["LANDING_PAGE"],
-                variables=variables,
-            )
+            url = build_url("LANDING_PAGE", variables)
             headers = self._get_graphql_headers(authenticated=authenticated)
             response = self.http_manager.get(
                 url, operation="vod_landing_page", headers=headers,
@@ -772,11 +693,7 @@ class JoynVodManager(VodManager):
         # force_refresh=True bypasses the cache for one call; the decorator
         # strips it before the call reaches this function.
         with transport_errors("vod_user_state", "Joyn"):
-            url = self._build_graphql_url(
-                operation_name=self._operations["GET_ME_STATE"],
-                query_hash=self._query_hashes["GET_ME_STATE"],
-                variables={},
-            )
+            url = build_url("GET_ME_STATE")
             headers = self._get_graphql_headers(authenticated=True)
             response = self.http_manager.get(
                 url, operation="vod_user_state", headers=headers,
@@ -961,10 +878,6 @@ class JoynVodManager(VodManager):
         Returned as the opaque `next_cursor` string; callers pass it back as
         `cursor`.
         """
-        query_hash = self._query_hashes.get("SEARCH", "")
-        if not query_hash:
-            raise ServerError("Joyn SEARCH persisted query hash is not configured.")
-
         offset = 0
         if cursor:
             try:
@@ -979,11 +892,7 @@ class JoynVodManager(VodManager):
                 "first": page_size,
                 "offset": offset,
             }
-            url = self._build_graphql_url(
-                operation_name=self._operations["SEARCH"],
-                query_hash=query_hash,
-                variables=variables,
-            )
+            url = build_url("SEARCH", variables)
             headers = self._get_graphql_headers(authenticated=True)
             response = self.http_manager.get(
                 url, operation="vod_search", headers=headers,
@@ -1220,11 +1129,7 @@ class JoynVodManager(VodManager):
         Returns the `asset` object including its `video.id` (a_…).
         """
         with transport_errors(f"vod_playable_asset {asset_id}", "Joyn"):
-            url = self._build_graphql_url(
-                operation_name=self._operations["PLAYABLE_ASSET"],
-                query_hash=self._query_hashes["PLAYABLE_ASSET"],
-                variables={"id": asset_id},
-            )
+            url = build_url("PLAYABLE_ASSET", {"id": asset_id})
             headers = self._get_graphql_headers(authenticated=authenticated)
             response = self.http_manager.get(
                 url, operation="vod_playable_asset", headers=headers,

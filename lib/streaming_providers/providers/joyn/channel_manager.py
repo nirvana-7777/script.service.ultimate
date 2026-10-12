@@ -10,17 +10,19 @@ two declared extras:
                       get_channel_manifest and get_channel_drm share ONE
                       playlist call per zap
 
-Headers come from `self.config`; the bearer comes from
-`self.auth.get_access_token()`. Never through the provider.
+Headers come from `self.config`. The channel manager's GraphQL header builder
+tolerates an absent session (see `_graphql_headers`): the LiveChannelsAndEpg
+operation is served anonymously (joyn-user-state=A_A) as well as authenticated
+(R_A), and there is no reason a broken login should hide the channel list. The
+VOD manager uses a stricter builder for user-scoped queries; the two
+deliberately differ.
 
 Routing: handles_content_id() is the cheap pure pre-filter (README §7). It is the
 mirror image of JoynVodManager.handles_content_id — both call ids.is_vod_id() —
 so a VOD id is never handed to this manager first.
 """
 
-import json
 import time
-import urllib.parse
 from typing import Any, Dict, List, Optional, Tuple
 
 from ...base.errors import BadRequestError
@@ -37,9 +39,6 @@ from .constants import (
     GRAPHQL_LIVE_CHANNELS_FILTER,
     GRAPHQL_MAX_RESULTS,
     GRAPHQL_OFFSET,
-    GRAPHQL_PERSISTED_QUERY_VERSION,
-    GRAPHQL_QUERY_HASHES,
-    JOYN_GRAPHQL_ENDPOINTS,
     JOYN_STREAMING_ENDPOINTS,
     MODE_LIVE,
     MODE_VOD,
@@ -49,6 +48,7 @@ from .constants import (
 from .drm import build_widevine_config
 from .ids import is_live_id, is_vod_id
 from .models import JoynChannel, JoynPlayout
+from .graphql import build_url
 from .signing import (  # noqa: F401  (re-exported: external callers imported these from here)
     build_signature,
     create_video_payload,
@@ -88,13 +88,34 @@ class JoynChannelManager(ChannelManager):
     # ------------------------------------------------------------------
 
     def _graphql_headers(self) -> Dict[str, str]:
-        # get_access_token() RAISES a typed error if no session can be had
-        # (README §8). An anonymous token is a normal, valid result when no
-        # credentials are stored; a permanent failure (MFA, rejected credentials)
-        # must surface here, not silently degrade to an anonymous channel list
-        # that then fails at playback.
-        token = self.auth.get_access_token()
-        return self.config.graphql_headers(token=token, authenticated=True)
+        """
+        GraphQL headers for the channel listing.
+
+        Deliberately tolerant of an absent session:
+
+          * LiveChannelsAndEpg is served to anonymous callers
+            (joyn-user-state=A_A). It is a public catalogue, not a
+            user-scoped resource.
+          * A permanent login failure (MFA, rejected credentials) must NOT
+            stop the channel list: there is no reason a user who cannot
+            log in should be unable to see what is on. The failure
+            surfaces on the first authenticated call (VOD, entitlement,
+            playback), where the user can act on it.
+          * A *transient* login failure (network, WAF) also does not block
+            the listing: `ensure()` returns False and the request goes out
+            anonymously, and the session's backoff keeps the next attempt
+            from hammering the login endpoint.
+
+        The VOD manager's `_get_graphql_headers(authenticated=True)` uses
+        the opposite policy — a user-scoped query is meaningless without a
+        session and raises typed errors. The two policies are intentional.
+        """
+        token = None
+        if self.auth.ensure():
+            token = self.auth.get_access_token()
+        return self.config.graphql_headers(
+            token=token, authenticated=token is not None
+        )
 
     def get_channel_manifest_headers(self, content_id: str, **kw: Any) -> Dict[str, str]:
         # CDN headers: no Authorization. The manifest URL carries its own
@@ -192,17 +213,7 @@ class JoynChannelManager(ChannelManager):
                 "from": current_time,
                 "to": end_time,
             }
-            variables_encoded = urllib.parse.quote(json.dumps(variables))
-            extensions_encoded = urllib.parse.quote(json.dumps({
-                "persistedQuery": {
-                    "version": GRAPHQL_PERSISTED_QUERY_VERSION,
-                    "sha256Hash": GRAPHQL_QUERY_HASHES["LIVE_CHANNELS"],
-                }
-            }))
-            url = (
-                f"{JOYN_GRAPHQL_ENDPOINTS['LIVE_CHANNELS']}"
-                f"&variables={variables_encoded}&extensions={extensions_encoded}"
-            )
+            url = build_url("LIVE_CHANNELS", variables)
             response = self.http_manager.get(
                 url, operation="api", headers=headers,
                 timeout=DEFAULT_REQUEST_TIMEOUT,

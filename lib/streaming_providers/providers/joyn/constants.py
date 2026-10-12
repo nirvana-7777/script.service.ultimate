@@ -92,19 +92,66 @@ JOYN_API_BASE_HEADERS = {
 
 JOYN_GRAPHQL_BASE_URL = "https://api.joyn.de/graphql"
 
-# GraphQL persisted query hashes
+# Persisted-query registry. Every GraphQL operation the provider uses lives
+# here, hash and operation name side by side, so a reader sees both at once
+# and they cannot drift apart. Callers name an operation by its key; the
+# URL builder (graphql.py) reads both dicts.
+#
+# Adding a new operation:
+#   1. Capture the request in a browser (DevTools → Network → the GraphQL call)
+#   2. Copy the sha256Hash from the `extensions` query parameter here
+#   3. Copy the operationName (or the operationName query parameter) here
+#   4. Note where the hash came from, in a comment, so a future maintainer
+#      can tell whether it is a captured value or a legacy const.py import.
 GRAPHQL_QUERY_HASHES = {
-    "LIVE_PLAYER": "52b37a3cf5bc75e56026aed7b0d234874eeabd2eccd369d0cd3d3a6ea15ef566",
-    "LIVE_CHANNELS": "b7703103ddd0516be6b49ed66186092a6c6f6d815ccc502a9f50800a8cc18dd2",
+    # --- Live TV ---
+    "LIVE_PLAYER":          "52b37a3cf5bc75e56026aed7b0d234874eeabd2eccd369d0cd3d3a6ea15ef566",
+    "LIVE_CHANNELS":        "b7703103ddd0516be6b49ed66186092a6c6f6d815ccc502a9f50800a8cc18dd2",
+    "LIVESTREAM_BY_BRAND":  "333399353bead5c153684c1c326504e82e7494ae2e89ca1d11d4ad76a16a839e",
+    "LIVESTREAM_OVERVIEW":  "5a094812b90747ed18d2eac87f8b29a82e403a02f329d03478f7b2a5cf6ca463",
+    "PLAYABLE_LIVESTREAM":  "2057248fde6948eebc02b03bb4244a1361707c96ed8bab25027d1f3a80ea0cb8",
+
+    # --- VOD ---
+    "NAVIGATION":           "818622ff5afe143664241034ba0c537650ec9a2eeae4d568830b47d8de605b7e",
+    "LANDING_PAGE":         "5838ac6b328cda91a70da264d5be09d4735cf95de8d9ee00cec60e77fcc3df08",
+    "LANDING_BLOCKS":       "1655591f83b0dc1508ad4d52c5f37f72d410f48ad08c3e5f2de8622f86a21c68",
+    "GET_ME_STATE":         "55ebb3812b45628017ee6c7f36f0b88a94e9778b9f11ad8a6fc05849182c07ec",
+    "LIVE_LANE":            "51659c62d4e4a6628d1e512190a3b0659486478b12be494875bef5a83dcb79ed",
+    "HERO_RESUME":          "d3b7e480f593ba4866598f8cfe95185b3e400fcff112c026dc4e1b5ad4b0d537",
+    "COLLECTION_QUERY":     "bdf4e08de65351750eefb2165a58af50c9e4b3526b78cd75e2066df2bc7ec8d8",
+    "PAGE_OVERVIEW_GENRE":  "37ba6d0dde470df3f8999d49bcd24bc5c72b8e7192768026d82447c664c6ab7f",
+    "SEASON":               "ee2396bb1b7c9f800e5cefd0b341271b7213fceb4ebe18d5a30dab41d703009f",
+    "MOVIE_DETAIL":         "9ae6bcd8c45a5e350438d1cc415a022fe053e938c93438509f60ae3abb425fa7",
+    "PLAYABLE_ASSET":       "e2db6e6f9090f14848d3989920a1342f6813099c65ee7faef1e334f23e390970",
+    # Recovered from the legacy addon's const.py (SEARCH.HASH) — not captured
+    # independently from live traffic like the hashes above, so keep an eye on
+    # this if Joyn ever rotates persisted-query hashes.
+    "SEARCH":               "bb2bab6cbe17321d7eddd5006e7f40765faedd79790b193a59d83f4640694856",
 }
 
-# GraphQL endpoints with full URLs
-JOYN_GRAPHQL_ENDPOINTS = {
-    "LIVE_PLAYER": f'{JOYN_GRAPHQL_BASE_URL}?operationName=PageLivePlayerClientSide&enable_user_location=true&watch_assistant_variant=true&extensions=%7B%22persistedQuery%22%3A%7B%22version%22%3A1%2C%22sha256Hash%22%3A%22{GRAPHQL_QUERY_HASHES["LIVE_PLAYER"]}%22%7D%7D',
-    "LIVE_CHANNELS": f"{JOYN_GRAPHQL_BASE_URL}?operationName=LiveChannelsAndEpg&enable_user_location=true&watch_assistant_variant=true",
+GRAPHQL_OPERATIONS = {
+    "LIVE_PLAYER":          "PageLivePlayerClientSide",
+    "LIVE_CHANNELS":        "LiveChannelsAndEpg",
+    "LIVESTREAM_BY_BRAND":  "LivestreamIdByBrand",
+    "LIVESTREAM_OVERVIEW":  "LivestreamOverviewByBrand",
+    "PLAYABLE_LIVESTREAM":  "PlayableLivestream",
+    "NAVIGATION":           "Navigation",
+    "LANDING_PAGE":         "LandingPageClient",
+    "LANDING_BLOCKS":       "LandingBlocks",
+    "GET_ME_STATE":         "GetMeState",
+    "LIVE_LANE":            "LiveLane",
+    "HERO_RESUME":          "HeroLandingResumePositionsWithToken",
+    "COLLECTION_QUERY":     "PageOverviewCollectionQuery",
+    "PAGE_OVERVIEW_GENRE":  "PageOverviewGenre",
+    "SEASON":               "Season",
+    "MOVIE_DETAIL":         "PageMovieDetailStatic",
+    "PLAYABLE_ASSET":       "PlayableAssetWithToken",
+    # Legacy const.py names this operation "SearchQ", not "Search".
+    "SEARCH":               "SearchQ",
 }
 
-# Base GraphQL headers
+# Base GraphQL headers (the shared header set without the per-call additions
+# built by JoynConfig.graphql_headers()).
 JOYN_GRAPHQL_BASE_HEADERS = {
     "X-Api-Key": "4f0fd9f18abbe3cf0e87fdb556bc39c8",
     "Accept": "application/json",
@@ -112,7 +159,7 @@ JOYN_GRAPHQL_BASE_HEADERS = {
     "User-Agent": JOYN_USER_AGENT,
 }
 
-# GraphQL query defaults
+# GraphQL query defaults (used by the channel and EPG managers)
 GRAPHQL_PERSISTED_QUERY_VERSION = 1
 GRAPHQL_LIVE_CHANNELS_FILTER = "DEFAULT"
 GRAPHQL_MAX_RESULTS = 5000

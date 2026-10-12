@@ -43,6 +43,7 @@ from .constants import JOYN_LOGO, PROVIDER_NAME, SUPPORTED_COUNTRIES
 from .entitlement import JoynEntitlement
 from .session import JoynSession
 from .vod_manager import JoynVodManager
+from .epg_manager import JoynEpgManager
 
 # Only the provider is public. Discovery takes the FIRST StreamingProvider
 # subclass in the package namespace; ManagedProvider must never appear here.
@@ -176,7 +177,15 @@ class JoynProvider(ManagedProvider):
             entitlement=self._entitlement,
         )
 
-    # No _build_epg, no _build_catchup: Joyn does not have them. A provider
+    def _build_epg(self):
+        return JoynEpgManager(
+            http_manager=self.http_manager,
+            auth=self.auth,
+            country=self.country,
+            config=self.provider_config,
+        )
+
+    # No _build_catchup: Joyn does not have it. A provider
     # without a capability simply has no manager.
 
     # ------------------------------------------------------------------
