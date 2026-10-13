@@ -21,11 +21,12 @@ python -m streaming_providers.base.testing.migration_pack <key> --json before.js
 | Constructor signature the migrated class must keep | |
 | Extra `ctor_kwargs` the contract test needs | |
 | **Id grammar**: how are live ids and VOD ids told apart? (→ `handles_content_id` on both managers) | ❓ |
+| **Routing**: id pattern each manager claims, and the module that owns the grammar (`ids.py`) | ❓ one pure module; predicates complementary? |
 
 ## 2. Capabilities (what v1 really has)
 channels ☐  vod ☐  epg ☐  recordings ☐  favorites ☐  bookmarks ☐  catchup ☐  drm ☐  timers ☐(not delegated)  events ☐(not delegated)
 
-For each: does a v1 manager class already exist? Does it follow the 4-collaborator
+For each: does a v1 manager class already exist? Does it subclass the ABC? Does it follow the 4-collaborator
 constructor, or take the provider (`__init__(self, provider)`)? ❓
 
 ## 3. Decisions (README reference)
@@ -39,9 +40,16 @@ constructor, or take the provider (`__init__(self, provider)`)? ❓
 | Token buffer(s) in the authenticator (grep `expires_in -`) | keep (reason: ___) / remove (device test: ___) | never remove by reflex (§9) |
 | Provider-specific exceptions callers rely on | are they `ProviderError` subclasses? if not: make them so or `passthrough=` in `transport_errors` | `issubclass(X, ProviderError)` |
 | `get_events` / `enrich_channel_data` / `get_program_details` | real implementation → keep on provider; inert stub → delete | §12.2 |
+| Dead v1 methods (`enrich_channel_data`, `populate_streaming_data`, …) | no caller → delete; caller → move to provider unchanged | grep result (pack §5): ___ |
 | Manager method renames (`get_manifest` → `get_channel_manifest`, …) | list | §12.2 |
 | Failure behaviour (§8, §12.5) | v1 returns `[]`/`None` → v2 raises | OK for the UI? |
 | VOD return shape | list / dict / `VodPage` | wrap with `normalize_vod_result` |
+| **Pagination** (§6.2) | per endpoint: honours offset? v1 default size? | `next_cursor` only where offset is honoured; full-list endpoints keep their size, `next_cursor=None` |
+| **Authenticator failure behaviour** (§9) | permanent exceptions (rejected credentials, MFA): ___ ; transient: ___ ; anonymous fallback yes/no | every permanent case raises a typed `AuthError` |
+| **HTTP manager on 4xx/5xx** (§8) | fact: returns the response / raises with `.response` (❓ verified?) | until verified: handle both |
+| **Caches to clear on credential change** (§9, §14) | list (playout, entitlement variants, VOD, …) | cleared in the `on_invalidate` callback |
+| **Shared builders** (§11) | DRM builder: one function used by which managers? | |
+| **Client hints** (§10) | `User-Agent` and `sec-ch-ua*` derived from one constant? | |
 
 ## 4. Legacy helpers the provider calls (pack §3)
 | Helper | What it does (read the source) | v2 replacement (§12.6b) |
@@ -57,4 +65,9 @@ constructor, or take the provider (`__init__(self, provider)`)? ❓
 ☐ typed errors instead of `[]`/`None`   ☐ headers from manager hooks   ☐ capabilities now reachable (list which)   ☐ eager login removed   ☐ token buffer changed (reason recorded)   ☐ other: ______
 
 ## 7. Done when
-Definition of done (README §18); `--compare before.json` reviewed — expected: REMOVED = deleted boilerplate/stubs/delegated flags, ADDED = only `_build_*`, `DRM_IN_MANAGERS`, `HEADERS_FROM_MANAGERS` (anything else is unexplained); device checklist (§12.7) signed off.
+Definition of done (README §18); `--compare before.json` reviewed — expected: REMOVED = deleted boilerplate/stubs/delegated flags, ADDED = only `_build_*`, `DRM_IN_MANAGERS`, `HEADERS_FROM_MANAGERS` (anything else is unexplained); tests parse and run, **at least one test fails on the v1 shape**; device checklist (§12.7) signed off.
+
+### Device-test result table
+| # (§12.7) | Check | Result | Date | Signed off by |
+|---|---|---|---|---|
+| 1–10 | | | | |

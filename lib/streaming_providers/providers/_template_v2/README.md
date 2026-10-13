@@ -345,6 +345,10 @@ migration then has to be done twice. If you cannot decide between "part of the
 session" and "separate type": derived from the token ⇒ session; has its own
 fetch/refresh ⇒ separate type.
 
+**Dead dependencies.** A declared keyword-only extra that no method reads is
+deleted, including its comment. An extra that is passed "for later" is a
+back-reference candidate nobody has reviewed.
+
 `python -m streaming_providers.base.testing.migration_pack <key> --repo <root>`,
 section 4, lists every back-reference the v1 managers make into the provider —
 each line needs one of the rows above.
@@ -362,6 +366,11 @@ class YourManager(ChannelManager):              # or Vod/Epg/Recordings/Favorite
         self._my_cache = my_cache if my_cache is not None else {}
 ```
 
+* **A manager is a subclass of the ABC** (`ChannelManager`, `VodManager`, …); the
+  constructor calls `super().__init__` with the four collaborators. A plain class
+  with the right method names is rejected by the wiring check. When migrating,
+  change the v1 class line too: keeping `class JoynChannelManager:` makes
+  `super().__init__(...)` hit `object`.
 * Four required keyword-only collaborators, **no `**kwargs`** (a typo at a call
   site is an immediate `TypeError`).
 * Extras are keyword-only, declared explicitly, stored **after** `super().__init__`,
@@ -369,6 +378,7 @@ class YourManager(ChannelManager):              # or Vod/Epg/Recordings/Favorite
 * `auth` is checked against `AuthProtocol` (method presence only); a mismatch is
   a logged warning, not an error.
 * Managers expose `self.http_manager`, `self.auth`, `self.country`, `self.config`.
+* A declared extra that no method reads is deleted (§5.1).
 * Managers never talk to each other through the provider; a manager that needs
   another gets it as an explicit extra (`channels=`).
 * **Return-value convention for all managers:**
@@ -384,7 +394,7 @@ class YourManager(ChannelManager):              # or Vod/Epg/Recordings/Favorite
 | `get_channel_manifest_headers(content_id, **kw)` | override | default = `auth.build_headers()` = **API headers**; override with the CDN headers (§10) |
 | `get_segment_headers(content_id, **kw)` | concrete | default = manifest headers |
 | `get_channel_drm(content_id, **kw) -> List[DRMConfig]` | concrete | default `[]` = no DRM (§11) |
-| `handles_content_id(content_id)` | concrete | default `True`; override when ids of several managers coexist. **Cheap, pure, no I/O.** |
+| `handles_content_id(content_id)` | concrete | default `True` — **mandatory override on *every* id-taking manager as soon as more than one exists** (live + VOD, …). With the default the first manager receives *every* id, and any exception other than `NotFoundError` stops routing (§7). Keep the grammar in one pure `ids.py` that all managers call, so the tests are complementary by construction. **Cheap, pure, no I/O.** |
 
 ### 6.2 `VodManager`
 
@@ -416,6 +426,11 @@ class YourManager(ChannelManager):              # or Vod/Epg/Recordings/Favorite
   parsing.
 * Slugs are derived per sibling set, so they are **not stable across pages** —
   never persist them (§17).
+* **Paging rules.** A `next_cursor` is only produced for endpoints that honour the
+  offset. Endpoints that return a full list keep their own default size and return
+  `next_cursor=None`. Never default `first=page_size` on an endpoint that v1
+  returned in full — that silently truncates the list. Record per endpoint in the
+  brief which ones honour the offset and what the v1 default size was.
 
 ### 6.3 `EpgManager`
 
@@ -534,6 +549,14 @@ used to fall through silently; in v2 the two managers must be told apart by
 `handles_content_id()` (implement it on **both**: pure prefix/format test, no I/O),
 otherwise a VOD id is handed to the channel manager first and fails there.
 
+**Rule:** `handles_content_id` is mandatory on **every** manager that takes ids once
+more than one manager does. The ABC default is `True`, so a manager without the
+override claims everything; the first manager (channels) then gets VOD ids and a
+non-`NotFoundError` stops the routing. Put the grammar in **one pure `ids.py`**
+(`is_live_id`, `is_vod_id`) that both managers call, so the two predicates are
+complementary by construction, and unit-test a sample of ids of each kind: exactly
+one manager must claim each.
+
 Id grammar guidance:
 
 * Ids are opaque to the base. Use short **prefixes** when several kinds coexist
@@ -586,9 +609,23 @@ KeyError` / `except RuntimeError` in the operations layer keep working.
   exceptions in `ServerError` and lets typed `ProviderError`s through untouched
   (callers rely on `AuthError`/`RateLimitError` to refresh tokens or back off —
   never flatten them).
-* The HTTP manager raises for 4xx/5xx itself — don't call `raise_for_status()`.
-  How it types a 401/403 is **(unverified)**: map them to `AuthError` at the one
-  place you call login.
+* **HTTP manager on 400/401/403/5xx — until verified, handle both shapes.** What the
+  HTTP manager does for these statuses (return the error response vs. raise an
+  exception carrying `.response`) and whether `response.raise_for_status()` is
+  redundant is **not yet confirmed**. Write code that handles *both* a returned
+  error response and an exception with `.response`; use a single helper
+  `base.utils.transport.response_of(exc)` (to be shipped, §17) that returns the
+  response of either. Map 401/403 to `AuthError` at the one place you call login.
+  Replace this note with the verified behaviour after the first device run.
+* **Retry loops.** Retry only `ServerError` / untyped transport errors. Every other
+  `ProviderError` (`AuthError`, `RateLimitError`, `GeoBlockError`,
+  `EntitlementError`, …) propagates **immediately and unchanged**. Use
+  `base.utils.transport.retry_transient(fn, attempts, sleep)` (to be shipped, §17);
+  until then write the loop so that it catches `ProviderError` first and re-raises.
+* **A broad `except Exception` around an auth-using call flattens
+  `AuthError`/`RateLimitError`** into whatever the handler does (usually `[]` or
+  `ServerError`) and the caller can no longer back off or show the real reason.
+  Catch `ProviderError` first and re-raise, or use `transport_errors`.
 
 ### Backend behaviours you must know
 
@@ -668,6 +705,24 @@ must never call the raw authenticator — they use the adapter.
   `base · 2^(n−1)` s, capped. Without it, every failing call repeats a full SSO
   login — lockout/WAF risk. Tested with an injectable clock.
 
+**Session adapter rules** (and `optional/session_adapter.py` must follow them):
+
+* Keep the type of any `ProviderError` the authenticator raises (`type(exc)`); only
+  *untyped* errors become `ServerError`.
+* Managers call `get_access_token()` / `require()`. `ensure()` is for the settings UI
+  only — a manager that uses it turns a permanent failure into silent anonymous
+  requests.
+* **Rejected credentials and MFA are permanent.** The authenticator must raise a
+  typed `AuthError` for them. A bare `Exception("No authorization code")` ends up
+  in the backoff loop and risks an account lock.
+* Do not `force_refresh` on the first login — persisted tokens stay usable.
+* `invalidate()` runs the registered `on_invalidate` callbacks; the **provider**
+  registers one that clears every account-specific cache (playout, entitlement
+  variants, VOD, …).
+* **Injected config.** A wrapped `BaseAuthenticator` receives the provider's config
+  object (`config=`). Do not build a second config inside it (two config
+  constructions in one provider drift apart).
+
 ### Credentials API on the provider (OPTIONAL — only if v1 has it)
 
 **A migration preserves the v1 public surface; it never adds to it.** Of the two
@@ -715,6 +770,10 @@ Keep two builders in `constants.py`: `api_headers(token=None)` and
 Akamai-style edges *reject* requests without a whitelisted origin/referer — Allente).
 Sending API headers (JSON `Content-Type`, tenant ids, tokens) to the CDN is noise at
 best and a token leak at worst.
+
+**Client hints.** Derive `User-Agent` and every `sec-ch-ua*` header from **one**
+constant (browser name + version + platform). A `User-Agent` that disagrees with the
+client hints is a WAF signal.
 
 ### `HEADERS_FROM_MANAGERS` — decide explicitly
 
@@ -776,6 +835,11 @@ ignore what you don't use. `get_drm(content_id, drm_variant=None, content_type=N
   The plain-text header parser splits on `;`/`,` followed by `Name:` — a
   `User-Agent` such as `Mozilla/5.0 (X11; Linux …)` is the classic victim.
   `+` vs `%20` for spaces is **not verified on a device**; `%20` is unambiguous.
+  Record in the provider which of the three encodings (dict / `urlencode` /
+  JSON string) is **proven on a device**, with the date; do not mix them.
+* **One shared DRM builder.** When live and VOD managers both build `DRMConfig`s,
+  put the construction in one module-level function (e.g. `drm.build_widevine(...)`)
+  that both call — one place to fix a header or `req_data` bug.
 * `req_data` auto-detection (`_is_base64`) cannot tell plain text like `abcd` from
   base64; prefer `create_with_req_data()`.
 * **Verify on a device**: dump ISA's outgoing license request (URL, headers, body)
@@ -881,6 +945,8 @@ Fill this table for your provider:
 | v1 manager methods named after the provider API (`get_manifest`, `get_drm`, `get_manifest_headers`) | **rename** to the ABC names (`get_channel_manifest`, `get_channel_drm`, `get_channel_manifest_headers`; VOD: `get_vod_*`) — the ABC cannot be instantiated otherwise |
 | `get_events` / `enrich_channel_data` overridden to delegate to an inert stub manager | **delete**; the base defaults answer `[]` / `None`. If the provider **really** implements events, keep the method on the provider with its logic (there is no events manager; §17) and do not leave it calling a manager that no longer exists |
 | `get_program_details` | delegated by `ManagedProvider` to the EPG manager when one exists, `None` otherwise — nothing to write |
+| unreferenced v1 methods with real logic (`enrich_channel_data`, `populate_streaming_data`, …) | grep (pack §5): **no caller → delete**; **caller → move to the provider unchanged** |
+| docstrings that promise wiring ("the provider wires X into Y", "see provider.py") | must be backed by code **and a test** — otherwise delete the sentence (Traps 26, 40) |
 | `_build_provider_headers(...)` (legacy mixin) called by managers through the provider | stop calling it: build headers from `Config` (`api_headers(token)`, `stream_headers()`) with the token from `self.auth`; the mixin itself stays — the base still uses it |
 | manager `__init__(self, provider)` | **rewrite** to the 4-collaborator constructor; borrow state through `auth` / explicit extras |
 | provider-held auth state (`bearer_token`, `_profile`, `_last_auth_error`) | move into the session (Variant B), keep delegates |
@@ -1048,6 +1114,7 @@ providers can be mixed freely.
 | `base/testing/provider_contract.py` → `check_provider(cls, key, ctor_kwargs=None)` | the **contract**: returns `(errors, warnings)` |
 | `base/testing/migration_pack.py` | **before** a migration: registry facts, surface snapshot, legacy helper sources, back-references, external users (§12.0b); **after**: `--compare` |
 | repo-level test (add once) | parametrise `check_provider` over every `ManagedProvider` in `AVAILABLE_PROVIDERS` |
+| `tests/conftest.py` (copied by the scaffold) | shared fixtures: `FakeHttp`, `FakeAuthenticator`, a fake clock and the `env` fixture (the Joyn test suite is a working template) |
 
 ```python
 # tests/test_provider_contract.py (repo level, once)
@@ -1097,6 +1164,16 @@ def test_contract(key):
 * Run the tests of the **real** package, not only a sandbox, before trusting them.
 * Providers whose constructor requires more than `country` (a config object): call
   `check_provider(cls, key, ctor_kwargs={...})`.
+
+**Required for every migrated provider:**
+
+* The test files **parse** (`python -m py_compile`; run `pyflakes` in CI).
+* **At least one test fails on the v1 shape** — e.g. a VOD id must not reach the
+  channel manager. A migration whose tests all pass on the old code proves nothing.
+* A **credential-change test**: after `invalidate()` every account-specific cache is empty.
+* Per manager: a **"typed error propagates unchanged and is not retried"** test
+  (`AuthError` / `RateLimitError` out of the retry loop, call count 1).
+* Docstring promises have tests (Traps 26, 40).
 
 ### How the shipped suite was built (context)
 
@@ -1177,6 +1254,22 @@ Things that already cost time. Each is covered by a test or the contract unless 
     a subclass or pass it via `passthrough=(…,)`.
 38. Treating the migration pack's `ADDED` lines as errors: `_build_*`,
     `DRM_IN_MANAGERS`, `HEADERS_FROM_MANAGERS` are expected additions (§12.0b).
+39. Keeping the v1 class line of a manager (`class XManager:`) — `super().__init__`
+    then hits `object`; a manager must subclass its ABC (§6.0).
+40. A specific case of Trap 26: docstrings that promise wiring ("the provider wires X into Y") without code and
+    a test behind them (§12.2).
+41. A broad `except Exception` around an auth-using call, or a retry loop that
+    retries every error — flattens/repeats `AuthError`/`RateLimitError` (§8).
+42. Managers calling `ensure()` instead of `get_access_token()`/`require()` — a
+    permanent auth failure silently degrades to anonymous requests (§9).
+43. An authenticator that raises a bare `Exception` for rejected credentials or MFA —
+    it enters the backoff loop and can lock the account (§9).
+44. `force_refresh` on the first login (§9), or a second config object built inside a
+    wrapped authenticator (§9).
+45. Defaulting `first=page_size` on an endpoint v1 returned in full — silent
+    truncation (§6.2).
+46. `User-Agent` and `sec-ch-ua*` derived from different constants (§10).
+47. Two copies of the DRM config builder in live and VOD managers (§11).
 
 ---
 
@@ -1202,6 +1295,21 @@ Known gaps in the base, so you don't hunt for them:
 * Provider-specific features outside the ABCs (restart, `get_restart`) are free-form;
   there is no `RestartInfo` type yet.
 
+**Tooling still to ship** (the README above already assumes it):
+
+* `base.utils.transport.retry_transient(fn, attempts, sleep)` and `response_of(exc)` (§8).
+* `check_provider(..., sample_ids={"channels": [...], "vod": [...]})`: for each sample
+  id exactly one manager must return `True` from `handles_content_id`; verify the
+  managers are instances of the ABCs (clear message instead of a late `TypeError`).
+* Contract warning: a manager `__init__` takes an extra that is never read.
+* `migration_pack` new sections: (a) manager base classes, (b) `handles_content_id`
+  presence, (c) unused constructor params, (d) `except Exception` around `self.auth.*`
+  calls, (e) literal URLs outside `constants.py`, (f) two config constructions in one
+  provider, (g) docstring claims (`provider wires`, `see provider.py`) without
+  matching code.
+* `optional/session_adapter.py` updated to the rules in §9.
+* `tests/conftest.py` with `FakeHttp`, `FakeAuthenticator`, fake clock, `env` (§15).
+
 ---
 
 ## 18. Definition of done
@@ -1225,6 +1333,15 @@ Known gaps in the base, so you don't hunt for them:
 - [ ] Provider tests green; **contract test green**; repo tests green
 - [ ] Device checklist §12.7 done; behaviour changes §12.5 written down in the commit message
 - [ ] Provider README/docstring lists known limitations (token expiry in DRM, proxy not applied to ISA, …)
+- [ ] Managers subclass the ABCs (`isinstance` check passes)
+- [ ] `handles_content_id` on **every** id-taking manager; one pure `ids.py`; exactly one manager claims each sample id
+- [ ] No declared extra left unused
+- [ ] Every docstring promise ("the provider wires …") has code and a test
+- [ ] `User-Agent` and `sec-ch-ua*` derived from one constant
+- [ ] One shared DRM builder when more than one manager builds DRM
+- [ ] Retry loops: only `ServerError`/untyped retried, other `ProviderError`s propagate unchanged (test per manager)
+- [ ] Authenticator raises typed `AuthError` for rejected credentials/MFA; managers use `require()`/`get_access_token()`, never `ensure()`
+- [ ] Tests parse and run; at least one test fails on the v1 shape; credential-change cache-clearing test exists
 
 ---
 
