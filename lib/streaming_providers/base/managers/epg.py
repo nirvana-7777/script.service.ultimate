@@ -24,14 +24,25 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
+from ..errors import AuthError, GeoBlockError, ProviderError, RateLimitError
 from ..models.epg_models import EPGEntry, EPGProgramDetails
+from ..utils.logger import logger
 from ._base import ManagerBase
 
 
 class EpgManager(ManagerBase):
     """Abstract base for provider EPG managers."""
+
+    # Opt-in (default False = the historical behaviour, unchanged).
+    # False: get_epg_grid() lets any exception of ONE channel abort the grid.
+    # True:  AuthError / RateLimitError / GeoBlockError still abort (they hit
+    #        every channel alike); any other ProviderError of one channel yields
+    #        [] for that channel plus a warning, so one bad channel cannot take
+    #        the whole grid down. Only affects the DEFAULT get_epg_grid; a
+    #        manager that overrides get_epg_grid is not touched.
+    ISOLATE_GRID_FAILURES: ClassVar[bool] = False
 
     # ------------------------------------------------------------------
     # Capability
@@ -89,15 +100,32 @@ class EpgManager(ManagerBase):
         Default: loops get_epg per channel, skipping channels for which
         handles_channel_id() is False (returns [] for those without calling
         get_epg). Override when the provider has a native batch endpoint.
+
+        With ISOLATE_GRID_FAILURES = True a failure of one channel (other than
+        auth / rate-limit / geo) yields [] for that channel instead of
+        aborting the grid. Default: False (unchanged behaviour).
         """
         result: Dict[str, List[EPGEntry]] = {}
         for cid in channel_ids:
             if not self.handles_channel_id(cid):
                 result[cid] = []
                 continue
-            result[cid] = self.get_epg(
-                cid, start_time=start_time, end_time=end_time, **kw
-            )
+            if not self.ISOLATE_GRID_FAILURES:
+                result[cid] = self.get_epg(
+                    cid, start_time=start_time, end_time=end_time, **kw
+                )
+                continue
+            try:
+                result[cid] = self.get_epg(
+                    cid, start_time=start_time, end_time=end_time, **kw
+                )
+            except (AuthError, RateLimitError, GeoBlockError):
+                raise
+            except ProviderError as exc:
+                logger.warning(
+                    f"{self.__class__.__name__}: channel {cid} skipped in EPG grid: {exc}"
+                )
+                result[cid] = []
         return result
 
     def get_program_details(

@@ -4,20 +4,17 @@ EPG (Electronic Programme Guide) manager for the move.tv / MTS-SI provider.
 
 Design notes
 ------------
-* Uses the provider's existing ``http_manager`` (via the authenticator) so
-  that proxy settings, retries, and session-level headers are all inherited —
-  NOT a bare ``requests.post`` call.
-* Calls ``authenticator.authenticate()`` before every request so an expired
-  or missing token is refreshed transparently (same pattern used by
-  vod_manager.py and the live-channel fetcher).
-* Timestamps are converted to UTC-aware ``datetime`` objects and formatted as
-  ISO-8601 strings so downstream consumers never have to guess the timezone.
-* All constants (URL, partner ID, app version, timeout) come from
-  ``MoveTVConfig`` — no magic strings here.
-* Time-window translation: accepts either the generic (start_time, end_time)
-  contract used by EPGOperations/EPGManager, or the native (backwards,
-  forwards) shorthand used by the MoveTV API directly.  Translation happens
-  here so no other layer needs to know about the API's hour-relative model.
+* An EpgManager subclass (README §6.3): the four standard collaborators, the
+  shared HTTP manager and the session (`auth`); no reference to the provider or
+  the raw authenticator.
+* Requests go through `api_post` (one 401 recovery, typed errors): a failed
+  request RAISES instead of returning [] (v1 behaviour). "No programmes"
+  (success=false, empty content) is still a valid empty result.
+* get_epg accepts the generic form (start_time/end_time datetimes, as passed by
+  EPGOperations) and the native form (backwards=/forwards= hours in **kw).
+  EPGOperations also passes `limit=`; like v1 it is ignored.
+* The v1 helper `get_channels_epg` (no callers) is gone; `get_epg_grid` is the
+  batch entry point.
 """
 
 from __future__ import annotations
@@ -26,12 +23,16 @@ import math
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from ...base.utils.logger import logger
+from ...base.errors import AuthError, GeoBlockError, ProviderError, RateLimitError
+from ...base.managers import EpgManager
 from ...base.models.epg_models import EPGEntry, EPGFlags
+from ...base.utils.logger import logger
+from .api import api_post
 from .constants import MoveTVConfig
+from .ids import is_live_id, parse_live_id
 
 
-class MoveTvEpgManager:
+class MoveTvEpgManager(EpgManager):
     """
     Fetches and normalises EPG data from the MoveTV API into EPGEntry
     objects (the same typed contract used by EPGOperations and the other
@@ -74,208 +75,100 @@ class MoveTvEpgManager:
     relying on this contract.
     """
 
-    def __init__(self, authenticator: Any) -> None:
-        """
-        Parameters
-        ----------
-        authenticator:
-            A ``MoveTVAuthenticator`` instance.  Must expose:
-            - ``authenticate() -> MoveTVAuthToken``
-            - ``get_session_info() -> Optional[Dict]``
-            - ``http_manager`` (the shared ``HTTPManager`` instance)
-        """
-        self._auth = authenticator
 
     # ------------------------------------------------------------------
-    # Public API
+    # Capability
     # ------------------------------------------------------------------
+    @property
+    def epg_window(self) -> Tuple[int, int]:
+        """(past_days, future_days) -- same as v1."""
+        return self.config.EPG_WINDOW_DAYS
 
-    def get_channel_epg(
+    def handles_channel_id(self, channel_id: str) -> bool:
+        return is_live_id(channel_id)
+
+    # ------------------------------------------------------------------
+    # EPG
+    # ------------------------------------------------------------------
+    def get_epg(
         self,
         channel_id: str,
-        # Native form — passed directly to the API
-        backwards: int = 2,
-        forwards: int = 2,
-        # Generic form — EPGOperations passes these via **kwargs.
-        # When provided they take precedence and are translated to
-        # backwards/forwards internally so nothing else has to change.
         start_time: Optional[datetime] = None,
         end_time: Optional[datetime] = None,
-        # Absorb any other kwargs forwarded by EPGOperations / provider.get_epg()
-        # so we never raise on unknown arguments.
-        **_kwargs: Any,
+        **kw: Any,
     ) -> List[EPGEntry]:
         """
-        Fetch the EPG schedule for a single live channel.
+        Fetch the EPG schedule for ONE live channel.
 
-        Accepts two calling conventions — use whichever the caller has:
+        Generic form: start_time/end_time (aware or naive-local datetimes) are
+        translated to the API's backwards/forwards hour offsets around the
+        window midpoint. Native form: backwards=/forwards= (hours, default 2)
+        in **kw, anchored at start_time (or now). Other kwargs (limit=, ...)
+        are ignored.
 
-        Generic (EPGOperations contract):
-            get_channel_epg(channel_id, start_time=<datetime>, end_time=<datetime>)
-            The absolute window is translated to the API's backwards/forwards
-            hour offsets anchored to the window midpoint.
-
-        Native (MoveTV shorthand):
-            get_channel_epg(channel_id, backwards=2, forwards=4)
-            Passed straight through; start_time/end_time must be None.
-
-        Parameters
-        ----------
-        channel_id:
-            The provider's numeric content ID for the channel (as a string).
-        backwards:
-            Hours of past programming to include (API default: 2).
-            Ignored when both start_time and end_time are provided.
-        forwards:
-            Hours of future programming to include (API default: 2).
-            Ignored when both start_time and end_time are provided.
-        start_time:
-            Inclusive window start (timezone-aware or naive-local datetime).
-            When provided, anchors the API query. If end_time is omitted,
-            uses `backwards` and `forwards` around this anchor.
-        end_time:
-            Inclusive window end (timezone-aware or naive-local datetime).
-            When provided together with start_time, takes precedence over
-            backwards/forwards and calculates a symmetric window.
-
-        Returns
-        -------
-        List of EPGEntry objects (see ``_parse_items``), or an empty list
-        on any error or for items that fail EPGEntry validation.
+        Returns [] when the API has no data; raises typed errors on failures.
         """
-        # ----------------------------------------------------------------
-        # Step 1 — resolve the time anchor and API window parameters
-        # ----------------------------------------------------------------
+        backwards = int(kw.get("backwards", self.config.EPG_DEFAULT_BACKWARDS_HOURS))
+        forwards = int(kw.get("forwards", self.config.EPG_DEFAULT_FORWARDS_HOURS))
+        content_id = parse_live_id(channel_id)          # BadRequestError if malformed
         anchor_utc, backwards, forwards = self._resolve_window(
             start_time, end_time, backwards, forwards
         )
-
-        # ----------------------------------------------------------------
-        # Step 2 — authenticate (no-op when token is fresh)
-        # ----------------------------------------------------------------
-        try:
-            self._auth.authenticate()
-        except Exception as exc:
-            logger.error(f"MoveTV EPG: Authentication failed — {exc}")
-            return []
-
-        session = self._auth.get_session_info()
-        if not session:
-            logger.error(
-                "MoveTV EPG: get_session_info() returned None after successful authenticate()"
-            )
-            return []
-
-        customer_id = session.get("customer_id")
-        auth_token  = session.get("auth_token")
-
-        if not customer_id or not auth_token:
-            logger.error(
-                f"MoveTV EPG: Incomplete session — "
-                f"customer_id={customer_id!r}, "
-                f"auth_token={'set' if auth_token else 'missing'}"
-            )
-            return []
-
-        # ----------------------------------------------------------------
-        # Step 3 — build and fire the request
-        # ----------------------------------------------------------------
         now_ms = int(anchor_utc.timestamp() * 1000)
-
-        payload: Dict[str, Any] = {
-            "customerId": customer_id,
-            "partnerId":  MoveTVConfig.PARTNER_ID,
-            "contentId":  int(channel_id),
-            "time":       now_ms,
-            "backwards":  backwards,
-            "forwards":   forwards,
-            "appVersion": MoveTVConfig.APP_VERSION,
-        }
-        headers = MoveTVConfig.get_api_headers(auth_token)
-        url     = MoveTVConfig.epg_all_url()
 
         logger.debug(
             f"MoveTV EPG: Fetching channel_id={channel_id} "
             f"anchor={anchor_utc.isoformat()} "
             f"(backwards={backwards}h, forwards={forwards}h)"
         )
-
-        try:
-            response = self._auth.http_manager.post(
-                url,
-                json=payload,
-                headers=headers,
-                timeout=MoveTVConfig.TIMEOUT,
-            )
-            response.raise_for_status()
-        except Exception as exc:
-            logger.error(
-                f"MoveTV EPG: Request failed for channel {channel_id} — {exc}"
-            )
-            return []
-
-        # Decode JSON separately so a missing / malformed body doesn't
-        # collapse into a silent "Request failed" that hides the real cause.
-        try:
-            data: Dict[str, Any] = response.json()
-        except Exception as exc:
-            logger.error(
-                f"MoveTV EPG: Failed to decode JSON response for channel "
-                f"{channel_id} — {exc} "
-                f"(HTTP {response.status_code}, body={response.text[:200]!r})"
-            )
-            return []
-
-        # The API may return a 200 with success=false, or (rarely) a null body
-        # parsed as None.  Guard both cases before calling .get() on data.
-        if data is None:
-            logger.error(
-                f"MoveTV EPG: API returned null/empty JSON body for channel {channel_id}"
-            )
-            return []
-
+        data = api_post(
+            self.http_manager, self.auth, self.config.epg_all_url(),
+            lambda info: {
+                "customerId": info["customer_id"],
+                "partnerId": self.config.PARTNER_ID,
+                "contentId": content_id,
+                "time": now_ms,
+                "backwards": backwards,
+                "forwards": forwards,
+                "appVersion": self.config.APP_VERSION,
+            },
+            what=f"EPG for channel {channel_id}", operation="api", need_profile=False,
+        )
         if not data.get("success"):
             logger.warning(
-                f"MoveTV EPG: API returned success=false for channel "
-                f"{channel_id}: {data}"
+                f"MoveTV EPG: API returned success=false for channel {channel_id}: {data}"
             )
             return []
 
-        items = data.get("content", [])
-        logger.debug(
-            f"MoveTV EPG: Received {len(items)} programme(s) for channel {channel_id}"
-        )
+        items = data.get("content") or []
+        logger.debug(f"MoveTV EPG: Received {len(items)} programme(s) for channel {channel_id}")
         return self._parse_items(items, channel_id)
 
-    def get_channels_epg(
+    def get_epg_grid(
         self,
         channel_ids: List[str],
-        backwards: int = 2,
-        forwards: int = 2,
         start_time: Optional[datetime] = None,
         end_time: Optional[datetime] = None,
+        **kw: Any,
     ) -> Dict[str, List[EPGEntry]]:
-        """
-        Convenience wrapper: fetch EPG for multiple channels.
+        """Batch EPG: one request per channel (no native batch endpoint).
 
-        Returns a dict keyed by channel_id, each value a list of EPGEntry
-        objects. Missing / failed channels are present with an empty list
-        so callers don't have to guard KeyError.
-        """
+        Auth / rate-limit / geo errors abort the whole grid (they hit every
+        channel alike); any other failure of ONE channel yields [] for it, so
+        one bad channel cannot take the grid down."""
         result: Dict[str, List[EPGEntry]] = {}
         for cid in channel_ids:
-            result[cid] = self.get_channel_epg(
-                cid,
-                backwards=backwards,
-                forwards=forwards,
-                start_time=start_time,
-                end_time=end_time,
-            )
+            if not self.handles_channel_id(cid):
+                result[cid] = []
+                continue
+            try:
+                result[cid] = self.get_epg(cid, start_time=start_time, end_time=end_time, **kw)
+            except (AuthError, RateLimitError, GeoBlockError):
+                raise
+            except ProviderError as exc:
+                logger.warning(f"MoveTV EPG: channel {cid} skipped in grid: {exc}")
+                result[cid] = []
         return result
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _resolve_window(

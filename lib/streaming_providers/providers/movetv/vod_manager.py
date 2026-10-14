@@ -1,48 +1,52 @@
 # streaming_providers/providers/movetv/vod_manager.py
 """
-MoveTV VOD Manager
+move.tv VOD manager (browse only -- the API has no logged VOD playback yet).
 
-Handles all VOD-related API interactions for the MoveTV / MTS provider:
-  - get_vod_filters()      → available content types, categories, catalogs, tags, sort options
-  - get_vod_items()        → paginated catalogue listing with filtering / sorting
-  - get_all_vod_items()    → transparent pagination helper
-  - get_page_components()  → homepage / page layout (ordered list of component descriptors)
-  - get_component_items()  → items inside a single carousel / banner component
-  - get_vod_item()         → (stub — implement when detail endpoint is logged)
-  - get_vod_category()     → (stub — implement when browse endpoint is logged)
+  Catalogue (provider-specific, delegated 1:1 by the provider as in v1):
+    get_vod_filters()      -> VodFilters
+    get_vod_items(...)     -> VodListing (page / has_next_page)
+    get_all_vod_items(...) -> List[VodItem] (pages transparently)
+    get_page_components()  -> homepage layout descriptors
+    get_component_items()  -> cards of one carousel
 
-The manager is intentionally decoupled from the provider class so that
-provider.py only needs a single delegation call per public VOD method.
+  VodManager contract (README §6.2):
+    get_vod_category(content_id, cursor, page_size) -> VodPage
+        ""                      root  -> content types ("content_type_<ct>")
+        "content_type_<ct>"     -> categories          ("category_<ct>_<cat>")
+        "category_<ct>_<cat>"   -> items; cursor = next page number, only while
+                                   the API says has_next_page (the endpoint
+                                   honours `page`); the page size is fixed by
+                                   the API, page_size is ignored
+    get_vod_manifest -> None, handles_content_id -> False: there is no VOD
+    playback, so no id is ever routed here (ids.py).
 
-Minimal provider.py wiring:
-    from .vod_manager import MoveTvVodManager
-
-    class MoveTvProvider(StreamingProvider):
-        def __init__(self, ...):
-            ...
-            self._vod = MoveTvVodManager(self)
-
-        # --- VOD catalogue ---
-        def get_vod_filters(self):              return self._vod.get_vod_filters()
-        def get_vod_items(self, **kw):          return self._vod.get_vod_items(**kw)
-        def get_all_vod_items(self, **kw):      return self._vod.get_all_vod_items(**kw)
-
-        # --- Homepage / pages ---
-        def get_page_components(self, page_id): return self._vod.get_page_components(page_id)
-        def get_component_items(self, cid):     return self._vod.get_component_items(cid)
+!! The four parsers below (_parse_filters, _parse_vod_page,
+!! _parse_page_components, _parse_component_items) were `pass` in the v1 file
+!! that was supplied for the migration. They now raise NotImplementedYetError
+!! instead of returning None. Paste the real bodies back in before enabling
+!! VOD (MoveTVProvider.VOD_BROWSE_ENABLED).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
-from ...base.utils.logger import logger
+from ...base.errors import BadRequestError, NotImplementedYetError
+from ...base.managers import VodManager
 from ...base.models.vod import VodCategory, VodItem
+from ...base.utils.logger import logger
+from ...base.vod import VodPage
+from .api import api_post
 from .constants import MoveTVConfig
+from .ids import category_node, content_type_node, parse_vod_node
 
-if TYPE_CHECKING:
-    from .provider import MoveTVProvider
+_NAME = MoveTVConfig.PROVIDER_NAME
+
+_MISSING_PARSER = (
+    "move.tv: {name} has no implementation (the file supplied for the "
+    "migration contained only a placeholder); restore the v1 parser body."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -118,8 +122,11 @@ class VodFilters:
 
 
 @dataclass
-class VodPage:
-    """Paginated result of POST /api/v2/content/vod/get/all."""
+class VodListing:
+    """Paginated result of POST /api/v2/content/vod/get/all.
+
+    (v1 name: VodPage -- renamed, it collided with the base VodPage that
+    get_vod_category returns.)"""
     items: List[VodItem]
     current_page: int
     has_next_page: bool
@@ -312,122 +319,51 @@ class ComponentItem:
 # Manager
 # ---------------------------------------------------------------------------
 
-class MoveTvVodManager:
-    """
-    Handles all VOD API calls for the MoveTV provider.
+class MoveTvVodManager(VodManager):
+    """VOD browse for move.tv. The four standard collaborators only: no
+    reference to the provider (v1 took `provider`)."""
 
-    Accesses the parent provider only through well-defined attributes:
-        provider.http_manager           -- shared HTTPManager instance
-        provider.authenticator          -- for authentication and session info
-        provider.provider_name          -- used in log messages
-    """
+    # ------------------------------------------------------------------
+    # Routing / playback (none)
+    # ------------------------------------------------------------------
+    def handles_content_id(self, content_id: str) -> bool:
+        return False                      # no VOD playback: never routed
 
-    def __init__(self, provider: "MoveTVProvider") -> None:
-        self._provider = provider
+    def get_vod_manifest(self, content_id: str, **kw: Any) -> Optional[str]:
+        return None
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-
-    @property
-    def _http(self):
-        """Shortcut to the provider's HTTP manager (asserted to exist)."""
-        mgr = self._provider.http_manager
-        if mgr is None:
-            raise RuntimeError(
-                "MoveTvVodManager: HTTP manager is not initialised. "
-                "Call provider.authenticate() / provider.setup() first."
-            )
-        return mgr
-
-    def _ensure_session(self) -> Dict[str, Any]:
-        """
-        Ensure we have a valid session and return session info.
-
-        Follows the same pattern as epg_manager.py:
-        1. Authenticate (refreshes token if needed)
-        2. Get session info with customer_id, customer_profile_id, auth_token
-        3. Raise if still missing
-        """
-        try:
-            self._provider.authenticator.authenticate()
-        except Exception as exc:
-            logger.error(f"MoveTV VOD: Authentication failed — {exc}")
-            raise RuntimeError(f"VOD authentication failed: {exc}")
-
-        session = self._provider.authenticator.get_session_info()
-        if not session:
-            logger.error(
-                "MoveTV VOD: get_session_info() returned None after successful authenticate()"
-            )
-            raise RuntimeError("VOD: No session info available")
-
-        customer_id = session.get("customer_id")
-        customer_profile_id = session.get("customer_profile_id")
-        auth_token = session.get("auth_token")
-
-        if not customer_id or not customer_profile_id or not auth_token:
-            logger.error(
-                f"MoveTV VOD: Incomplete session — "
-                f"customer_id={customer_id!r}, "
-                f"customer_profile_id={customer_profile_id!r}, "
-                f"auth_token={'set' if auth_token else 'missing'}"
-            )
-            raise RuntimeError("VOD: Incomplete session data")
-
-        return session
-
-    def _auth_headers(self) -> Dict[str, str]:
-        """Build the standard headers for every MoveTV API call."""
-        session = self._ensure_session()
-        return MoveTVConfig.get_api_headers(session["auth_token"])
-
-    def _base_payload(self) -> Dict[str, Any]:
-        """
-        Common POST body fields included in every VOD request.
-
-        Fetches customer_profile_id fresh each time to ensure it's always
-        current (supports token refresh scenarios).
-        """
-        session = self._ensure_session()
-        return {
-            "customerProfileId": session["customer_profile_id"],
-            "lang": MoveTVConfig.DEFAULT_LANG,
-            "appVersion": MoveTVConfig.APP_VERSION,
-        }
-
-    def _post(self, url: str, payload: Dict[str, Any]) -> Dict:
-        """
-        Execute a POST request and return the parsed JSON body.
-        Raises on network / JSON errors after logging them.
-        """
-        try:
-            response = self._http.post(url, json=payload, headers=self._auth_headers())
-            return response.json()
-        except Exception as exc:
-            logger.error(f"{self._provider.provider_name}: POST {url} failed -- {exc}")
-            raise
+    def _post(self, url: str, extra: Dict[str, Any], *, what: str) -> Dict:
+        """POST with the common VOD fields (customerProfileId, lang, appVersion),
+        re-read from the session on every attempt (token refresh safe)."""
+        return api_post(
+            self.http_manager, self.auth, url,
+            lambda info: {
+                "customerProfileId": info["customer_profile_id"],
+                "lang": self.config.DEFAULT_LANG,
+                "appVersion": self.config.APP_VERSION,
+                **extra,
+            },
+            what=what, operation="api",
+        )
 
     # ------------------------------------------------------------------
-    # Parsing helpers (keep these exactly as they were)
+    # Parsing helpers -- BODIES MISSING IN THE SUPPLIED v1 FILE (see docstring)
     # ------------------------------------------------------------------
-
     def _parse_filters(self, data: Dict) -> VodFilters:
-        # ... unchanged ...
-        pass
+        raise NotImplementedYetError(_MISSING_PARSER.format(name="_parse_filters"))
 
-    def _parse_vod_page(self, data: Dict, fallback_page: int) -> VodPage:
-        # ... unchanged ...
-        pass
+    def _parse_vod_page(self, data: Dict, fallback_page: int) -> VodListing:
+        raise NotImplementedYetError(_MISSING_PARSER.format(name="_parse_vod_page"))
 
     @staticmethod
     def _parse_page_components(data: Dict) -> List[PageComponent]:
-        # ... unchanged ...
-        pass
+        raise NotImplementedYetError(_MISSING_PARSER.format(name="_parse_page_components"))
 
     def _parse_component_items(self, data: Dict) -> List[ComponentItem]:
-        # ... unchanged ...
-        pass
+        raise NotImplementedYetError(_MISSING_PARSER.format(name="_parse_component_items"))
 
     # ------------------------------------------------------------------
     # Public API -- VOD catalogue
@@ -445,17 +381,17 @@ class MoveTvVodManager:
             VodFilters with content_types, categories, catalogs, tags, sort_types.
         """
         url = MoveTVConfig.vod_filters_url()
-        logger.debug(f"{self._provider.provider_name}: Fetching VOD filters")
+        logger.debug(f"{_NAME}: Fetching VOD filters")
 
-        data = self._post(url, self._base_payload())
+        data = self._post(url, {}, what="VOD filters")
 
         if not data.get("success"):
-            logger.warning(f"{self._provider.provider_name}: VOD filters -- success=false")
+            logger.warning(f"{_NAME}: VOD filters -- success=false")
             return VodFilters()
 
         filters = self._parse_filters(data)
         logger.info(
-            f"{self._provider.provider_name}: VOD filters -- "
+            f"{_NAME}: VOD filters -- "
             f"{len(filters.content_types)} content types, "
             f"{len(filters.categories)} categories, "
             f"{len(filters.catalogs)} catalogs, "
@@ -472,7 +408,7 @@ class MoveTvVodManager:
             catalog_id: Optional[int] = None,
             content_type_id: Optional[int] = None,
             search_query: Optional[str] = None,
-    ) -> VodPage:
+    ) -> VodListing:
         """
         Fetch a paginated list of VOD items with optional filtering.
 
@@ -498,10 +434,10 @@ class MoveTvVodManager:
             search_query:     Free-text search string.
 
         Returns:
-            VodPage(items, current_page, has_next_page).
+            VodListing(items, current_page, has_next_page).
         """
         url = MoveTVConfig.vod_get_all_url()
-        payload: Dict[str, Any] = {**self._base_payload(), "page": page, "sort": sort}
+        payload: Dict[str, Any] = {"page": page, "sort": sort}
 
         # Only include filter keys that were explicitly provided --
         # omitting them returns all content.
@@ -517,20 +453,20 @@ class MoveTvVodManager:
             payload["search"] = search_query
 
         logger.debug(
-            f"{self._provider.provider_name}: VOD get/all "
+            f"{_NAME}: VOD get/all "
             f"page={page} sort={sort} "
             f"tag={tag_id} cat={category_id} catalog={catalog_id}"
         )
 
-        data = self._post(url, payload)
+        data = self._post(url, payload, what=f"VOD page {page}")
 
         if not data.get("success"):
-            logger.warning(f"{self._provider.provider_name}: VOD get/all -- success=false")
-            return VodPage(items=[], current_page=page, has_next_page=False)
+            logger.warning(f"{_NAME}: VOD get/all -- success=false")
+            return VodListing(items=[], current_page=page, has_next_page=False)
 
         vod_page = self._parse_vod_page(data, fallback_page=page)
         logger.info(
-            f"{self._provider.provider_name}: VOD page {vod_page.current_page} -- "
+            f"{_NAME}: VOD page {vod_page.current_page} -- "
             f"{len(vod_page.items)} items, next={vod_page.has_next_page}"
         )
         return vod_page
@@ -576,13 +512,13 @@ class MoveTvVodManager:
                 break
             if max_pages is not None and page >= max_pages:
                 logger.debug(
-                    f"{self._provider.provider_name}: VOD pagination capped at {max_pages} pages"
+                    f"{_NAME}: VOD pagination capped at {max_pages} pages"
                 )
                 break
             page += 1
 
         logger.info(
-            f"{self._provider.provider_name}: VOD full fetch -- "
+            f"{_NAME}: VOD full fetch -- "
             f"{len(all_items)} items across {page} page(s)"
         )
         return all_items
@@ -612,23 +548,23 @@ class MoveTvVodManager:
             all components for the requested page arrive in a single response.
         """
         url = MoveTVConfig.page_get_url()
-        payload = {**self._base_payload(), "page": page_id}
+        payload = {"page": page_id}
 
         logger.debug(
-            f"{self._provider.provider_name}: Fetching page components page_id={page_id}"
+            f"{_NAME}: Fetching page components page_id={page_id}"
         )
 
-        data = self._post(url, payload)
+        data = self._post(url, payload, what=f"page {page_id}")
 
         if not data.get("success"):
             logger.warning(
-                f"{self._provider.provider_name}: page/get page_id={page_id} -- success=false"
+                f"{_NAME}: page/get page_id={page_id} -- success=false"
             )
             return []
 
         components = self._parse_page_components(data)
         logger.info(
-            f"{self._provider.provider_name}: Page {page_id} -- {len(components)} components"
+            f"{_NAME}: Page {page_id} -- {len(components)} components"
         )
         return components
 
@@ -651,171 +587,90 @@ class MoveTvVodManager:
             Use ComponentItem.as_vod_item() to convert non-live cards to VodItem.
         """
         url = MoveTVConfig.component_get_url()
-        payload = {**self._base_payload(), "componentId": component_id}
+        payload = {"componentId": component_id}
 
         logger.debug(
-            f"{self._provider.provider_name}: Fetching component items "
+            f"{_NAME}: Fetching component items "
             f"component_id={component_id}"
         )
 
-        data = self._post(url, payload)
+        data = self._post(url, payload, what=f"component {component_id}")
 
         if not data.get("success"):
             logger.warning(
-                f"{self._provider.provider_name}: component/get "
+                f"{_NAME}: component/get "
                 f"id={component_id} -- success=false"
             )
             return []
 
         items = self._parse_component_items(data)
         logger.info(
-            f"{self._provider.provider_name}: Component {component_id} -- {len(items)} items"
+            f"{_NAME}: Component {component_id} -- {len(items)} items"
         )
         return items
 
     # ------------------------------------------------------------------
-    # Stubs for endpoints not yet logged
+    # VodManager: browse tree
     # ------------------------------------------------------------------
-
-    def get_vod_item(self, content_id: str, **kwargs) -> Optional[VodItem]:
-        """
-        Fetch full metadata for a single VOD item (manifest, cast, DRM config, ...).
-
-        Not yet implemented -- log the browser request when clicking a title
-        to play it, then implement here.  Expected pattern:
-            POST /api/v2/content/vod/get/{content_id}
-            or  /api/v2/content/vod/details  { contentId, ... }
-        """
-        logger.warning(
-            f"{self._provider.provider_name}: get_vod_item({content_id}) -- "
-            "not yet implemented; log the detail/play endpoint to add support."
-        )
-        return None
-
     def get_vod_category(
-            self, path_ids: List[str], **kwargs
-    ) -> List[Union[VodCategory, VodItem]]:
-        """
-        Fetch children of a VOD category node.
+        self,
+        content_id: str = "",
+        cursor: Optional[str] = None,
+        page_size: int = 24,
+        **kw: Any,
+    ) -> VodPage:
+        node = parse_vod_node(content_id)          # BadRequestError on a foreign id
 
-        Path structure:
-            [] or ["root"]          → Return content types (Film, Serija)
-            ["root", "Film"]        → Return categories for movies
-            ["root", "Serija"]      → Return categories for series
-            ["root", "Film", "123"] → Return VOD items for that category
-            ["root", "Serija", "456"] → Return VOD items for that series category
-        """
-
-        # Handle root level - return content types
-        if not path_ids or path_ids[0] == "root":
-            # Fetch filters to get content types
+        if node[0] == "root":
             filters = self.get_vod_filters()
-
-            categories = []
-            for content_type in filters.content_types:
-                # Map content type ID to a display name
-                type_name = content_type.name  # "Film" or "Serija"
-
-                categories.append(
-                    VodCategory(
-                        name=type_name,
-                        content_id=f"content_type_{content_type.content_type_id}",
-                        provider=self._provider.provider_name,
-                        # Store the content_type_id in the path for next level
-                        # The UI will pass this as path_ids[1]
-                    )
+            entries = [
+                VodCategory(
+                    name=ct.name,
+                    content_id=content_type_node(ct.content_type_id),
+                    provider=_NAME,
                 )
+                for ct in filters.content_types
+            ]
+            logger.info(f"{_NAME}: VOD root -> {len(entries)} content types")
+            return VodPage(entries=entries)
 
-            logger.info(
-                f"{self._provider.provider_name}: VOD root -> "
-                f"{len(categories)} content types"
-            )
-            return categories
+        content_type_id = node[1]
+        filters = self.get_vod_filters()
+        content_type = next(
+            (ct for ct in filters.content_types if ct.content_type_id == content_type_id), None
+        )
+        if content_type is None:
+            logger.warning(f"{_NAME}: unknown content type {content_type_id}")
+            return VodPage()
 
-        # Handle content type level (e.g., ["root", "Film"] or ["root", "Serija"])
-        if len(path_ids) == 2 and path_ids[0] == "root":
-            content_type_name = path_ids[1]
-
-            # Fetch filters to get categories for this content type
-            filters = self.get_vod_filters()
-
-            # Find the content type ID
-            content_type_id = None
-            for ct in filters.content_types:
-                if ct.name == content_type_name:
-                    content_type_id = ct.content_type_id
-                    break
-
-            if not content_type_id:
-                logger.warning(
-                    f"{self._provider.provider_name}: Unknown content type '{content_type_name}'"
-                )
-                return []
-
-            # Return categories/genres for this content type
-            categories = []
+        if node[0] == "content_type":
+            entries = []
             for category in filters.categories:
-                # Create a category that can be browsed further
-                categories.append(
+                if not str(category.content_id).isdigit():
+                    logger.warning(f"{_NAME}: skipping category with non-numeric id: {category}")
+                    continue
+                entries.append(
                     VodCategory(
                         name=category.name,
-                        content_id=str(category.content_id),
-                        provider=self._provider.provider_name,
-                        # The path will be ["root", content_type_name, category_id]
+                        content_id=category_node(content_type_id, category.content_id),
+                        provider=_NAME,
                     )
                 )
+            logger.info(f"{_NAME}: VOD content type '{content_type.name}' -> {len(entries)} categories")
+            return VodPage(entries=entries)
 
-            logger.info(
-                f"{self._provider.provider_name}: VOD content type '{content_type_name}' -> "
-                f"{len(categories)} categories"
-            )
-            return categories
-
-        # Handle category level - return VOD items
-        if len(path_ids) >= 3 and path_ids[0] == "root":
-            content_type_name = path_ids[1]
-            category_id = path_ids[2]
-
-            # Fetch filters to get content type ID
-            filters = self.get_vod_filters()
-            content_type_id = None
-            for ct in filters.content_types:
-                if ct.name == content_type_name:
-                    content_type_id = ct.content_type_id
-                    break
-
-            if not content_type_id:
-                return []
-
-            # Map content type name to tag ID (optional filtering)
-            tag_map = {
-                "Film": 1,  # FILM tag
-                "Serija": 2,  # SERIJA tag
-            }
-            tag_id = tag_map.get(content_type_name)
-
-            # Fetch VOD items for this category
-            vod_page = self.get_vod_items(
-                page=1,
-                sort="newest",
-                tag_id=tag_id,
-                category_id=int(category_id) if category_id != "root" else None,
-                content_type_id=content_type_id,
-            )
-
-            # Convert VodItems to the expected return format
-            # (VodOperations likely expects VodItem or similar)
-            items = []
-            for item in vod_page.items:
-                items.append(item)
-
-            logger.info(
-                f"{self._provider.provider_name}: VOD category '{category_id}' -> "
-                f"{len(items)} items"
-            )
-            return items
-
-        logger.warning(
-            f"{self._provider.provider_name}: Unhandled VOD path: {path_ids}"
+        # node[0] == "category": items, paged by the API's `page`
+        try:
+            page = int(cursor) if cursor else 1
+        except ValueError:
+            raise BadRequestError(f"move.tv: invalid VOD cursor {cursor!r}")
+        listing = self.get_vod_items(
+            page=page,
+            sort="newest",
+            tag_id=self.config.TAG_ID_BY_CONTENT_TYPE_NAME.get(content_type.name),
+            category_id=node[2],
+            content_type_id=content_type_id,
         )
-        return []
+        next_cursor = str(listing.current_page + 1) if listing.has_next_page else None
+        logger.info(f"{_NAME}: VOD category {node[2]} page {page} -> {len(listing.items)} items")
+        return VodPage(entries=list(listing.items), next_cursor=next_cursor)

@@ -206,6 +206,19 @@ directory name == AVAILABLE_PROVIDERS key == provider_name == PROVIDER_NAME
   as Allente does.
 * `get_all_possible_instances()` hard-codes `"DE"` for single-country providers
   (known issue, §17) — do not rely on it for AT/SE/… providers.
+* **Take the country from the registry, not from the constructor default.** Pack §1
+  shows what the registry really passes (movetv: ctor default `"SI"`, registry
+  `"DE"`, correct value `"RS"`). Ask for the provider's real country before
+  writing `SUPPORTED_COUNTRIES`.
+* **Changing the country (or adding the lower-casing) moves storage keys.**
+  CredentialManager / SessionManager / ProxyConfigManager key by lower-case country:
+  stored credentials, sessions and proxy settings of a provider that used to run
+  under another country (`de`) are **not found** under the new one (`rs`). Record it
+  in the brief (§12.5) and either migrate the stored key or tell users to re-enter
+  the credentials. Lower-casing *before* `_setup_http_manager` can also make a stored
+  proxy apply that v1 never found.
+* `Content.country` / `Channel.country` are **upper-case** (`"RS"`), the manager's
+  `country` collaborator is lower-case: use `self.country.upper()` for models.
 
 ### How the registry constructs providers — check, don't assume
 
@@ -453,6 +466,20 @@ class YourManager(ChannelManager):              # or Vod/Epg/Recordings/Favorite
   end)`) and, when the backend passes no ids, builds them from `get_channels()`.
 * `get_program_details(program_id) -> Optional[EPGProgramDetails]`.
 * `handles_channel_id(channel_id)`: override to skip channels without EPG.
+* **Grid failure isolation.** The default `get_epg_grid` does not isolate a failing
+  channel: one `ServerError` aborts the grid. Set the class attribute
+  **`ISOLATE_GRID_FAILURES = True`** on your EpgManager (opt-in, default `False` =
+  unchanged): `AuthError` / `RateLimitError` / `GeoBlockError` still abort (they hit
+  every channel alike), any other `ProviderError` of ONE channel yields `[]` plus a
+  warning. A manager that overrides `get_epg_grid` is not affected. (movetv carries
+  its own override with the same semantics until the base change is merged.)
+* **EPG-based catchup** (the catchup source is requested per programme): the catchup
+  manager needs the EPG manager as an explicit keyword-only extra (`epg=`) and asks
+  it for the programme at `start_time`. A provider-native window in `**kw`
+  (`backwards=`/`forwards=` hours, movetv) is fine; ignore unknown kwargs such as
+  `limit=` knowingly and say so in the docstring.
+* A failed request RAISES; "no programmes" (`success=false`, empty list) is `[]`
+  (decision rule in §8).
 
 ### 6.4 `RecordingsManager`
 
@@ -519,6 +546,20 @@ class YourManager(ChannelManager):              # or Vod/Epg/Recordings/Favorite
 * `catchup:<channel>@<ts>` style ids are provider grammar: parse them in the
   provider's `get_manifest`/`get_drm` and hand the manager plain
   `(content_id, start_time)`; a malformed id raises `BadRequestError`.
+* **`ManagedProvider` routes catchup arguments asymmetrically**: `get_segment_headers`
+  sends a `start_time` kwarg to the catchup manager, `get_manifest_headers` does not.
+  A provider whose manifest-header call carries `start_time` sets
+  **`CATCHUP_HEADERS_ON_MANIFEST_CALL = True`** (opt-in, default `False` = unchanged;
+  needs `HEADERS_FROM_MANAGERS = True`): `get_manifest_headers(id, start_time=…,
+  end_time=…, epg_id=…)` is then routed to `get_catchup_manifest_headers` like the
+  segment call. Until that base change is merged, use a provider-level
+  `get_manifest_headers` override that calls the catchup manager and otherwise
+  `super()` (movetv).
+* **Catchup headers never fall back to the live headers** (wrong token / Play-Auth):
+  raise `NotFoundError` when no catchup source can be resolved. The segment-header
+  call is swallowed by the DRM pipeline (§8), so test the manifest-header path.
+* Catchup that needs other managers takes them as keyword-only extras
+  (`channels=`, `epg=`, a shared source cache) — still no provider reference (§5.1).
 
 ### 6.7 `DRM`
 
@@ -556,6 +597,14 @@ non-`NotFoundError` stops the routing. Put the grammar in **one pure `ids.py`**
 (`is_live_id`, `is_vod_id`) that both managers call, so the two predicates are
 complementary by construction, and unit-test a sample of ids of each kind: exactly
 one manager must claim each.
+
+**Ids that cannot be told apart** (live and VOD ids are both plain numerics): the
+grammar cannot separate them, so decide who *owns* numeric ids. If one side has no
+playback (movetv: VOD is browse-only), that manager returns `False` from
+`handles_content_id` for **every** id and `None` from its manifest method; the other
+claims the numerics. State this in `ids.py` and in the brief, and add the test with
+sample ids of both kinds (§15). Browse-node ids (`category_<a>_<b>`) are not
+playable ids and must not match the live predicate.
 
 Id grammar guidance:
 
@@ -626,6 +675,18 @@ KeyError` / `except RuntimeError` in the operations layer keep working.
   `AuthError`/`RateLimitError`** into whatever the handler does (usually `[]` or
   `ServerError`) and the caller can no longer back off or show the real reason.
   Catch `ProviderError` first and re-raise, or use `transport_errors`.
+* **`success=false` / empty answers — decide per endpoint and write it down.** There
+  is no global rule; the one that worked for movetv: an endpoint whose result the
+  caller cannot do without (channel list, live source) **raises** `ServerError`; an
+  endpoint where "nothing there" is a valid answer (EPG, catalogue/browse, a catchup
+  source that may have expired) returns `[]` / `None` with a warning. Record the
+  choice per endpoint in the brief; it is the single most common silent behaviour
+  change of a migration.
+* **`operation=` on `http_manager.post/get`** selects the proxy/timeout scope (`"api"`,
+  `"auth"`, `"manifest"`, `"license"` in the template). v1 providers pass ad-hoc
+  names (`"live_manifest"`, `"token_validate"`) and omit it elsewhere (default).
+  The accepted values are **not verified**: keep v1's strings where v1 passed one;
+  use `"api"` where v1 passed nothing and note the change in §12.5.
 
 ### Backend behaviours you must know
 
@@ -722,6 +783,27 @@ must never call the raw authenticator — they use the adapter.
 * **Injected config.** A wrapped `BaseAuthenticator` receives the provider's config
   object (`config=`). Do not build a second config inside it (two config
   constructions in one provider drift apart).
+
+### Server-validated tokens (no usable expiry) — an accepted exception to "single truth"
+
+Some authenticators cannot trust a token's expiry: movetv's login response has no
+lifetime (v1 invented 365 days) and v1 asked the server to validate the token inside
+**every** `authenticate()` call (one network POST per VOD/EPG/catchup request, up to
+three per call). A session adapter for such a provider:
+
+* validates **once per process** (the first `authenticate()` after start, which also
+  validates a persisted token) and then trusts the token;
+* on HTTP **401** runs `recover()`: refresh the token, else a full login with
+  `force_refresh=True`, then **exactly one** retry of the request (a shared
+  `api_post` helper does this for every manager; a second 401 raises `AuthError`);
+* does not remove the validation silently: record it in the brief (token decision
+  row) and in §12.5, and test: first call validates, later calls do not, 401 → one
+  refresh and one retry, second 401 → `AuthError`, 5xx → no retry.
+
+The template adapter assumes `current_token`, `has_user_credentials()` and
+`invalidate_token()` on the authenticator; **check them in `BaseAuthenticator`**
+before wrapping, or use the provider authenticator's own getters (movetv:
+`get_current_token()`).
 
 ### Credentials API on the provider (OPTIONAL — only if v1 has it)
 
@@ -904,6 +986,18 @@ python -m streaming_providers.base.testing.migration_pack <key> --compare before
 Every `REMOVED`/`CHANGED` line must be explained (deleted boilerplate is fine; a
 removed public method that something calls is not), every `ADDED` line justified.
 
+**Input hygiene (each cost a round trip once):**
+
+* **The supplied v1 files must be complete.** Search them for placeholder bodies
+  before anything else: `grep -n "unchanged\|^\s*pass$" <files>`. A `pass  # ... unchanged ...`
+  body (movetv `vod_manager.py`) cannot be migrated or rewritten; the migrator needs
+  the real file (git history) or an explicit decision to ship it disabled.
+* **Write `pack.txt` / `before.json` OUTSIDE the scanned tree** (e.g. `/tmp`): a pack
+  inside `--repo` is scanned and reports itself as an "external user".
+* **Never upload same-named files separately** (`provider.py`, `auth.py`,
+  `constants.py`, `__init__.py`, `channel.py`, `vod.py` of several packages overwrite
+  each other). Zip the directories or keep relative paths.
+
 ### 12.1 Inventory (10 minutes, saves hours)
 
 ```bash
@@ -955,6 +1049,11 @@ Fill this table for your provider:
 | `__init__(…, **kwargs)` | drop unless the registry needs it |
 | `catchup_window_hours` = minimum of per-channel windows | **maximum**, plus `catchup_window_for_channel` (§6.6) |
 | ad-hoc `get_restart()` etc. | **keep** (provider-level, outside the ABC) |
+| `uses_dynamic_manifests`, `requires_manifest_context`, `supports_catchup`, `provider_label/_logo`, `supported_auth_types` properties | not delegated by `ManagedProvider`. Keep the two behaviour flags if v1 returns non-default values (check what the legacy mixin returns); `supports_catchup` and the label/logo/auth-type properties duplicate the ClassVars/derived flags → delete. List each in the `--compare` review |
+| `class XChannel(Channel)` with API-internal ids (`live_id`, stream uid, token fields) | **no Channel subclass**: keep the records in the ChannelManager (`content_id → record`); the extra keys disappear from `Channel.to_dict()` — grep external users (also the Kodi/PVR repos) before accepting that |
+| provider-local result/model types named like base types (`VodPage`) | **rename** (`VodListing`); the base name is what `get_vod_category` returns |
+| a provider package `__init__` exporting auth/config/models | **reduce to `__all__ = ["XProvider"]`**; grep external imports first |
+| stub bodies (`pass`, `# TODO`) in a v1 manager | raise `NotImplementedYetError` (typed) and keep the capability **unregistered** (`_build_*` returns `None`) until the body exists; never register a manager that crashes |
 
 ### 12.3 Step by step
 
@@ -995,6 +1094,14 @@ catchup window, the EPG flag network call).
 | Managers read a **fresh token per request** from `self.auth` | a `provider.bearer_token` snapshot is stale by the first request | — |
 | Eager login removed from `__init__` | network at registry-construction time; first call is now slower | restore only as the documented opportunistic login (stored credentials) |
 | A second token buffer removed / kept | **needs a recorded reason either way** (§9) | — |
+| Per-call server token validation replaced by validate-once + 401 recovery | one network POST per request is not acceptable (§9 server-validated tokens) | validate in `_ready()` |
+| Country / `SUPPORTED_COUNTRIES` changed, or lower-cased before `_setup_http_manager` | wrong or inconsistent country; storage keys move | re-enter credentials, or migrate the stored key (§4) |
+| `success=false` now raises for required endpoints, stays empty for optional ones | per-endpoint rule (§8) | wrap the call |
+| Per-channel catchup window enforced (outside → `None`; 0 h → `None`) | the backend only knows the global maximum (§6.6) | return the manifest regardless |
+| `get_catchup_drm` returns `[]` → `ManagedProvider` raises `NotImplementedError` (PSSH from the manifest) | legacy contract (Trap 9); a v1 `[]` meant "clear" | set `CATCHUP_DRM_FROM_LIVE = True` if catchup is encrypted like live |
+| Channel fields removed from `to_dict()` (no Channel subclass) | internals stay in the manager | — |
+| One failing channel no longer empties the EPG grid (if you override it, §6.3) | resilience | keep the default |
+| Capability exists in the code but is deliberately **not registered** (stub parsers) | a registered capability that crashes is worse than a missing one | flip the provider flag when the body exists |
 
 ### 12.6 External references (needs the whole repo — the migration pack section 5 does this)
 
@@ -1070,6 +1177,9 @@ providers can be mixed freely.
 * `Channel.catchup_hours` is the per-channel window; leave `0` unless catchup is
   really offered (do not conflate with "start-over").
 * `provider` on models is the **registry key** (`PROVIDER_NAME`).
+* **Do not subclass `Channel`** to carry API-internal ids (a v1 habit); they vanish
+  from `to_dict()` in v2. Keep a small record per channel in the manager. Remember
+  `Channel.country` is upper-case (§4).
 * **Time:** the backend hands **timezone-aware UTC** `datetime`s to EPG; EPG and
   catchup use **unix seconds (int)** at the manager boundary. Never mix naive and
   aware datetimes (that was a real `TypeError` in `PricePoint.is_active`). Parse
@@ -1270,6 +1380,23 @@ Things that already cost time. Each is covered by a test or the contract unless 
     truncation (§6.2).
 46. `User-Agent` and `sec-ch-ua*` derived from different constants (§10).
 47. Two copies of the DRM config builder in live and VOD managers (§11).
+48. Placeholder bodies (`pass  # ... unchanged ...`) in the supplied v1 file: the pack's
+    line numbers match the stub, so the repo may be stubbed too — confirm before you
+    migrate (§12.0b).
+49. A provider-local type named like a base type (`VodPage`) — imports resolve to the
+    wrong one (§12.2).
+50. Changing the country or the lower-casing without migrating stored credentials,
+    sessions and proxy keys (§4). The constructor default is not what the registry passes.
+51. Subclassing `Channel` for API-internal ids; they silently leave `to_dict()` (§13).
+52. `ManagedProvider.get_manifest_headers` does not route `start_time` to catchup (only
+    `get_segment_headers` does) — v1 providers that did need a provider-level override (§6.6).
+53. A hidden network call inside `authenticate()` (server-side token validation) paid on
+    every request (§9).
+54. `success=false` treated one way everywhere: required endpoints must raise, "no data"
+    endpoints return empty (§8).
+55. A registered capability whose parsers/bodies are stubs — hide it instead (§12.2).
+56. Same-named files uploaded separately overwrite each other; packs written inside the
+    scanned tree report themselves as external users (§12.0b).
 
 ---
 
@@ -1310,6 +1437,29 @@ Known gaps in the base, so you don't hunt for them:
 * `optional/session_adapter.py` updated to the rules in §9.
 * `tests/conftest.py` with `FakeHttp`, `FakeAuthenticator`, fake clock, `env` (§15).
 
+**Base changes — every one must be additive with an unchanged default and pass the
+contract test for ALL existing providers (Allente, simpli, Magenta2, Joyn, movetv)
+before it is merged. Two are implemented as patches (below); the rest are proposals:**
+
+* **Implemented as patches, opt-in, defaults unchanged** (`managed_provider.py`,
+  `managers/epg.py`; default behaviour verified identical, flags tested):
+  `ManagedProvider.CATCHUP_HEADERS_ON_MANIFEST_CALL` (§6.6) and
+  `EpgManager.ISOLATE_GRID_FAILURES` (§6.3). Before merging run the contract test for
+  every provider and
+  `grep -rn "ISOLATE_GRID_FAILURES\|CATCHUP_HEADERS_ON_MANIFEST_CALL" providers/`
+  (a same-named attribute in a provider would shadow the new one).
+* **Deliberately NOT added:** an `EpgManager.get_entry_at()` helper. Only movetv
+  needs "the programme at a timestamp"; its matching rules (containment, tolerance)
+  are provider-specific. Add it when a second provider needs the same rules.
+* One shared session adapter with `recover()` and `on_invalidate` (backwards
+  compatible with the template adapter's public methods) plus the shared `api_post`
+  helper (401 → one recovery → one retry, both HTTP-manager error shapes) — as a new
+  module; no provider is forced to switch.
+* Document the accepted `operation=` values after reading `HTTPManager` (§8).
+* `migration_pack`: placeholder-body detection (`pass  # ...`), output-inside-tree
+  guard, `--bundle` that keeps relative paths, and rows for the actual constructor
+  country vs. the declared one.
+
 ---
 
 ## 18. Definition of done
@@ -1342,6 +1492,12 @@ Known gaps in the base, so you don't hunt for them:
 - [ ] Retry loops: only `ServerError`/untyped retried, other `ProviderError`s propagate unchanged (test per manager)
 - [ ] Authenticator raises typed `AuthError` for rejected credentials/MFA; managers use `require()`/`get_access_token()`, never `ensure()`
 - [ ] Tests parse and run; at least one test fails on the v1 shape; credential-change cache-clearing test exists
+- [ ] `SUPPORTED_COUNTRIES` and the constructor country match what the registry passes; moved storage keys handled or documented
+- [ ] No placeholder/stub body is registered as a capability
+- [ ] `success=false` / empty-answer decision recorded per endpoint
+- [ ] No `Channel` subclass; internals live in the manager; external users of removed `to_dict()` keys checked
+- [ ] No provider-local type shares a name with a base type
+- [ ] Token validation model recorded (expiry-based vs. server-validated) and tested
 
 ---
 

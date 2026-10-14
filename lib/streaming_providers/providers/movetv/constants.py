@@ -7,9 +7,19 @@ class MoveTVConfig:
     Central configuration for the move.tv / MTS-SI provider.
 
     All endpoint paths and fixed request parameters live here so that
-    provider.py, auth.py, and vod_manager.py never contain raw strings
-    or magic numbers.
+    provider.py, auth.py, and the managers never contain raw strings
+    or magic numbers. The class itself is the shared config object (static,
+    passed to auth and managers as `config=`).
+
+    Identity rule: directory == registry key == provider_name == PROVIDER_NAME
+    == credentials key. Never rename after release.
     """
+    PROVIDER_NAME: str = "movetv"
+    PROVIDER_LABEL: str = "move.tv"
+    # SUPPORTED_COUNTRIES semantics (README §Countries): exactly one entry ->
+    # the registry pins the construction country to it (UPPER-case, verbatim).
+    SUPPORTED_COUNTRIES: tuple = ("RS",)      # Serbia
+    DEFAULT_COUNTRY: str = "RS"
     PROVIDER_LOGO: str = "https://m.media-amazon.com/images/I/41NLX+Ej5+L.png"
     # -------------------------------------------------------------------------
     # Base URLs
@@ -67,6 +77,30 @@ class MoveTVConfig:
     TIMEOUT: int = 30
 
     # -------------------------------------------------------------------------
+    # Catchup / EPG / caches
+    # -------------------------------------------------------------------------
+    # Provider-wide catchup window = the MAXIMUM over all channels (hours).
+    # Must be >= every channel's catchup.duration; the per-channel value is
+    # enforced by the catchup manager.
+    CATCHUP_WINDOW_HOURS: int = 168          # 7 days
+    EPG_WINDOW_DAYS: tuple = (3, 3)          # (past_days, future_days)
+    EPG_DEFAULT_BACKWARDS_HOURS: int = 2
+    EPG_DEFAULT_FORWARDS_HOURS: int = 2
+    # Catchup resolves the programme from the EPG: a fixed 6 h backward window
+    # anchored at start_time covers long programmes (films, sports).
+    CATCHUP_EPG_BACK_HOURS: int = 6
+    CATCHUP_EPG_FORWARD_HOURS: int = 2
+    CATCHUP_EPG_TOLERANCE_SECONDS: int = 3600
+    EPG_LOOKUP_CACHE_TTL: float = 60.0       # rapid manifest polls
+    SOURCE_CACHE_SIZE: int = 200
+    PLAY_AUTH_EARLY_EXPIRY_SECONDS: int = 60
+    PLAY_AUTH_EXPIRY_PATTERN: str = r"expires-(\d+)"
+    HEADER_PLAY_AUTH: str = "X-Play-Auth"
+
+    # VOD: browse tag per content-type NAME (as in v1)
+    TAG_ID_BY_CONTENT_TYPE_NAME: Dict[str, int] = {"Film": 1, "Serija": 2}
+
+    # -------------------------------------------------------------------------
     # Token sentinel: the API uses the literal string "null" for unauthenticated
     # requests instead of omitting the header entirely.
     # -------------------------------------------------------------------------
@@ -122,6 +156,15 @@ class MoveTVConfig:
     def get_api_headers(cls, auth_token: Optional[str] = None) -> Dict[str, str]:
         """Headers for authenticated JSON API calls (channels, manifest source, VOD)."""
         return cls.get_base_headers(auth_token)
+
+    @classmethod
+    def stream_headers(cls, play_auth: Optional[str] = None) -> Dict[str, str]:
+        """Headers for manifest / segment fetches by the player (CDN): the
+        User-Agent and the per-stream X-Play-Auth value, never the API token."""
+        headers = {"User-Agent": cls.USER_AGENT}
+        if play_auth is not None:
+            headers[cls.HEADER_PLAY_AUTH] = play_auth
+        return headers
 
     # -------------------------------------------------------------------------
     # Full endpoint URL helpers

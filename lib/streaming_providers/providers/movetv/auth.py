@@ -5,6 +5,13 @@ from typing import Any, Dict, Optional, cast
 
 from ...base.auth.base_auth import BaseAuthenticator, BaseAuthToken, TokenAuthLevel
 from ...base.auth.credentials import UserPasswordCredentials
+from ...base.errors import (
+    AuthError,
+    CredentialsError,
+    ProviderError,
+    ServerError,
+    default_error_for_status_heuristic,
+)
 from ...base.utils.logger import logger
 from .constants import MoveTVConfig
 
@@ -94,7 +101,7 @@ class MoveTVAuthenticator(BaseAuthenticator):
     def _build_auth_payload(self) -> Dict[str, Any]:
         """Build the login payload from current credentials."""
         if not self.credentials or not isinstance(self.credentials, UserPasswordCredentials):
-            raise ValueError("move.tv requires username/password credentials")
+            raise AuthError("move.tv requires username/password credentials")
         uid = self.get_device_id()
         return {
             "username": self.credentials.username,
@@ -189,18 +196,39 @@ class MoveTVAuthenticator(BaseAuthenticator):
 
         logger.debug(f"move.tv: Authenticating with slot UID: {uid}")
 
-        response = self.http_manager.post(
-            self.auth_endpoint,
-            json=payload,
-            headers=self._get_auth_headers(),
-            operation="auth",
-        )
-        response.raise_for_status()
-        data = response.json()
+        # Typed errors (README §8/§9): 401 -> AuthError (permanent in the
+        # session), 403/429/5xx keep their own type (transient). The HTTP
+        # manager may return an error response OR raise with `.response`.
+        try:
+            response = self.http_manager.post(
+                self.auth_endpoint,
+                json=payload,
+                headers=self._get_auth_headers(),
+                operation="auth",
+            )
+            status = getattr(response, "status_code", None)
+        except ProviderError:
+            raise
+        except Exception as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if not isinstance(status, int):
+                raise ServerError(f"move.tv: login request failed: {exc}") from exc
+            raise default_error_for_status_heuristic(
+                status, f"move.tv: login failed (HTTP {status})", url=self.auth_endpoint
+            ) from exc
+        if isinstance(status, int) and status >= 400:
+            raise default_error_for_status_heuristic(
+                status, f"move.tv: login failed (HTTP {status})", url=self.auth_endpoint
+            )
+        try:
+            data = response.json()
+        except Exception as exc:
+            raise ServerError(f"move.tv: login: invalid JSON response: {exc}") from exc
 
         if not data.get("success"):
             message = data.get("message", "Unknown login error")
-            raise RuntimeError(f"Move.tv auth failed: {message}")
+            # Rejected credentials are PERMANENT: no retry until they change.
+            raise CredentialsError(f"Move.tv auth failed: {message}")
 
         return self._create_token_from_response({**data, "uid": uid, "device_id": uid})
 
@@ -388,7 +416,10 @@ class MoveTVAuthenticator(BaseAuthenticator):
     def _full_login(self) -> MoveTVAuthToken:
         """Ensure credentials, run the login request, persist the session."""
         if not self._ensure_credentials():
-            raise Exception("No valid credentials available for move.tv")
+            raise AuthError(
+                "move.tv: no valid credentials available. "
+                "Set username and password in the addon settings."
+            )
 
         token = self._perform_authentication()
         self._current_token = token

@@ -105,6 +105,15 @@ class ManagedProvider(StreamingProvider):
     # -- only for providers whose catchup is encrypted exactly like live.
     CATCHUP_DRM_FROM_LIVE: ClassVar[bool] = False
 
+    # Opt-in (default False = the historical behaviour, unchanged).
+    # False: get_manifest_headers() ignores catchup arguments; only
+    #        get_segment_headers() routes a start_time kwarg to the catchup
+    #        manager. A provider that needs more overrides get_manifest_headers.
+    # True:  a get_manifest_headers() call carrying start_time is routed to
+    #        CatchupManager.get_catchup_manifest_headers(), like the segment
+    #        call. Only effective with HEADERS_FROM_MANAGERS = True.
+    CATCHUP_HEADERS_ON_MANIFEST_CALL: ClassVar[bool] = False
+
     ROUTE_CACHE_SIZE: ClassVar[int] = 512
 
     # NOTE: `self.channels` holds the ChannelManager here (template
@@ -353,6 +362,20 @@ class ManagedProvider(StreamingProvider):
     def get_manifest_headers(self, content_id: str, **kw: Any) -> Dict[str, str]:
         if not self.HEADERS_FROM_MANAGERS:
             return super().get_manifest_headers(content_id, **kw)
+        if (
+            self.CATCHUP_HEADERS_ON_MANIFEST_CALL
+            and self.catchup is not None
+            and kw.get("start_time") is not None
+        ):
+            rest = dict(kw)
+            start = rest.pop("start_time")
+            return self.catchup.get_catchup_manifest_headers(
+                content_id,
+                start,
+                end_time=rest.pop("end_time", None),
+                epg_id=rest.pop("epg_id", None),
+                **rest,
+            )
         name, mgr = self._routed_manager(content_id)
         if name == "channels":
             return mgr.get_channel_manifest_headers(content_id, **kw)
