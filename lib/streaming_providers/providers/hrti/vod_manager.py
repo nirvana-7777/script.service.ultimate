@@ -1,327 +1,181 @@
 # streaming_providers/providers/hrti/vod_manager.py
 """
-HRTi VOD Manager - Handles all VOD catalogue operations.
+HRTi VOD manager -- catalogue navigation and VOD playback.
 
-Endpoints actually available (confirmed from API):
-  GetCatalogueStructure  → full nested tree (Children arrays), root nav
-  GetCatalogue           → paginated items for a catalogue node
-  GetSeries              → episodes for a series season
-  GetVodDetails          → full metadata + FileName for a single item
-  GetEditorsChoice       → editor's picks
-  GetWatchLater          → user watch later (requires user auth)
+Endpoints (confirmed from the API): GetCatalogueStructure (root tree),
+GetCatalogue (paged items), GetSeries (episodes of a season), GetVodDetails
+(metadata + FileName), GetEditorsChoice, GetWatchLater (user auth).
+There is NO GetSeasons / GetEpisodes.
 
-NOT available: GetSeasons, GetEpisodes — these do not exist on this API.
+content_id grammar (see ids.py):
+  ""                          root          -> GetCatalogueStructure
+  "catalogue_<ref>"           folder items  -> GetCatalogue (paged)
+  "series_<sid>--<ssid>"      episodes      -> GetSeries
+  "special_watch_later" / "special_editors_choice"
+  "details_<ref>" | "<ref>"   one playable item (VodManager.handles_content_id)
 
-Navigation model
-----------------
-  GetCatalogueStructure returns the full tree with Children nesting.
-  Every navigable node at every level uses ``catalogue:{ReferenceId}``.
-  There is no separate seasons API — seasons appear as Children of a
-  series node inside GetCatalogueStructure and are therefore already
-  handled by the catalogue_ routing.
+Return conventions
+------------------
+Navigation always returns a VodPage. next_cursor (the next page number) is set
+ONLY for GetCatalogue, which honours PageNumber/ItemsPerPage; every other
+endpoint returns the full list (next_cursor None). Failures raise typed
+errors; GetWatchLater / GetEditorsChoice are optional lists: an API error
+there yields an empty page.
 
-  Type-3 series items in GetCatalogue listings link to GetSeries via:
-    content_id = "series_{SeriesReferenceId}--{SeasonReferenceId}"
-  The default SeasonReferenceId is "{SeriesReferenceId}_S01".
-
-Content ID scheme
------------------
-  ""                                     root  (GetCatalogueStructure)
-  "catalogue_{ref_id}"                   items (GetCatalogue, paginated)
-  "series_{series_ref}--{season_ref}"     episodes (GetSeries)
-  "special_watch_later"                   GetWatchLater
-  "special_editors_choice"              GetEditorsChoice
-
-Field mapping (verified from real API responses)
--------------------------------------------------
-  GetCatalogueStructure nodes:
-    Name, ReferenceId, Children (list), PosterLandscape, ParentReferenceId
-
-  GetCatalogue items:
-    Type 2 → playable VOD   (VodData.Duration ms, VodData.ProductionYear,
-                              VodData.ContentRating)
-    Type 3 → series         (SeriesData.SeriesReferenceId, SeriesData.SeriesName,
-                              SeriesData.LastSeasonNumber)
-    Type 5 → episode        (EpisodeData.EpisodeNr, EpisodeData.SeasonNr,
-                              EpisodeData.Duration ms, EpisodeData.ContentRating)
-    other  → navigable folder
-
-  GetVodDetails:
-    ReferenceID (capital), Title, FileName (streaming URL — NOT StreamingURL),
-    DurationInFrames (frames / 25 ≈ seconds), ProductionYear, ContentRating,
-    AssetCategory, Directors, Actors (plain strings, not lists),
-    SeriesReferenceId, SeriesName, SeasonNr, EpisodeNr,
-    SVODVideostores (list → "svod" auth when non-empty),
-    PosterLandscape, PosterPortrait
-
-  AuthorizeSession parameters derived from FileName:
-    FileName = https://cdn1oiv.akamaized.net/hrtvodorigin/REF.smil/manifest.mpd
-    ContentReferenceId = path[1] without ".smil"    e.g. "1870699590_delin"
-    ContentDrmId       = "{path[0]}_{path[1]}"      e.g. "hrtvodorigin_1870699590_delin.smil"
-    ContentType        = "svod" if SVODVideostores else "vod"
-    VideostoreReferenceIds = SVODVideostores or null
-
-  Token: _current_token.access_token (no get_access_token() method exists).
-  Pagination: NumberOfItems field (not TotalCount); no HasMore field.
+Manifest and DRM share one GetVodDetails through the provider-owned playout
+cache (5 s TTL); the AuthorizeSession of the DRM call is cached the same way.
 """
 
-import json
-from typing import Dict, List, Optional, Union
-from urllib.parse import urlparse
+import time
+from typing import Any, Dict, List, Optional, Tuple, Union
 
+from ...base.errors import BadRequestError, EntitlementError, NotFoundError
+from ...base.managers import VodManager
+from ...base.models import DRMConfig
 from ...base.models.vod import VodCategory, VodItem
 from ...base.utils.logger import logger
+from ...base.vod import VodPage
+from . import ids
+from .api import api_post
 from .constants import HRTiDefaults
+from .drm import build_widevine, derive_vod_session_params
+from .models import VodDetails
 
-# GetCatalogue / GetSeries Type discriminator values
+# GetCatalogue / GetSeries "Type" discriminator values
 _TYPE_VOD = 2
 _TYPE_SERIES = 3
 _TYPE_EPISODE = 5
 
-# DurationInFrames in GetVodDetails is at ~25 fps
+# DurationInFrames in GetVodDetails is ~25 fps
 _ASSUMED_FPS = 25
 
+_VOD_REFERER = "/videostore"
+_PROVIDER = HRTiDefaults.PROVIDER_NAME
+_PARSE_ERRORS = (KeyError, TypeError, AttributeError, ValueError)
 
-class HRTiVodManager:
-    """Manages HRTi VOD catalogue operations."""
 
-    def __init__(self, provider):
-        self.provider = provider
-        self._config = provider.hrti_config
-        self._http_manager = provider.http_manager
-        self._authenticator = provider.authenticator
+class HRTiVodManager(VodManager):
+    def __init__(
+        self,
+        *,
+        http_manager: Any,
+        auth: Any,
+        country: str,
+        config: Any,
+        playout_cache: Optional[Dict[str, Tuple[Any, float]]] = None,
+    ):
+        super().__init__(
+            http_manager=http_manager, auth=auth, country=country, config=config
+        )
+        # Provider-owned dict, borrowed by reference. Keys: "vod:<ref>" ->
+        # (VodDetails, ts) and "vodsess:<ref>" -> (session dict, ts).
+        self._playout_cache = playout_cache if playout_cache is not None else {}
 
-    # -------------------------------------------------------------------------
-    # Public API (called by provider.get_vod_category)
-    # -------------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Routing
+    # ------------------------------------------------------------------
+    def handles_content_id(self, content_id: str) -> bool:
+        return ids.is_vod(content_id)
 
-    def get_category(
+    # ------------------------------------------------------------------
+    # Navigation
+    # ------------------------------------------------------------------
+    def get_vod_category(
         self,
         content_id: str = "",
         cursor: Optional[str] = None,
-        page_size: int = 24,
-    ) -> Union[List, Dict]:
-        """
-        Return children for a VOD navigation node.
-
-        Routing by content_id prefix:
-          ""                    → GetCatalogueStructure (root, top-level categories)
-          "catalogue_{ref_id}"  → GetCatalogue items (paginated)
-          "series_{sid}--{ssid}" → GetSeries episodes
-          "special_*"           → special collections
-        """
+        page_size: int = HRTiDefaults.VOD_ITEMS_PER_PAGE,
+        **kw: Any,
+    ) -> VodPage:
         if not content_id:
             return self._fetch_catalogue_structure()
-
         if content_id.startswith("catalogue_"):
-            ref_id = content_id[len("catalogue_"):]
-            return self._fetch_catalogue_items(ref_id, cursor, page_size)
-
+            return self._fetch_catalogue_items(content_id[len("catalogue_"):], cursor, page_size)
         if content_id.startswith("series_"):
-            # Format: series:{series_ref_id}:{season_ref_id}
             parts = content_id[len("series_"):].split("--", 1)
-            if len(parts) == 2:
-                return self._fetch_series_episodes(parts[0], parts[1])
-            logger.warning(f"Malformed series content_id (expected series_SID--SSID): {content_id}")
-            return []
-
-        if content_id == "special_watch_later":
-            return self._fetch_watch_later()
-
-        if content_id == "special_editors_choice":
-            return self._fetch_editors_choice()
-
-        logger.warning(f"Unknown VOD content_id format: {content_id}")
-        return []
-
-    # -------------------------------------------------------------------------
-    # HTTP helpers
-    # -------------------------------------------------------------------------
-
-    def _get_headers(self, referer_path: str = "/videostore") -> Dict[str, str]:
-        """Build authenticated headers for VOD API calls."""
-        headers = {
-            "deviceid": self._authenticator.get_device_id(),
-            "devicetypeid": self._config.device_reference_id,
-            "ipaddress": self._authenticator.get_ip_address(),
-            "operatorreferenceid": self._config.operator_reference_id,
-            "origin": self._config.base_website,
-            "referer": f"{self._config.base_website}{referer_path}",
-            "User-Agent": self._config.user_agent,
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        }
-        token = (
-            self._authenticator._current_token.access_token
-            if self._authenticator._current_token
-            else ""
-        )
-        if token:
-            headers["authorization"] = f"Client {token}"
-        return headers
-
-    def _post(
-        self,
-        endpoint_key: str,
-        payload: Dict,
-        referer_path: str = "/videostore",
-    ) -> Optional[Union[Dict, List]]:
-        """
-        POST to a named endpoint and return the Result field.
-
-        Returns None on HTTP error, API error (ErrorCode != 0), or missing Result.
-        Result type varies by endpoint:
-          GetCatalogueStructure → list
-          GetCatalogue          → dict with Items, NumberOfItems, Name
-          GetSeries             → dict with Items, LastWatchedEpisodeReferenceId
-          GetVodDetails         → dict (single item)
-        """
-        url = self._config.api_endpoints.get(endpoint_key)
-        if not url:
-            logger.error(f"Unknown endpoint key: {endpoint_key}")
-            return None
-        try:
-            resp = self._http_manager.post(
-                url,
-                operation="api",
-                headers=self._get_headers(referer_path),
-                data=json.dumps(payload),
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            if data.get("ErrorCode", 0) != 0:
-                logger.warning(
-                    f"HRTi API error for {endpoint_key}: "
-                    f"[{data.get('ErrorCode')}] {data.get('ErrorDescription')}"
+            if len(parts) != 2 or not all(parts):
+                raise BadRequestError(
+                    f"HRTi: malformed series id (expected series_SID--SSID): {content_id}"
                 )
-                return None
-            return data.get("Result")
-        except Exception as e:
-            logger.error(f"Error calling {endpoint_key}: {e}")
-            return None
+            return self._fetch_series_episodes(parts[0], parts[1])
+        if content_id == "special_watch_later":
+            return self._fetch_special("watch_later", "/watch_later")
+        if content_id == "special_editors_choice":
+            return self._fetch_special("editors_choice", "/editors_choice")
+        raise BadRequestError(f"HRTi: unknown VOD content_id format: {content_id}")
 
-    # -------------------------------------------------------------------------
-    # GetCatalogueStructure — root navigation tree
-    # -------------------------------------------------------------------------
+    def _post(self, endpoint_key: str, payload: Dict, referer_path: str = _VOD_REFERER,
+              required: bool = True) -> Optional[Union[Dict, List]]:
+        return api_post(
+            http_manager=self.http_manager,
+            session=self.auth,
+            config=self.config,
+            endpoint_key=endpoint_key,
+            payload=payload,
+            referer_path=referer_path,
+            required=required,
+        )
 
-    def _fetch_catalogue_structure(self) -> List[VodCategory]:
-        """
-        Fetch top-level navigation categories from GetCatalogueStructure.
-
-        The API returns a flat list of root nodes, each with a Children array
-        containing the full subtree.  We parse only the top level here —
-        children are lazy-loaded when the user navigates via their
-        catalogue:{ReferenceId} content_id.
-
-        child_count is set from len(Children) since the API provides no
-        separate count field.  A non-zero child_count signals the UI that
-        this node is drillable.
-        """
-        result = self._post("catalogue_structure", {}, "/videostore")
-
-        if not result or not isinstance(result, list):
-            logger.warning("No catalogue structure returned from HRTi")
-            return []
-
-        categories = []
-        for node in result:
-            cat = self._parse_structure_node(node)
-            if cat:
-                categories.append(cat)
-
-        logger.info(f"Retrieved {len(categories)} root VOD categories from HRTi")
-        return categories
+    # --- GetCatalogueStructure: root tree -------------------------------
+    def _fetch_catalogue_structure(self) -> VodPage:
+        result = self._post("catalogue_structure", {})
+        if not isinstance(result, list):
+            logger.warning("HRTi: no catalogue structure returned")
+            return VodPage()
+        categories = [c for c in (self._parse_structure_node(n) for n in result) if c]
+        logger.info(f"HRTi: {len(categories)} root VOD categories")
+        return VodPage(entries=categories)
 
     def _parse_structure_node(self, node: Dict) -> Optional[VodCategory]:
-        """
-        Parse one node from GetCatalogueStructure.
-
-        Fields: Name, ReferenceId, Children (list), PosterLandscape,
-                ParentReferenceId (ignored — content_id encodes the path).
-        """
         try:
             ref_id = node.get("ReferenceId")
             name = (node.get("Name") or "").strip()
             if not ref_id or not name:
-                logger.debug(f"Skipping structure node — missing id or name")
                 return None
-
             children = node.get("Children") or []
             return VodCategory(
                 name=name,
                 content_id=f"catalogue_{ref_id}",
-                provider=self.provider.provider_name,
+                provider=_PROVIDER,
                 logo_url=node.get("PosterLandscape"),
                 description=None,
-                # child_count from Children length; None if empty (may still have
-                # items via GetCatalogue even with no sub-categories)
                 child_count=len(children) if children else None,
             )
-        except Exception as e:
-            logger.error(f"Error parsing structure node: {e}")
+        except _PARSE_ERRORS as exc:
+            logger.warning(f"HRTi: skipping malformed structure node: {exc!r}")
             return None
 
-    # -------------------------------------------------------------------------
-    # GetCatalogue — paginated items for a catalogue node
-    # -------------------------------------------------------------------------
-
-    def _fetch_catalogue_items(
-        self,
-        ref_id: str,
-        cursor: Optional[str] = None,
-        page_size: int = 24,
-    ) -> Dict:
-        """
-        Fetch paginated items from GetCatalogue for a given ReferenceId.
-
-        Response: { "Name": "...", "NumberOfItems": N, "Items": [...] }
-        Pagination is derived from NumberOfItems — no HasMore field exists.
-        """
+    # --- GetCatalogue: paged items ---------------------------------------
+    def _fetch_catalogue_items(self, ref_id: str, cursor: Optional[str], page_size: int) -> VodPage:
         page = 1
         if cursor:
             try:
                 page = max(1, int(cursor))
             except ValueError:
-                logger.warning(f"Invalid cursor '{cursor}', using page 1")
-
+                logger.warning(f"HRTi: invalid cursor '{cursor}', using page 1")
         if page > HRTiDefaults.MAX_VOD_PAGES:
-            return {"entries": [], "next_cursor": None, "total": None}
+            return VodPage()
 
         result = self._post(
-            "catalogue",
-            {"ReferenceId": ref_id, "ItemsPerPage": page_size, "PageNumber": page},
+            "catalogue", {"ReferenceId": ref_id, "ItemsPerPage": page_size, "PageNumber": page}
         )
+        if not isinstance(result, dict):
+            return VodPage()
 
-        if not result or not isinstance(result, dict):
-            return {"entries": [], "next_cursor": None, "total": None}
-
-        raw_items = result.get("Items") or []
-        total_count = result.get("NumberOfItems")
-
-        entries = []
-        for item in raw_items:
-            parsed = self._parse_catalogue_item(item)
-            if parsed:
-                entries.append(parsed)
-
+        entries = [e for e in (self._parse_catalogue_item(i) for i in result.get("Items") or []) if e]
+        total = result.get("NumberOfItems")
         has_more = (
-            total_count is not None
-            and page * page_size < total_count
+            total is not None
+            and page * page_size < total
             and page < HRTiDefaults.MAX_VOD_PAGES
         )
-
-        logger.debug(
-            f"catalogue {ref_id} page {page}: {len(entries)} entries, "
-            f"total {total_count}, next_cursor {page + 1 if has_more else None}"
+        return VodPage(
+            entries=entries,
+            next_cursor=str(page + 1) if has_more else None,
+            total=total,
         )
-        return {
-            "entries": entries,
-            "next_cursor": str(page + 1) if has_more else None,
-            "total": total_count,
-        }
 
     def _parse_catalogue_item(self, item: Dict) -> Optional[Union[VodCategory, VodItem]]:
-        """Dispatch catalogue item parsing by Type field."""
         try:
             item_type = item.get("Type")
             if item_type == _TYPE_VOD:
@@ -331,12 +185,12 @@ class HRTiVodManager:
             if item_type == _TYPE_EPISODE:
                 return self._parse_episode_catalogue_item(item)
             return self._parse_folder_catalogue_item(item)
-        except Exception as e:
-            logger.error(f"Error parsing catalogue item: {e}")
+        except _PARSE_ERRORS as exc:
+            logger.warning(f"HRTi: skipping malformed catalogue item: {exc!r}")
             return None
 
     def _parse_folder_catalogue_item(self, item: Dict) -> Optional[VodCategory]:
-        """No Type — navigable sub-folder node."""
+        """No Type: a navigable sub-folder."""
         ref_id = item.get("ReferenceId")
         name = (item.get("Title") or item.get("Name") or "").strip()
         if not ref_id or not name:
@@ -344,67 +198,48 @@ class HRTiVodManager:
         return VodCategory(
             name=name,
             content_id=f"catalogue_{ref_id}",
-            provider=self.provider.provider_name,
+            provider=_PROVIDER,
             logo_url=item.get("PosterLandscape") or item.get("PosterPortrait"),
             description=None,
             child_count=item.get("ChildCount"),
         )
 
     def _parse_series_catalogue_item(self, item: Dict) -> Optional[VodCategory]:
-        """
-        Type-3 series item.
-
-        Navigation goes to GetSeries which requires SeriesReferenceId and
-        SeasonReferenceId.  We default to the _S01 suffix since there is no
-        GetSeasons endpoint.  Multi-season series have their seasons listed as
-        Children in GetCatalogueStructure, so they are browsed via catalogue:
-        nodes and never reach this path.
-        """
+        """Type 3: navigation goes to GetSeries (needs series + season ids);
+        there is no GetSeasons, so the default season is ``<series>_S01``."""
         series_data = item.get("SeriesData") or {}
         series_ref_id = series_data.get("SeriesReferenceId") or item.get("ReferenceId")
         name = (item.get("Title") or "").strip()
         if not series_ref_id or not name:
             return None
-
-        default_season_ref = f"{series_ref_id}_S01"
-        season_count = series_data.get("LastSeasonNumber")
-
         return VodCategory(
             name=name,
-            content_id=f"series_{series_ref_id}--{default_season_ref}",
-            provider=self.provider.provider_name,
+            content_id=f"series_{series_ref_id}--{series_ref_id}_S01",
+            provider=_PROVIDER,
             logo_url=item.get("PosterLandscape") or item.get("PosterPortrait"),
             description=None,
-            child_count=season_count,
+            child_count=series_data.get("LastSeasonNumber"),
         )
 
     def _parse_vod_catalogue_item(self, item: Dict) -> Optional[VodItem]:
-        """
-        Type-2 playable item from a GetCatalogue listing.
-
-        manifest_script is None — FileName only available via GetVodDetails.
-        content_id is the raw ReferenceId (no prefix) so provider routing works.
-        """
+        """Type 2: playable item. manifest_script stays None (FileName only
+        comes from GetVodDetails); content_id is the raw ReferenceId."""
         ref_id = item.get("ReferenceId")
         title = (item.get("Title") or "").strip()
         if not ref_id or not title:
             return None
-
         vod_data = item.get("VodData") or {}
         duration_ms = vod_data.get("Duration")
-        duration_sec = int(duration_ms / 1000) if duration_ms else None
-        category_str = item.get("VodCategoryNames") or ""
-        genres = [g.strip() for g in category_str.split(",") if g.strip()] or None
-
+        genres = [g.strip() for g in (item.get("VodCategoryNames") or "").split(",") if g.strip()] or None
         return VodItem(
             name=title,
             content_id=ref_id,
-            provider=self.provider.provider_name,
+            provider=_PROVIDER,
             logo_url=item.get("PosterLandscape") or item.get("PosterPortrait"),
             description=None,
             long_description=None,
             original_title=None,
-            duration_seconds=duration_sec,
+            duration_seconds=int(duration_ms / 1000) if duration_ms else None,
             release_year=vod_data.get("ProductionYear"),
             rating=vod_data.get("ContentRating"),
             genre=genres[0] if genres else None,
@@ -422,34 +257,24 @@ class HRTiVodManager:
         )
 
     def _parse_episode_catalogue_item(self, item: Dict) -> Optional[VodItem]:
-        """
-        Type-5 episode item from GetCatalogue or GetSeries.
-
-        EpisodeData sub-object: EpisodeNr, SeasonNr, Duration (ms), ContentRating.
-        SeriesData sub-object:  SeriesReferenceId, SeriesName.
-        content_id is the raw ReferenceId.
-        """
+        """Type 5: episode (EpisodeData / SeriesData sub-objects)."""
         ref_id = item.get("ReferenceId")
         title = (item.get("Title") or "").strip()
         if not ref_id or not title:
             return None
-
         ep_data = item.get("EpisodeData") or {}
         series_data = item.get("SeriesData") or {}
         duration_ms = ep_data.get("Duration")
-        duration_sec = int(duration_ms / 1000) if duration_ms else None
-        category_str = item.get("VodCategoryNames") or ""
-        genres = [g.strip() for g in category_str.split(",") if g.strip()] or None
-
+        genres = [g.strip() for g in (item.get("VodCategoryNames") or "").split(",") if g.strip()] or None
         return VodItem(
             name=title,
             content_id=ref_id,
-            provider=self.provider.provider_name,
+            provider=_PROVIDER,
             logo_url=item.get("PosterLandscape") or item.get("PosterPortrait"),
             description=None,
             long_description=None,
             original_title=None,
-            duration_seconds=duration_sec,
+            duration_seconds=int(duration_ms / 1000) if duration_ms else None,
             release_year=None,
             rating=ep_data.get("ContentRating"),
             genre=genres[0] if genres else None,
@@ -466,109 +291,57 @@ class HRTiVodManager:
             manifest_script=None,
         )
 
-    # -------------------------------------------------------------------------
-    # GetSeries — episodes for a specific series season
-    # -------------------------------------------------------------------------
-
-    def _fetch_series_episodes(
-        self,
-        series_ref_id: str,
-        season_ref_id: str,
-    ) -> Dict:
-        """
-        Fetch all episodes from GetSeries for a given series + season.
-
-        Payload: SeriesReferenceId, SeasonReferenceId, PageSize, PageNumber.
-        Response: { "Items": [...], "LastWatchedEpisodeReferenceId": ..., ... }
-        Each item uses Type 5 / EpisodeData schema.
-        """
+    # --- GetSeries: episodes of one season --------------------------------
+    def _fetch_series_episodes(self, series_ref_id: str, season_ref_id: str) -> VodPage:
         result = self._post(
             "episodes",
             {
                 "SeriesReferenceId": series_ref_id,
                 "SeasonReferenceId": season_ref_id,
-                "PageSize": 100,
+                "PageSize": HRTiDefaults.SERIES_PAGE_SIZE,
                 "PageNumber": 1,
             },
         )
+        if not isinstance(result, dict):
+            logger.warning(f"HRTi: no episodes for series {series_ref_id} season {season_ref_id}")
+            return VodPage()
+        episodes = [e for e in (self._parse_episode_catalogue_item(i) for i in result.get("Items") or []) if e]
+        return VodPage(entries=episodes, total=len(episodes))
 
-        if not result or not isinstance(result, dict):
-            logger.warning(
-                f"No episodes returned for series {series_ref_id} "
-                f"season {season_ref_id}"
-            )
-            return {"entries": [], "next_cursor": None, "total": None}
-
-        raw_items = result.get("Items") or []
-        episodes = []
-        for ep in raw_items:
-            parsed = self._parse_episode_catalogue_item(ep)
-            if parsed:
-                episodes.append(parsed)
-
-        logger.info(
-            f"Retrieved {len(episodes)} episodes for series {series_ref_id} "
-            f"season {season_ref_id}"
-        )
-        return {"entries": episodes, "next_cursor": None, "total": len(episodes)}
-
-    # -------------------------------------------------------------------------
-    # GetVodDetails — full metadata for one item
-    # -------------------------------------------------------------------------
-
-    def _fetch_vod_details(self, ref_id: str) -> Optional[VodItem]:
-        """Fetch full metadata for a single VOD item from GetVodDetails."""
-        result = self._post("vod_details", {"ReferenceId": ref_id})
-        if not result:
-            logger.warning(f"No details returned for VOD item {ref_id}")
-            return None
-        return self._parse_vod_details_item(result)
+    # --- Special lists (optional endpoints) --------------------------------
+    def _fetch_special(self, endpoint_key: str, referer_path: str) -> VodPage:
+        result = self._post(endpoint_key, {}, referer_path, required=False)
+        if not isinstance(result, list):
+            return VodPage()
+        items = [i for i in (self._parse_vod_details_item(r) for r in result) if i]
+        return VodPage(entries=items)
 
     def _parse_vod_details_item(self, item: Dict) -> Optional[VodItem]:
-        """
-        Parse a rich VOD item from GetVodDetails.
-
-        Key differences from catalogue listing schema:
-          - ReferenceID (capital ID, not ReferenceId)
-          - FileName (streaming URL, not StreamingURL)
-          - DurationInFrames (divide by 25 for seconds)
-          - Directors / Actors are plain strings, not lists
-          - SVODVideostores list controls auth type
-        """
+        """Rich item as returned by GetVodDetails / the special lists: ReferenceID
+        (capital ID), FileName (the stream URL), DurationInFrames (/25 = s),
+        Directors / Actors are plain strings."""
         try:
             ref_id = item.get("ReferenceID") or item.get("ReferenceId")
             title = (item.get("Title") or "").strip()
             if not ref_id or not title:
                 return None
-
             frames = item.get("DurationInFrames")
-            duration_sec = int(frames / _ASSUMED_FPS) if frames else None
-
-            actors_str = item.get("Actors")
-            cast = (
-                [a.strip() for a in actors_str.split(",") if a.strip()]
-                if actors_str else None
-            )
-
-            item_type_str = (item.get("Type") or "").lower()
-            content_type = "SERIES" if item_type_str == "episode" else "MOVIE"
+            actors = item.get("Actors")
             genre = item.get("AssetCategory") or None
-            svod_videostores = item.get("SVODVideostores") or []
-
-            vod_item = VodItem(
+            return VodItem(
                 name=title,
                 content_id=ref_id,
-                provider=self.provider.provider_name,
+                provider=_PROVIDER,
                 logo_url=item.get("PosterLandscape") or item.get("PosterPortrait"),
                 description=item.get("Description"),
                 long_description=None,
                 original_title=item.get("OriginalTitle"),
-                duration_seconds=duration_sec,
+                duration_seconds=int(frames / _ASSUMED_FPS) if frames else None,
                 release_year=item.get("ProductionYear"),
                 rating=item.get("ContentRating"),
                 genre=genre,
                 genres=[genre] if genre else None,
-                cast=cast,
+                cast=[a.strip() for a in actors.split(",") if a.strip()] if actors else None,
                 director=item.get("Directors") or None,
                 season_number=item.get("SeasonNr"),
                 episode_number=item.get("EpisodeNr"),
@@ -576,110 +349,72 @@ class HRTiVodManager:
                 series_title=item.get("SeriesName"),
                 trailer_url=item.get("TrailerUrl"),
                 is_highlight=False,
-                content_type=content_type,
+                content_type="SERIES" if (item.get("Type") or "").lower() == "episode" else "MOVIE",
                 manifest_script=item.get("FileName") or None,
             )
-            vod_item._svod_videostores = svod_videostores
-            logger.debug(f"Parsed VOD details: {title} ({ref_id}), svod={bool(svod_videostores)}")
-            return vod_item
-
-        except Exception as e:
-            logger.error(f"Error parsing VOD details item: {e}")
+        except _PARSE_ERRORS as exc:
+            logger.warning(f"HRTi: skipping malformed VOD details item: {exc!r}")
             return None
 
-    # -------------------------------------------------------------------------
-    # Special collections
-    # -------------------------------------------------------------------------
-
-    def _fetch_watch_later(self) -> List[VodItem]:
-        """User's Watch Later list (requires user auth)."""
-        result = self._post("watch_later", {}, "/watch_later")
-        if not result or not isinstance(result, list):
-            return []
-        items = [self._parse_vod_details_item(i) for i in result]
-        return [i for i in items if i]
-
-    def _fetch_editors_choice(self) -> List[VodItem]:
-        """Editor's Choice list."""
-        result = self._post("editors_choice", {}, "/editors_choice")
-        if not result or not isinstance(result, list):
-            return []
-        items = [self._parse_vod_details_item(i) for i in result]
-        return [i for i in items if i]
-
-    # -------------------------------------------------------------------------
-    # Provider-facing helpers (called by provider.py)
-    # -------------------------------------------------------------------------
-
-    def get_vod_streaming_url(self, content_id: str) -> Optional[str]:
-        """
-        Return the DASH manifest URL for a playable VOD item.
-
-        Always calls GetVodDetails — FileName is only available there,
-        never in catalogue listings.
-        """
-        details = self._fetch_vod_details(content_id)
-        if details and details.manifest_script:
-            return details.manifest_script
-        logger.warning(f"No FileName found for VOD item {content_id}")
+    # ------------------------------------------------------------------
+    # Playback: details + authorised session, cached per request
+    # ------------------------------------------------------------------
+    def _cached(self, key: str) -> Optional[Any]:
+        entry = self._playout_cache.get(key)
+        if entry and (time.time() - entry[1]) < HRTiDefaults.PLAYOUT_CACHE_TTL:
+            return entry[0]
         return None
 
-    def get_vod_session_data(self, content_id: str) -> Optional[Dict]:
-        """
-        Authorize a VOD playback session and return the session dict.
-
-        Derives all AuthorizeSession parameters from the FileName in GetVodDetails:
-
-          FileName = https://cdn1oiv.akamaized.net/hrtvodorigin/REF.smil/manifest.mpd
-            path[0] = "hrtvodorigin"   (origin)
-            path[1] = "REF.smil"
-
-          ContentReferenceId = "REF"                        (stem without .smil)
-          ContentDrmId       = "hrtvodorigin_REF.smil"
-          ContentType        = "svod" if SVODVideostores non-empty else "vod"
-          VideostoreReferenceIds = SVODVideostores or null
-        """
+    def _details(self, ref_id: str) -> VodDetails:
+        cached = self._cached(f"vod:{ref_id}")
+        if cached is not None:
+            return cached
+        result = self._post("vod_details", {"ReferenceId": ref_id})
+        if not isinstance(result, dict) or not result:
+            raise NotFoundError(f"HRTi: VOD item {ref_id} not found")
         try:
-            details = self._fetch_vod_details(content_id)
-            if not details or not details.manifest_script:
-                logger.error(f"Cannot authorize VOD session — no FileName for {content_id}")
-                return None
+            details = VodDetails.from_api_response(result)
+        except (KeyError, TypeError, AttributeError, ValueError) as exc:
+            raise NotFoundError(f"HRTi: VOD item {ref_id} has no usable details: {exc}") from exc
+        self._playout_cache[f"vod:{ref_id}"] = (details, time.time())
+        return details
 
-            filename = details.manifest_script
-            svod_stores = getattr(details, "_svod_videostores", []) or []
+    def _session(self, ref_id: str) -> Dict[str, Any]:
+        cached = self._cached(f"vodsess:{ref_id}")
+        if cached is not None:
+            return cached
+        details = self._details(ref_id)
+        if not details.file_name:
+            raise EntitlementError(f"HRTi: no FileName (not entitled?) for VOD item {ref_id}")
+        params = derive_vod_session_params(details.file_name)
+        stores = details.svod_stores
+        session_data = self.auth.authorize_session(
+            content_type="svod" if stores else "vod",
+            content_ref_id=params.content_ref_id,
+            content_drm_id=params.content_drm_id,
+            video_store_ids=stores or None,
+            channel_id=None,
+            start_time=None,
+            end_time=None,
+        )
+        if not session_data.get("Authorized", False):
+            raise EntitlementError(f"HRTi: VOD session for {ref_id} was not authorised")
+        self._playout_cache[f"vodsess:{ref_id}"] = (session_data, time.time())
+        return session_data
 
-            path_parts = urlparse(filename).path.strip("/").split("/")
-            if len(path_parts) < 2:
-                logger.error(f"Cannot parse FileName path for {content_id}: {filename}")
-                return None
-
-            origin = path_parts[0]
-            ref_with_ext = path_parts[1]
-            ref_id = (
-                ref_with_ext.removesuffix(".smil")
-                if ref_with_ext.endswith(".smil")
-                else ref_with_ext
-            )
-            content_drm_id = f"{origin}_{ref_with_ext}"
-            content_type = "svod" if svod_stores else "vod"
-            video_store_ids = svod_stores if svod_stores else None
-
-            logger.debug(
-                f"Authorizing VOD session — content_id: {content_id}, "
-                f"ref: {ref_id}, drm: {content_drm_id}, "
-                f"type: {content_type}, stores: {video_store_ids}"
-            )
-
-            return self._authenticator.authorize_session(
-                content_type=content_type,
-                content_ref_id=ref_id,
-                content_drm_id=content_drm_id,
-                video_store_ids=video_store_ids,
-                channel_id=None,
-                start_time=None,
-                end_time=None,
-            )
-
-        except Exception as e:
-            logger.error(f"Error getting VOD session data for {content_id}: {e}")
+    def get_vod_manifest(self, content_id: str, **kw: Any) -> Optional[str]:
+        details = self._details(ids.vod_ref(content_id))
+        if not details.file_name:
+            logger.warning(f"HRTi: no FileName for VOD item {content_id}")
             return None
+        return details.file_name
+
+    def get_vod_drm(self, content_id: str, **kw: Any) -> List[DRMConfig]:
+        ref_id = ids.vod_ref(content_id)
+        return build_widevine(
+            self.config,
+            self.auth.user_id,
+            self._session(ref_id),
+            ref_id,
+            referer_path=_VOD_REFERER,
+        )

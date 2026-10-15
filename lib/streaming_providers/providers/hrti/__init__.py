@@ -1,11 +1,11 @@
-# [file name]: __init__.py
-# [file content begin]
-# lib/streaming_providers/providers/hrti/__init__.py
+# streaming_providers/providers/hrti/__init__.py
 """
-HRTi streaming provider module
+HRTi (Croatian Radio Television Internet) provider.
+
+Public API:
+    from streaming_providers.providers.hrti import HRTiProvider
 """
 
 from .provider import HRTiProvider
 
 __all__ = ["HRTiProvider"]
-# [file content end]

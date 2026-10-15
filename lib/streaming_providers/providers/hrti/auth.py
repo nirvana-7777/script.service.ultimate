@@ -7,54 +7,37 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
 from ...base.auth.base_auth import BaseAuthenticator, BaseAuthToken, TokenAuthLevel
-from ...base.models.proxy_models import ProxyConfig
+from ...base.errors import AuthError, ProviderError, ServerError
 from ...base.utils.logger import logger
-from .constants import HRTiConfig
+from .api import typed_error_for
+from .constants import HRTiConfig, HRTiDefaults
 from .models import HRTiAuthToken, HRTiCredentials
 
 
 class HRTiAuthenticator(BaseAuthenticator):
-    def __init__(
-            self,
-            credentials=None,
-            config_dir=None,
-            proxy_config: Optional[ProxyConfig] = None,
-            http_manager=None,
-    ):
-
-        # Initialize configuration FIRST
-        self._config = HRTiConfig()
-
-        # Get proxy_config if not provided
-        if proxy_config is None:
-            from ...base.network import ProxyConfigManager
-
-            proxy_mgr = ProxyConfigManager(config_dir)
-            proxy_config = proxy_mgr.get_proxy_config("hrti")
-
-        # Store HTTP manager and proxy config locally (like MagentaEU)
-        self._http_manager = http_manager
-        self._proxy_config = proxy_config
-
-        # Require http_manager like MagentaEU does
+    def __init__(self, *, http_manager, config: HRTiConfig, credentials=None, config_dir=None):
+        """
+        ``config`` is the ONE HRTiConfig of the provider (shared with session
+        and managers; never build a second one here). Storage keys stay FLAT
+        (country=None): credentials, persisted session and device id of
+        existing installations are stored without a country.
+        """
         if http_manager is None:
             raise ValueError("http_manager is required for HRTiAuthenticator")
+        self._config = config
+        self._http_manager = http_manager
 
-        # Initialize HRTi-specific properties BEFORE calling parent init
+        # HRTi-specific state BEFORE the parent init (it loads the session)
         self._ip_address = None
         self._device_id = None
-        self._user_id = None  # Initialize _user_id here
+        self._user_id = None
 
-        # Call parent init WITHOUT proxy_config and http_manager (like MagentaEU)
         super().__init__(
-            provider_name="hrti",
+            provider_name=HRTiDefaults.PROVIDER_NAME,
             credentials=credentials,
-            country=None,  # Changed from 'HR' to None for flat credential structure
+            country=None,
             config_dir=config_dir,
-            # NO proxy_config or http_manager passed to parent
         )
-
-        # Load or initialize device ID
         self._initialize_device()
 
     @property
@@ -80,7 +63,7 @@ class HRTiAuthenticator(BaseAuthenticator):
     @property
     def auth_endpoint(self) -> str:
         """HRTi authentication endpoint"""
-        return self.config.api_endpoints.get("grant_access", "")
+        return self.config.endpoint("grant_access")
 
     def _get_auth_headers(self) -> Dict[str, str]:
         """Get headers specifically for authentication endpoint"""
@@ -176,7 +159,7 @@ class HRTiAuthenticator(BaseAuthenticator):
         token = HRTiAuthToken(
             access_token=access_token,
             token_type="Client",
-            expires_in=86400,  # 24 hours default
+            expires_in=HRTiDefaults.TOKEN_LIFETIME_SECONDS,  # GrantAccess carries no lifetime
             issued_at=time.time(),
             user_id=self._user_id or "",  # Ensure user_id is never None
             valid_from=result.get("ValidFrom", ""),
@@ -194,7 +177,10 @@ class HRTiAuthenticator(BaseAuthenticator):
 
     def get_fallback_credentials(self):
         """Get fallback credentials (anonymous access)"""
-        return HRTiCredentials(username="anonymoushrt", password="an0nPasshrt")
+        return HRTiCredentials(
+            username=HRTiDefaults.ANONYMOUS_USERNAME,
+            password=HRTiDefaults.ANONYMOUS_PASSWORD,
+        )
 
     def _perform_authentication(self) -> HRTiAuthToken:
         """Perform HRTi custom authentication flow"""
@@ -250,24 +236,18 @@ class HRTiAuthenticator(BaseAuthenticator):
         except Exception as e:
             logger.debug(f"Could not read configured IP from settings: {e}")
 
-        # Priority 2: Fall back to API fetch if no configured IP
+        # Priority 2: ask the API (endpoint resolved lazily from the dynamic config)
         try:
             logger.debug("No configured IP found, fetching from API...")
-            get_ip_endpoint = self.config.api_endpoints.get("get_ip", "")
-            if not get_ip_endpoint:
-                logger.warning("No get_ip endpoint configured, using fallback")
-                self._ip_address = "0.0.0.0"
-                return self._ip_address
-
-            response = self.http_manager.get(get_ip_endpoint, operation="api")
+            response = self.http_manager.get(self.config.endpoint("get_ip"), operation="api")
             response.raise_for_status()
             self._ip_address = response.text.strip().strip('"')  # Remove quotes if present
             logger.info(f"Retrieved IP address from API: {self._ip_address}")
             return self._ip_address
         except Exception as e:
+            # Not cached: the next call may succeed
             logger.error(f"Error getting IP address from API: {e}")
-            self._ip_address = "0.0.0.0"  # Fallback
-            return self._ip_address
+            return "0.0.0.0"
 
     def _get_configured_ip_from_settings(self) -> Optional[str]:
         """
@@ -297,26 +277,9 @@ class HRTiAuthenticator(BaseAuthenticator):
         return None
 
     def _get_environment_config(self):
-        """Get HRTi environment configuration"""
-        try:
-            # Get env config
-            env_response = self.http_manager.get(self.config.env_endpoint, operation="api")
-            env_response.raise_for_status()
-            env_data = env_response.json()
-
-            # Get main config
-            config_response = self.http_manager.get(self.config.config_endpoint, operation="api")
-            config_response.raise_for_status()
-            config_data = config_response.json()
-
-            # Update config with retrieved values
-            self.config.update_from_api(env_data, config_data)
-            logger.debug("HRTi environment configuration loaded")
-
-        except Exception as e:
-            logger.warning(f"Error loading HRTi environment config: {e}")
-            # Ensure API endpoints are built even if config fetch fails
-            self.config._build_fallback_endpoints()
+        """Dynamic endpoints (env.json / config.production.json), loaded once by
+        the shared config -- also used by the managers, independent of login."""
+        self.config.ensure_loaded()
 
     def _perform_grant_access(self) -> Dict[str, Any]:
         """Perform grant access authentication with proper headers and debugging"""
@@ -346,9 +309,7 @@ class HRTiAuthenticator(BaseAuthenticator):
                 safe_payload["Password"] = "***" if safe_payload["Password"] else "<empty>"
             logger.debug(f"HRTi Auth Payload: {safe_payload}")
 
-            auth_endpoint = self.auth_endpoint
-            if not auth_endpoint:
-                raise Exception("No grant_access endpoint configured")
+            auth_endpoint = self.auth_endpoint  # ConfigurationError when missing
 
             response = self.http_manager.post(
                 auth_endpoint,
@@ -362,7 +323,10 @@ class HRTiAuthenticator(BaseAuthenticator):
 
             result = response.json()
             if "Result" not in result:
-                raise Exception("No result in grant access response")
+                raise AuthError(
+                    "HRTi: GrantAccess response has no Result "
+                    f"(ErrorCode={result.get('ErrorCode')}: {result.get('ErrorDescription')})"
+                )
 
             customer_id = result.get("Result", {}).get("Customer", {}).get("CustomerId", "unknown")
             logger.debug(f"Grant access successful - user: {customer_id}")
@@ -373,13 +337,15 @@ class HRTiAuthenticator(BaseAuthenticator):
             # Only fallback to anonymous if we're not already using it
             if (
                     not isinstance(self.credentials, HRTiCredentials)
-                    or self.credentials.username != "anonymoushrt"
+                    or self.credentials.username != HRTiDefaults.ANONYMOUS_USERNAME
             ):
                 logger.info("Falling back to anonymous credentials")
                 self.credentials = self.get_fallback_credentials()
                 return self._perform_grant_access()
             else:
-                raise e
+                if isinstance(e, ProviderError):
+                    raise
+                raise ServerError(f"HRTi login failed: {e}") from e
 
     def _register_device(self):
         """Register device with HRTi using API headers with proper authorization"""
@@ -412,7 +378,7 @@ class HRTiAuthenticator(BaseAuthenticator):
 
             logger.debug(f"HRTi Device Registration Payload: {payload}")
 
-            register_endpoint = self.config.api_endpoints.get("register_device", "")
+            register_endpoint = self.config.endpoint("register_device")
             if not register_endpoint:
                 logger.warning("No register_device endpoint configured")
                 return
@@ -443,7 +409,7 @@ class HRTiAuthenticator(BaseAuthenticator):
             headers["referer"] = f"{self.config.base_website}/"
 
             # Get content ratings
-            content_endpoint = self.config.api_endpoints.get("content_ratings", "")
+            content_endpoint = self.config.endpoint("content_ratings")
             if content_endpoint:
                 content_response = self.http_manager.post(
                     content_endpoint,
@@ -454,7 +420,7 @@ class HRTiAuthenticator(BaseAuthenticator):
                 content_response.raise_for_status()
 
             # Get profiles
-            profiles_endpoint = self.config.api_endpoints.get("profiles", "")
+            profiles_endpoint = self.config.endpoint("profiles")
             if profiles_endpoint:
                 profiles_response = self.http_manager.post(
                     profiles_endpoint,
@@ -500,26 +466,61 @@ class HRTiAuthenticator(BaseAuthenticator):
         return self._device_id
 
     def get_ip_address(self) -> str:
-        """Get IP address"""
-        if not self._ip_address:
-            self._get_ip_address()
-        return self._ip_address
+        """Get IP address (cached; "0.0.0.0" fallback is not cached)."""
+        return self._get_ip_address()
 
     def _load_session(self) -> None:
-        """Override to ensure _user_id is set when loading session"""
+        """
+        Restore the persisted token. The stored dict is FLAT (``to_dict``), so
+        it is rebuilt with HRTiAuthToken.from_dict. It must NOT go through
+        _create_token_from_response (the base default), which expects a
+        GrantAccess response and used to produce a token with an EMPTY
+        access_token and a fresh issued_at -- "valid" for 24 h and never
+        refreshed.
+        """
+        self._current_token = None
         try:
-            # Call parent method first
-            super()._load_session()
-
-            # If we have a current token and it's an HRTiAuthToken, set _user_id
-            if self._current_token and isinstance(self._current_token, HRTiAuthToken):
-                self._user_id = self._current_token.user_id
-                logger.debug(f"Set _user_id from loaded session: {self._user_id}")
-
+            token_data = self.settings_manager.load_token_data(self.provider_name, self.country)
+            if token_data and token_data.get("access_token"):
+                token = HRTiAuthToken.from_dict(token_data)
+                token.auth_level = self._classify_token(token)
+                self._current_token = token
+                self._user_id = token.user_id or self._user_id or ""
+                logger.info("Restored persisted HRTi session")
+            else:
+                logger.info("No existing HRTi session found")
         except Exception as e:
-            logger.error(f"Error in HRTi session loading: {e}")
-            # Ensure _user_id is at least an empty string
+            logger.error(f"Error loading HRTi session: {e}")
+            self._current_token = None
             self._user_id = self._user_id or ""
+
+    # ------------------------------------------------------------------
+    # State read by HRTiSession
+    # ------------------------------------------------------------------
+    def get_current_token(self) -> Optional[BaseAuthToken]:
+        return self._current_token
+
+    def get_user_id(self) -> str:
+        return self._user_id or ""
+
+    def has_user_credentials(self) -> bool:
+        """True when real (non-anonymous) user credentials are stored or set."""
+        from ...base.auth.credentials import UserPasswordCredentials
+
+        try:
+            stored = self.settings_manager.get_provider_credentials(
+                self.provider_name, self.country
+            )
+        except TypeError:
+            stored = self.settings_manager.get_provider_credentials(self.provider_name)
+        for creds in (stored, self.credentials):
+            if (
+                isinstance(creds, UserPasswordCredentials)
+                and creds.validate()
+                and creds.username != HRTiDefaults.ANONYMOUS_USERNAME
+            ):
+                return True
+        return False
 
     def authorize_session(
             self,
@@ -530,69 +531,61 @@ class HRTiAuthenticator(BaseAuthenticator):
             channel_id: str = None,
             start_time: str = None,
             end_time: str = None,
-    ) -> Optional[Dict[str, Any]]:
-        """Authorize a playback session"""
+    ) -> Dict[str, Any]:
+        """Authorize a playback session. Raises typed errors (AuthError on 401,
+        ServerError otherwise); returns the raw ``Result`` dict -- the caller
+        checks ``Authorized``."""
+        bearer_token = self._current_token.access_token if self._current_token else ""
+        headers = self._get_api_headers(bearer_token)
+
+        # Set referer based on content type
+        if channel_id is None:
+            headers["referer"] = f"{self.config.base_website}/videostore"
+        elif content_type == "tlive":
+            headers["referer"] = f"{self.config.base_website}/live/tv?channel={channel_id}"
+        elif content_type == "rlive":
+            headers["referer"] = f"{self.config.base_website}/live/radio"
+        else:
+            headers["referer"] = f"{self.config.base_website}/live/"
+
+        payload = {
+            "ContentType": content_type,
+            "ContentReferenceId": content_ref_id,
+            "ContentDrmId": content_drm_id or f"{content_ref_id}_drm",
+            "VideostoreReferenceIds": video_store_ids,
+            "ChannelReferenceId": channel_id,
+            "StartTime": start_time,
+            "EndTime": end_time,
+        }
+        logger.debug(
+            f"Authorizing session - type: {content_type}, ref: {content_ref_id}, drm: {content_drm_id}"
+        )
+
+        auth_endpoint = self.config.endpoint("authorize_session")
         try:
-            bearer_token = self._current_token.access_token if self._current_token else ""
-            headers = self._get_api_headers(bearer_token)
-
-            # Set referer based on content type
-            if channel_id is None:
-                headers["referer"] = f"{self.config.base_website}/videostore"
-            else:
-                if content_type == "tlive":
-                    headers["referer"] = f"{self.config.base_website}/live/tv?channel={channel_id}"
-                elif content_type == "rlive":
-                    headers["referer"] = f"{self.config.base_website}/live/radio"
-                else:
-                    headers["referer"] = f"{self.config.base_website}/live/"
-
-            payload = {
-                "ContentType": content_type,
-                "ContentReferenceId": content_ref_id,
-                "ContentDrmId": content_drm_id or f"{content_ref_id}_drm",
-                "VideostoreReferenceIds": video_store_ids,
-                "ChannelReferenceId": channel_id,
-                "StartTime": start_time,
-                "EndTime": end_time,
-            }
-
-            logger.debug(
-                f"Authorizing session - type: {content_type}, ref: {content_ref_id}, drm: {content_drm_id}"
-            )
-
-            auth_endpoint = self.config.api_endpoints.get("authorize_session", "")
-            if not auth_endpoint:
-                logger.error("No authorize_session endpoint configured")
-                return None
-
             response = self.http_manager.post(
-                auth_endpoint,
-                operation="api",
-                headers=headers,
-                data=json.dumps(payload),
+                auth_endpoint, operation="api", headers=headers, data=json.dumps(payload)
             )
             response.raise_for_status()
-
             result = response.json()
-            session_result = result.get("Result")
-            if session_result:
-                authorized = session_result.get("Authorized", False)
-                session_id = session_result.get("SessionId") or session_result.get("DrmId")
-                logger.debug(
-                    f"Session authorization result - authorized: {authorized}, session_id: {session_id}"
-                )
-                return session_result
-            else:
-                logger.warning(
-                    f"No result in session authorization response "
-                    f"(ErrorCode={result.get('ErrorCode')}: {result.get('ErrorDescription')})"
-                )
-                return None
+        except ProviderError:
+            raise
+        except Exception as exc:
+            raise typed_error_for(exc, auth_endpoint) from exc
 
-        except Exception as e:
-            logger.error(f"HRTi session authorization failed: {e}")
-            return None
+        session_result = result.get("Result")
+        if not session_result:
+            raise ServerError(
+                "HRTi: no result in AuthorizeSession response "
+                f"(ErrorCode={result.get('ErrorCode')}: {result.get('ErrorDescription')})",
+                url=auth_endpoint,
+                code=str(result.get("ErrorCode")),
+            )
+        logger.debug(
+            f"Session authorization result - authorized: {session_result.get('Authorized', False)}, "
+            f"session_id: {session_result.get('SessionId') or session_result.get('DrmId')}"
+        )
+        return session_result
 
     def report_session_event(self, session_id: str, channel_id: str = None) -> bool:
         """Report session event (like play start)"""
@@ -608,7 +601,7 @@ class HRTiAuthenticator(BaseAuthenticator):
 
             payload = {"SessionEventId": 1, "SessionId": session_id}  # 1 = play start
 
-            report_endpoint = self.config.api_endpoints.get("report_session", "")
+            report_endpoint = self.config.endpoint("report_session")
             if not report_endpoint:
                 logger.warning("No report_session endpoint configured")
                 return False
@@ -628,33 +621,6 @@ class HRTiAuthenticator(BaseAuthenticator):
             logger.warning(f"Session event reporting failed: {e}")
             return False
 
-    def get_license_data(self, session_id: str) -> str:
-        """Generate license data for DRM - returns base64 encoded string"""
-        try:
-            # Use merchant from config (now dynamically loaded)
-            merchant = self.config.merchant or "aviion2"
-
-            drm_license = {
-                "userId": self._user_id or "",
-                "sessionId": session_id,
-                "merchant": merchant,
-            }
-
-            logger.debug(
-                f"Creating license data - userId: {self._user_id}, sessionId: {session_id}, merchant: {merchant}"
-            )
-
-            # Encode to JSON then to base64
-            license_bytes = json.dumps(drm_license).encode("utf-8")
-            license_b64 = base64.b64encode(license_bytes).decode("utf-8")
-
-            logger.debug(f"License data (base64, first 30 chars): {license_b64[:30]}...")
-            return license_b64
-
-        except Exception as e:
-            logger.error(f"Error generating license data: {e}")
-            return ""
-
     @staticmethod
     def get_time_offset(hours_offset: int) -> int:
         """Get timestamp with offset in milliseconds"""
@@ -669,7 +635,7 @@ class HRTiAuthenticator(BaseAuthenticator):
         # Check if it's an HRTiAuthToken and has user_id attribute
         if isinstance(token, HRTiAuthToken):
             # Check if it's an anonymous token by user_id
-            if token.user_id == "anonymoushrt":
+            if token.user_id == HRTiDefaults.ANONYMOUS_USERNAME:
                 return TokenAuthLevel.ANONYMOUS
 
             # Check if we have user credentials available
@@ -695,18 +661,18 @@ class HRTiAuthenticator(BaseAuthenticator):
                 )
 
             # If we have user credentials and token has a real user_id, it's user authenticated
-            if has_user_creds and token.user_id and token.user_id != "anonymoushrt":
+            if has_user_creds and token.user_id and token.user_id != HRTiDefaults.ANONYMOUS_USERNAME:
                 return TokenAuthLevel.USER_AUTHENTICATED
 
         # Check if using anonymous credentials
-        if hasattr(self.credentials, "username") and self.credentials.username == "anonymoushrt":
+        if hasattr(self.credentials, "username") and self.credentials.username == HRTiDefaults.ANONYMOUS_USERNAME:
             return TokenAuthLevel.ANONYMOUS
 
         # If we have user credentials, consider it user authenticated
         if (
                 hasattr(self.credentials, "username")
                 and self.credentials.username
-                and self.credentials.username != "anonymoushrt"
+                and self.credentials.username != HRTiDefaults.ANONYMOUS_USERNAME
         ):
             return TokenAuthLevel.USER_AUTHENTICATED
 
