@@ -20,6 +20,13 @@ template is ever registered.
 > Statements about things *not* seen are marked **(unverified)**. The first
 > provider you migrate against this README is the real validation — please
 > note every place where the README was wrong or silent, and report it.
+>
+> **Revision note (third migration, HRTi):** nothing in the README was wrong, but it
+> was silent in places that are now covered: client identity (§5.1), details endpoints
+> that need a parent id (§6.3), the boundary of the required/optional rule (§8),
+> server-side token invalidation, the recovery ladder and its concurrency rules (§9),
+> persisted-state and logging checks, staged registration and how code is handed to a
+> migrator (§12.1b, §12.3b), plus Traps 57–65. Two hedges are still unbuilt (§8, §17).
 
 ---
 
@@ -86,7 +93,8 @@ python _template_v2/scaffold.py joyn Joyn --label "Joyn" --country DE \
    `provider.py`. (Without the scaffold: copy the directory, replace the tokens
    by hand, move files out of `optional/`, delete `optional/` and `scaffold.py`.
    Optional files use `from ....base` one level deeper; after moving it must be
-   `from ...base`.)
+   `from ...base`.) Pasted snippets must work as they are: no `# ADAPT:` comment
+   may survive into committed code (§12.3b, Trap 61).
 3. **`constants.py`**: fill in hosts, paths, headers, `SUPPORTED_COUNTRIES`.
    Nothing else may contain URLs or header values.
 4. **`models.py`**: write the `from_api_response()` parsers (strict) and the
@@ -348,6 +356,7 @@ through a **constructor collaborator**. Decide per piece of state:
 | fetched separately, with its own lifecycle/expiry (e.g. an entitlement or package list loaded after login) | a **small dedicated collaborator** (`JoynEntitlements`), owned by the provider | keyword-only extra `entitlements=` on every manager that needs it |
 | a cache | a plain **dict owned by the provider** | keyword-only extra, borrowed by reference |
 | a pure helper (id parsing, header building, URL building) | a **module-level function** or the `Config` | import it |
+| **client identity** — who *this installation* is, independent of any account (device id, install uuid) | the **authenticator + settings manager**; persisted at creation; **deliberately never cleared with the token** | read-only `self.auth.<attr>` (e.g. `auth.device_id`) |
 | needed by the **settings UI only** | the provider (thin delegate to the session) | — (managers never read it) |
 | read by a **legacy mixin through `self`** (e.g. `ProviderAuthMixin` reads `self.authenticator.get_bearer_token()`; shared with every v1 provider) | **stays on the provider — do not delete it** | managers do **not** use it and do not call the mixin; they use `self.auth` and build headers from `Config` |
 
@@ -357,6 +366,16 @@ is the back-reference in disguise — don't, not even "for the first pass": the
 migration then has to be done twice. If you cannot decide between "part of the
 session" and "separate type": derived from the token ⇒ session; has its own
 fetch/refresh ⇒ separate type.
+
+**Client identity is a third category.** It is not account state (which
+`invalidate()` clears) and not a cache (which the `on_invalidate` callback clears on a
+credential change). It is created once, persisted at creation, and survives both —
+clearing it with the token makes the server see a new device after every logout.
+"Caches to clear on credential change" (§14, the brief) has no line for it because
+the concept had no name before. Corollary: if it is ever stale or wrong, the damage is
+silent (HRTi: a stale device id made EPG return `[]` for as long as nobody looked, §8),
+so every persisted identity value needs both getter **and** setter on the storage
+layer (§12.1b).
 
 **Dead dependencies.** A declared keyword-only extra that no method reads is
 deleted, including its comment. An extra that is passed "for later" is a
@@ -478,8 +497,21 @@ class YourManager(ChannelManager):              # or Vod/Epg/Recordings/Favorite
   it for the programme at `start_time`. A provider-native window in `**kw`
   (`backwards=`/`forwards=` hours, movetv) is fine; ignore unknown kwargs such as
   `limit=` knowingly and say so in the docstring.
+* **Details endpoints that need a parent id.** `get_program_details(program_id)` hands
+  you one id; some upstream details endpoints need more (HRTi `GetEpgDetails` wants
+  `ChannelReferenceId` **and** `ReferenceId`). Derive the parent from the grid parse:
+  keep a hint map `program_id → parent id` filled while parsing grids, make it
+  self-healing (a details answer that names its channel corrects the map), and document
+  the empty-id fallback used when no hint exists. Expose the **raw `Result`** of the
+  details call next to the ABC method (e.g. `get_program_details_raw`) for
+  provider-specific fields the model cannot hold (HRTi catchup reads `FileName*` from
+  it).
+* **`epg_event_id` vs `program_id`** (models docstring) works as specified: a provider
+  with a single per-broadcast id (HRTi) populates `program_id` and leaves
+  `epg_event_id = None`.
 * A failed request RAISES; "no programmes" (`success=false`, empty list) is `[]`
-  (decision rule in §8).
+  (decision rule in §8, **including its boundary**: session/identity-state errors
+  always raise, whatever the endpoint's classification).
 
 ### 6.4 `RecordingsManager`
 
@@ -645,6 +677,13 @@ Names marked above beyond the ones in the shipped base were taken from
 docstrings and imports — **(unverified)**: check `base/errors.py` for the exact
 constructors (the templates assume `Error("message")`).
 
+**Still open after three migrations.** Two standing hedges have never been verified:
+(a) the HTTP manager's behaviour on 4xx/5xx (raise vs. return — HRTi's `api.py` still
+handles both shapes), (b) the `base.errors` constructor kwargs (`url=` on `AuthError`
+is hedged in two places). The hedges work, but each migration copies them. Pin both
+against the real code before the next provider (§17) and replace the hedges with the
+verified behaviour.
+
 ### Compatibility on purpose
 
 `ItemNotFoundError` is a `NotFoundError` **and** a `KeyError`;
@@ -682,6 +721,13 @@ KeyError` / `except RuntimeError` in the operations layer keep working.
   source that may have expired) returns `[]` / `None` with a warning. Record the
   choice per endpoint in the brief; it is the single most common silent behaviour
   change of a migration.
+* **Boundary of that rule: data-availability errors only.** Required/optional decides
+  what "no data" means. It never applies to **session- or identity-state errors**
+  (token rejected, device session unknown to the server, stale client id): those raise
+  typed errors (`AuthError` after the recovery ladder, §9) **regardless of how the
+  endpoint is classified**. HRTi's EPG was `required=False`; a stale device id made it
+  return `[]` — indistinguishable from "no programmes" — for however long nobody
+  noticed. Test: a session-state failure on an optional endpoint raises.
 * **`operation=` on `http_manager.post/get`** selects the proxy/timeout scope (`"api"`,
   `"auth"`, `"manifest"`, `"license"` in the template). v1 providers pass ad-hoc
   names (`"live_manifest"`, `"token_validate"`) and omit it elsewhere (default).
@@ -710,10 +756,14 @@ Two supported shapes. Both give managers an `auth` that satisfies `AuthProtocol`
 ### Rules for both
 
 * **Lazy**: no network in `__init__`. The first caller that needs a token logs in.
-* **One login for concurrent callers**: lock + re-check after acquiring it.
+* **One login for concurrent callers**: lock + re-check after acquiring it (the
+  re-check only dedupes when the repair rotates the identifier — see the recovery
+  ladder below).
 * **Typed errors**, never `None`/`[]`.
 * `invalidate()` clears memory **and persisted storage** (otherwise a restart
-  resurrects the old session; this bit `set_user_credentials`).
+  resurrects the old session; this bit `set_user_credentials`). **Client identity
+  (device id / install uuid) is not part of that**: owned by the authenticator +
+  settings manager, persisted at creation, never cleared with the token (§5.1).
 * The token's own expiry (`is_expired`, fixed 300 s buffer in `BaseAuthToken`) is
   the single truth — **a new provider must not add a second buffer constant.**
   **Migrating a provider that already has one** (look for `expires_in - 1800`-style
@@ -724,7 +774,9 @@ Two supported shapes. Both give managers an `auth` that satisfies `AuthProtocol`
   in **one** documented place (token creation) unless a device test proves it
   redundant, and record the decision in `MIGRATION_BRIEF.md`.
 * Never log credentials or the dict from `to_auth_payload()`; verify the HTTP
-  layer does not log request bodies at DEBUG.
+  layer does not log request bodies at DEBUG. **Token fragments count** (HRTi v1
+  `auth.py` printed three DEBUG lines with token fragments). Nothing scans for this
+  automatically — grep during migration (§12.1b).
 * Token transport is provider-specific: header (Allente, template), query string
   or body (simpli: `with_token()`/`auth_body()` helpers, token-free headers).
   Keep `build_headers()` token-free if the token does not belong in headers.
@@ -793,7 +845,7 @@ three per call). A session adapter for such a provider:
 
 * validates **once per process** (the first `authenticate()` after start, which also
   validates a persisted token) and then trusts the token;
-* on HTTP **401** runs `recover()`: refresh the token, else a full login with
+* on HTTP **401** (or the provider's body-level equivalent, next subsection) runs `recover()`: refresh the token, else a full login with
   `force_refresh=True`, then **exactly one** retry of the request (a shared
   `api_post` helper does this for every manager; a second 401 raises `AuthError`);
 * does not remove the validation silently: record it in the brief (token decision
@@ -804,6 +856,36 @@ The template adapter assumes `current_token`, `has_user_credentials()` and
 `invalidate_token()` on the authenticator; **check them in `BaseAuthenticator`**
 before wrapping, or use the provider authenticator's own getters (movetv:
 `get_current_token()`).
+
+### Server-side invalidation and the recovery ladder
+
+Validity can end on the server without an HTTP 401 and without any expiry in the
+token. The signal may sit in the **body of a 200**: HRTi's `ErrorCode 4` means "device
+session unknown to the server" while the token itself is perfectly valid. The
+movetv "server-validated token" pattern generalizes to a ladder:
+
+* Detect invalidation in the **one** request helper every manager goes through
+  (`api_post`-style), with a provider-defined predicate covering the HTTP status
+  **and** body codes. Never in individual managers.
+* Repair is a **recovery ladder**: each rung **at most once** per request, **cheapest
+  repair first**, then exactly one retry of the original request:
+  1. *targeted repair* (e.g. re-register the device/session) — preserves a valid token;
+  2. *full refresh* (token refresh, or login with `force_refresh=True`) — also works
+     (HRTi: login re-registers the device as a side effect) but throws a valid token
+     away;
+  3. a surviving failure → `AuthError`.
+  The movetv validate-once + 401 recovery is the single-rung special case.
+* Session/identity errors raise on every endpoint, optional ones included (§8 boundary).
+* **Concurrency.** Repair under a lock with a re-check after acquiring it: the second
+  caller compares the identifier it failed with against the current one and skips the
+  repair if it changed. That dedup **only works when the repair rotates the
+  identifier.** HRTi's `RegisterDevice` (re-)creates the server record for the
+  `DeviceSerial` you supply — no rotation — so id comparison can never dedupe and a
+  **short time window** ("repaired within the last N seconds → just retry") is
+  required instead. Record in the brief which of the two applies.
+* Tests: body code on a 200 → targeted repair once + one retry; targeted repair fails
+  → full refresh; both fail → `AuthError` with bounded call counts; N concurrent
+  callers → one repair.
 
 ### Credentials API on the provider (OPTIONAL — only if v1 has it)
 
@@ -1021,6 +1103,29 @@ Fill this table for your provider:
 | `provider_name`, directory, class name, credentials key — all equal? | §4 |
 | Does anything outside the provider read its attributes (`bearer_token`, `_profile`, `channel_manager`, …)? | compatibility delegates / call-site fixes |
 
+### 12.1b Persisted-state and logging checks (before converting anything)
+
+Two checks the pack does not do yet (§17); each cost a migration a surprise.
+
+**(a) Getter *and* setter for every persisted value.** For each piece of state the
+provider persists (device id, tokens, profile, …) verify that both halves exist on the
+storage layer. HRTi had `get_device_id` with no `set_device_id`; it was found
+mid-migration and degraded persistence to a warning.
+
+```bash
+# for each persisted key K: both lines must be found
+grep -rn --include='*.py' -E 'def get_<K>\b' base streaming_providers
+grep -rn --include='*.py' -E 'def set_<K>\b' base streaming_providers
+```
+
+**(b) Credential/token logging.** §9 forbids it; nothing scans for it.
+
+```bash
+grep -rn --include='*.py' -iE 'log(ger)?\.(debug|info|warning|error).*(token|password|secret|bearer|authorization|serial)' providers/<key>
+```
+
+Every hit is read, not skimmed: truncated or masked fragments (`token[:8]`) count.
+
 ### 12.2 v1 → v2 mapping (what to delete, what to keep)
 
 | In the v1 provider | In v2 |
@@ -1069,6 +1174,21 @@ Fill this table for your provider:
 8. Run the external-reference grep (§12.6), then the device checklist (§12.7).
 9. Remove the delegates once nothing uses them (separate commit).
 
+### 12.3b Rules for the migration process itself
+
+* **Staged capability registration is fine** (channels first, EPG in step 2) — but the
+  "EPG deliberately NOT registered yet" module docstring and the `# _build_epg(): step 2`
+  placeholder must flip **in the same commit** as the factory. For exactly one step the
+  HRTi module docstring lied about the provider's capabilities (Trap 26).
+* **How code is handed to a migrator.** Insertion blocks with `# ADAPT:` comments are a
+  bug vector: the block that was pasted into HRTi shipped `self.authenticator` (an
+  attribute `HRTiSession` does not have) with the ADAPT comments still in the code —
+  the "migration done twice" failure of §5.1, in migration form. Rule: **output
+  complete files when the file is small enough; otherwise the block must name exact
+  anchor symbols (what to replace / insert after) and every adaptation must be
+  mechanical** (a rename the reader can grep, never a decision). Decisions belong in the
+  brief, not in a comment. Gate: `grep -rn "ADAPT" providers/<key>` is empty.
+
 ### 12.4 What becomes reachable that never was
 
 If the v1 provider did not define `get_epg*`, `get_recordings`/`delete_recording`,
@@ -1102,6 +1222,9 @@ catchup window, the EPG flag network call).
 | Channel fields removed from `to_dict()` (no Channel subclass) | internals stay in the manager | — |
 | One failing channel no longer empties the EPG grid (if you override it, §6.3) | resilience | keep the default |
 | Capability exists in the code but is deliberately **not registered** (stub parsers) | a registered capability that crashes is worse than a missing one | flip the provider flag when the body exists |
+| EPG goes through the session; a failed login now blocks EPG with typed errors | v1 EPG `_get_headers` read `authenticator._current_token.access_token` directly (a private-attribute back-reference, the shape §5.1 bans) and fired requests with whatever token state was lying around | — (accepted) |
+| Session/identity-state errors raise on optional endpoints too | the required/optional rule covers data availability only (§8) | — |
+| Server-side invalidation (status or body code) repaired by the recovery ladder | §9; v1 either failed silently or relied on expiry | — |
 
 ### 12.6 External references (needs the whole repo — the migration pack section 5 does this)
 
@@ -1207,7 +1330,9 @@ providers can be mixed freely.
 * **TTL cache** pattern used by simpli/Allente: `(value, timestamp)` tuples, TTL in
   `constants.py` (`PLAYOUT_CACHE_TTL = 5.0`; manifest + DRM share one request).
 * **Clear caches when credentials change** (`set_user_credentials` →
-  `_playout_cache.clear()`): ids/stream ids may be user- or token-specific.
+  `_playout_cache.clear()`): ids/stream ids may be user- or token-specific. **Client
+  identity (device id / install uuid) is not on that list** — it is neither account
+  state nor a cache and survives a credential change (§5.1).
 * The route cache in `ManagedProvider` is bounded (`ROUTE_CACHE_SIZE = 512`) and locked.
 * A shared thread-safe TTL helper does not exist yet (§17) — keep caches small and
   per-provider.
@@ -1397,6 +1522,21 @@ Things that already cost time. Each is covered by a test or the contract unless 
 55. A registered capability whose parsers/bodies are stubs — hide it instead (§12.2).
 56. Same-named files uploaded separately overwrite each other; packs written inside the
     scanned tree report themselves as external users (§12.0b).
+57. Server-side session invalidation signalled in a 200 body (HRTi `ErrorCode 4`) while
+    the token is valid — status-code-only detection misses it; use the ladder (§9).
+58. The required/optional rule applied to session/identity errors: `required=False`
+    hid a stale device id behind `[]` (§8).
+59. Client identity cleared with the token, or treated as a cache (§5.1).
+60. Re-check-after-lock dedup on a repair that does not rotate the identifier — it
+    never dedupes; use a time window (§9).
+61. `# ADAPT:` comments and non-existent attributes (`self.authenticator` on a session)
+    surviving in pasted insertion blocks (§12.3b).
+62. Persisted state with a getter but no setter on the storage layer — persistence
+    silently degrades to a warning (§12.1b).
+63. Token fragments in DEBUG log lines (§9, §12.1b).
+64. Staged registration where the docstring/placeholder flips in a later commit than
+    the factory (§12.3b).
+65. A details endpoint that needs a parent id fed only `program_id` (§6.3).
 
 ---
 
@@ -1433,12 +1573,18 @@ Known gaps in the base, so you don't hunt for them:
   presence, (c) unused constructor params, (d) `except Exception` around `self.auth.*`
   calls, (e) literal URLs outside `constants.py`, (f) two config constructions in one
   provider, (g) docstring claims (`provider wires`, `see provider.py`) without
-  matching code.
-* `optional/session_adapter.py` updated to the rules in §9.
+  matching code, (h) getter/setter pairs for every persisted key on the storage layer
+  (§12.1b a), (i) credential/token logging (§12.1b b), (j) leftover `# ADAPT` comments
+  (§12.3b).
+* **Pin the two standing (unverified) hedges** (§8): the HTTP manager's 4xx/5xx
+  behaviour and the `base.errors` constructor kwargs; then delete the hedges from
+  `api.py` and the templates.
+* `optional/session_adapter.py` updated to the rules in §9 (including the recovery
+  ladder and the time-window dedup).
 * `tests/conftest.py` with `FakeHttp`, `FakeAuthenticator`, fake clock, `env` (§15).
 
 **Base changes — every one must be additive with an unchanged default and pass the
-contract test for ALL existing providers (Allente, simpli, Magenta2, Joyn, movetv)
+contract test for ALL existing providers (Allente, simpli, Magenta2, Joyn, movetv, HRTi)
 before it is merged. Two are implemented as patches (below); the rest are proposals:**
 
 * **Implemented as patches, opt-in, defaults unchanged** (`managed_provider.py`,
@@ -1451,7 +1597,7 @@ before it is merged. Two are implemented as patches (below); the rest are propos
 * **Deliberately NOT added:** an `EpgManager.get_entry_at()` helper. Only movetv
   needs "the programme at a timestamp"; its matching rules (containment, tolerance)
   are provider-specific. Add it when a second provider needs the same rules.
-* One shared session adapter with `recover()` and `on_invalidate` (backwards
+* One shared session adapter with `recover()` (the §9 ladder) and `on_invalidate` (backwards
   compatible with the template adapter's public methods) plus the shared `api_post`
   helper (401 → one recovery → one retry, both HTTP-manager error shapes) — as a new
   module; no provider is forced to switch.
@@ -1497,7 +1643,14 @@ before it is merged. Two are implemented as patches (below); the rest are propos
 - [ ] `success=false` / empty-answer decision recorded per endpoint
 - [ ] No `Channel` subclass; internals live in the manager; external users of removed `to_dict()` keys checked
 - [ ] No provider-local type shares a name with a base type
-- [ ] Token validation model recorded (expiry-based vs. server-validated) and tested
+- [ ] Token validation model recorded (expiry-based vs. server-validated; invalidation signal: status and/or body code) and tested, including the recovery ladder (each rung at most once, then `AuthError`) and the concurrency dedup (rotated id vs. time window)
+- [ ] Session/identity-state errors raise on every endpoint, optional ones included (§8)
+- [ ] Client identity (device id / install uuid) owned by authenticator + settings manager, persisted at creation, never cleared with the token (§5.1)
+- [ ] Every persisted key has getter **and** setter on the storage layer (§12.1b)
+- [ ] No token/credential fragment in any log line (grep, §12.1b)
+- [ ] No `# ADAPT` comment and no reference to a non-existent attribute left from pasted blocks (§12.3b)
+- [ ] Capability docstring/placeholder flipped in the same commit as its factory (§12.3b)
+- [ ] Details endpoints needing a parent id: hint map + documented fallback; raw result exposed if provider-specific fields are read (§6.3)
 
 ---
 

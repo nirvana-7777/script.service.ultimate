@@ -100,8 +100,9 @@ class HRTiProvider(ManagedProvider):
 
     def _clear_caches(self) -> None:
         self._playout_cache.clear()
-        if self.channels is not None:
-            self.channels.clear_caches()
+        clear_channel_caches = getattr(self.channels, "clear_caches", None)
+        if callable(clear_channel_caches):   # None (no live) or the pre-init legacy list: skip
+            clear_channel_caches()
         # NOTE: the EPG manager's programme->channel hint map is schedule
         # data, not account-specific state -- deliberately NOT cleared here.
 

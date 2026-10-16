@@ -22,9 +22,10 @@ import json
 import time
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from ...base.auth.base_auth import BaseAuthenticator, BaseAuthToken, TokenAuthLevel
+from ...base.auth.credentials import UserPasswordCredentials
 from ...base.errors import AuthError, ProviderError, ServerError
 from ...base.utils.logger import logger
 from .api import DEVICE_SESSION_INVALID_CODE, typed_error_for
@@ -85,9 +86,7 @@ class HRTiAuthenticator(BaseAuthenticator):
 
     def _get_auth_headers(self) -> Dict[str, str]:
         """Get headers specifically for authentication endpoint"""
-        if not self._ip_address:
-            self._get_ip_address()
-
+        ip_address = self._get_ip_address()   # cached; "0.0.0.0" on failure (never None)
         device_id = self.get_device_id()
 
         # Special headers for authentication endpoint with /signin referer
@@ -97,7 +96,7 @@ class HRTiAuthenticator(BaseAuthenticator):
             "Content-Type": "application/json",
             "deviceid": device_id,
             "devicetypeid": self.config.device_reference_id,
-            "ipaddress": self._ip_address,
+            "ipaddress": ip_address,
             "operatorreferenceid": self.config.operator_reference_id,
             "origin": self.config.base_website,
             "referer": f"{self.config.base_website}/signin",
@@ -105,11 +104,11 @@ class HRTiAuthenticator(BaseAuthenticator):
 
         return headers
 
-    def _get_api_headers(self, bearer_token: str = None, referer: str = None) -> Dict[str, str]:
+    def _get_api_headers(
+        self, bearer_token: Optional[str] = None, referer: Optional[str] = None
+    ) -> Dict[str, str]:
         """Get headers for regular API endpoints with proper session support"""
-        if not self._ip_address:
-            self._get_ip_address()
-
+        ip_address = self._get_ip_address()   # cached; "0.0.0.0" on failure (never None)
         device_id = self.get_device_id()
 
         if referer is None:
@@ -122,7 +121,7 @@ class HRTiAuthenticator(BaseAuthenticator):
             "Content-Type": "application/json",
             "deviceid": device_id,
             "devicetypeid": self.config.device_reference_id,
-            "ipaddress": self._ip_address,
+            "ipaddress": ip_address,
             "operatorreferenceid": self.config.operator_reference_id,
             "origin": self.config.base_website,
             "referer": referer,
@@ -156,7 +155,7 @@ class HRTiAuthenticator(BaseAuthenticator):
 
     def _create_token_from_response(self, response_data: Dict[str, Any]) -> HRTiAuthToken:
         """Create HRTi-specific token from API response"""
-        result = response_data.get("Result", {})
+        result = response_data.get("Result") or {}
 
         # Debug the response structure
         logger.debug(f"GrantAccess response Result keys: {list(result.keys())}")
@@ -298,15 +297,11 @@ class HRTiAuthenticator(BaseAuthenticator):
     def _perform_grant_access(self) -> Dict[str, Any]:
         """Perform grant access authentication with proper headers and debugging"""
         try:
-            # Ensure we have IP and device ID
-            if not self._ip_address:
-                self._get_ip_address()
-
             device_id = self.get_device_id()
 
             logger.debug(f"Performing grant access with username: {self.credentials.username}")
             logger.debug(f"Using device ID: {device_id}")
-            logger.debug(f"Using IP address: {self._ip_address}")
+            logger.debug(f"Using IP address: {self._get_ip_address()}")
 
             # Use auth-specific headers with /signin referer
             headers = self._get_auth_headers()
@@ -359,7 +354,7 @@ class HRTiAuthenticator(BaseAuthenticator):
             else:
                 if isinstance(e, ProviderError):
                     raise
-                raise ServerError(f"HRTi login failed: {e}") from e
+                raise typed_error_for(e, self.config.api_endpoints.get("grant_access")) from e
 
     def _register_device(self, strict: bool = False) -> bool:
         """
@@ -406,7 +401,7 @@ class HRTiAuthenticator(BaseAuthenticator):
             payload = {
                 "DeviceSerial": self._device_id,
                 "DeviceReferenceId": self.config.device_reference_id,
-                "IpAddress": self._ip_address,
+                "IpAddress": self._get_ip_address(),
                 "ConnectionType": self.config.connection_type,
                 "ApplicationVersion": self.config.application_version,
                 "DrmId": self._device_id,
@@ -569,16 +564,23 @@ class HRTiAuthenticator(BaseAuthenticator):
     def get_user_id(self) -> str:
         return self._user_id or ""
 
+    def _stored_credentials(self) -> Any:
+        """Credentials from the settings manager (flat key, country=None)."""
+        try:
+            return self.settings_manager.get_provider_credentials(self.provider_name, self.country)
+        except TypeError:   # older settings manager without the country parameter
+            return self.settings_manager.get_provider_credentials(self.provider_name)
+
+    def _has_valid_user_credentials(self) -> bool:
+        """Stored OR current credentials are valid user (username/password) credentials."""
+        return any(
+            isinstance(creds, UserPasswordCredentials) and creds.validate()
+            for creds in (self._stored_credentials(), self.credentials)
+        )
+
     def has_user_credentials(self) -> bool:
         """True when real (non-anonymous) user credentials are stored or set."""
-        from ...base.auth.credentials import UserPasswordCredentials
-
-        try:
-            stored = self.settings_manager.get_provider_credentials(
-                self.provider_name, self.country
-            )
-        except TypeError:
-            stored = self.settings_manager.get_provider_credentials(self.provider_name)
+        stored = self._stored_credentials()
         for creds in (stored, self.credentials):
             if (
                 isinstance(creds, UserPasswordCredentials)
@@ -592,11 +594,11 @@ class HRTiAuthenticator(BaseAuthenticator):
             self,
             content_type: str,
             content_ref_id: str,
-            content_drm_id: str = None,
-            video_store_ids: list = None,
-            channel_id: str = None,
-            start_time: str = None,
-            end_time: str = None,
+            content_drm_id: Optional[str] = None,
+            video_store_ids: Optional[List[str]] = None,
+            channel_id: Optional[str] = None,
+            start_time: Optional[str] = None,
+            end_time: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Authorize a playback session. Raises typed errors (AuthError on 401,
         ServerError otherwise); returns the raw ``Result`` dict -- the caller
@@ -665,7 +667,7 @@ class HRTiAuthenticator(BaseAuthenticator):
         )
         return session_result
 
-    def report_session_event(self, session_id: str, channel_id: str = None) -> bool:
+    def report_session_event(self, session_id: str, channel_id: Optional[str] = None) -> bool:
         """Report session event (like play start)"""
         try:
             bearer_token = self._current_token.access_token if self._current_token else ""
@@ -716,30 +718,13 @@ class HRTiAuthenticator(BaseAuthenticator):
             if token.user_id == HRTiDefaults.ANONYMOUS_USERNAME:
                 return TokenAuthLevel.ANONYMOUS
 
-            # Check if we have user credentials available
-            from ...base.auth.credentials import UserPasswordCredentials
-
-            # Check stored credentials first
-            try:
-                stored_creds = self.settings_manager.get_provider_credentials(
-                    self.provider_name, self.country
-                )
-            except TypeError:
-                stored_creds = self.settings_manager.get_provider_credentials(self.provider_name)
-
-            has_user_creds = (
-                    isinstance(stored_creds, UserPasswordCredentials) and stored_creds.validate()
-            )
-
-            # Check current credentials
-            if not has_user_creds:
-                has_user_creds = (
-                        isinstance(self.credentials, UserPasswordCredentials)
-                        and self.credentials.validate()
-                )
-
-            # If we have user credentials and token has a real user_id, it's user authenticated
-            if has_user_creds and token.user_id and token.user_id != HRTiDefaults.ANONYMOUS_USERNAME:
+            # If we have user credentials (stored or current) and the token has a real
+            # user_id, it's user authenticated
+            if (
+                self._has_valid_user_credentials()
+                and token.user_id
+                and token.user_id != HRTiDefaults.ANONYMOUS_USERNAME
+            ):
                 return TokenAuthLevel.USER_AUTHENTICATED
 
         # Check if using anonymous credentials
@@ -769,28 +754,8 @@ class HRTiAuthenticator(BaseAuthenticator):
 
         # Check if token is anonymous and we have user credentials
         if token.auth_level == TokenAuthLevel.ANONYMOUS:
-            from ...base.auth.credentials import UserPasswordCredentials
-
-            # Check if we have stored user credentials
-            try:
-                stored_creds = self.settings_manager.get_provider_credentials(
-                    self.provider_name, self.country
-                )
-            except TypeError:
-                stored_creds = self.settings_manager.get_provider_credentials(self.provider_name)
-
-            has_stored_user_creds = (
-                    isinstance(stored_creds, UserPasswordCredentials) and stored_creds.validate()
-            )
-
-            # Check current credentials
-            has_current_user_creds = (
-                    isinstance(self.credentials, UserPasswordCredentials)
-                    and self.credentials.validate()
-            )
-
-            # Upgrade if we have any user credentials
-            return has_stored_user_creds or has_current_user_creds
+            # Upgrade if we have any user credentials (stored or current)
+            return self._has_valid_user_credentials()
 
         return False
 
@@ -806,11 +771,12 @@ class HRTiAuthenticator(BaseAuthenticator):
         current_token = self.authenticate(force_refresh=force_refresh)
 
         # Check if upgrade is needed/requested
-        should_upgrade = force_upgrade or self.should_upgrade_token(current_token)
+        upgrade_wanted = self.should_upgrade_token(current_token)
+        should_upgrade = force_upgrade or upgrade_wanted
 
         if should_upgrade:
             logger.info(
-                f"HRTi token upgrade triggered (force={force_upgrade}, should_upgrade={self.should_upgrade_token(current_token)})"
+                f"HRTi token upgrade triggered (force={force_upgrade}, should_upgrade={upgrade_wanted})"
             )
 
             # Store original credentials at the beginning
@@ -818,12 +784,7 @@ class HRTiAuthenticator(BaseAuthenticator):
 
             try:
                 # Get user credentials from settings manager
-                try:
-                    user_creds = self.settings_manager.get_provider_credentials(
-                        self.provider_name, self.country
-                    )
-                except TypeError:
-                    user_creds = self.settings_manager.get_provider_credentials(self.provider_name)
+                user_creds = self._stored_credentials()
 
                 if not user_creds or not user_creds.validate():
                     logger.debug("No valid user credentials available for upgrade")

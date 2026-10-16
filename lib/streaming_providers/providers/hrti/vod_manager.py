@@ -349,7 +349,7 @@ class HRTiVodManager(VodManager):
                 series_title=item.get("SeriesName"),
                 trailer_url=item.get("TrailerUrl"),
                 is_highlight=False,
-                content_type="SERIES" if (item.get("Type") or "").lower() == "episode" else "MOVIE",
+                content_type="SERIES" if str(item.get("Type") or "").lower() == "episode" else "MOVIE",
                 manifest_script=item.get("FileName") or None,
             )
         except _PARSE_ERRORS as exc:

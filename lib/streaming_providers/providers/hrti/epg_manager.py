@@ -33,8 +33,9 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
+from ...base.errors import ServerError
 from ...base.managers.epg import EpgManager
 from ...base.models.epg_models import (
     EPGEntry,
@@ -67,7 +68,7 @@ class HRTiEpgManager(EpgManager):
 
     # HRTi category label -> DVB-SI genre (ETSI EN 300 468); labels are
     # upper-cased before the lookup. Same map as v1.
-    _CATEGORY_GENRES = {
+    _CATEGORY_GENRES: ClassVar[Dict[str, int]] = {
         "VIJESTI": EPGGenre.NEWSCURRENTAFFAIRS,
         "SPORT": EPGGenre.SPORTS,
         "GLAZBA": EPGGenre.MUSICBALLETDANCE,
@@ -228,6 +229,8 @@ class HRTiEpgManager(EpgManager):
     ) -> Dict[str, List[EPGEntry]]:
         """ONE GetProgramme call; every requested id is present in the dict."""
         ids = [str(cid) for cid in channel_ids if cid]
+        if not ids:
+            return {}
         start_time, end_time = self._resolve_range(start_time, end_time)
         payload = {
             "ChannelReferenceIds": ids,
@@ -260,9 +263,15 @@ class HRTiEpgManager(EpgManager):
             return grid
         if not result:
             return grid
+        if not isinstance(result, list):
+            raise ServerError(
+                f"HRTi EPG: unexpected GetProgramme result type {type(result).__name__}"
+            )
 
         total = 0
         for channel_data in result:
+            if not isinstance(channel_data, dict):
+                continue
             channel_id = channel_data.get("ReferenceID")
             if not channel_id:
                 continue
@@ -378,7 +387,7 @@ class HRTiEpgManager(EpgManager):
             self._remember_channel(program_id, str(channel_ref))
 
         genres: List[str] = []
-        for category in [raw.get("Category")] + list(raw.get("AdditionalCategories") or []):
+        for category in [raw.get("Category"), *(raw.get("AdditionalCategories") or [])]:
             if category and category not in genres:
                 genres.append(category)
 

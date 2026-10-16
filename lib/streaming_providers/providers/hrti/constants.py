@@ -18,7 +18,7 @@ defaults below are used (they equal the live values).
 """
 
 import threading
-from typing import Any, Dict, Optional
+from typing import Any, ClassVar, Dict, Optional
 
 from ...base.errors import ConfigurationError
 from ...base.utils.logger import logger
@@ -42,7 +42,7 @@ class HRTiDefaults:
     FALLBACK_MERCHANT = "aviion2"
 
     # Endpoint path templates; base URLs come from the bootstrap
-    API_ENDPOINT_PATHS = {
+    API_ENDPOINT_PATHS: ClassVar[Dict[str, str]] = {
         "get_ip": "/getIPAddress",
         "grant_access": "/GrantAccess",
         "channels": "/GetChannels",
@@ -174,6 +174,13 @@ class HRTiConfig:
                 cfg_resp.raise_for_status()
                 self.update_from_api(env_resp.json(), cfg_resp.json())
                 self.loaded_from_fallback = False
+                if not self.hsapi_base_url or not self.web_api_url:
+                    # Bootstrap answered but lacks apiUrl / webApiUrl: fill ONLY the
+                    # gaps from the defaults (otherwise endpoint() raises a PERMANENT
+                    # ConfigurationError for every later call).
+                    logger.warning("HRTi: bootstrap config incomplete; filling gaps from defaults")
+                    self._build_fallback_endpoints()
+                    self.loaded_from_fallback = True
                 logger.debug("HRTi environment configuration loaded")
             except Exception as exc:  # deliberate: bootstrap failure -> documented defaults
                 logger.warning(f"HRTi: environment config unavailable ({exc}); using defaults")
