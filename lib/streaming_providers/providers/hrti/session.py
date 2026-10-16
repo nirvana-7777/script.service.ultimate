@@ -23,7 +23,15 @@ Behaviour
   rejected USER credentials degrade to an anonymous token (they do not raise).
 * ``invalidate()`` clears memory AND persisted storage (authenticator) and
   runs the registered callbacks (the provider clears its caches there).
-  ``refresh()`` is the 401 recovery: invalidate + one forced fresh login.
+  ``refresh()`` is the 401 recovery: invalidate + one forced fresh login
+  (which also re-registers the device -- step 5 of the login flow).
+* ErrorCode-4 recovery (stale device session, called from api.api_post
+  ONLY): ``reregister_device`` re-registers the device ONCE under the
+  session lock -- deduped by a short TIME window (registration does NOT
+  rotate the device id, so an id comparison alone cannot dedupe) and by the
+  failed-id comparison (kept for the day registration rotates) -- so
+  concurrent requests failing together do not stampede RegisterDevice;
+  failures feed the same permanent/backoff bookkeeping as login failures.
 """
 
 import threading
@@ -38,6 +46,12 @@ _PERMANENT = (AuthError, ConfigurationError)
 
 
 class HRTiSession:
+    #: Seconds after a successful re-registration during which further
+    #: reregister_device() calls are deduped. Registration does not rotate
+    #: the device id, so concurrent callers that failed together can simply
+    #: retry with the (now re-registered) same id.
+    REREGISTER_DEDUPE_SECONDS = 5.0
+
     def __init__(
         self,
         *,
@@ -59,6 +73,7 @@ class HRTiSession:
         self._permanent = False
         self._failures = 0
         self._retry_at = 0.0
+        self._last_reregister_at = float("-inf")
 
     # ------------------------------------------------------------------
     # AuthProtocol
@@ -102,7 +117,15 @@ class HRTiSession:
     # Session API for the UI and the 401 recovery
     # ------------------------------------------------------------------
     def refresh(self) -> str:
-        """401 recovery: invalidate, then one forced fresh login."""
+        """401 recovery: invalidate, then one forced fresh login.
+
+        Note: the forced login re-registers the device as a side effect
+        (step 5 of the login flow) -- so a full refresh also heals a stale
+        device session, at the cost of discarding a possibly still-valid
+        token. The ErrorCode-4 ladder in api.api_post therefore prefers the
+        lighter, targeted reregister_device() and only falls back to this
+        when the token is genuinely dead (HTTP 401).
+        """
         self.invalidate()
         return self.get_access_token(force_refresh=True)
 
@@ -153,9 +176,9 @@ class HRTiSession:
         self.get_access_token()           # typed login errors, backoff, lazy login
         try:
             return self._authenticator.authorize_session(**kw)
-        except AuthError:                 # stale token: one refresh, one retry
-            self.refresh()
-            return self._authenticator.authorize_session(**kw)
+        except AuthError:                 # stale token OR stale device session
+            self.refresh()                # (ErrorCode 4 -> AuthError there):
+            return self._authenticator.authorize_session(**kw)  # one retry
 
     def report_session_event(self, session_id: str, channel_id: Optional[str] = None) -> bool:
         return self._authenticator.report_session_event(session_id, channel_id)
@@ -169,8 +192,8 @@ class HRTiSession:
         if self._permanent or self._clock() < self._retry_at:
             raise self._typed_error
 
-    def _record_failure(self, exc: BaseException) -> ProviderError:
-        typed = exc if isinstance(exc, ProviderError) else ServerError(f"HRTi login failed: {exc}")
+    def _record_failure(self, exc: BaseException, what: str = "login") -> ProviderError:
+        typed = exc if isinstance(exc, ProviderError) else ServerError(f"HRTi {what} failed: {exc}")
         self._last_error = exc
         self._typed_error = typed
         if isinstance(typed, _PERMANENT):
@@ -180,7 +203,7 @@ class HRTiSession:
             delay = min(self._backoff_cap, self._backoff_base * (2 ** (self._failures - 1)))
             self._retry_at = self._clock() + delay
         logger.warning(
-            f"HRTi: login failed ({type(typed).__name__}, "
+            f"HRTi: {what} failed ({type(typed).__name__}, "
             f"{'permanent' if self._permanent else f'retry in {self._retry_at - self._clock():.0f}s'}): {typed}"
         )
         return typed
@@ -191,3 +214,54 @@ class HRTiSession:
         self._permanent = False
         self._failures = 0
         self._retry_at = 0.0
+
+    # ------------------------------------------------------------------
+    # ErrorCode-4 recovery (called from api.api_post ONLY)
+    # ------------------------------------------------------------------
+    def reregister_device(self, failed_device_id: Optional[str] = None) -> None:
+        """
+        ErrorCode-4 recovery: re-register the device with the backend.
+
+        Called from api.api_post only (managers never call this). The session
+        is the ONE place allowed to touch the raw authenticator.
+
+        Concurrency / stampede control, two guards:
+        * TIME (the effective one): registration does NOT rotate the device
+          id -- the authenticator re-registers the SAME uuid, RegisterDevice
+          (re-)creates the server-side record for the DeviceSerial supplied
+          -- so an id comparison alone cannot dedupe. A successful
+          re-registration therefore blocks further calls for
+          REREGISTER_DEDUPE_SECONDS; concurrent callers that failed together
+          simply retry with the (re-registered) same id.
+        * ID (kept for the day registration rotates): if the id HAS moved on
+          since the caller's request went out, this is a no-op.
+
+        A FAILED re-registration feeds the shared permanent/backoff
+        bookkeeping (a fresh failure blocks the next concurrent attempt via
+        _raise_if_blocked instead of hammering RegisterDevice); a success
+        clears it.
+
+        Raises typed errors (AuthError / ServerError / ConfigurationError);
+        never fails silently.
+        """
+        with self._lock:
+            # Normally a no-op here: api_post calls get_access_token() right
+            # before the request, and every success clears the bookkeeping.
+            # It guards the failure case -- a re-registration that just
+            # failed must block the next concurrent attempt.
+            self._raise_if_blocked()
+            now = self._clock()
+            if now < self._last_reregister_at + self.REREGISTER_DEDUPE_SECONDS:
+                return  # another caller re-registered moments ago
+            current = self._authenticator.get_device_id()
+            if failed_device_id is not None and current != failed_device_id:
+                return  # id already rotated by another caller
+            try:
+                self._authenticator.register_device(force=True)
+            except Exception as exc:
+                typed = self._record_failure(exc, what="device registration")
+                if typed is exc:
+                    raise
+                raise typed from exc
+            self._last_reregister_at = now
+            self._clear_failure()

@@ -1,5 +1,23 @@
 # streaming_providers/providers/hrti/auth.py
-import base64
+"""
+HRTiAuthenticator -- stateful login flow (Variant B raw authenticator).
+
+Managers never call this class; they go through HRTiSession (the AuthProtocol
+adapter). The provider keeps both objects: ``self.authenticator`` for the
+legacy auth mixin, ``self.auth`` (the session) for the managers.
+
+Device identity
+---------------
+The device id (a UUID) is CLIENT identity, not account state: it survives
+invalidate() / refresh() and is deliberately NOT cleared with the token. It
+is loaded from the settings manager on startup (flat keys, country=None) and
+persisted whenever a fresh one is generated or the ErrorCode-4 recovery
+re-registers it (register_device -> _persist_device_id). The server-side
+registration of that id can expire while the stored id lives on -- that is
+ErrorCode 4, recovered reactively by api.api_post (ONE re-registration + ONE
+retry, then AuthError).
+"""
+
 import json
 import time
 import uuid
@@ -9,7 +27,7 @@ from typing import Any, Dict, Optional
 from ...base.auth.base_auth import BaseAuthenticator, BaseAuthToken, TokenAuthLevel
 from ...base.errors import AuthError, ProviderError, ServerError
 from ...base.utils.logger import logger
-from .api import typed_error_for
+from .api import DEVICE_SESSION_INVALID_CODE, typed_error_for
 from .constants import HRTiConfig, HRTiDefaults
 from .models import HRTiAuthToken, HRTiCredentials
 
@@ -115,7 +133,7 @@ class HRTiAuthenticator(BaseAuthenticator):
         # Add authorization header with Client prefix
         if bearer_token:
             headers["authorization"] = f"Client {bearer_token}"
-            logger.debug(f"Added authorization header with token: {bearer_token[:20]}...")
+            logger.debug("Added authorization header to API headers")
 
         return headers
 
@@ -146,8 +164,6 @@ class HRTiAuthenticator(BaseAuthenticator):
         # Extract token
         access_token = result.get("Token", "")
         logger.debug(f"Extracted access_token: {'present' if access_token else 'MISSING'}")
-        if access_token:
-            logger.debug(f"Token length: {len(access_token)}, starts with: {access_token[:20]}...")
 
         # Store user ID if available
         if "Customer" in result:
@@ -201,9 +217,7 @@ class HRTiAuthenticator(BaseAuthenticator):
 
         # Debug: Verify token is available
         logger.debug(f"Token created - access_token present: {bool(token.access_token)}")
-        if token.access_token:
-            logger.debug(f"Token value: {token.access_token[:20]}...")
-        else:
+        if not token.access_token:
             logger.warning("Token created but access_token is empty!")
 
         # Step 5: Register device (now with token available in self._current_token)
@@ -347,13 +361,37 @@ class HRTiAuthenticator(BaseAuthenticator):
                     raise
                 raise ServerError(f"HRTi login failed: {e}") from e
 
-    def _register_device(self):
-        """Register device with HRTi using API headers with proper authorization"""
+    def _register_device(self, strict: bool = False) -> bool:
+        """
+        Register the device with HRTi (RegisterDevice, HSAPI endpoint).
+
+        strict=False (login flow, step 5 of _perform_authentication): best
+        effort -- every failure is logged and swallowed, a missing token is
+        a warning; registration must never abort the login. Returns
+        True/False (the login flow ignores it).
+
+        strict=True (ErrorCode-4 recovery, called via register_device()):
+        failures RAISE typed errors -- AuthError when there is no token to
+        register with, ServerError for transport/HTTP/body-ErrorCode
+        failures, ConfigurationError when the endpoint is not configured.
+        The recovery ladder in api.api_post must be able to tell a FAILED
+        re-registration from a successful one; swallowing here would make
+        it retry the original request, get ErrorCode 4 again and raise a
+        misleading AuthError while the real cause is only a warning in
+        the log.
+        """
+        url: Optional[str] = None
         try:
             bearer_token = self._current_token.access_token if self._current_token else ""
             if not bearer_token:
+                if strict:
+                    raise AuthError("HRTi: no token available for device registration")
                 logger.warning("No bearer token available for device registration")
-                return
+                return False
+
+            # ConfigurationError when missing (endpoint() raises, never returns
+            # a falsy URL -- the old `if not register_endpoint` check was dead)
+            url = self.config.endpoint("register_device")
 
             # Use API headers with proper authorization and referer
             headers = self._get_api_headers(bearer_token)
@@ -378,13 +416,8 @@ class HRTiAuthenticator(BaseAuthenticator):
 
             logger.debug(f"HRTi Device Registration Payload: {payload}")
 
-            register_endpoint = self.config.endpoint("register_device")
-            if not register_endpoint:
-                logger.warning("No register_device endpoint configured")
-                return
-
             response = self.http_manager.post(
-                register_endpoint,
+                url,
                 operation="api",
                 headers=headers,
                 data=json.dumps(payload),
@@ -394,10 +427,36 @@ class HRTiAuthenticator(BaseAuthenticator):
             response.raise_for_status()
 
             result = response.json()
+            error_code = result.get("ErrorCode") if isinstance(result, dict) else None
+            if error_code not in (0, None):
+                if strict:
+                    raise ServerError(
+                        f"HRTi device registration failed: [{error_code}] "
+                        f"{result.get('ErrorDescription')}",
+                        url=url,
+                        code=str(error_code),
+                    )
+                logger.warning(
+                    f"HRTi device registration error: [{error_code}] "
+                    f"{result.get('ErrorDescription')}"
+                )
+                return False
             logger.debug(f"HRTi device registration successful: {result}")
+            return True
 
-        except Exception as e:
+        except ProviderError as e:
+            # Typed error (incl. ConfigurationError from endpoint() and the
+            # ServerError/AuthError raised above): fatal in the recovery
+            # path, logged and swallowed in the login flow (v1 behaviour).
+            if strict:
+                raise
             logger.warning(f"HRTi device registration failed: {e}")
+            return False
+        except Exception as e:
+            if strict:
+                raise typed_error_for(e, url) from e
+            logger.warning(f"HRTi device registration failed: {e}")
+            return False
 
     def _get_initial_data(self):
         """Get initial content rating and profiles using API headers with proper authorization"""
@@ -441,16 +500,23 @@ class HRTiAuthenticator(BaseAuthenticator):
             self._device_id = self.settings_manager.get_device_id(self.provider_name, self.country)
             if not self._device_id:
                 self._device_id = str(uuid.uuid4())
+                # A freshly generated id MUST survive the restart, otherwise
+                # the device identity churns on every start and the server
+                # sees a brand-new device each time. No-op + warning when the
+                # settings manager has no setter (see _persist_device_id).
+                self._persist_device_id()
                 logger.debug(f"Generated new device ID: {self._device_id}")
 
             # Ensure it's a valid UUID format
             if not self._validate_uuid(self._device_id):
                 logger.warning(f"Invalid device ID format, generating new one: {self._device_id}")
                 self._device_id = str(uuid.uuid4())
+                self._persist_device_id()
 
         except Exception as e:
             logger.error(f"Error initializing device ID: {e}")
             self._device_id = str(uuid.uuid4())
+            self._persist_device_id()
 
     @staticmethod
     def _validate_uuid(uuid_string):
@@ -575,11 +641,23 @@ class HRTiAuthenticator(BaseAuthenticator):
 
         session_result = result.get("Result")
         if not session_result:
+            error_code = result.get("ErrorCode")
+            if error_code == DEVICE_SESSION_INVALID_CODE:
+                # Stale device session: AuthError (NOT ServerError) so that
+                # HRTiSession.authorize_session's existing recovery ladder
+                # (refresh = invalidate + forced login, which re-registers the
+                # device inside _perform_authentication) heals it with
+                # exactly one retry. Assumption to verify on device:
+                # ErrorCode 4 means the same here as on the data endpoints.
+                raise AuthError(
+                    "HRTi: AuthorizeSession rejected the device session "
+                    f"(ErrorCode {error_code}: {result.get('ErrorDescription')})"
+                )
             raise ServerError(
                 "HRTi: no result in AuthorizeSession response "
-                f"(ErrorCode={result.get('ErrorCode')}: {result.get('ErrorDescription')})",
+                f"(ErrorCode={error_code}: {result.get('ErrorDescription')})",
                 url=auth_endpoint,
-                code=str(result.get("ErrorCode")),
+                code=str(error_code),
             )
         logger.debug(
             f"Session authorization result - authorized: {session_result.get('Authorized', False)}, "
@@ -794,3 +872,81 @@ class HRTiAuthenticator(BaseAuthenticator):
         except Exception as e:
             logger.error(f"HRTi token refresh failed: {e}")
             return None
+
+    # ------------------------------------------------------------------
+    # ErrorCode-4 recovery (called through HRTiSession.reregister_device)
+    # ------------------------------------------------------------------
+    def register_device(self, force: bool = False) -> None:
+        """
+        Public, targeted device re-registration -- the ErrorCode-4 recovery
+        path. Called ONLY through HRTiSession.reregister_device (which locks
+        and dedupes concurrent callers); managers and api.py never call this
+        directly.
+
+        Unlike the best-effort registration inside the login flow
+        (_register_device(strict=False) swallows every failure), this RAISES
+        typed errors (AuthError / ServerError / ConfigurationError) -- see
+        _register_device(strict=True).
+
+        The device id is NOT rotated: RegisterDevice (re-)creates the
+        server-side record for the DeviceSerial supplied, so the SAME id is
+        sent; generating a fresh one would churn the device identity and any
+        server-side per-device state. ``force`` is therefore accepted for the
+        session contract but has no shortcut to skip today -- registration
+        in the login flow is unconditional anyway (the web client
+        re-registers on every login too).
+
+        Persists the device id after success (write-through, see
+        _persist_device_id): the original bug was a stored id whose
+        server-side registration had expired; the reactive recovery fixes
+        the session, the write-through keeps memory and storage consistent.
+        """
+        logger.debug(f"HRTi: targeted device re-registration (force={force})")
+        if self._register_device(strict=True):
+            self._persist_device_id()
+
+    def _persist_device_id(self) -> None:
+        """
+        Write the CURRENT device id back to the storage it is loaded from on
+        startup (settings_manager.get_device_id(provider_name, country)).
+
+        Defensive about the save API (its name is not pinned anywhere in
+        this file): tries the natural setter names, each with the signature
+        MIRRORING the getter -- (provider_name, country, device_id), country
+        being None for the flat HRTi keys. No other signature is guessed: a
+        2-arg call against a setter with an optional country parameter would
+        silently bind the device id to the country slot.
+
+        Never raises. If no setter exists, logs ONE warning naming the
+        expected API -- then the id lives only in memory for this process
+        and the reactive ErrorCode-4 recovery in api.api_post self-heals
+        after every restart instead of never. If get_device_id turns out to
+        be get-or-create, this whole method is a harmless no-op except in
+        the freshly-generated branches of _initialize_device.
+        """
+        device_id = self._device_id
+        if not device_id:
+            return
+        settings_manager = getattr(self, "settings_manager", None)
+        if settings_manager is None:
+            return
+        for name in ("set_device_id", "save_device_id", "store_device_id"):
+            setter = getattr(settings_manager, name, None)
+            if not callable(setter):
+                continue
+            try:
+                setter(self.provider_name, self.country, device_id)
+                logger.debug(f"HRTi: device id persisted via {name}")
+                return
+            except TypeError:
+                continue  # wrong name/signature -- try the next candidate
+            except Exception as exc:
+                logger.warning(f"HRTi: persisting the device id failed ({name}): {exc!r}")
+                return
+        logger.warning(
+            "HRTi: settings manager exposes no device-id setter "
+            "(tried set_device_id/save_device_id/store_device_id with the "
+            "get_device_id-mirroring signature (provider, country, device_id)) "
+            "-- the current device id is not persisted; ErrorCode-4 recovery "
+            "stays reactive. Add the setter to make it stick across restarts."
+        )

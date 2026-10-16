@@ -47,6 +47,7 @@ class HRTiDefaults:
         "grant_access": "/GrantAccess",
         "channels": "/GetChannels",
         "programme": "/GetProgramme",
+        "epg_details": "/GetEpgDetails",
         "authorize_session": "/AuthorizeSession",
         "report_session": "/ReportSessionEvent",
         "register_device": "/RegisterDevice",
@@ -61,9 +62,9 @@ class HRTiDefaults:
     }
     # served by the web API (webApiUrl) / by the HSAPI (apiUrl)
     WEB_API_ENDPOINTS = (
-        "get_ip", "grant_access", "channels", "programme", "authorize_session",
-        "report_session", "catalogue_structure", "catalogue", "vod_details",
-        "episodes", "watch_later", "editors_choice",
+        "get_ip", "grant_access", "channels", "programme", "epg_details",
+        "authorize_session", "report_session", "catalogue_structure",
+        "catalogue", "vod_details", "episodes", "watch_later", "editors_choice",
     )
     HSAPI_ENDPOINTS = ("register_device", "content_ratings", "profiles")
 

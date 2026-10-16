@@ -7,10 +7,11 @@ caches) and builds the managers; everything generic (capability flags,
 content-id routing, manifest / DRM delegation, legacy surface) comes from
 ManagedProvider.
 
-Capabilities in this step: live channels + radio, VOD. EPG is deliberately
-NOT registered yet (v1 had implements_epg False; HRTiEpgManager follows as a
-second step and needs a real GetProgramme sample). The unwired
-epg_manager.py stays untouched in the package until then.
+Capabilities: live channels + radio, VOD, EPG (native batch GetProgramme,
+per-programme GetEpgDetails enrichment; epg_window = (2, 7), v1 values
+kept). A future catchup manager would take the EPG manager as a
+keyword-only ``epg=`` extra (_init_managers builds epg before catchup, so
+``self.epg`` is available in _build_catchup).
 """
 
 from typing import ClassVar, Dict, List, Optional
@@ -20,6 +21,7 @@ from ...base.models.proxy_models import ProxyConfig
 from .auth import HRTiAuthenticator
 from .channel_manager import HRTiChannelManager
 from .constants import HRTiConfig, HRTiDefaults
+from .epg_manager import HRTiEpgManager
 from .session import HRTiSession
 from .vod_manager import HRTiVodManager
 
@@ -100,6 +102,8 @@ class HRTiProvider(ManagedProvider):
         self._playout_cache.clear()
         if self.channels is not None:
             self.channels.clear_caches()
+        # NOTE: the EPG manager's programme->channel hint map is schedule
+        # data, not account-specific state -- deliberately NOT cleared here.
 
     # ------------------------------------------------------------------
     # Manager factories (None = capability not offered)
@@ -122,4 +126,14 @@ class HRTiProvider(ManagedProvider):
             playout_cache=self._playout_cache,
         )
 
-    # _build_epg(): step 2 (HRTiEpgManager, native batch GetProgramme).
+    def _build_epg(self):
+        # Exactly the four collaborators: no playout_cache (EPG plays
+        # nothing), no channels= (the provider layer fills channel_ids from
+        # get_channels() when the backend passes none; the programme->channel
+        # hint map inside the manager is its own state).
+        return HRTiEpgManager(
+            http_manager=self.http_manager,
+            auth=self.auth,
+            country=self.country,
+            config=self.hrti_config,
+        )
