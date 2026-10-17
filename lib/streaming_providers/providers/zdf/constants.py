@@ -9,15 +9,16 @@ Identity rule: ONE id, used everywhere
 Never rename it after release.
 
 Upstream flow (all against api.zdf.de, no user account, no DRM):
+    0. GET  https://www.zdf.de/  -> videoToken + appToken (auth.py, cached)
     1. GET  /graphql  getActiveLiveStreams (persisted query)  -> channel list
     2. POST /graphql  VideoByCanonical (only if the ptmd path is not cached)
-    3. GET  /tmd/2/<player>/live/ptmd/<id>                    -> DASH manifest URL
+    3. GET  /tmd/2/<player>/live/ptmd/<id>                    -> HLS manifest URL
 
-The two ``api-auth`` bearer values are the PUBLIC client tokens of the ZDF web
-player (visible in any browser capture), not user credentials. ZDF rotates them
-from time to time: override via the provider config dict
-(``api_token`` / ``list_token`` / ``app_id``) instead of editing this file.
-They must never be logged.
+The ``api-auth`` bearer values are the PUBLIC, expiring client tokens of the
+ZDF web player, not user credentials. auth.py fetches them from the web page;
+the static values below are only the FALLBACK when that fetch fails (they
+stop working when ZDF rotates them). Override via the provider config dict
+(``api_token`` / ``list_token`` / ``app_id``). Tokens must never be logged.
 """
 
 import json
@@ -53,17 +54,33 @@ class ZdfDefaults:
     # (sports, services) and test items do not, and are not channels.
     LIVE247_MARKER = "/live/ptmd/247onAir-"
 
-    # --- DASH selection ----------------------------------------------------
-    # Only DASH is wanted (no HLS). A formitaet counts as DASH when its
-    # mimeType contains "dash" or its type contains "mpd".
-    DASH_MIME_MARKER = "dash"
-    DASH_TYPE_MARKER = "mpd"
-    # Preferred quality entries, best first ("auto" = the adaptive master).
-    DASH_QUALITY_ORDER = ("auto", "veryhigh", "high", "hd", "med", "low")
+    # --- HLS selection -------------------------------------------------------
+    # The 24/7 channels were only seen with HLS formitaeten (no DASH), so
+    # HLS is returned. A formitaet counts as HLS when its mimeType contains
+    # "mpegurl" or its type contains "m3u8". Matching is case-insensitive.
+    HLS_MIME_MARKER = "mpegurl"
+    HLS_TYPE_MARKER = "m3u8"
+    # Preferred quality entries, best first. "auto" is the master ZDF itself
+    # lists first (and the one the web player / other clients use).
+    HLS_QUALITY_ORDER = ("auto", "veryhigh", "high", "hd", "med", "low")
     AUDIO_CLASS_PREFERRED = "main"      # not "ad" (audio description)
     AUDIO_LANGUAGE_PREFERRED = "deu"
 
-    # --- Public web-client identity (override via config, never log) -----------
+    # --- Token source ---------------------------------------------------------
+    # The page embeds the tokens in Next.js "flight" chunks:
+    #   self.__next_f.push([1,"...\"videoToken\":{\"apiToken\":\"..\",\"expiresAt\":\"..\"}..."])
+    # videoToken -> GraphQL POST + PTMD ("api"), appToken -> channel list ("app").
+    WEB_URL = "https://www.zdf.de/"
+    TOKEN_KIND_API = "api"
+    TOKEN_KIND_LIST = "app"
+    FLIGHT_TOKEN_NAMES = {"videoToken": "api", "appToken": "app"}
+    # Refresh this long before the token really expires.
+    TOKEN_REFRESH_BUFFER_SECONDS = 300
+    # After a failed token fetch use the static fallback and do not retry
+    # before this many seconds have passed.
+    TOKEN_FETCH_BACKOFF_SECONDS = 60
+
+    # --- Fallback client identity (override via config, never log) --------------
     LIST_TOKEN = "aa3noh4ohz9eeboo8shiesheec9ciequ9Quah7el"
     API_TOKEN = "ahBaeMeekaiy5ohsai4bee4ki6Oopoi5quailieb"
     APP_ID = "ffw-mt-web-37e8d3ae"
@@ -152,6 +169,7 @@ class ZdfConfig:
         }
 
     # ----- Header builders ------------------------------------------------
+    # The token always comes from auth.py (fresh or fallback), never from here.
     def _base_headers(self) -> dict:
         return {
             "User-Agent": self.user_agent,
@@ -160,33 +178,41 @@ class ZdfConfig:
             "Referer": ZdfDefaults.REFERER,
         }
 
-    def list_headers(self) -> dict:
-        """Persisted-query GET (channel list)."""
+    def page_headers(self) -> dict:
+        """Plain page fetch of the token source (no api-auth)."""
+        return {
+            "User-Agent": self.user_agent,
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": ZdfDefaults.ACCEPT_LANGUAGE,
+        }
+
+    def list_headers(self, token: str) -> dict:
+        """Persisted-query GET (channel list): appToken + app id."""
         headers = self._base_headers()
         headers["Accept"] = ZdfDefaults.ACCEPT_LIST
         headers["Content-Type"] = "application/json"
-        headers["api-auth"] = f"Bearer {self.list_token}"
+        headers["api-auth"] = f"Bearer {token}"
         headers["zdf-app-id"] = self.app_id
         return headers
 
-    def graphql_headers(self) -> dict:
-        """VideoByCanonical POST."""
+    def graphql_headers(self, token: str) -> dict:
+        """VideoByCanonical POST: videoToken."""
         headers = self._base_headers()
         headers["Accept"] = "*/*"
         headers["Content-Type"] = "application/json"
-        headers["api-auth"] = f"Bearer {self.api_token}"
+        headers["api-auth"] = f"Bearer {token}"
         return headers
 
-    def ptmd_headers(self) -> dict:
-        """PTMD GET."""
+    def ptmd_headers(self, token: str) -> dict:
+        """PTMD GET: videoToken."""
         headers = self._base_headers()
         headers["Accept"] = ZdfDefaults.ACCEPT_PTMD
-        headers["api-auth"] = f"Bearer {self.api_token}"
+        headers["api-auth"] = f"Bearer {token}"
         return headers
 
     def stream_headers(self) -> dict:
         """
-        Headers for MPD / segment fetches by the player (CDN).
+        Headers for manifest / segment fetches by the player (CDN).
 
         Deliberately WITHOUT api-auth / zdf-app-id: the CDN does not need them
         and sending them would leak the client token to the edge.

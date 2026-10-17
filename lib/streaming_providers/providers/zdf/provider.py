@@ -2,15 +2,16 @@
 """
 ZDF provider (live TV of ZDF, ZDFneo, ZDFinfo, 3sat, phoenix, KiKA, ARTE).
 
-Capabilities: channels only. Clear DASH streams, no account, no DRM, no EPG
+Capabilities: channels only. Clear HLS streams, no account, no DRM, no EPG
 (the generic XMLTV path answers EPG), no catchup.
 
 Known limitations:
   * Streams are geo-limited to Germany; a ProxyConfig only affects the
     Python-side API calls. The manifest and segment fetches are made by
     inputstream.adaptive inside Kodi and do not use it.
-  * The api-auth client tokens are public web-player tokens and may be rotated
-    by ZDF (config keys api_token / list_token / app_id).
+  * The api-auth client tokens are public, expiring web-player tokens that
+    auth.py fetches from zdf.de; the static config values (api_token /
+    list_token / app_id) are only the fallback if that fetch fails.
 """
 
 from typing import ClassVar, Dict, List, Optional, Tuple
@@ -33,7 +34,7 @@ class ZdfProvider(ManagedProvider):
     # Decision 1 (§11): clear streams, no DRM at all -> no folded DRM, no _build_drm().
     DRM_IN_MANAGERS: ClassVar[bool] = False
     # Decision 2 (§10): the manager's CDN headers (UA/Origin/Referer, no tokens)
-    # are what the player must send for MPD and segments.
+    # are what the player must send for the playlist and segments.
     HEADERS_FROM_MANAGERS: ClassVar[bool] = True
 
     @property
@@ -60,8 +61,8 @@ class ZdfProvider(ManagedProvider):
             user_agent=self.provider_config.user_agent,
             timeout=self.provider_config.timeout,
         )
-        # 3. auth (static public tokens, nothing lazy to do)
-        self.auth = ZdfAuth(config=self.provider_config)
+        # 3. auth: lazy, no network here (tokens are fetched on first use)
+        self.auth = ZdfAuth(http_manager=self.http_manager, config=self.provider_config)
         # 4. caches (provider-owned, borrowed by the manager)
         self._ptmd_cache: Dict[str, Tuple[str, float]] = {}
         # 5. managers -- must be the last line

@@ -1,10 +1,10 @@
 # streaming_providers/providers/zdf/channel_manager.py
 """
-ZDF channel manager -- the only manager (live TV, clear DASH, no DRM).
+ZDF channel manager -- the only manager (live TV, clear HLS, no DRM).
 
 Contract (ChannelManager ABC; README §6.1):
   * get_channels()                -> List[Channel]
-  * get_channel_manifest(id)      -> DASH MPD url; raises on real failures
+  * get_channel_manifest(id)      -> HLS master.m3u8 url; raises on real failures
   * get_channel_manifest_headers  -> CDN headers (HEADERS_FROM_MANAGERS = True)
   * get_segment_headers           -> inherited (= manifest headers)
   * get_channel_drm               -> inherited ([] = no DRM; ZDF streams are clear)
@@ -13,14 +13,17 @@ content_id == the video's `canonical` ("zdf-live-beitrag-100"). It resolves to
 a ptmd path via a small TTL cache that get_channels() fills; on a miss one
 VideoByCanonical request fills it. Failure semantics:
   * canonical unknown / no live media  -> NotFoundError
-  * ptmd without a DASH stream, or encrypted -> ServerError (raised as
+  * ptmd without an HLS stream, or encrypted -> ServerError (raised as
     ValueError inside transport_errors); the message lists what was offered.
+  * API refuses a request (AuthError / EntitlementError, i.e. 401/403) ->
+    one refetch of the web-client tokens and exactly one retry, only if the
+    tokens really changed; otherwise the original error propagates.
 """
 
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from ...base.errors import NotFoundError
+from ...base.errors import AuthError, EntitlementError, NotFoundError
 from ...base.managers import ChannelManager
 from ...base.models import Channel
 from ...base.utils.logger import logger
@@ -56,16 +59,32 @@ class ZdfChannelManager(ChannelManager):
         self._ptmd_cache = ptmd_cache if ptmd_cache is not None else {}
 
     # ------------------------------------------------------------------
+    # Request helper: one retry after a token rejection
+    # ------------------------------------------------------------------
+    def _send(self, send: Callable[[], Any]) -> Any:
+        """
+        Run `send` (which must build its headers inside, so a retry picks up
+        the new token). A 401/403 may mean an expired web-client token: refetch
+        once and retry once, but only if the tokens actually changed.
+        """
+        try:
+            return send()
+        except (AuthError, EntitlementError):
+            if not self.auth.refresh_after_rejection():
+                raise
+            return send()
+
+    # ------------------------------------------------------------------
     # Channels
     # ------------------------------------------------------------------
     def get_channels(self, **kw: Any) -> List[Channel]:
         with transport_errors("get_channels", _PROVIDER):
-            resp = self.http_manager.get(
+            resp = self._send(lambda: self.http_manager.get(
                 self.config.url(ZdfDefaults.PATH_GRAPHQL),
                 params=self.config.list_query_params(),
                 headers=self.auth.build_list_headers(),
                 operation="api",
-            )
+            ))
             nodes = extract_video_nodes(resp.json())
 
         channels: List[ZdfChannel] = []
@@ -98,7 +117,7 @@ class ZdfChannelManager(ChannelManager):
         if cached and (now - cached[1]) < ZdfDefaults.PTMD_PATH_CACHE_TTL:
             return cached[0]
         with transport_errors(f"VideoByCanonical {canonical}", _PROVIDER):
-            resp = self.http_manager.post(
+            resp = self._send(lambda: self.http_manager.post(
                 self.config.url(ZdfDefaults.PATH_GRAPHQL),
                 json={
                     "operationName": "VideoByCanonical",
@@ -107,7 +126,7 @@ class ZdfChannelManager(ChannelManager):
                 },
                 headers=self.auth.build_headers(),
                 operation="api",
-            )
+            ))
             path = ptmd_path_from_video(resp.json())
         if path is None:
             raise NotFoundError(f"{_PROVIDER}: no live stream for {canonical}")
@@ -120,11 +139,11 @@ class ZdfChannelManager(ChannelManager):
     def get_channel_manifest(self, content_id: str, **kw: Any) -> Optional[str]:
         ptmd_path = self._ptmd_path(content_id)
         with transport_errors(f"ptmd for {content_id}", _PROVIDER):
-            resp = self.http_manager.get(
+            resp = self._send(lambda: self.http_manager.get(
                 self.config.url(ptmd_path),
                 headers=self.auth.build_ptmd_headers(),
                 operation="api",
-            )
+            ))
             playout = ZdfPlayout.from_api_response(resp.json())
         return playout.manifest_url
 

@@ -11,11 +11,57 @@ scheduled shows); `is_channel_node` is the one place that decides what counts
 as a channel.
 """
 
+import json
+import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from ...base.models import Channel
 from .constants import ZdfDefaults
+
+
+# ----------------------------------------------------------------------
+# Web-client tokens (parsed from the zdf.de page, see auth.py)
+# ----------------------------------------------------------------------
+_FLIGHT_CHUNK = re.compile(r'self\.__next_f\.push\(\[1,\s*"((?:[^"\\]|\\.)*)"\]\)')
+
+
+def _parse_expiry(value: str) -> float:
+    """ISO-8601 with offset ('2026-10-18T05:21:01+02:00', also 'Z') -> unix seconds."""
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+
+
+def parse_flight_tokens(html: str) -> Dict[str, Tuple[str, float]]:
+    """
+    {kind: (token, expires_at_unix)} from the zdf.de start page.
+
+    Joins every ``self.__next_f.push([1,"..."])`` chunk (JSON-string
+    unescaped) and reads the ``videoToken`` / ``appToken`` objects out of the
+    result. Kinds that are missing or malformed are simply absent; the caller
+    decides what an incomplete result means.
+    """
+    chunks: List[str] = []
+    for raw in _FLIGHT_CHUNK.findall(html or ""):
+        try:
+            chunks.append(json.loads('"' + raw + '"'))
+        except ValueError:
+            continue
+    flight = "".join(chunks)
+
+    tokens: Dict[str, Tuple[str, float]] = {}
+    for name, kind in ZdfDefaults.FLIGHT_TOKEN_NAMES.items():
+        match = re.search(
+            r'"%s":\{"apiToken":"([^"]+)","expiresAt":"([^"]+)"\}' % re.escape(name),
+            flight,
+        )
+        if not match:
+            continue
+        try:
+            tokens[kind] = (match.group(1), _parse_expiry(match.group(2)))
+        except ValueError:
+            continue
+    return tokens
 
 
 # ----------------------------------------------------------------------
@@ -132,33 +178,33 @@ def _attr(attributes: Dict[str, Any], name: str) -> Optional[str]:
     return entry.get("value") if isinstance(entry, dict) else None
 
 
-def _is_dash(formitaet: Dict[str, Any]) -> bool:
+def _is_hls(formitaet: Dict[str, Any]) -> bool:
     mime = (formitaet.get("mimeType") or "").lower()
     kind = (formitaet.get("type") or "").lower()
-    return ZdfDefaults.DASH_MIME_MARKER in mime or ZdfDefaults.DASH_TYPE_MARKER in kind
+    return ZdfDefaults.HLS_MIME_MARKER in mime or ZdfDefaults.HLS_TYPE_MARKER in kind
 
 
 def _rank(order: Tuple[str, ...], value: Optional[str]) -> int:
     return order.index(value) if value in order else len(order)
 
 
-def pick_dash_url(priority_list: Iterable[Dict[str, Any]]) -> Tuple[Optional[str], List[str]]:
+def pick_hls_url(priority_list: Iterable[Dict[str, Any]]) -> Tuple[Optional[str], List[str]]:
     """
-    Choose ONE DASH manifest URL. Returns (url or None, offered formats).
+    Choose ONE HLS master playlist URL. Returns (url or None, offered formats).
 
     Order of preference: earlier priorityList item, then quality
-    (DASH_QUALITY_ORDER, "auto" first), then main-class German audio track,
-    then https. HLS and everything else is ignored.
+    (HLS_QUALITY_ORDER, "auto" first), then main-class German audio track,
+    then https. DASH and everything else is ignored.
     """
     offered: List[str] = []
     best: Optional[Tuple[Tuple[int, int, int, int], str]] = None
     for p_idx, item in enumerate(priority_list or []):
         for formitaet in item.get("formitaeten") or []:
             offered.append(formitaet.get("mimeType") or formitaet.get("type") or "?")
-            if not _is_dash(formitaet):
+            if not _is_hls(formitaet):
                 continue
             for quality in formitaet.get("qualities") or []:
-                q_rank = _rank(ZdfDefaults.DASH_QUALITY_ORDER, quality.get("quality"))
+                q_rank = _rank(ZdfDefaults.HLS_QUALITY_ORDER, quality.get("quality"))
                 for track in (quality.get("audio") or {}).get("tracks") or []:
                     uri = track.get("uri")
                     if not uri:
@@ -189,10 +235,10 @@ class ZdfPlayout:
         encryption = _attr(attributes, "encryption")
         if encryption not in (None, "none"):
             raise ValueError(f"encrypted stream ({encryption}) is not supported")
-        url, offered = pick_dash_url(data.get("priorityList") or [])
+        url, offered = pick_hls_url(data.get("priorityList") or [])
         if not url:
             raise ValueError(
-                f"ptmd response offers no DASH stream (offered: {sorted(set(offered))})"
+                f"ptmd response offers no HLS stream (offered: {sorted(set(offered))})"
             )
         return cls(
             manifest_url=url,
