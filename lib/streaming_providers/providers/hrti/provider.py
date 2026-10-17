@@ -8,10 +8,8 @@ content-id routing, manifest / DRM delegation, legacy surface) comes from
 ManagedProvider.
 
 Capabilities: live channels + radio, VOD, EPG (native batch GetProgramme,
-per-programme GetEpgDetails enrichment; epg_window = (2, 7), v1 values
-kept). A future catchup manager would take the EPG manager as a
-keyword-only ``epg=`` extra (_init_managers builds epg before catchup, so
-``self.epg`` is available in _build_catchup).
+per-programme GetEpgDetails enrichment; epg_window = (3, 2).
+
 """
 
 from typing import ClassVar, Dict, List, Optional

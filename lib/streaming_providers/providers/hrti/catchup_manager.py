@@ -74,9 +74,6 @@ def _wcf_date(epoch_seconds: int) -> str:
 
 
 class HRTiCatchupManager(CatchupManager):
-    #: v1 EPG window is 2 days back. VERIFY the real nPVR retention on a device
-    #: (oldest programme that still has a FileName) and adjust.
-    CATCHUP_HOURS = 48
 
     def __init__(
         self,
@@ -101,7 +98,7 @@ class HRTiCatchupManager(CatchupManager):
     # ------------------------------------------------------------------
     @property
     def catchup_window_hours(self) -> int:
-        return self.CATCHUP_HOURS
+        return self._epg.PAST_DAYS * 24
 
     # ------------------------------------------------------------------
     # Resolution: (channel, start_time) -> programme + FileName

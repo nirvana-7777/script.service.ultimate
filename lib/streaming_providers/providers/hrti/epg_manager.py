@@ -52,8 +52,8 @@ class HRTiEpgManager(EpgManager):
     """Manages HRTi EPG operations (GetProgramme / GetEpgDetails)."""
 
     # EPG window (v1 values, kept): 2 days back, 7 days forward
-    PAST_DAYS = 2
-    FUTURE_DAYS = 7
+    PAST_DAYS = 3  # was 2  (72 h back)
+    FUTURE_DAYS = 2  # was 7  (48 h ahead)
 
     # referer the web client uses on both EPG endpoints (v1 used "/tv")
     EPG_REFERER_PATH = "/live/programme"
