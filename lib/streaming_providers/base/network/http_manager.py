@@ -9,12 +9,32 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from ..errors import parse_retry_after
 from ..models.proxy_models import ProxyConfig, RequestConfig
 from ..utils.logger import logger
 
 # Suppress urllib3 connection pool logging to prevent "Closing connection" messages
 # This affects all providers using HTTPManager
 logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
+
+# Methods retried on 429 / connection errors. POST is added on top of these
+# when RequestConfig.retry_post is True (the default).
+_IDEMPOTENT_METHODS = ("HEAD", "GET", "OPTIONS", "PUT", "DELETE")
+
+# Upper bound for any single wait caused by a Retry-After header. The server's
+# full hint is still reported to callers (RateLimitError.retry_after); we just
+# refuse to block a worker thread for minutes inside the transport layer.
+_MAX_RETRY_AFTER_SECONDS = 30.0
+
+
+class _CappedRetry(Retry):
+    """urllib3 Retry that never sleeps longer than _MAX_RETRY_AFTER_SECONDS."""
+
+    def get_retry_after(self, response):
+        value = super().get_retry_after(response)
+        if value is None:
+            return None
+        return min(value, _MAX_RETRY_AFTER_SECONDS)
 
 
 class HTTPManager:
@@ -29,6 +49,18 @@ class HTTPManager:
     - Automatic Referer and Origin injection
     - Provider-specific configurations
     - Cookie jar access for external persistence (e.g. Kodi VFS)
+
+    Error contract (identical on the requests and the curl_cffi backend):
+    - HTTP status >= 400 RAISES requests.exceptions.HTTPError with `.response`
+      set (an error response is never returned) -- unless the call passes
+      `raise_for_status=False`.
+    - Network failures raise requests.exceptions.ProxyError / Timeout /
+      SSLError / ConnectionError / RequestException (curl_cffi's own
+      exceptions are translated, they do not subclass the requests ones).
+    - 429 is retried up to `config.max_retries` (Retry-After honoured, each
+      wait capped); when retries are exhausted the last 429 is raised as a
+      normal HTTPError, never as RetryError.
+    - Map to typed provider errors with base.errors.error_from_exception().
     """
 
     def __init__(self, config: Optional[RequestConfig] = None):
@@ -67,7 +99,11 @@ class HTTPManager:
                     self._using_cffi = True
                     logger.debug(
                         f"{self.config.provider}: using curl_cffi Chrome TLS impersonation"
-                        + (f" via proxy {proxies.get('https')}" if proxies else "")
+                        + (
+                            f" via proxy {self.config.proxy_config.to_safe_url()}"
+                            if proxies
+                            else ""
+                        )
                     )
                 except ImportError:
                     logger.warning(
@@ -77,11 +113,18 @@ class HTTPManager:
 
         if not self._using_cffi:
             self._session = requests.Session()
-            retry_strategy = Retry(
+            retry_methods = list(_IDEMPOTENT_METHODS)
+            if self.config.retry_post:
+                retry_methods.append("POST")
+            # raise_on_status=False: once retries are exhausted the last 429
+            # is returned and surfaces as a normal HTTPError (with .response)
+            # instead of requests' RetryError (which has no response).
+            retry_strategy = _CappedRetry(
                 total=self.config.max_retries,
                 backoff_factor=self.config.retry_delay,
                 status_forcelist=[429],
-                allowed_methods=["HEAD", "GET", "OPTIONS", "POST", "PUT", "DELETE"],
+                allowed_methods=retry_methods,
+                raise_on_status=False,
             )
             adapter = HTTPAdapter(max_retries=retry_strategy)
             self._session.mount("http://", adapter)
@@ -110,19 +153,33 @@ class HTTPManager:
         Args:
             config: New request configuration
         """
-        # Snapshot cookies before tearing down the old session
-        old_cookies = self._session.cookies if self._session else None
-
         self.config = config
         self._last_url = None
+        self._rebuild_session()
+
+    def _rebuild_session(self) -> None:
+        """
+        Build a fresh session, carry the cookies over and close the old one.
+
+        requests_cookies.update() accepts a RequestsCookieJar directly; we
+        pass the jar (not a plain dict) so domain/path/expiry metadata is
+        preserved rather than flattened. The old session is closed after the
+        cookies were copied, otherwise its connection pool (or curl handle)
+        leaks on every proxy/config change.
+        """
+        old_session = self._session
+        old_cookies = old_session.cookies if old_session else None
+
         self._setup_session()
 
-        # Restore cookies into the new session.
-        # requests_cookies.update() accepts a RequestsCookieJar directly;
-        # we pass the jar (not a plain dict) so domain/path/expiry metadata
-        # is preserved rather than flattened.
         if old_cookies is not None:
             self._session.cookies.update(old_cookies)  # type: ignore[arg-type]
+
+        if old_session is not None:
+            try:
+                old_session.close()
+            except Exception as e:  # never let cleanup break a config change
+                logger.debug(f"{self.config.provider}: closing old session failed: {e}")
 
     def update_proxy(self, proxy_config: Optional[ProxyConfig]) -> None:
         """
@@ -143,10 +200,7 @@ class HTTPManager:
         self.config.proxy_config = proxy_config
 
         if self._using_cffi:
-            old_cookies = self._session.cookies if self._session else None
-            self._setup_session()
-            if old_cookies is not None:
-                self._session.cookies.update(old_cookies)  # type: ignore[arg-type]
+            self._rebuild_session()
 
     def reset_referer(self) -> None:
         """
@@ -168,14 +222,20 @@ class HTTPManager:
 
         Args:
             url: Request URL
-            operation: Operation type (api, auth, manifest, license) for proxy scoping
-            **kwargs: Additional arguments for requests
+            operation: Operation type for proxy scoping: "api", "auth",
+                "manifest" or "license" (see proxy_models.KNOWN_OPERATIONS).
+                Any other string is proxied whenever the proxy master switch
+                is on.
+            **kwargs: Additional arguments for requests. The extra keyword
+                `raise_for_status=False` returns 4xx/5xx responses instead of
+                raising (use it when you need to read an error body).
 
         Returns:
             requests.Response object
 
         Raises:
-            requests.exceptions.RequestException: On request failure
+            requests.exceptions.HTTPError: status >= 400 (`.response` is set)
+            requests.exceptions.RequestException: any other request failure
         """
         return self._make_request("GET", url, operation, **kwargs)
 
@@ -229,13 +289,21 @@ class HTTPManager:
         """
         logger.debug(f"{self.config.provider}: _using_cffi={self._using_cffi} for {method} {url}")
 
+        # Not a requests kwarg: controls whether status >= 400 raises
+        raise_for_status = kwargs.pop("raise_for_status", True)
+
         # Get base request configuration
         request_kwargs = self.config.get_request_kwargs(operation)
 
         # Merge with any additional kwargs (caller overrides win)
         request_kwargs.update(kwargs)
 
-        headers = request_kwargs.setdefault("headers", {})
+        # Work on a copy: the injections below must never mutate a headers
+        # dict the caller keeps and reuses across requests (a stale Origin
+        # from the first host would otherwise stick to every later call).
+        headers = dict(request_kwargs.get("headers") or {})
+        request_kwargs["headers"] = headers
+        header_names = {name.lower() for name in headers}
 
         # Inject Referer from the last response URL, but only when the caller
         # opts in via config.inject_referer (mirrors inject_origin below).
@@ -243,18 +311,13 @@ class HTTPManager:
         # that carry backend API URLs as the Referer. Providers that want
         # this should set inject_referer=True in their RequestConfig, or
         # continue setting Referer explicitly in their own header factories.
-        #
-        # NOTE: `inject_referer` isn't (yet) a declared field on RequestConfig
-        # in proxy_models.py — using getattr so this doesn't break if it's
-        # absent. Add `inject_referer: bool = False` to RequestConfig to make
-        # this a first-class, documented option.
-        if getattr(self.config, "inject_referer", False) and self._last_url and "Referer" not in headers:
+        if self.config.inject_referer and self._last_url and "referer" not in header_names:
             headers["Referer"] = self._last_url
 
         # Inject Origin derived from target URL only when explicitly requested.
         # Origin injection is opt-in because some non-browser APIs reject
         # requests that carry an unexpected Origin header.
-        if self.config.inject_origin and "Origin" not in headers:
+        if self.config.inject_origin and "origin" not in header_names:
             parsed = urllib.parse.urlparse(url)
             if parsed.scheme and parsed.netloc:
                 headers["Origin"] = f"{parsed.scheme}://{parsed.netloc}"
@@ -263,12 +326,7 @@ class HTTPManager:
         self._log_request(method, url, operation, request_kwargs)
 
         try:
-            # curl_cffi session has proxy baked in at construction — strip it from
-            # per-request kwargs to prevent conflicts / double-proxy application
-            if self._using_cffi:
-                request_kwargs.pop("proxies", None)
-
-            response = self._session.request(method, url, **request_kwargs)
+            response = self._send(method, url, request_kwargs)
 
             # Log redirect chain — cookies set on intermediate responses are
             # otherwise invisible, making auth flow debugging very painful
@@ -286,8 +344,13 @@ class HTTPManager:
             # Track final URL (after redirects) for next request's Referer
             self._last_url = response.url
 
-            # Raise for 4xx/5xx
-            response.raise_for_status()
+            # Raise for 4xx/5xx. Done here (not via response.raise_for_status())
+            # so both backends raise the *requests* HTTPError; curl_cffi's own
+            # HTTPError does not subclass it and would bypass every handler.
+            if raise_for_status and response.status_code >= 400:
+                raise requests.exceptions.HTTPError(
+                    self._http_error_message(response), response=response
+                )
 
             return response
 
@@ -311,17 +374,17 @@ class HTTPManager:
             raise
 
         except requests.exceptions.HTTPError as e:
-            status = e.response.status_code if e.response else "unknown"
+            # NB: never `if e.response:` -- Response.__bool__ is `.ok`, which
+            # is False for every 4xx/5xx, so the status used to log "unknown".
+            response = e.response
+            status = response.status_code if response is not None else "unknown"
             logger.error(
                 f"{self.config.provider}: HTTP {status} error for {operation} request to {url}: {e}"
             )
-            if e.response is not None and 400 <= e.response.status_code < 500:
-                try:
-                    body = e.response.json()
-                except Exception:
-                    body = e.response.text
+            if response is not None:
                 logger.debug(
-                    f"{self.config.provider}: {status} response body: {body}"
+                    f"{self.config.provider}: {status} response body: "
+                    f"{self._body_snippet(response)}"
                 )
             raise
 
@@ -330,6 +393,114 @@ class HTTPManager:
                 f"{self.config.provider}: Request error for {operation} request to {url}: {e}"
             )
             raise
+
+    def _send(self, method: str, url: str, request_kwargs: Dict[str, Any]):
+        """
+        Send one request on the active backend.
+
+        requests: retries (429) are done by the mounted urllib3 adapter.
+        curl_cffi: no adapter exists, so 429 retries are done here with the
+        same limits, and curl_cffi exceptions are translated to their
+        requests equivalents.
+        """
+        if not self._using_cffi:
+            return self._session.request(method, url, **request_kwargs)
+
+        # curl_cffi session has proxy baked in at construction — strip it from
+        # per-request kwargs to prevent conflicts / double-proxy application
+        request_kwargs.pop("proxies", None)
+
+        attempt = 0
+        while True:
+            try:
+                response = self._session.request(method, url, **request_kwargs)
+            except requests.exceptions.RequestException:
+                raise
+            except Exception as exc:
+                translated = self._translate_cffi_exception(exc)
+                if translated is exc:
+                    raise
+                raise translated from exc
+
+            if (
+                response.status_code != 429
+                or attempt >= self.config.max_retries
+                or not self._method_is_retryable(method)
+            ):
+                return response
+
+            delay = self._retry_delay_seconds(response, attempt)
+            logger.warning(
+                f"{self.config.provider}: HTTP 429 for {method} {url}; "
+                f"retry {attempt + 1}/{self.config.max_retries} in {delay:.1f}s"
+            )
+            time.sleep(delay)
+            attempt += 1
+
+    def _method_is_retryable(self, method: str) -> bool:
+        method = method.upper()
+        if method in _IDEMPOTENT_METHODS:
+            return True
+        return method == "POST" and self.config.retry_post
+
+    def _retry_delay_seconds(self, response, attempt: int) -> float:
+        """Retry-After if present, else exponential backoff; always capped."""
+        hinted = parse_retry_after(
+            response.headers.get("Retry-After"), max_seconds=_MAX_RETRY_AFTER_SECONDS
+        )
+        if hinted is not None:
+            return hinted
+        return min(self.config.retry_delay * (2 ** attempt), _MAX_RETRY_AFTER_SECONDS)
+
+    @staticmethod
+    def _translate_cffi_exception(exc: Exception) -> Exception:
+        """
+        Map a curl_cffi exception to the matching requests exception.
+
+        curl_cffi's exception classes do not inherit from requests', so
+        without this every `except requests.exceptions.*` (here and in the
+        providers) misses them. Unknown exceptions are returned unchanged.
+        """
+        try:
+            from curl_cffi import CurlError
+            from curl_cffi.requests import exceptions as cffi_exc
+        except ImportError:
+            return exc
+
+        # Most specific first; names are looked up defensively because the
+        # exact set differs between curl_cffi versions.
+        pairs = (
+            ("ProxyError", requests.exceptions.ProxyError),
+            ("SSLError", requests.exceptions.SSLError),
+            ("Timeout", requests.exceptions.Timeout),
+            ("ConnectionError", requests.exceptions.ConnectionError),
+            ("RequestException", requests.exceptions.RequestException),
+        )
+        for name, target in pairs:
+            source = getattr(cffi_exc, name, None)
+            if isinstance(source, type) and isinstance(exc, source):
+                return target(str(exc))
+        if isinstance(exc, CurlError):
+            return requests.exceptions.RequestException(str(exc))
+        return exc
+
+    @staticmethod
+    def _http_error_message(response) -> str:
+        status = response.status_code
+        kind = "Client" if status < 500 else "Server"
+        reason = getattr(response, "reason", "") or ""
+        return f"{status} {kind} Error: {reason} for url: {response.url}"
+
+    @staticmethod
+    def _body_snippet(response, limit: int = 500) -> str:
+        """Truncated response text for debug logs (never raises)."""
+        try:
+            text = response.text or ""
+        except Exception:
+            return "<unreadable body>"
+        if len(text) > limit:
+            return f"{text[:limit]}... [{len(text) - limit} more chars]"
+        return text
 
     # ------------------------------------------------------------------
     # Logging helpers
@@ -370,21 +541,36 @@ class HTTPManager:
         Uses Content-Length header instead of buffering response.content,
         so this is safe to call before consuming streaming responses.
         """
+        # `elapsed` is a timedelta on requests but a plain float (seconds) on
+        # some curl_cffi versions; a malformed Content-Length must not break
+        # the request either -- this is only logging.
         elapsed = ""
-        if hasattr(response, "elapsed"):
-            elapsed = f" [{int(response.elapsed.total_seconds() * 1000)}ms]"
+        elapsed_attr = getattr(response, "elapsed", None)
+        if elapsed_attr is not None:
+            try:
+                seconds = (
+                    elapsed_attr.total_seconds()
+                    if hasattr(elapsed_attr, "total_seconds")
+                    else float(elapsed_attr)
+                )
+                elapsed = f" [{int(seconds * 1000)}ms]"
+            except (TypeError, ValueError):
+                pass
 
+        size_display = "unknown size"
         content_length = response.headers.get("Content-Length")
         if content_length is not None:
-            size = int(content_length)
-            if size > 1024 * 1024:
-                size_display = f"{size / (1024 * 1024):.2f} MB"
-            elif size > 1024:
-                size_display = f"{size / 1024:.2f} KB"
-            else:
-                size_display = f"{size} bytes"
-        else:
-            size_display = "unknown size"
+            try:
+                size = int(content_length)
+            except (TypeError, ValueError):
+                size = None
+            if size is not None:
+                if size > 1024 * 1024:
+                    size_display = f"{size / (1024 * 1024):.2f} MB"
+                elif size > 1024:
+                    size_display = f"{size / 1024:.2f} KB"
+                else:
+                    size_display = f"{size} bytes"
 
         content_type = response.headers.get("Content-Type", "unknown")
 
@@ -567,7 +753,7 @@ class HTTPManagerFactory:
             # Add more providers as needed
         }
 
-        defaults = provider_defaults.get(provider_name, {})
+        defaults = dict(provider_defaults.get(provider_name, {}))
         defaults.update(config_kwargs)
         defaults["provider"] = provider_name
 

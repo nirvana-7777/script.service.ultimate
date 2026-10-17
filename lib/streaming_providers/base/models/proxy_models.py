@@ -1,4 +1,6 @@
 # streaming_providers/base/models/proxy_models.py
+import re
+import urllib.parse
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Optional
@@ -10,7 +12,21 @@ class ProxyType(Enum):
     HTTP = "http"
     HTTPS = "https"
     SOCKS4 = "socks4"
+    SOCKS4A = "socks4a"  # hostname resolved by the proxy
     SOCKS5 = "socks5"
+    SOCKS5H = "socks5h"  # hostname resolved by the proxy
+
+
+# The `operation=` values HTTPManager.get/post/put/delete understand for proxy
+# scoping. Any other string (v1 providers pass ad-hoc names such as
+# "live_manifest") is NOT an error: it is proxied whenever the master switch
+# `ProxyScope.all` is on, regardless of the per-operation flags.
+KNOWN_OPERATIONS = ("api", "auth", "manifest", "license")
+
+
+def _redact_url_credentials(url: str) -> str:
+    """Hide everything between '//' and the last '@' (user:password)."""
+    return re.sub(r"//.*@", "//***@", url)
 
 
 @dataclass
@@ -27,7 +43,13 @@ class ProxyScope:
     all: bool = True  # Master switch - overrides all others
 
     def should_use_proxy_for(self, operation: str) -> bool:
-        """Check if proxy should be used for specific operation"""
+        """
+        Check if proxy should be used for specific operation.
+
+        Known operations: see KNOWN_OPERATIONS. Unknown operation names fall
+        back to True (proxied) as long as the master switch `all` is on --
+        they are never matched against the per-operation flags.
+        """
         if not self.all:
             return False
 
@@ -43,14 +65,20 @@ class ProxyScope:
 
 @dataclass
 class ProxyAuth:
-    """Proxy authentication details"""
+    """Proxy authentication details (password is hidden from repr/logs)"""
 
     username: str
-    password: str
+    password: str = field(repr=False)
 
     def to_auth_string(self) -> str:
-        """Convert to authentication string for proxy URL"""
+        """Raw 'username:password' (NOT URL-encoded, never log this)"""
         return f"{self.username}:{self.password}"
+
+    def to_url_userinfo(self) -> str:
+        """Percent-encoded 'username:password' for use inside a proxy URL"""
+        user = urllib.parse.quote(self.username, safe="")
+        password = urllib.parse.quote(self.password, safe="")
+        return f"{user}:{password}"
 
 
 @dataclass
@@ -78,6 +106,12 @@ class ProxyConfig:
     # Provider-specific overrides
     provider_specific: Dict[str, Any] = field(default_factory=dict)
 
+    def _host_for_url(self) -> str:
+        """Host as it must appear in a URL (IPv6 literals need brackets)"""
+        if ":" in self.host and not self.host.startswith("["):
+            return f"[{self.host}]"
+        return self.host
+
     def to_proxy_dict(self) -> Dict[str, str]:
         """
         Convert to requests-compatible proxy dictionary
@@ -85,23 +119,32 @@ class ProxyConfig:
         Returns:
             Dict in format {'http': 'proxy_url', 'https': 'proxy_url'}
         """
-        # Build proxy URL
-        auth_part = ""
-        if self.auth:
-            auth_part = f"{self.auth.to_auth_string()}@"
-
-        proxy_url = f"{self.proxy_type.value}://{auth_part}{self.host}:{self.port}"
-
-        # Return both HTTP and HTTPS proxy settings
+        proxy_url = self.to_proxy_url()
         return {"http": proxy_url, "https": proxy_url}
 
     def to_proxy_url(self) -> str:
-        """Get single proxy URL string"""
-        auth_part = ""
-        if self.auth:
-            auth_part = f"{self.auth.to_auth_string()}@"
+        """
+        Get single proxy URL string.
 
-        return f"{self.proxy_type.value}://{auth_part}{self.host}:{self.port}"
+        Contains the password (percent-encoded). Use to_safe_url() for
+        anything that is logged or displayed.
+        """
+        userinfo = f"{self.auth.to_url_userinfo()}@" if self.auth else ""
+        return (
+            f"{self.proxy_type.value}://{userinfo}"
+            f"{self._host_for_url()}:{self.port}"
+        )
+
+    def to_safe_url(self) -> str:
+        """Proxy URL with the password masked -- safe for logs and UIs"""
+        userinfo = ""
+        if self.auth:
+            user = urllib.parse.quote(self.auth.username, safe="")
+            userinfo = f"{user}:***@"
+        return (
+            f"{self.proxy_type.value}://{userinfo}"
+            f"{self._host_for_url()}:{self.port}"
+        )
 
     def validate(self) -> bool:
         """Validate proxy configuration"""
@@ -113,8 +156,14 @@ class ProxyConfig:
             return False
         return True
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for serialization"""
+    def to_dict(self, redact: bool = False) -> Dict[str, Any]:
+        """
+        Convert to dictionary for serialization.
+
+        Args:
+            redact: mask the proxy password ("***"). Use for logs/UI; the
+                default keeps the password so from_dict() round-trips.
+        """
         result = {
             "host": self.host,
             "port": self.port,
@@ -134,7 +183,7 @@ class ProxyConfig:
         if self.auth:
             result["auth"] = {
                 "username": self.auth.username,
-                "password": self.auth.password,
+                "password": "***" if redact else self.auth.password,
             }
 
         return result
@@ -176,34 +225,48 @@ class ProxyConfig:
         Create ProxyConfig from proxy URL string
 
         Args:
-            proxy_url: Proxy URL like "http://user:pass@proxy.example.com:8080"
+            proxy_url: Proxy URL like "http://user:pass@proxy.example.com:8080".
+                Credentials may be percent-encoded (they are decoded here).
             scope: Optional scope configuration
 
         Returns:
             ProxyConfig instance
-        """
-        import urllib.parse
 
+        Raises:
+            ValueError: missing host/port or unsupported scheme. Error
+                messages never contain the credentials.
+        """
+        safe = _redact_url_credentials(proxy_url)
         parsed = urllib.parse.urlparse(proxy_url)
 
-        if not parsed.hostname or not parsed.port:
-            raise ValueError(f"Invalid proxy URL: {proxy_url}")
+        try:
+            port = parsed.port
+        except ValueError:
+            raise ValueError(f"Invalid proxy URL (bad port): {safe}") from None
+        if not parsed.hostname or not port:
+            raise ValueError(f"Invalid proxy URL: {safe}")
 
         auth = None
-        if parsed.username and parsed.password:
-            auth = ProxyAuth(username=parsed.username, password=parsed.password)
+        if parsed.username:
+            auth = ProxyAuth(
+                username=urllib.parse.unquote(parsed.username),
+                password=urllib.parse.unquote(parsed.password or ""),
+            )
 
         proxy_type = ProxyType.HTTP
         if parsed.scheme:
             try:
                 proxy_type = ProxyType(parsed.scheme.lower())
             except ValueError:
-                # Default to HTTP if scheme not recognized
-                pass
+                # Silently falling back to HTTP turned e.g. socks5h:// into a
+                # broken HTTP proxy; refuse instead.
+                raise ValueError(
+                    f"Unsupported proxy scheme '{parsed.scheme}' in {safe}"
+                ) from None
 
         return cls(
             host=parsed.hostname,
-            port=parsed.port,
+            port=port,
             proxy_type=proxy_type,
             auth=auth,
             scope=scope or ProxyScope(),
@@ -221,7 +284,7 @@ class RequestConfig:
     proxy_config: Optional[ProxyConfig] = None
 
     # Request settings
-    timeout: int = 30
+    timeout: float = 30
     verify_ssl: bool = True
     max_retries: int = 3
     retry_delay: float = 1.0
@@ -246,6 +309,17 @@ class RequestConfig:
     provider: str = ""
 
     use_tls_impersonation: bool = False  # curl_cffi Chrome impersonation; ignored under Kodi
+
+    # When True, HTTPManager sends the previous response URL as Referer.
+    # Opt-in: WAFs (e.g. Akamai) flag API calls that carry backend API URLs
+    # as Referer. (New fields are appended last so positional construction
+    # of the fields above keeps working.)
+    inject_referer: bool = False
+
+    # Retry POST requests on 429 / connection errors. Default True keeps the
+    # historical behaviour; set False for providers where a replayed POST
+    # (e.g. after a read timeout) would duplicate a write.
+    retry_post: bool = True
 
     def get_request_kwargs(self, operation: str = "api") -> Dict[str, Any]:
         """
@@ -278,8 +352,8 @@ class RequestConfig:
             headers["User-Agent"] = self.user_agent
         return headers
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary"""
+    def to_dict(self, redact: bool = False) -> Dict[str, Any]:
+        """Convert to dictionary (redact=True masks the proxy password)"""
         result = {
             "timeout": self.timeout,
             "verify_ssl": self.verify_ssl,
@@ -287,10 +361,17 @@ class RequestConfig:
             "retry_delay": self.retry_delay,
             "default_headers": self.default_headers,
             "user_agent": self.user_agent,
+            "accept": self.accept,
+            "accept_language": self.accept_language,
+            "accept_encoding": self.accept_encoding,
+            "inject_origin": self.inject_origin,
+            "inject_referer": self.inject_referer,
+            "retry_post": self.retry_post,
+            "use_tls_impersonation": self.use_tls_impersonation,
             "provider": self.provider,
         }
 
         if self.proxy_config:
-            result["proxy_config"] = self.proxy_config.to_dict()
+            result["proxy_config"] = self.proxy_config.to_dict(redact=redact)
 
         return result

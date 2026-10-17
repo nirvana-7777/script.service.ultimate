@@ -48,6 +48,9 @@ that don't use codes leave it None.
 
 from __future__ import annotations
 
+import email.utils
+import math
+from datetime import datetime, timezone
 from typing import Any, Optional, Tuple
 
 
@@ -216,15 +219,41 @@ class BadRequestError(ProviderError):
 # ---------------------------------------------------------------------------
 
 class RateLimitError(ProviderError):
-    """429 -- caller should back off and retry."""
+    """429 -- caller should back off and retry.
+
+    ``retry_after`` is the server's Retry-After hint in seconds (already
+    capped by parse_retry_after), or None when the server sent none. It is a
+    class attribute default so provider subclasses with their own __init__
+    (e.g. a WAF-block exception) still have the attribute.
+    """
+
+    retry_after: Optional[float] = None
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: Optional[int] = None,
+        url: Optional[str] = None,
+        code: Optional[str] = None,
+        retry_after: Optional[float] = None,
+    ) -> None:
+        super().__init__(message, status=status, url=url, code=code)
+        self.retry_after = retry_after
 
 
 class ServerError(ProviderError):
     """5xx -- retryable."""
 
 
-class TransportError(ProviderError):
-    """Connection-level failure (DNS, TLS, timeout) -- no HTTP status."""
+class TransportError(ServerError):
+    """Connection-level failure (DNS, TLS, timeout) -- no HTTP status.
+
+    Deliberately a ServerError: the error contract (README section 8) maps
+    "network down" to ServerError and says retry loops retry only
+    ServerError/untyped errors. As a sibling instead of a subclass, a
+    TransportError would have escaped every such retry loop.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -265,8 +294,50 @@ class OperationFailedError(ProviderError, RuntimeError):
 
 
 # ---------------------------------------------------------------------------
-# HTTP status -> error class heuristic
+# HTTP status -> error class mapping
 # ---------------------------------------------------------------------------
+
+def parse_retry_after(
+    value: Any, *, max_seconds: float = 300.0
+) -> Optional[float]:
+    """
+    Parse a Retry-After header (delta-seconds or HTTP-date) into seconds.
+
+    Returns None when the value is missing or unparseable. Negative values
+    (a date in the past) become 0.0; results are capped at ``max_seconds`` so
+    a hostile or buggy header cannot park a worker thread for hours.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        seconds = float(text)
+    except ValueError:
+        try:
+            when = email.utils.parsedate_to_datetime(text)
+        except (TypeError, ValueError):
+            return None
+        if when is None:
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        seconds = (when - datetime.now(timezone.utc)).total_seconds()
+    if math.isnan(seconds):
+        return None
+    return min(max(seconds, 0.0), max_seconds)
+
+
+_GEO_MARKERS = ("geo", "region")
+_WAF_MARKERS = (
+    "captcha",
+    "cf-chl",
+    "just a moment",
+    "attention required",
+    "cloudflare",
+)
+
 
 def default_error_for_status_heuristic(
     status: int,
@@ -274,29 +345,104 @@ def default_error_for_status_heuristic(
     *,
     url: Optional[str] = None,
     body_snippet: str = "",
+    retry_after: Optional[float] = None,
 ) -> ProviderError:
     """
     Heuristic mapping from HTTP status to ProviderError subclass.
 
     This is a heuristic, not a contract. Providers with their own error
     classification should construct the specific error directly rather than
-    relying on this. The 403 branch in particular uses a substring match on
+    relying on this. The 403 branch in particular uses substring matches on
     body_snippet and is intentionally shallow so providers do not depend on
     it accidentally.
+
+    403 order: geo markers first (a Cloudflare "country or region" block is
+    permanent), then WAF/CAPTCHA markers (transient -> RateLimitError, as the
+    README error contract requires), else EntitlementError.
     """
     if status == 400:
         return BadRequestError(message, status=status, url=url)
     if status == 401:
         return AuthError(message, status=status, url=url)
+    if status == 402:
+        return EntitlementError(message, status=status, url=url)
     if status == 403:
         lower = body_snippet.lower()
-        if "geo" in lower or "region" in lower:
+        if any(marker in lower for marker in _GEO_MARKERS):
             return GeoBlockError(message, status=status, url=url)
+        if any(marker in lower for marker in _WAF_MARKERS):
+            return RateLimitError(
+                message, status=status, url=url, retry_after=retry_after
+            )
         return EntitlementError(message, status=status, url=url)
-    if status == 404:
+    if status in (404, 410):
         return NotFoundError(message, status=status, url=url)
     if status == 429:
-        return RateLimitError(message, status=status, url=url)
+        return RateLimitError(
+            message, status=status, url=url, retry_after=retry_after
+        )
+    if status == 451:
+        return GeoBlockError(message, status=status, url=url)
     if 500 <= status < 600:
         return ServerError(message, status=status, url=url)
     return ProviderError(message, status=status, url=url)
+
+
+def error_from_response(
+    response: Any, message: Optional[str] = None, *, body_limit: int = 500
+) -> ProviderError:
+    """
+    Build a ProviderError from any response-like object (requests or
+    curl_cffi): needs ``status_code``; uses ``url``, ``reason``, ``headers``
+    and ``text`` when present. Applies default_error_for_status_heuristic and
+    fills ``retry_after`` from the Retry-After header.
+    """
+    try:
+        status = int(getattr(response, "status_code", 0) or 0)
+    except (TypeError, ValueError):
+        status = 0
+    raw_url = getattr(response, "url", None)
+    url = str(raw_url) if raw_url else None
+
+    try:
+        snippet = (response.text or "")[:body_limit]
+    except Exception:
+        snippet = ""
+
+    headers = getattr(response, "headers", None)
+    raw_retry = headers.get("Retry-After") if hasattr(headers, "get") else None
+    retry_after = parse_retry_after(raw_retry)
+
+    if message is None:
+        reason = getattr(response, "reason", None) or ""
+        message = f"HTTP {status} {reason}".strip()
+        if url:
+            message += f" for {url}"
+
+    return default_error_for_status_heuristic(
+        status, message, url=url, body_snippet=snippet, retry_after=retry_after
+    )
+
+
+def error_from_exception(exc: BaseException, *, body_limit: int = 500) -> ProviderError:
+    """
+    Convert an HTTP-layer exception into a ProviderError.
+
+    * already a ProviderError            -> returned unchanged
+    * has a non-None ``.response``       -> error_from_response()
+    * no response (timeout, DNS, proxy)  -> TransportError
+
+    Only pass exceptions raised by the HTTP layer (HTTPManager raises
+    requests exceptions on both of its backends). Usage::
+
+        try:
+            resp = http.get(url, operation="api")
+        except Exception as exc:
+            raise error_from_exception(exc) from exc
+    """
+    if isinstance(exc, ProviderError):
+        return exc
+    response = getattr(exc, "response", None)
+    if response is not None:  # NOT `if response`: a 4xx/5xx Response is falsy
+        return error_from_response(response, body_limit=body_limit)
+    return TransportError(str(exc) or exc.__class__.__name__)

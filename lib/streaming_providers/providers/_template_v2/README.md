@@ -673,16 +673,22 @@ Id grammar guidance:
 | backend refused a write | raise `OperationFailedError` |
 | capability is not supported by design | `UnsupportedOperationError` (a `NotImplementedYetError`) |
 
-Names marked above beyond the ones in the shipped base were taken from
-docstrings and imports — **(unverified)**: check `base/errors.py` for the exact
-constructors (the templates assume `Error("message")`).
+**Verified against `base/errors.py` and `base/network/http_manager.py`** (the two
+standing hedges of the earlier migrations are closed):
 
-**Still open after three migrations.** Two standing hedges have never been verified:
-(a) the HTTP manager's behaviour on 4xx/5xx (raise vs. return — HRTi's `api.py` still
-handles both shapes), (b) the `base.errors` constructor kwargs (`url=` on `AuthError`
-is hedged in two places). The hedges work, but each migration copies them. Pin both
-against the real code before the next provider (§17) and replace the hedges with the
-verified behaviour.
+* **Constructors.** Every `ProviderError` subclass in the base takes
+  `Error(message, *, status=None, url=None, code=None)`; `Error("message")` works and
+  `url=` on `AuthError` is fine — delete the `url=` hedges in `api.py` and the
+  templates. `RateLimitError` additionally takes `retry_after=` (seconds, from the
+  `Retry-After` header; `None` if absent). Provider subclasses with their own
+  `__init__` keep working: `retry_after` is a class-level default and pickling/deepcopy
+  restores every attribute.
+* **`TransportError` is a `ServerError`** (connection-level failure, no HTTP status),
+  so "network down → `ServerError`" and "retry only `ServerError`" hold without
+  special-casing.
+* **HTTP manager: status ≥ 400 always raises** `requests.exceptions.HTTPError` with
+  `.response` set — on the `requests` **and** the `curl_cffi` backend. An error
+  response is never *returned* (see Helpers for the one opt-out).
 
 ### Compatibility on purpose
 
@@ -697,14 +703,23 @@ KeyError` / `except RuntimeError` in the operations layer keep working.
   exceptions in `ServerError` and lets typed `ProviderError`s through untouched
   (callers rely on `AuthError`/`RateLimitError` to refresh tokens or back off —
   never flatten them).
-* **HTTP manager on 400/401/403/5xx — until verified, handle both shapes.** What the
-  HTTP manager does for these statuses (return the error response vs. raise an
-  exception carrying `.response`) and whether `response.raise_for_status()` is
-  redundant is **not yet confirmed**. Write code that handles *both* a returned
-  error response and an exception with `.response`; use a single helper
-  `base.utils.transport.response_of(exc)` (to be shipped, §17) that returns the
-  response of either. Map 401/403 to `AuthError` at the one place you call login.
-  Replace this note with the verified behaviour after the first device run.
+* **HTTP manager on 400/401/403/429/5xx — it raises; handle one shape.**
+  `http_manager.get/post/put/delete` raise `requests.exceptions.HTTPError` whose
+  `.response` carries the status, headers and body; `response.raise_for_status()` after
+  the call is redundant. Network failures raise `ProxyError` / `Timeout` / `SSLError` /
+  `ConnectionError` (the `curl_cffi` backend's own exceptions are translated, they do
+  not subclass the `requests` ones). 429 is retried `max_retries` times (`Retry-After`
+  honoured, each wait capped at 30 s); when exhausted the last 429 arrives as a normal
+  `HTTPError`, never `RetryError`. To map to typed errors use
+  `base.errors.error_from_exception(exc)` (`ProviderError` → unchanged, response →
+  `default_error_for_status_heuristic` incl. `retry_after`, no response →
+  `TransportError`) and raise it `from exc`. Two pitfalls: **never test
+  `if exc.response:`** — a `requests.Response` is falsy for every 4xx/5xx; use
+  `is not None`. When you must read an error body to decide (a 400 whose JSON says what
+  went wrong), call with `raise_for_status=False` and inspect the returned response
+  instead of catching the exception. Map 401/403 to `AuthError` at the one place you
+  call login. `RequestConfig.retry_post=False` stops POSTs being replayed after a
+  timeout (default `True` = historical behaviour).
 * **Retry loops.** Retry only `ServerError` / untyped transport errors. Every other
   `ProviderError` (`AuthError`, `RateLimitError`, `GeoBlockError`,
   `EntitlementError`, …) propagates **immediately and unchanged**. Use
@@ -728,11 +743,14 @@ KeyError` / `except RuntimeError` in the operations layer keep working.
   endpoint is classified**. HRTi's EPG was `required=False`; a stale device id made it
   return `[]` — indistinguishable from "no programmes" — for however long nobody
   noticed. Test: a session-state failure on an optional endpoint raises.
-* **`operation=` on `http_manager.post/get`** selects the proxy/timeout scope (`"api"`,
-  `"auth"`, `"manifest"`, `"license"` in the template). v1 providers pass ad-hoc
-  names (`"live_manifest"`, `"token_validate"`) and omit it elsewhere (default).
-  The accepted values are **not verified**: keep v1's strings where v1 passed one;
-  use `"api"` where v1 passed nothing and note the change in §12.5.
+* **`operation=` on `http_manager.post/get`** selects the **proxy** scope only (it does
+  not change timeouts). Known values: `"api"`, `"auth"`, `"manifest"`, `"license"`
+  (`proxy_models.KNOWN_OPERATIONS`). **Any other string is accepted and is proxied
+  whenever the master switch `ProxyScope.all` is on, regardless of the per-operation
+  flags** — v1's ad-hoc names (`"live_manifest"`, `"token_validate"`) therefore keep
+  working but ignore a `manifests=False` / `authentication=False` setting. Where v1
+  passed nothing the default is `"api"`; where a v1 string means manifest/auth/license
+  traffic, prefer the known value and note the change in §12.5.
 
 ### Backend behaviours you must know
 
@@ -1564,7 +1582,9 @@ Known gaps in the base, so you don't hunt for them:
 
 **Tooling still to ship** (the README above already assumes it):
 
-* `base.utils.transport.retry_transient(fn, attempts, sleep)` and `response_of(exc)` (§8).
+* `base.utils.transport.retry_transient(fn, attempts, sleep)` (§8). `response_of(exc)`
+  is no longer needed: use `getattr(exc, "response", None)` with `is not None`, or
+  `base.errors.error_from_exception` (§8).
 * `check_provider(..., sample_ids={"channels": [...], "vod": [...]})`: for each sample
   id exactly one manager must return `True` from `handles_content_id`; verify the
   managers are instances of the ABCs (clear message instead of a late `TypeError`).
@@ -1576,9 +1596,9 @@ Known gaps in the base, so you don't hunt for them:
   matching code, (h) getter/setter pairs for every persisted key on the storage layer
   (§12.1b a), (i) credential/token logging (§12.1b b), (j) leftover `# ADAPT` comments
   (§12.3b).
-* **Pin the two standing (unverified) hedges** (§8): the HTTP manager's 4xx/5xx
-  behaviour and the `base.errors` constructor kwargs; then delete the hedges from
-  `api.py` and the templates.
+* **Delete the two former hedges** (§8, now verified): the "handle both HTTP shapes"
+  code and the `url=` fallbacks on `AuthError` in `api.py` and the templates (HRTi
+  first). Replace them with `error_from_exception`.
 * `optional/session_adapter.py` updated to the rules in §9 (including the recovery
   ladder and the time-window dedup).
 * `tests/conftest.py` with `FakeHttp`, `FakeAuthenticator`, fake clock, `env` (§15).
@@ -1599,9 +1619,9 @@ before it is merged. Two are implemented as patches (below); the rest are propos
   are provider-specific. Add it when a second provider needs the same rules.
 * One shared session adapter with `recover()` (the §9 ladder) and `on_invalidate` (backwards
   compatible with the template adapter's public methods) plus the shared `api_post`
-  helper (401 → one recovery → one retry, both HTTP-manager error shapes) — as a new
+  helper (401 → one recovery → one retry, one HTTP-manager error shape) — as a new
   module; no provider is forced to switch.
-* Document the accepted `operation=` values after reading `HTTPManager` (§8).
+* ~~Document the accepted `operation=` values~~ — done in §8.
 * `migration_pack`: placeholder-body detection (`pass  # ...`), output-inside-tree
   guard, `--bundle` that keeps relative paths, and rows for the actual constructor
   country vs. the declared one.
