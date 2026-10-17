@@ -24,6 +24,7 @@ from .constants import HRTiConfig, HRTiDefaults
 from .epg_manager import HRTiEpgManager
 from .session import HRTiSession
 from .vod_manager import HRTiVodManager
+from .catchup_manager import HRTiCatchupManager
 
 # Only the provider is public (discovery takes the FIRST StreamingProvider
 # subclass in the package namespace -- never export ManagedProvider).
@@ -137,4 +138,11 @@ class HRTiProvider(ManagedProvider):
             auth=self.auth,
             country=self.country,
             config=self.hrti_config,
+        )
+
+    def _build_catchup(self):
+        return HRTiCatchupManager(
+            http_manager=self.http_manager, auth=self.auth,
+            country=self.country, config=self.hrti_config,
+            epg=self.epg, playout_cache=self._playout_cache,
         )
