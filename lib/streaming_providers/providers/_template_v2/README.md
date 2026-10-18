@@ -428,6 +428,12 @@ class YourManager(ChannelManager):              # or Vod/Epg/Recordings/Favorite
 | `get_channel_drm(content_id, **kw) -> List[DRMConfig]` | concrete | default `[]` = no DRM (§11) |
 | `handles_content_id(content_id)` | concrete | default `True` — **mandatory override on *every* id-taking manager as soon as more than one exists** (live + VOD, …). With the default the first manager receives *every* id, and any exception other than `NotFoundError` stops routing (§7). Keep the grammar in one pure `ids.py` that all managers call, so the tests are complementary by construction. **Cheap, pure, no I/O.** |
 
+**Stream format.** `get_channel_manifest` returns whatever the upstream gives: a
+DASH MPD URL or an HLS master-playlist URL (a CDN redirect or a tokenised URL
+without extension is fine). You do not *declare* a format — the backend sniffs the
+manifest (§11, "Stream format: DASH and HLS"). Do set the `streaming_format` hint on
+the `Channel` where you know it at list time (§13).
+
 ### 6.2 `VodManager`
 
 > **Return `VodPage`, not a list.** `ManagedProvider` tolerates a list/dict/`None` at
@@ -1032,6 +1038,40 @@ ignore what you don't use. `get_drm(content_id, drm_variant=None, content_type=N
 * **Catchup DRM semantics**: see §6.6 (`[]` ⇒ `NotImplementedError` ⇒ PSSH
   extraction; live DRM reuse is explicit).
 
+### Stream format: DASH and HLS
+
+The backend serves DASH and **unencrypted HLS**. A provider does not declare the
+format: `drm_operations` sniffs the manifest it fetches anyway (`#EXTM3U` → HLS,
+`<MPD` → DASH; the URL extension is only a fallback) and caches the result together
+with the DRM configs. Clear HLS needs no DRM code: return `[]` from
+`get_channel_drm` / `get_vod_drm` (or have no DRM at all). The pipeline verifies the
+playlist itself — a media playlist with at least one segment and no `#EXT-X-KEY`
+other than `METHOD=NONE`; for a master playlist the first variant's playlist is
+fetched and checked — and answers "clear". Note the check fetches with your
+`get_manifest_headers`, exactly as for DASH.
+
+What the provider **should** do: set the `streaming_format` hint (§13) per channel /
+VOD item when the format is known at list time. Playlist generation cannot fetch
+thousands of manifests, so it uses the hint: HLS-hinted channels get the
+`…/stream/index.m3u8` alias and, where inputstream.adaptive is activated,
+`manifest_type=hls`. Decide **per item** (a provider can mix, e.g. live DASH and VOD
+HLS), never per provider. Leave `None` for dynamic-manifest items — **unknown is not
+DASH**; without a hint nothing changes for existing DASH providers.
+
+**HLS limits** — state them in the provider docstring (phase 1, no HLS rewriter or
+media-proxy path yet):
+
+| Situation | Behaviour today |
+|---|---|
+| Clear HLS, CDN needs no proxy and no special headers | works: the backend answers with a redirect to the upstream playlist |
+| `requires_manifest_context = True` | the backend fetches the playlist and makes every relative URI absolute (HLS has no `<BaseURL>`); the manifest query (token) is inherited unless `inherit_manifest_query_on_segments = False` |
+| Provider needs an HTTP proxy (`needs_proxy`) | **not supported yet**: redirected anyway, a warning is logged; geo-proxied HLS will not play |
+| CDN needs headers for manifest/segments | **unverified**: a redirect carries none; headers reach the client only via `x-kodi-stream-headers` / KODIPROPs. Prove it on a device before you rely on it (§12.7) |
+| `METHOD=AES-128` | reported as unknown (never "clear"); passed through unchanged, the player fetches the key itself |
+| `SAMPLE-AES`, Widevine/FairPlay HLS | detected as encrypted and passed through; no PSSH extraction, no server-side handling |
+| Only the first variant is probed | separately encrypted audio renditions are not checked |
+| `index.m3u8` alias | channels only; events, VOD and recordings still expose `index.mpd` |
+
 ---
 
 ## 12. Migrating an existing (v1) provider
@@ -1115,6 +1155,7 @@ Fill this table for your provider:
 | Are managers already ABC subclasses with the 4-collaborator constructor? | simpli-style (easy) vs Allente-style (constructor `(provider)` → rewrite) |
 | Where does auth live? Native token class or a stateful `BaseAuthenticator`? | Variant A or B (§9) |
 | Do manifest and DRM share one backend response? | `DRM_IN_MANAGERS` (§11) |
+| Which manifest format(s) does it return (DASH, HLS, both; per channel or per content type)? Any `#EXT-X-KEY` besides `METHOD=NONE`? Does the CDN need a proxy or headers? | the `streaming_format` hint (§13) and whether HLS is servable yet (§11, "Stream format") |
 | Does the v1 provider override `get_manifest_headers`/`get_segment_headers`? Do its managers define header hooks? | `HEADERS_FROM_MANAGERS` (§10) |
 | Which id prefixes/formats exist? How does v1 tell a **live id from a VOD id**? Any `catchup:`-like grammar? | `handles_content_id()` on **both** managers (§7) and provider-level overrides (§5.8) |
 | What does the provider return when auth fails (`[]`/`None`/raise)? | behaviour change list (§12.5) |
@@ -1296,6 +1337,9 @@ well; handle it once, here.
 9. Wrong password / OTP / geoblock: the UI shows the typed reason; **no login
    loop** (check the SSO traffic).
 10. Credentials change: old token not resurrected after restart.
+11. HLS channels: play through the `index.m3u8` URL; every rendition (audio,
+    subtitles) loads; segments fetch **without** the backend's headers/Referer
+    (`curl -I` the redirect target from another host); catchup redirects.
 
 ### 12.8 Rollback
 
@@ -1318,6 +1362,12 @@ providers can be mixed freely.
 * `Channel.catchup_hours` is the per-channel window; leave `0` unless catchup is
   really offered (do not conflate with "start-over").
 * `provider` on models is the **registry key** (`PROVIDER_NAME`).
+* **`streaming_format`** (on `Channel`, `VodItem`, …) is a *hint* of the manifest
+  format: a `StreamFormat` member (`StreamFormat.DASH` / `StreamFormat.HLS`, from
+  `base/stream_format.py`) or a string (`"dash"`, `"hls"`, also `"mpd"`, `"m3u8"`),
+  coerced in `__post_init__`; anything unrecognised becomes `None` (= unknown, **not**
+  DASH). `to_dict()["StreamingFormat"]` is `"dash"`, `"hls"` or `null`. The format the
+  backend detects from the manifest wins over the hint (§11).
 * **Do not subclass `Channel`** to carry API-internal ids (a v1 habit); they vanish
   from `to_dict()` in v2. Keep a small record per channel in the manager. Remember
   `Channel.country` is upper-case (§4).
@@ -1555,6 +1605,16 @@ Things that already cost time. Each is covered by a test or the contract unless 
 64. Staged registration where the docstring/placeholder flips in a later commit than
     the factory (§12.3b).
 65. A details endpoint that needs a parent id fed only `program_id` (§6.3).
+66. Assuming a manifest URL ends in `.mpd`, or that a provider has one format: HLS
+    exists, formats can mix per item, and tokenised URLs have no extension — the
+    backend sniffs the content; never branch on the extension (§11).
+67. Setting `streaming_format` per provider, or `"dash"` as a "default" — unknown
+    is `None`; a wrong hint sends playlists to the wrong alias (§13).
+68. HLS from a provider that needs an HTTP proxy or CDN headers: the redirect loses
+    both; it logs a warning and does not play. Document it, do not "fix" it in the
+    provider (§11).
+69. Treating `METHOD=AES-128` HLS as clear (it is *unknown* to the backend) or
+    returning DRM configs for it (§11).
 
 ---
 
@@ -1579,6 +1639,10 @@ Known gaps in the base, so you don't hunt for them:
 * `README` v1 (`_template`) describes the old shape; it is not rewritten.
 * Provider-specific features outside the ABCs (restart, `get_restart`) are free-form;
   there is no `RestartInfo` type yet.
+* **HLS**: no HLS rewriter / media-proxy path (proxied or header-gated HLS and
+  geo-proxied providers do not play), AES-128 policy undecided, encrypted HLS only
+  passed through, only the first variant probed, `index.m3u8` alias for channels
+  only (§11).
 
 **Tooling still to ship** (the README above already assumes it):
 
@@ -1671,6 +1735,7 @@ before it is merged. Two are implemented as patches (below); the rest are propos
 - [ ] No `# ADAPT` comment and no reference to a non-existent attribute left from pasted blocks (§12.3b)
 - [ ] Capability docstring/placeholder flipped in the same commit as its factory (§12.3b)
 - [ ] Details endpoints needing a parent id: hint map + documented fallback; raw result exposed if provider-specific fields are read (§6.3)
+- [ ] Manifest format(s) recorded; `streaming_format` hint set per item where known (never a provider-wide guess); HLS limits (proxy, headers, AES-128) listed in the provider docstring and device-tested (§11, §12.7)
 
 ---
 
@@ -1750,3 +1815,5 @@ wiring snippets. It never edits your wiring and never registers anything.
 * **ISA** — inputstream.adaptive (Kodi).
 * **Legacy surface** — what the operations layer calls (§3).
 * **Variant A / B** — native `AuthProtocol` class / session adapter (§9).
+* **StreamFormat** — `DASH` / `HLS` (`base/stream_format.py`); `None` = unknown. The
+  `streaming_format` field is only a hint; the backend sniffs the manifest (§11).
