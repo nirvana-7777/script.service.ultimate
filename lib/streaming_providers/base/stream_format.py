@@ -19,7 +19,7 @@ and provider default are applied by the caller.
 import re
 from enum import Enum
 from typing import Dict, Iterator, Optional
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit
 
 
 class StreamFormat(str, Enum):
@@ -169,3 +169,67 @@ def hls_key_attributes(content: str) -> Iterator[Dict[str, str]]:
         for match in _HLS_ATTR_RE.finditer(line.split(":", 1)[1]):
             attrs[match.group(1)] = match.group(2).strip('"')
         yield attrs
+
+
+# ---------------------------------------------------------------------------
+# Serving helpers
+# ---------------------------------------------------------------------------
+
+DASH_CONTENT_TYPE = "application/dash+xml; charset=utf-8"
+HLS_CONTENT_TYPE = "application/vnd.apple.mpegurl"
+
+
+def content_type_for(stream_format: Optional[StreamFormat]) -> str:
+    """HTTP Content-Type for a manifest of the given format. Unknown falls back
+    to DASH, which is what every manifest route served before HLS existed."""
+    return HLS_CONTENT_TYPE if stream_format is StreamFormat.HLS else DASH_CONTENT_TYPE
+
+
+def join_hls_uri(base_url: str, uri: str, inherit_query: bool = True) -> str:
+    """Resolve a playlist/segment URI against its parent (RFC 3986).
+
+    Like segment URLs for DASH, a query-less reference inherits the parent's
+    query (auth token) when inherit_query is true. Providers opt out via
+    `inherit_manifest_query_on_segments = False`.
+    """
+    joined = urljoin(base_url, uri)
+    if inherit_query:
+        base_query = urlsplit(base_url).query
+        parts = urlsplit(joined)
+        if base_query and not parts.query:
+            joined = urlunsplit(parts._replace(query=base_query))
+    return joined
+
+
+# URI="..." attribute inside a tag; the lookbehind keeps vendor attributes such
+# as X-ASSET-URI untouched.
+_HLS_URI_ATTR_RE = re.compile(r'(?<![A-Za-z0-9-])URI="([^"]*)"')
+
+
+def absolutize_hls_playlist(content: str, base_url: str, inherit_query: bool = True) -> str:
+    """Rewrite every relative reference in an HLS playlist to an absolute URL.
+
+    HLS has no <BaseURL> (the DASH trick used by `_inject_base_url`), so a
+    playlist that is re-served from another host must carry absolute URLs or
+    the player resolves them against OUR server. Handles URI lines (variants,
+    segments) and URI="..." attributes (EXT-X-MAP, -KEY, -SESSION-KEY, -MEDIA,
+    -I-FRAME-STREAM-INF, -PART, -PRELOAD-HINT, ...). data: URIs and already
+    absolute URLs are left alone. The playlist is otherwise returned verbatim.
+    """
+
+    def _abs(uri: str) -> str:
+        if not uri or uri.lower().startswith("data:"):
+            return uri
+        return join_hls_uri(base_url, uri, inherit_query)
+
+    out = []
+    for raw in content.splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            out.append(raw)
+        elif stripped.startswith("#"):
+            out.append(_HLS_URI_ATTR_RE.sub(lambda m: f'URI="{_abs(m.group(1))}"', raw))
+        else:
+            out.append(_abs(stripped))
+    result = "\n".join(out)
+    return result + "\n" if content.endswith("\n") else result

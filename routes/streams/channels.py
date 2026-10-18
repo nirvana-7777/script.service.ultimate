@@ -10,6 +10,7 @@ channel-specific catchup handling logic.
 import time
 
 from bottle import HTTPResponse, request, response
+from streaming_providers.base.stream_format import StreamFormat
 from streaming_providers.base.utils import logger
 
 
@@ -17,6 +18,7 @@ def setup_channel_routes(app, manager, service, helpers):
     """Setup all channel-related stream routes."""
     CONTENT_TYPE_CHANNEL = helpers["CONTENT_TYPE_CHANNEL"]
     _build_drm_header = helpers["_build_drm_header"]
+    _attach_drm_header = helpers["_attach_drm_header"]
     _build_stream_headers = helpers["_build_stream_headers"]
     _resolve_stream_unified = helpers["_resolve_stream_unified"]
     _get_drm_configs = helpers["_get_drm_configs"]
@@ -130,20 +132,30 @@ def setup_channel_routes(app, manager, service, helpers):
             country = request.query.get("country")
             base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
             qs = f"?country={country}" if country else ""
+
+            # Resolve first: the detected format decides which alias the URLs
+            # point at. Both aliases hit the same handler — the extension only
+            # helps clients that pick their player from the URL. Unknown
+            # format (None) keeps index.mpd, i.e. the pre-HLS behaviour.
+            stream_info = _attach_drm_header(
+                CONTENT_TYPE_CHANNEL, provider, channel_id, country=country
+            )
+            stream_format = stream_info.stream_format if stream_info else None
+            index_name = "index.m3u8" if stream_format is StreamFormat.HLS else "index.mpd"
+
             stream_url = (
                 f"{base_url}/api/providers/{provider}/channels/{channel_id}"
-                f"/stream/index.mpd{qs}"
+                f"/stream/{index_name}{qs}"
             )
             # Catchup template — callers substitute {start_time}/{end_time} with
             # Unix timestamps.  Matches the query params consumed by _handle_channel_stream.
             catchup_qs_sep = "&" if qs else "?"
             catchup_stream_url_template = (
                 f"{base_url}/api/providers/{provider}/channels/{channel_id}"
-                f"/stream/index.mpd{qs}{catchup_qs_sep}"
+                f"/stream/{index_name}{qs}{catchup_qs_sep}"
                 f"start_time={{start_time}}&end_time={{end_time}}"
             )
 
-            _build_drm_header(CONTENT_TYPE_CHANNEL, provider, channel_id, country=country)
             _build_stream_headers(CONTENT_TYPE_CHANNEL, provider, channel_id, country=country)
 
             return {
@@ -151,6 +163,7 @@ def setup_channel_routes(app, manager, service, helpers):
                 "channel_id": channel_id,
                 "manifest_url": stream_url,
                 "catchup_stream_url_template": catchup_stream_url_template,
+                "stream_format": stream_format.value if stream_format else None,
             }
 
         except ValueError as e:
@@ -163,9 +176,14 @@ def setup_channel_routes(app, manager, service, helpers):
             return {"error": f"Internal server error: {str(e)}"}
 
     @app.route("/api/providers/<provider>/channels/<channel_id>/stream/index.mpd")
+    @app.route("/api/providers/<provider>/channels/<channel_id>/stream/index.m3u8")
     def get_channel_stream(provider, channel_id):
         """
         Single stream endpoint for all channel playback — live and catchup.
+        index.m3u8 is an alias of index.mpd served by the same handler; the
+        format actually returned follows the upstream manifest, not the
+        extension. Playlists point HLS channels at the alias so clients that
+        select a player from the URL pick the right one.
         Replaces the former /stream/sw-drm/, /stream/noproxy/, /stream/proxied/,
         and /stream/proxied/ffmpeg/ routes, which are removed. Every
         combination those routes used to hardcode (and some that were

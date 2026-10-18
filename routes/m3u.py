@@ -500,6 +500,7 @@ def setup_m3u_routes(app, manager, service):
                         "stream/index.mpd?client_drm=false" if proxied
                         else "stream/index.mpd?client_drm=true"
                     )
+                    stream_path = service.stream_path_for(channel, stream_path)
                     stream_url = (
                         f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/{stream_path}"
                     )

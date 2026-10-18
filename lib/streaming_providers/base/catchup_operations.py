@@ -6,6 +6,7 @@ Catchup/timeshift operations.
 
 from typing import Dict, List, Optional
 
+from .drm_operations import ResolvedStream
 from .utils.logger import logger
 
 
@@ -54,7 +55,7 @@ class CatchupOperations:
             logger.error(f"Provider '{provider_name}' hasn't implemented catchup")
             return None
 
-    def get_catchup_drm_configs(
+    def get_catchup_stream_info(
             self,
             provider_name: str,
             channel_id: str,
@@ -63,11 +64,11 @@ class CatchupOperations:
             epg_id: Optional[str] = None,
             country: Optional[str] = None,
             drm_variant: Optional[str] = None,
-    ) -> List:
-        """Get DRM configs for catchup content."""
+    ) -> ResolvedStream:
+        """Stream format + DRM configs for catchup content."""
         provider = self.registry.get_provider(provider_name)
         if not provider:
-            raise ValueError(...)
+            raise ValueError(f"Provider '{provider_name}' not found or disabled")
 
         # First, get the catchup manifest URL and headers
         try:
@@ -81,14 +82,14 @@ class CatchupOperations:
             )
         except NotImplementedError:
             logger.error(f"Provider '{provider_name}' hasn't implemented catchup manifest resolution")
-            return []
+            return ResolvedStream(None, ())
 
         if not manifest_url:
             logger.warning(f"No catchup manifest URL for '{channel_id}'")
-            return []
+            return ResolvedStream(None, ())
 
         # Use the dedicated catchup DRM pipeline
-        return self.drm_operations.get_catchup_content_drm_configs(
+        return self.drm_operations.get_catchup_content_stream_info(
             provider_name=provider_name,
             channel_id=channel_id,
             catchup_manifest_url=manifest_url,
@@ -98,6 +99,25 @@ class CatchupOperations:
             epg_id=epg_id,
             country=country,
             drm_variant=drm_variant,
+        )
+
+    def get_catchup_drm_configs(
+            self,
+            provider_name: str,
+            channel_id: str,
+            start_time: int,
+            end_time: int,
+            epg_id: Optional[str] = None,
+            country: Optional[str] = None,
+            drm_variant: Optional[str] = None,
+    ) -> List:
+        """Get DRM configs for catchup content (list wrapper over
+        get_catchup_stream_info)."""
+        return list(
+            self.get_catchup_stream_info(
+                provider_name, channel_id, start_time, end_time,
+                epg_id=epg_id, country=country, drm_variant=drm_variant,
+            ).drm_configs
         )
 
     def get_catchup_window(self, provider_name: str, channel_id: Optional[str] = None) -> int:

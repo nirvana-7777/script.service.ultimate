@@ -33,6 +33,12 @@ import time
 from urllib.parse import urljoin
 
 from bottle import redirect, request, response
+from streaming_providers.base.stream_format import (
+    StreamFormat,
+    absolutize_hls_playlist,
+    content_type_for,
+    detect_format,
+)
 from streaming_providers.base.utils import logger
 from streaming_providers.base.utils.manifest_utils import ManifestUtils
 
@@ -114,8 +120,8 @@ def setup_stream_routes(app, manager, service):
                 provider, content_id, manifest_url
             )
 
-            # Return unmodified manifest
-            response.content_type = "application/dash+xml; charset=utf-8"
+            # Return unmodified manifest (DASH or HLS — sniffed from the content)
+            response.content_type = content_type_for(detect_format(manifest_text))
             return manifest_text
 
         except ValueError as e:
@@ -154,6 +160,39 @@ def make_helpers(manager, service):
     # INTERNAL HELPERS (with manager and service closed over)
     # =========================================================================
 
+    def _get_stream_info(
+            content_type: str,
+            provider: str,
+            content_id: str,
+            drm_variant: str = "auto",
+            **kwargs,
+    ):
+        """
+        Dispatch to the correct manager *_stream_info method based on content
+        type. Returns a ResolvedStream: the manifest's detected format
+        (StreamFormat or None) plus its DRM configs. Raises ValueError for an
+        unknown provider/content type; re-raises other exceptions.
+        """
+        kwargs.setdefault("drm_variant", drm_variant)
+        if content_type == CONTENT_TYPE_CHANNEL:
+            return manager.get_channel_stream_info(
+                provider_name=provider, channel_id=content_id, **kwargs
+            )
+        elif content_type == CONTENT_TYPE_EVENT:
+            return manager.get_event_stream_info(
+                provider_name=provider, event_id=content_id, **kwargs
+            )
+        elif content_type == CONTENT_TYPE_VOD:
+            return manager.get_vod_stream_info(
+                provider_name=provider, vod_id=content_id, **kwargs
+            )
+        elif content_type == CONTENT_TYPE_RECORDING:
+            return manager.get_recording_stream_info(
+                provider_name=provider, recording_id=content_id, **kwargs
+            )
+        else:
+            raise ValueError(f"Unknown content_type '{content_type}'")
+
     def _get_drm_configs(
             content_type: str,
             provider: str,
@@ -162,34 +201,21 @@ def make_helpers(manager, service):
             **kwargs,
     ):
         """
-        Dispatch DRM config retrieval to the correct manager method based on
-        content type.  Returns a list of DRMConfig objects (may be empty).
-        Raises ValueError for unknown provider; re-raises other exceptions.
+        Return the list of DRMConfig objects (may be empty) for any content
+        type — a thin wrapper over _get_stream_info that keeps the historic
+        list return type. Raises ValueError for unknown provider; re-raises
+        other exceptions.
 
         Args:
             drm_variant: 'auto' (provider default) or 'software' (prefer ClearKey).
                          Passed through to the provider via **kwargs so individual
                          providers can select an appropriate DRM scheme.
         """
-        kwargs.setdefault("drm_variant", drm_variant)
-        if content_type == CONTENT_TYPE_CHANNEL:
-            return manager.get_channel_drm_configs(
-                provider_name=provider, channel_id=content_id, **kwargs
-            )
-        elif content_type == CONTENT_TYPE_EVENT:
-            return manager.get_event_drm_configs(
-                provider_name=provider, event_id=content_id, **kwargs
-            )
-        elif content_type == CONTENT_TYPE_VOD:
-            return manager.get_vod_drm_configs(
-                provider_name=provider, vod_id=content_id, **kwargs
-            )
-        elif content_type == CONTENT_TYPE_RECORDING:
-            return manager.get_recording_drm_configs(
-                provider_name=provider, recording_id=content_id, **kwargs
-            )
-        else:
-            raise ValueError(f"Unknown content_type '{content_type}'")
+        return list(
+            _get_stream_info(
+                content_type, provider, content_id, drm_variant=drm_variant, **kwargs
+            ).drm_configs
+        )
 
     def _get_manifest_url(
             content_type: str,
@@ -227,6 +253,70 @@ def make_helpers(manager, service):
         else:
             raise ValueError(f"Unknown content_type '{content_type}'")
 
+    def _attach_drm_header(
+            content_type: str,
+            provider: str,
+            content_id: str,
+            country=None,
+            # catchup-specific — only used for channels
+            is_catchup: bool = False,
+            start_time: int = None,
+            end_time: int = None,
+            epg_id: str = None,
+            drm_variant: str = "auto",
+    ):
+        """
+        Resolve stream info (format + DRM configs), serialise the configs to
+        JSON and attach them as a base64-encoded response header
+        (x-kodi-drm-configs). When the manifest format is known it is also
+        attached as x-kodi-stream-format ("dash" / "hls"). Non-fatal: logs a
+        warning and returns None on any error.
+
+        Args:
+            drm_variant: 'auto' or 'software'.  Forwarded to the DRM config
+                         fetch so the provider can return ClearKey configs when
+                         the software-DRM variant is requested.
+
+        Returns:
+            The ResolvedStream that was fetched, or None on failure. Callers
+            that need the configs or the format reuse this instead of
+            resolving a second time.
+        """
+        try:
+            if is_catchup and content_type == CONTENT_TYPE_CHANNEL:
+                stream_info = manager.get_catchup_stream_info(
+                    provider_name=provider,
+                    channel_id=content_id,
+                    start_time=start_time,
+                    end_time=end_time,
+                    epg_id=epg_id,
+                    country=country,
+                    drm_variant=drm_variant,
+                )
+            else:
+                stream_info = _get_stream_info(
+                    content_type, provider, content_id,
+                    country=country, drm_variant=drm_variant,
+                )
+
+            merged = _serialize_drm_configs(stream_info.drm_configs)
+
+            encoded = base64.b64encode(
+                json.dumps(merged).encode("utf-8")
+            ).decode("ascii")
+
+            response.headers["x-kodi-drm-configs"] = encoded
+            if stream_info.stream_format is not None:
+                response.headers["x-kodi-stream-format"] = stream_info.stream_format.value
+            return stream_info
+
+        except Exception as e:
+            logger.warning(
+                f"Could not build x-kodi-drm-configs header for "
+                f"{content_type} {provider}/{content_id} (variant={drm_variant}): {e}"
+            )
+            return None
+
     def _build_drm_header(
             content_type: str,
             provider: str,
@@ -240,52 +330,19 @@ def make_helpers(manager, service):
             drm_variant: str = "auto",
     ):
         """
-        Fetch DRM configs, serialise to JSON and attach as a base64-encoded
-        response header (x-kodi-drm-configs).  Non-fatal: logs a warning and
-        returns [] on any error.
-
-        Args:
-            drm_variant: 'auto' or 'software'.  Forwarded to the DRM config
-                         fetch so the provider can return ClearKey configs when
-                         the software-DRM variant is requested.
-
-        Returns:
-            The list of DRMConfig objects that were fetched (or [] on failure).
-            Callers that also need the raw configs (e.g. _resolve_stream_unified)
-            can reuse this instead of fetching them again.
+        Back-compat wrapper around _attach_drm_header: same response headers,
+        but returns only the list of DRMConfig objects ([] on failure).
         """
-        try:
-            if is_catchup and content_type == CONTENT_TYPE_CHANNEL:
-                drm_configs = manager.get_catchup_drm_configs(
-                    provider_name=provider,
-                    channel_id=content_id,
-                    start_time=start_time,
-                    end_time=end_time,
-                    epg_id=epg_id,
-                    country=country,
-                    drm_variant=drm_variant,
-                )
-            else:
-                drm_configs = _get_drm_configs(
-                    content_type, provider, content_id,
-                    country=country, drm_variant=drm_variant,
-                )
-
-            merged = _serialize_drm_configs(drm_configs)
-
-            encoded = base64.b64encode(
-                json.dumps(merged).encode("utf-8")
-            ).decode("ascii")
-
-            response.headers["x-kodi-drm-configs"] = encoded
-            return drm_configs
-
-        except Exception as e:
-            logger.warning(
-                f"Could not build x-kodi-drm-configs header for "
-                f"{content_type} {provider}/{content_id} (variant={drm_variant}): {e}"
-            )
-            return []
+        stream_info = _attach_drm_header(
+            content_type, provider, content_id,
+            country=country,
+            is_catchup=is_catchup,
+            start_time=start_time,
+            end_time=end_time,
+            epg_id=epg_id,
+            drm_variant=drm_variant,
+        )
+        return list(stream_info.drm_configs) if stream_info else []
 
     def _build_stream_headers(
             content_type: str,
@@ -485,12 +542,23 @@ def make_helpers(manager, service):
                 manifest_text, _, _, _, effective_url = service.fetch_manifest_for_rewriter(
                     provider, content_id, manifest_url
                 )
-                # Inject the upstream manifest URL as a BaseURL so the player can
-                # resolve relative segment URLs correctly. Without this, segments
-                # resolve against the local server URL and all requests fail.
-                manifest_text = _inject_base_url(manifest_text, effective_url)
+                manifest_format = detect_format(manifest_text)
+                if manifest_format is StreamFormat.HLS:
+                    # HLS has no <BaseURL>: make every relative reference
+                    # absolute so segments don't resolve against our server.
+                    manifest_text = absolutize_hls_playlist(
+                        manifest_text, effective_url,
+                        inherit_query=bool(getattr(
+                            provider_instance, "inherit_manifest_query_on_segments", True
+                        )),
+                    )
+                else:
+                    # Inject the upstream manifest URL as a BaseURL so the player can
+                    # resolve relative segment URLs correctly. Without this, segments
+                    # resolve against the local server URL and all requests fail.
+                    manifest_text = _inject_base_url(manifest_text, effective_url)
 
-                response.content_type = "application/dash+xml; charset=utf-8"
+                response.content_type = content_type_for(manifest_format)
                 return manifest_text
 
             except Exception as e:
@@ -515,6 +583,68 @@ def make_helpers(manager, service):
                 }
             logger.debug(f"Redirecting to manifest: {manifest_url}")
             return redirect(manifest_url)
+
+    def _serve_hls_passthrough(
+            content_type: str,
+            provider: str,
+            content_id: str,
+            country,
+            drm_variant: str,
+            is_catchup: bool,
+            start_time,
+            end_time,
+            epg_id,
+            is_unencrypted: bool,
+    ):
+        """
+        HLS phase 1: hand the client the upstream playlist WITHOUT rewriting.
+
+        There is no HLS rewriter or proxy path yet — MPDRewriter and the media
+        proxy are DASH-only. The DASH routing in _resolve_stream_unified
+        (ClearKey rewrite, proxied manifest) must therefore never run for HLS:
+        MPDRewriter cannot parse a playlist and the request would end in a 502.
+        Instead the playlist is redirected to (or, for providers with
+        requires_manifest_context, fetched and absolutised by
+        _redirect_or_fetch).
+
+        Limits until an HLS proxy path exists: providers whose manifest or
+        segment fetches need an HTTP proxy cannot be served this way, and
+        provider headers only reach the client via x-kodi-stream-headers /
+        KODIPROPs. Encrypted or undecidable HLS (e.g. AES-128, SAMPLE-AES) is
+        passed through as-is; the client's player and the x-kodi-drm-configs
+        header have to cope with it.
+        """
+        if not is_unencrypted:
+            logger.debug(
+                f"HLS {provider}/{content_id}: not verified clear — passing the "
+                f"playlist through unchanged"
+            )
+        if manager.needs_proxy(provider):
+            logger.warning(
+                f"HLS {provider}/{content_id}: provider uses an HTTP proxy but HLS "
+                f"proxying is not implemented — redirecting to the upstream "
+                f"playlist; playback may fail"
+            )
+
+        if is_catchup:
+            manifest_url = manager.get_catchup_manifest(
+                provider_name=provider,
+                channel_id=content_id,
+                start_time=start_time,
+                end_time=end_time,
+                epg_id=epg_id,
+                country=country,
+                drm_variant=drm_variant,
+            )
+            if not manifest_url:
+                response.status = 404
+                return {
+                    "error": f'Catchup manifest not available for channel "{content_id}"'
+                }
+            logger.debug(f"Redirecting to HLS catchup playlist: {manifest_url}")
+            return redirect(manifest_url)
+
+        return _redirect_or_fetch(content_type, provider, content_id, country, drm_variant)
 
     def _resolve_stream_unified(
             content_type: str,
@@ -599,7 +729,7 @@ def make_helpers(manager, service):
         # --- DRM header (best-effort, never fatal). Also returns the DRM
         # configs it fetched so the branches below can reuse them instead of
         # fetching from the provider a second time. ---
-        drm_configs_for_header = _build_drm_header(
+        stream_info = _attach_drm_header(
             content_type, provider, content_id,
             country=country,
             is_catchup=is_catchup,
@@ -608,6 +738,10 @@ def make_helpers(manager, service):
             epg_id=epg_id,
             drm_variant=drm_variant,
         )
+        drm_configs_for_header = list(stream_info.drm_configs) if stream_info else []
+        # None = unknown (resolution failed or manifest unfetchable) → the
+        # DASH routing below, i.e. exactly the behaviour before HLS existed.
+        stream_format = stream_info.stream_format if stream_info else None
         # --- Stream headers (best-effort, never fatal) ---
         _build_stream_headers(
             content_type, provider, content_id,
@@ -625,6 +759,15 @@ def make_helpers(manager, service):
             .get("keyids", {})
         )
         is_unencrypted = "none" in drm_dict
+
+        # ==================================================================
+        # HLS: no rewriter exists, so none of the DASH routing below applies.
+        # ==================================================================
+        if stream_format is StreamFormat.HLS:
+            return _serve_hls_passthrough(
+                content_type, provider, content_id, country, drm_variant,
+                is_catchup, start_time, end_time, epg_id, is_unencrypted,
+            )
 
         # ==================================================================
         # Catchup path (channel-specific)
@@ -856,6 +999,8 @@ def make_helpers(manager, service):
         "_get_drm_configs": _get_drm_configs,
         "_get_manifest_url": _get_manifest_url,
         "_build_drm_header": _build_drm_header,
+        "_attach_drm_header": _attach_drm_header,
+        "_get_stream_info": _get_stream_info,
         "_build_stream_headers": _build_stream_headers,
         "_stream_needs_headers": _stream_needs_headers,
         "_inject_base_url": _inject_base_url,

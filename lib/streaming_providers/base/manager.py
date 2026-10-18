@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from .catchup_operations import CatchupOperations
 from .channel_operations import ChannelOperations
-from .drm_operations import DRMOperations
+from .drm_operations import DRMOperations, ResolvedStream
 from .epg_operations import EPGOperations
 from .event_operations import EventOperations
 from .vod_operations import VodOperations
@@ -176,6 +176,21 @@ class ProviderManager:
     def get_channel_drm_configs(self, provider_name: str, channel_id: str, **kwargs) -> List:
         return self.drm_ops.get_content_drm_configs(provider_name, channel_id, **kwargs)
 
+    # Stream info = detected format (DASH/HLS/None) + DRM configs, resolved in
+    # one pass and cached together. Same kwargs as the *_drm_configs methods.
+
+    def get_channel_stream_info(self, provider_name: str, channel_id: str, **kwargs) -> ResolvedStream:
+        return self.drm_ops.get_content_stream_info(provider_name, channel_id, **kwargs)
+
+    def get_event_stream_info(self, provider_name: str, event_id: str, **kwargs) -> ResolvedStream:
+        return self.drm_ops.get_content_stream_info(provider_name, event_id, **kwargs)
+
+    def get_vod_stream_info(self, provider_name: str, vod_id: str, **kwargs) -> ResolvedStream:
+        return self.drm_ops.get_content_stream_info(provider_name, vod_id, **kwargs)
+
+    def get_recording_stream_info(self, provider_name: str, recording_id: str, **kwargs) -> ResolvedStream:
+        return self.drm_ops.get_content_stream_info(provider_name, recording_id, **kwargs)
+
     def list_drm_plugins(self) -> Dict:
         return self.drm_ops.list_drm_plugins()
 
@@ -211,6 +226,20 @@ class ProviderManager:
             drm_variant: Optional[str] = None,
     ) -> List:
         return self.catchup_ops.get_catchup_drm_configs(
+            provider_name, channel_id, start_time, end_time, epg_id, country, drm_variant=drm_variant
+        )
+
+    def get_catchup_stream_info(
+            self,
+            provider_name: str,
+            channel_id: str,
+            start_time: int,
+            end_time: int,
+            epg_id: Optional[str] = None,
+            country: Optional[str] = None,
+            drm_variant: Optional[str] = None,
+    ) -> ResolvedStream:
+        return self.catchup_ops.get_catchup_stream_info(
             provider_name, channel_id, start_time, end_time, epg_id, country, drm_variant=drm_variant
         )
 

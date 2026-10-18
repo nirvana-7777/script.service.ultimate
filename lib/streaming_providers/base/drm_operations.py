@@ -59,7 +59,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from threading import Lock
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Tuple
-from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from .drm import DRMPluginManager
 from .models import DRMConfig, DRMSystem
@@ -71,6 +70,7 @@ from .stream_format import (
     hls_has_media_segments,
     hls_key_attributes,
     is_hls_master,
+    join_hls_uri,
 )
 from .utils import ManifestParser
 from .utils.drm_extractor import DRMExtractor
@@ -775,17 +775,8 @@ class DRMOperations:
 
     @staticmethod
     def _join_hls_uri(base_url: str, uri: str, inherit_query: bool) -> str:
-        """Resolve a playlist URI against its parent (RFC 3986). Like segment
-        URLs for DASH, a query-less reference inherits the parent's query
-        (auth token) unless the provider opted out via
-        `inherit_manifest_query_on_segments = False`."""
-        joined = urljoin(base_url, uri)
-        if inherit_query:
-            base_query = urlsplit(base_url).query
-            parts = urlsplit(joined)
-            if base_query and not parts.query:
-                joined = urlunsplit(parts._replace(query=base_query))
-        return joined
+        """Thin alias for stream_format.join_hls_uri (kept for callers/tests)."""
+        return join_hls_uri(base_url, uri, inherit_query)
 
     @staticmethod
     def _is_manifest_encrypted(manifest_content: str) -> Optional[bool]:

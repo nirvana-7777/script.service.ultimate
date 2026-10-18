@@ -23,6 +23,7 @@ try:
     # Add EPG Manager import
     from streaming_providers.base.epg.epg_manager import EPGManager
     from streaming_providers.base.models import StreamingChannel
+    from streaming_providers.base.stream_format import StreamFormat
     from streaming_providers.base.settings.provider_enable_manager import (
         ProviderEnableManager,
     )
@@ -831,6 +832,10 @@ class UltimateService:
         if manifest_headers_encoded or segment_headers_encoded:
             if "#KODIPROP:inputstream=inputstream.adaptive\n" not in entry_content:
                 entry_content += "#KODIPROP:inputstream=inputstream.adaptive\n"
+            if self._is_hls_hint(channel):
+                # inputstream.adaptive was activated above; don't leave the
+                # manifest type to autodetection when the hint says HLS.
+                entry_content += "#KODIPROP:inputstream.adaptive.manifest_type=hls\n"
             if manifest_headers_encoded:
                 entry_content += (
                     f"#KODIPROP:inputstream.adaptive.manifest_headers={manifest_headers_encoded}\n"
@@ -841,6 +846,22 @@ class UltimateService:
                 )
 
         return entry_content
+
+    @staticmethod
+    def _is_hls_hint(channel) -> bool:
+        """True if the channel's streaming_format HINT says HLS. Only a hint:
+        unknown (None) means "no information", not DASH."""
+        return StreamFormat.parse(getattr(channel, "streaming_format", None)) is StreamFormat.HLS
+
+    @staticmethod
+    def stream_path_for(channel, stream_path: str) -> str:
+        """Point HLS-hinted channels at the index.m3u8 alias of the single
+        stream route; everything else keeps index.mpd. Query strings are
+        untouched. Same handler either way — the alias only helps clients that
+        choose their player from the URL extension."""
+        if UltimateService._is_hls_hint(channel):
+            return stream_path.replace("stream/index.mpd", "stream/index.m3u8", 1)
+        return stream_path
 
     def _generate_m3u_entry(
             self,
@@ -869,6 +890,7 @@ class UltimateService:
                          it's appended as-is.
         """
         channel_id = channel.channel_id
+        stream_path = self.stream_path_for(channel, stream_path)
         header = self._build_m3u_entry_header(
             provider_name, channel,
             provider_label=provider_label,
@@ -1048,7 +1070,10 @@ class UltimateService:
                     # client_drm=false matches this playlist's static KODIPROP
                     # line below (server decrypts); highest_quality_only=true
                     # replaces the old dedicated /stream/proxied/ffmpeg/ path.
-                    stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/stream/index.mpd?client_drm=false&highest_quality_only=true"
+                    stream_path = self.stream_path_for(
+                        channel, "stream/index.mpd?client_drm=false&highest_quality_only=true"
+                    )
+                    stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/{stream_path}"
 
                     # Build ffmpeg pipe command
                     ffmpeg_cmd = self._build_ffmpeg_pipe_command(stream_url, channel_name)
