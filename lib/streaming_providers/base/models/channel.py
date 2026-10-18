@@ -18,6 +18,9 @@ class Channel(Content):
     catchup_hours: Optional[int] = 0
 
     def __post_init__(self):
+        # Content.__post_init__ is not called (see _validate_fields), so the
+        # shared normalisation has to be invoked explicitly.
+        self._normalize_streaming_format()
         self._validate_fields()
         if self.is_radio and self.content_type == "LIVE":
             self.content_type = "RADIO"

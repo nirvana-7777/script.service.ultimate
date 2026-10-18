@@ -33,18 +33,45 @@ NOT use the epoch.
 
 Caching is centralised in `_resolve_content_drm`: `_compute_content_drm` is
 pure with respect to the DRM-config cache and never writes to it directly.
+
+Stream format (DASH / HLS):
+The pipeline also reports the manifest's format. It is sniffed from the
+manifest content that is fetched anyway (URL extension is only a fallback),
+and the result travels with the DRM configs as a `ResolvedStream`, cached
+under the same key. `get_content_drm_configs` / `get_catchup_content_drm_configs`
+keep returning plain lists; `get_content_stream_info` /
+`get_catchup_content_stream_info` return the full `ResolvedStream`.
+
+HLS "verified clear" is deliberately strict, because a clear verdict is cached
+and short-circuits the whole pipeline: the playlist must be a media playlist
+with at least one segment and no key tag other than METHOD=NONE. For a master
+playlist the first variant's media playlist is fetched and checked (only that
+variant: audio renditions are not probed). METHOD=AES-128 is NOT DRM but also
+not clear, so it is reported as unknown (None) and falls through. Encrypted
+HLS (SAMPLE-AES, Widevine/FairPlay KEYFORMATs) is detected as encrypted but
+the PSSH/segment-extraction fallbacks below are DASH-only.
 """
 
 import re
 import time
 from collections import OrderedDict
 from contextlib import contextmanager
+from dataclasses import dataclass
 from threading import Lock
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Tuple
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from .drm import DRMPluginManager
 from .models import DRMConfig, DRMSystem
 from .network import HTTPManager
+from .stream_format import (
+    StreamFormat,
+    detect_format,
+    first_hls_variant_uri,
+    hls_has_media_segments,
+    hls_key_attributes,
+    is_hls_master,
+)
 from .utils import ManifestParser
 from .utils.drm_extractor import DRMExtractor
 from .utils.logger import logger
@@ -156,6 +183,32 @@ class _ManifestContext(NamedTuple):
         return self.effective_manifest_url or self.manifest_url
 
 
+@dataclass(frozen=True)
+class ResolvedStream:
+    """Outcome of one resolution: the manifest's format plus its DRM configs.
+
+    Immutable (configs are a tuple) so the cached instance can be handed out
+    directly without defensive copies; the DRMConfig objects themselves are
+    still shared (shallow), as before.
+
+    stream_format is None when it could not be determined (manifest
+    unfetchable and no usable URL hint). An empty drm_configs means "no DRM
+    solution found" and such results are never cached (see
+    `_resolve_content_drm`).
+    """
+
+    stream_format: Optional[StreamFormat]
+    drm_configs: Tuple[DRMConfig, ...] = ()
+
+
+@dataclass
+class _FormatProbe:
+    """Out-parameter that lets the (many-exit) DRM pipeline report the format
+    it observed without changing every return statement."""
+
+    stream_format: Optional[StreamFormat] = None
+
+
 class DRMOperations:
     """Resolves DRM configurations for live/VOD/event and catchup content.
 
@@ -179,10 +232,11 @@ class DRMOperations:
     # PUBLIC API — thin adapters
     # ==========================================================================
 
-    def get_content_drm_configs(
+    def get_content_stream_info(
         self, provider_name: str, channel_id: str, **kwargs
-    ) -> List[DRMConfig]:
-        """Resolve DRM configs for live/VOD/event/recording content.
+    ) -> ResolvedStream:
+        """Resolve stream format AND DRM configs for live/VOD/event/recording
+        content in one pass (they share the manifest fetch and the cache).
 
         kwargs are forwarded to the provider and DRM plugins; recognised
         cache-key variants are drm_variant, preferred_quality, preferred_format.
@@ -202,7 +256,18 @@ class DRMOperations:
             resolve_manifest, get_provider_configs, kwargs,
         )
 
-    def get_catchup_content_drm_configs(
+    def get_content_drm_configs(
+        self, provider_name: str, channel_id: str, **kwargs
+    ) -> List[DRMConfig]:
+        """Resolve DRM configs for live/VOD/event/recording content.
+
+        Thin wrapper over get_content_stream_info that keeps the historic
+        list return type (a fresh list on every call)."""
+        return list(
+            self.get_content_stream_info(provider_name, channel_id, **kwargs).drm_configs
+        )
+
+    def get_catchup_content_stream_info(
         self,
         provider_name: str,
         channel_id: str,
@@ -212,8 +277,8 @@ class DRMOperations:
         end_time: int,
         epg_id: Optional[str] = None,
         **kwargs,
-    ) -> List[DRMConfig]:
-        """Resolve DRM configs for a catchup/timeshift window."""
+    ) -> ResolvedStream:
+        """Resolve stream format and DRM configs for a catchup/timeshift window."""
         provider = self._get_provider(provider_name)
         kwargs = self._inject_provider_proxy(provider, kwargs)
         base_key = self._build_catchup_cache_key(
@@ -245,6 +310,26 @@ class DRMOperations:
             resolve_manifest, get_provider_configs, pipeline_kwargs,
         )
 
+    def get_catchup_content_drm_configs(
+        self,
+        provider_name: str,
+        channel_id: str,
+        catchup_manifest_url: str,
+        catchup_manifest_headers: Dict[str, str],
+        start_time: int,
+        end_time: int,
+        epg_id: Optional[str] = None,
+        **kwargs,
+    ) -> List[DRMConfig]:
+        """Resolve DRM configs for a catchup/timeshift window (list wrapper
+        over get_catchup_content_stream_info)."""
+        return list(
+            self.get_catchup_content_stream_info(
+                provider_name, channel_id, catchup_manifest_url,
+                catchup_manifest_headers, start_time, end_time, epg_id, **kwargs,
+            ).drm_configs
+        )
+
     # ==========================================================================
     # THE PIPELINE
     # ==========================================================================
@@ -258,19 +343,19 @@ class DRMOperations:
         resolve_manifest: Callable[[], Tuple[Optional[str], Optional[Dict[str, str]]]],
         get_provider_configs: Callable[[], List[DRMConfig]],
         pipeline_kwargs: Dict[str, Any],
-    ) -> List[DRMConfig]:
+    ) -> ResolvedStream:
         cache_key = self._config_cache_key(base_cache_key)
 
         cached = self.drm_config_cache.get(cache_key)
         if cached is not None:
-            return list(cached)
+            return cached
 
         # Single-flight: concurrent misses for the same key run the full
         # pipeline exactly once; the others wait and hit the cache.
         with self._keyed_locks.for_key(cache_key):
             cached = self.drm_config_cache.get(cache_key)  # double-check under lock
             if cached is not None:
-                return list(cached)
+                return cached
 
             result = self._compute_content_drm(
                 provider, provider_name, channel_id, base_cache_key,
@@ -278,15 +363,17 @@ class DRMOperations:
             )
 
             # Caching policy — the ONLY place results are cached:
-            # truthy results are answers (real configs, or verified-clear
-            # [NONE]) and get cached; [] means "no solution found" and
-            # deliberately does not, so transient provider/extractor
-            # failures self-heal on retry.
-            if result:
+            # a result with DRM configs is an answer (real configs, or
+            # verified-clear [NONE]) and gets cached; empty configs mean "no
+            # solution found" and deliberately do not, so transient
+            # provider/extractor failures self-heal on retry. (The format
+            # rides along in the same entry; a detected format alone is
+            # never worth caching.)
+            if result.drm_configs:
                 self.drm_config_cache.set(cache_key, result)
-            # Copy on every return: callers can sort/append/filter their list
-            # without poisoning the cache. (Shallow — see DRMConfig note.)
-            return list(result)
+            # ResolvedStream is immutable: no copy needed. (Shallow — see
+            # DRMConfig note.)
+            return result
 
     def _compute_content_drm(
         self,
@@ -297,12 +384,36 @@ class DRMOperations:
         resolve_manifest: Callable[[], Tuple[Optional[str], Optional[Dict[str, str]]]],
         get_provider_configs: Callable[[], List[DRMConfig]],
         pipeline_kwargs: Dict[str, Any],
-    ) -> List[DRMConfig]:
-        """Run the full resolution pipeline and return the result.
+    ) -> ResolvedStream:
+        """Run the pipeline and pair its DRM result with the stream format
+        observed while the manifest was analysed.
 
-        Pure w.r.t. the DRM-config cache: caching and copy-on-return are owned
-        by _resolve_content_drm. The PSSH cache is still populated here because
-        PSSH resolution is an internal, multi-phase concern.
+        Pure w.r.t. the DRM-config cache: caching is owned by
+        _resolve_content_drm.
+        """
+        probe = _FormatProbe()
+        configs = self._compute_drm_configs(
+            provider, provider_name, channel_id, base_cache_key,
+            resolve_manifest, get_provider_configs, pipeline_kwargs, probe,
+        )
+        return ResolvedStream(probe.stream_format, tuple(configs))
+
+    def _compute_drm_configs(
+        self,
+        provider,
+        provider_name: str,
+        channel_id: str,
+        base_cache_key: str,
+        resolve_manifest: Callable[[], Tuple[Optional[str], Optional[Dict[str, str]]]],
+        get_provider_configs: Callable[[], List[DRMConfig]],
+        pipeline_kwargs: Dict[str, Any],
+        probe: _FormatProbe,
+    ) -> List[DRMConfig]:
+        """Run the full resolution pipeline and return the DRM configs.
+
+        The PSSH cache is still populated here because PSSH resolution is an
+        internal, multi-phase concern. `probe.stream_format` is set as soon as
+        it is known (URL hint first, then upgraded from the manifest content).
         """
         # -- 1. Manifest: fetch once, parse once --------------------------------
         manifest_url, manifest_headers = resolve_manifest()
@@ -310,6 +421,9 @@ class DRMOperations:
         effective_manifest_url: Optional[str] = None
         parsed_pssh: Optional[List] = None
         analysis_failed = False
+
+        # Cheapest signal first (None for tokenised URLs without extension).
+        probe.stream_format = detect_format(url=manifest_url)
 
         if manifest_url and manifest_url.startswith(("http://", "https://")):
             http = getattr(provider, "http_manager", None) or HTTPManager()
@@ -322,12 +436,27 @@ class DRMOperations:
                     f"from final URL: {ManifestParser.redact_url(effective_manifest_url)}"
                 )
             if manifest_content is not None:
+                # Content beats the URL hint.
+                probe.stream_format = (
+                    detect_format(manifest_content) or probe.stream_format
+                )
                 # Degrade, don't crash: extractor blowups on malformed content
                 # must leave the pipeline free to resolve DRM from provider
                 # configs and plugins (matches the previous behaviour, where
                 # this ran inside the fetch's try/except and was swallowed).
                 try:
                     is_encrypted, parsed_pssh = self._analyse_manifest(manifest_content)
+                    if (
+                        is_encrypted is None
+                        and probe.stream_format is StreamFormat.HLS
+                        and is_hls_master(manifest_content)
+                    ):
+                        # A master playlist alone can't prove anything: the
+                        # key tags live in the media playlists.
+                        is_encrypted = self._resolve_hls_master_encryption(
+                            provider, http, manifest_content,
+                            effective_manifest_url or manifest_url, manifest_headers,
+                        )
                 except Exception as e:
                     logger.warning(
                         f"DRMOperations: Manifest analysis failed for '{manifest_url}': {e}"
@@ -335,7 +464,7 @@ class DRMOperations:
                     analysis_failed = True
                 else:
                     # `is False` (not `not is_encrypted`): an UNKNOWN state
-                    # must never short-circuit as "verified clear".
+                    # (None) must never short-circuit as "verified clear".
                     if is_encrypted is False:
                         return [DRMConfig(system=DRMSystem.NONE, priority=0)]
 
@@ -551,11 +680,16 @@ class DRMOperations:
     # ==========================================================================
 
     @staticmethod
-    def _analyse_manifest(manifest_content: str) -> Tuple[bool, List]:
+    def _analyse_manifest(manifest_content: str) -> Tuple[Optional[bool], List]:
         """Parse manifest content once → (is_encrypted, pssh_list).
 
-        is_encrypted is False ONLY when the manifest is verifiably clear.
+        is_encrypted is False ONLY when the manifest is verifiably clear, and
+        None when it can't be decided (HLS master playlist, HLS AES-128,
+        empty HLS media playlist). DASH never yields None.
         """
+        if detect_format(manifest_content) is StreamFormat.HLS:
+            return DRMOperations._analyse_hls(manifest_content)
+
         pssh_list = DRMExtractor._extract_from_manifest_content(manifest_content) or []
 
         if any(p.drm_system and p.drm_system != DRMSystem.NONE for p in pssh_list):
@@ -572,8 +706,90 @@ class DRMOperations:
         return False, pssh_list
 
     @staticmethod
-    def _is_manifest_encrypted(manifest_content: str) -> bool:
-        """Back-compat wrapper around _analyse_manifest."""
+    def _analyse_hls(content: str) -> Tuple[Optional[bool], List]:
+        """HLS counterpart of the DASH analysis → (is_encrypted, pssh_list).
+
+        True   any #EXT-X-KEY / #EXT-X-SESSION-KEY that is neither METHOD=NONE
+               nor identity AES-128 (SAMPLE-AES*, or a non-identity KEYFORMAT
+               such as Widevine/FairPlay/PlayReady). A tag without METHOD is
+               malformed and counted as encrypted (conservative).
+        None   undecidable: METHOD=AES-128 (full-segment encryption — not DRM,
+               but not clear either; policy still open), a master playlist
+               (key tags live in the media playlists; caller resolves a
+               variant), or a media playlist without segments (nothing to
+               verify yet, e.g. a live playlist that hasn't started).
+        False  media playlist with at least one segment and no key tag other
+               than METHOD=NONE.
+
+        pssh_list is always [] — PSSH extraction from HLS is not implemented.
+        """
+        saw_aes128 = False
+        for attrs in hls_key_attributes(content):
+            method = attrs.get("METHOD", "").upper()
+            if method == "NONE":
+                continue
+            keyformat = attrs.get("KEYFORMAT", "identity").lower()
+            if method == "AES-128" and keyformat == "identity":
+                saw_aes128 = True
+                continue
+            return True, []
+
+        if saw_aes128:
+            logger.debug("DRMOperations: HLS playlist uses AES-128 — treated as unknown")
+            return None, []
+        if is_hls_master(content):
+            return None, []
+        if not hls_has_media_segments(content):
+            return None, []
+        return False, []
+
+    def _resolve_hls_master_encryption(
+        self,
+        provider,
+        http,
+        master_content: str,
+        master_url: str,
+        headers: Optional[Dict[str, str]],
+    ) -> Optional[bool]:
+        """Decide encryption for a master playlist by analysing the media
+        playlist of its FIRST variant. Returns None whenever that can't be
+        done reliably (no variant, fetch failure, nested master, unrecognised
+        content) so the caller never claims 'clear' without evidence.
+
+        Limitation: only one variant is probed; separately encrypted audio
+        renditions (#EXT-X-MEDIA) are not checked.
+        """
+        variant_uri = first_hls_variant_uri(master_content)
+        if not variant_uri:
+            return None
+        inherit_query = bool(getattr(provider, "inherit_manifest_query_on_segments", True))
+        variant_url = self._join_hls_uri(master_url, variant_uri, inherit_query)
+
+        content, _ = self._fetch_manifest_text(http, variant_url, headers)
+        if content is None:
+            return None
+        if detect_format(content) is not StreamFormat.HLS or is_hls_master(content):
+            return None
+        is_encrypted, _ = self._analyse_hls(content)
+        return is_encrypted
+
+    @staticmethod
+    def _join_hls_uri(base_url: str, uri: str, inherit_query: bool) -> str:
+        """Resolve a playlist URI against its parent (RFC 3986). Like segment
+        URLs for DASH, a query-less reference inherits the parent's query
+        (auth token) unless the provider opted out via
+        `inherit_manifest_query_on_segments = False`."""
+        joined = urljoin(base_url, uri)
+        if inherit_query:
+            base_query = urlsplit(base_url).query
+            parts = urlsplit(joined)
+            if base_query and not parts.query:
+                joined = urlunsplit(parts._replace(query=base_query))
+        return joined
+
+    @staticmethod
+    def _is_manifest_encrypted(manifest_content: str) -> Optional[bool]:
+        """Back-compat wrapper around _analyse_manifest (None = undecidable)."""
         return DRMOperations._analyse_manifest(manifest_content)[0]
 
     @staticmethod

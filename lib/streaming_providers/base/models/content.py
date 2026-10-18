@@ -1,9 +1,14 @@
+import logging
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Dict, List, Optional
 
+from ..stream_format import StreamFormat
 from .drm import DRMConfig
 from .pricing import AccessType, PricePoint, Pricing
+
+# stdlib logger on purpose: this module must not import utils.* (cycle risk).
+_log = logging.getLogger(__name__)
 
 class StreamingMode:
     """Enum for streaming modes"""
@@ -63,7 +68,11 @@ class Content:
     # Streaming URLs
     license_url: Optional[str] = None
     certificate_url: Optional[str] = None
-    streaming_format: Optional[str] = None
+    # Format HINT (None = unknown). Normalised to StreamFormat in
+    # __post_init__; the authoritative value is the one detected from the
+    # manifest during DRM/format resolution. Dynamic-manifest items cannot
+    # know it at list time, so None is common and valid.
+    streaming_format: Optional[StreamFormat] = None
 
     # Pricing (None = UNKNOWN, NOT FREE)
     pricing: Optional[Pricing] = None
@@ -101,8 +110,27 @@ class Content:
             )
         return problems
 
+    def _normalize_streaming_format(self) -> None:
+        """Coerce a legacy/provider-supplied string to StreamFormat (or None).
+
+        A helper rather than inline __post_init__ code because Channel
+        deliberately does NOT call Content.__post_init__ (see
+        Channel._validate_fields); it calls this explicitly instead.
+        """
+        raw = self.streaming_format
+        if raw is None or isinstance(raw, StreamFormat):
+            return
+        parsed = StreamFormat.parse(raw)
+        if parsed is None and str(raw).strip():
+            _log.debug(
+                "Content %s/%s: unrecognised streaming_format %r treated as unknown",
+                self.provider, self.content_id, raw,
+            )
+        self.streaming_format = parsed
+
     def __post_init__(self):
         """Validate pricing and mode consistency (strict: raises)."""
+        self._normalize_streaming_format()
         problems = self._pricing_mode_problems()
         if problems:
             raise ValueError(problems[0])
@@ -216,6 +244,9 @@ class Content:
     # --- Serialization ---
 
     def to_dict(self) -> Dict:
+        # parse() again (not just .value): streaming_format may have been
+        # assigned a plain string after construction.
+        stream_format = StreamFormat.parse(self.streaming_format)
         result = {
             "Name": self.name,
             "Id": self.content_id,
@@ -238,7 +269,7 @@ class Content:
             "Language": self.language,
             "Description": self.description,
             "Genre": self.genre,
-            "StreamingFormat": self.streaming_format,
+            "StreamingFormat": stream_format.value if stream_format else None,
             "LicenseUrl": self.license_url,
             "CertificateUrl": self.certificate_url,
             # Pricing derived fields
