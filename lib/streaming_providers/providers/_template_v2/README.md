@@ -227,6 +227,14 @@ directory name == AVAILABLE_PROVIDERS key == provider_name == PROVIDER_NAME
   proxy apply that v1 never found.
 * `Content.country` / `Channel.country` are **upper-case** (`"RS"`), the manager's
   `country` collaborator is lower-case: use `self.country.upper()` for models.
+* **White-label platforms: the operator ("brand") is not the country.** Eon serves
+  six operators (SBB, Telemach ×3, Vivacom, Nova) from one API; brands and countries
+  are not 1:1. Make the brand a **config option** (`config["brand"]`, validated in
+  `EonConfig`, unknown value → `ConfigurationError`), keep `SUPPORTED_COUNTRIES` for
+  the default operator, and resolve brand → host by **identifier** from the platform's
+  own discovery endpoint, never by list position (the broker's list changed once and a
+  position then silently meant another operator's CDN). An identifier the broker no
+  longer lists falls back to the broker's own default, with a warning — not to a guess.
 
 ### How the registry constructs providers — check, don't assume
 
@@ -377,6 +385,19 @@ silent (HRTi: a stale device id made EPG return `[]` for as long as nobody looke
 so every persisted identity value needs both getter **and** setter on the storage
 layer (§12.1b).
 
+**Bootstrap data splits in two (Eon).** Platforms that discover their API host first
+(broker → CDN → host) and then need catalogues (rendering profiles, server list,
+service-provider id) have a circular dependency if one object does both: auth needs the
+host, the catalogues need auth. Split by *what the call needs*:
+
+* `Endpoints` — host discovery only; **no login** (client credentials), lazy, resolved
+  once under a lock, with `reset()`. Auth, the API helper and the managers get it.
+* `Catalog` — data that needs a session; fetched through the authenticated API helper,
+  cached with a TTL under a lock, **loaded on first use** (never in `__init__`). Two
+  consumers (live + catchup) already justify the collaborator (threshold above).
+
+Neither runs network code in `__init__` (§9 rule); a test builds the provider with a
+fake HTTP manager and asserts **zero calls** after construction.
 **Dead dependencies.** A declared keyword-only extra that no method reads is
 deleted, including its comment. An extra that is passed "for later" is a
 back-reference candidate nobody has reviewed.
@@ -518,6 +539,21 @@ the `Channel` where you know it at list time (§13).
 * A failed request RAISES; "no programmes" (`success=false`, empty list) is `[]`
   (decision rule in §8, **including its boundary**: session/identity-state errors
   always raise, whatever the endpoint's classification).
+* **Day-based endpoints** (Eon `v2/events/epg?cid=&date=`, one channel and one day per
+  request). Work out *which* day first, from a real response: the first event of
+  `date=2026-10-22` started at 00:15 **UTC** (03:15 local), i.e. a UTC day selected by
+  programme **start** time (one sample — confirm with a programme that crosses the
+  boundary before relying on it for another operator). Consequences: (1) a programme that began before the day
+  boundary and still runs is only in the **previous** day's answer, so request
+  `day(start) − 1 … day(end − 1)` and filter with `overlaps_with(start, end)`;
+  (2) de-duplicate by the programme id across days; (3) clamp to the archive, and let
+  **only the oldest day** tolerate a `400` (the boundary is day-granular; a `400` on any
+  other day is a real error and raises); (4) skip entries `EPGEntry` rejects
+  (`ValueError`: empty title, `end <= start`) and entries whose `channelId` is not the
+  one asked for, each with a warning. Derive the cost up front: *days × channels*
+  requests for a grid.
+* **Timestamps in milliseconds** (`startTime`/`endTime`): divide by 1000 once, in the
+  model parser; `EPGEntry` takes seconds.
 
 ### 6.4 `RecordingsManager`
 
@@ -598,6 +634,18 @@ the `Channel` where you know it at list time (§13).
   call is swallowed by the DRM pipeline (§8), so test the manifest-header path.
 * Catchup that needs other managers takes them as keyword-only extras
   (`channels=`, `epg=`, a shared source cache) — still no provider reference (§5.1).
+* **The window can be per channel and server-supplied** (Eon: `cutvDelay` in ms on every
+  channel of the list, `cutvEnabled` as the switch). Keep `catchup_window_hours` a
+  **constant maximum with no I/O** (the property is read without a channel and must not
+  trigger a request) and read the real value in `catchup_window_for_channel()`; enforce
+  it in `get_catchup_manifest` (outside the window, in the future, `start_time <= 0` or a
+  channel without catchup → `None`).
+* **Catchup that is "the live URL with a time" mints through the channel manager.**
+  Eon's catchup URL is the signed live URL plus `t=<start>000` and a different server
+  list. Put the minting in **one public method of the channel manager**
+  (`stream_url(record, start_time=None | int)`) and give the catchup manager
+  `channels=`; do not copy the signing code. `end_time` / `epg_id` the API does not use
+  are accepted for the signature and documented as ignored.
 
 ### 6.7 `DRM`
 
@@ -911,6 +959,40 @@ movetv "server-validated token" pattern generalizes to a ladder:
   → full refresh; both fail → `AuthError` with bounded call counts; N concurrent
   callers → one repair.
 
+### Several identities in one provider (Eon)
+
+Some platforms need three different credentials, with different lifecycles. Keep them
+apart in one auth class instead of one `token` field:
+
+| Identity | Obtained by | Lifecycle | Cleared by `invalidate()`? |
+|---|---|---|---|
+| **client token** | OAuth `client_credentials` with the app's client id/secret | refetched on a `401` | no (not account state) |
+| **device** (serial, device id, device number) | client-generated serial; server-minted ids at registration | persisted at creation (§5.1) | **never** |
+| **user session** (access / refresh token, stream key + user) | refresh grant, else password / OTP login | server-validated (below) | yes |
+
+* The user session is **server-validated** (no usable expiry, or none sent): treat the
+  token as valid until a `401`, apply the recovery ladder once, retry once. Eon's ladder
+  is: refresh-token grant → password / OTP login → **re-register the device** and log in
+  again → `AuthError`. A rejected refresh token is deleted before falling through.
+* **The refresh grant rotates the access token**, so the id-comparison dedup under the
+  lock works here (the caller compares the token it failed with against the current
+  one). Contrast HRTi's registration, which does not rotate and needs a time window.
+* **A login that needs a human step is a typed, non-retryable `AuthError` subclass**
+  carrying the data the UI must show (`EonOtpRequiredError(otp, expires_minutes)`). The
+  ladder must not swallow it, the next attempt exchanges the confirmed code, and a code
+  that was not confirmed produces a plain `AuthError` and clears the pending code.
+* **Record a login failure once, after the whole ladder** (`_gated`). A rejected grant
+  *inside* the ladder is a signal (stale device → re-register), not a verdict; only the
+  ladder's final failure counts. Then apply the Variant B policy (`session_adapter.py`):
+  wrong credentials (`EonLoginRejected`, only HTTP 400/401 — a 403 may be a WAF) are
+  **permanent** until `set_credentials()`; everything else is **transient** with
+  exponential backoff (30 s … 900 s) and **no network while backing off**; a pending OTP
+  is neither. Without this every failing call retried a full login against the SSO.
+* Persisted state is behind a small `Store` protocol (`get/set/delete`) with a
+  non-durable in-memory default **that is loudly documented as such**: without a durable
+  store every restart registers a new device (§12.1b).
+* Never log the stream key, tokens, device serial or a signed URL — not even at DEBUG.
+
 ### Credentials API on the provider (OPTIONAL — only if v1 has it)
 
 **A migration preserves the v1 public surface; it never adds to it.** Of the two
@@ -1071,6 +1153,35 @@ media-proxy path yet):
 | `SAMPLE-AES`, Widevine/FairPlay HLS | detected as encrypted and passed through; no PSSH extraction, no server-side handling |
 | Only the first variant is probed | separately encrypted audio renditions are not checked |
 | `index.m3u8` alias | channels only; events, VOD and recordings still expose `index.mpd` |
+
+**Locally minted, short-lived manifest URLs (Eon).** When the provider builds the
+manifest URL itself (an AES-encrypted payload with a server `ctime` and a session id):
+
+* The URL is valid for seconds (Eon's CDN rejects a `ctime` older than ~20 s) and the
+  session id must not be reused while the CDN thinks it is active. Mint per request
+  with a fresh session id; cache **only** for a few seconds, keyed by
+  `(content_id, start_time)` — a live URL must never be served for a catchup key.
+* **Session-capped CDNs and the sniff (verified against `drm_operations.py`).** Every GET
+  on such a URL may open a CDN session and the CDN caps them (Eon: `403.5300 Streamable
+  bandwidth exceeded`). What the backend does per `(provider, content_id, drm kwargs)`:
+  it mints a URL (`get_manifest_with_headers`), GETs the playlist with
+  `provider.http_manager` and, for a **master** playlist, GETs the **first variant** too
+  (`_resolve_hls_master_encryption`); a verified-clear result (`[NONE]`) is cached for
+  `cache_ttl` (default 1 h). The player's own request then mints a second URL. So a
+  first tune-in costs ~3 GETs on the CDN, a repeat within the hour 1.
+  * **The `streaming_format` hint does not skip the sniff** — it only drives playlist
+    generation (above).
+  * **A failed sniff is not cached** (empty configs = "no solution", self-heals by
+    design), so a provider that is *refused* by the CDN (cap reached) is re-sniffed on
+    every request and makes it worse. Check the logs for repeated sniff GETs.
+  * **`inherit_manifest_query_on_segments`** (default `True`) appends the master's query
+    to the variant URL for that second GET. If the master query is a token the variant
+    does not need (Eon: the encrypted payload), set it `False` on the provider.
+  * Counting the real GETs on a device (§12.7) remains the proof.
+* Keep the cryptography in one pure module (`stream_url.py`: no network, no state, the
+  IV injectable) and test it with a round trip **and** an exact-payload test per
+  platform variant — layouts differ per client and a field in the wrong place is a
+  `403` with no explanation.
 
 ---
 
@@ -1478,6 +1589,25 @@ def test_contract(key):
   (`AuthError` / `RateLimitError` out of the retry loop, call count 1).
 * Docstring promises have tests (Traps 26, 40).
 
+### Eon: a scripted fake HTTP manager as the pattern
+
+The Eon suite (`tests/test_eon.py`, `test_e2e.py`, `test_epg_catchup.py`) runs the whole
+provider offline against a **route table**: `[(("get", "<url fragment>"), Resp | callable)]`
+where a callable receives the call's kwargs (so a test can answer per `channelType`,
+per `date` or per `cid`, and record what was asked). Like the real HTTP manager the fake
+**raises `HTTPError` for ≥ 400 unless `raise_for_status=False`**. What it let us assert
+cheaply and what you should copy:
+
+* zero HTTP calls after constructing the provider;
+* the exact **sequence** of calls of a login (client token → device registration →
+  token grant), the recovery ladder rung by rung (a `400` on the grant → device
+  re-registered → second grant) and that a stale-token `recover()` makes **no** call;
+* per-request kwargs (the headers of the EPG call, the `params` of the channel list);
+* that the **real** base ABCs are used, not stubs: copy `base/managers/*.py` and
+  `base/models/epg_models.py` into the sandbox — the ABC contract (abstract methods,
+  `ISOLATE_GRID_FAILURES`, `EPGEntry` validation) then fails the test instead of the
+  device. Stub only what you do not have (`ManagedProvider`, `transport_errors`).
+
 ### How the shipped suite was built (context)
 
 72 tests ran in a sandbox: real files for the models/ABCs/ManagedProvider, **stubs**
@@ -1615,6 +1745,28 @@ Things that already cost time. Each is covered by a test or the contract unless 
     provider (§11).
 69. Treating `METHOD=AES-128` HLS as clear (it is *unknown* to the backend) or
     returning DRM configs for it (§11).
+70. Brand/operator modelled as country, or resolved by list position (§4).
+71. One object that does host discovery and authenticated catalogues — circular; split
+    `Endpoints` / `Catalog` (§5.1).
+72. A day-based EPG endpoint asked for the window's days only: the programme crossing the
+    day boundary is in the previous day's answer (§6.3). Check the day's timezone on a
+    real response before writing the loop.
+73. A catchup window read from the network inside `catchup_window_hours` (§6.6).
+74. Signing code copied into the catchup manager instead of one public method on the
+    channel manager (§6.6).
+75. Caching a minted URL longer than the CDN accepts its timestamp, or under a key that
+    ignores the start time (§11).
+76. Not counting the backend's own manifest GETs against a session-capped CDN (§11).
+77. A human-step login (OTP) flattened into a plain `AuthError`, or retried by the
+    ladder (§9).
+78. Using a media-metric field from the wrong side: Eon's `minvbr`/`maxvbr` are **video**
+    bounds and must come from `videoBitrate` even on radio — an audio-only profile (video
+    bitrate 0) sent its audio bitrate and the CDN answered `403`. Profile *choice* uses
+    the audio bitrate for radio, the *bounds* never do. (Provider-specific, but the
+    general rule holds: a field's name says which quantity, not which channel type.)
+79. Recording a login failure inside the recovery ladder (a stale-device `400` then
+    blocks the provider permanently) or treating every `AuthError` — including a WAF
+    `403` — as "wrong credentials" (§9).
 
 ---
 
@@ -1643,6 +1795,19 @@ Known gaps in the base, so you don't hunt for them:
   geo-proxied providers do not play), AES-128 policy undecided, encrypted HLS only
   passed through, only the first variant probed, `index.m3u8` alias for channels
   only (§11).
+* **`HTTPManager` has no `patch()`** (`_make_request("PATCH", …)` exists, only the public
+  wrapper is missing). Eon needs `PATCH v2/devices`; until it is added the provider
+  `hasattr`-checks and falls back to the `v1` POST (which mints a *new* device number).
+  `http_manager_patch.diff` (4 lines, not retried on 429 because PATCH is not in
+  `_IDEMPOTENT_METHODS`) adds it. Raw/multipart bodies already work: `post(url, data=<bytes>,
+  headers={"Content-Type": "multipart/form-data; boundary=…"})`, and `json=` passes
+  through `**kwargs`.
+* **No shared persisted-state protocol for Variant A providers**: Eon ships its own
+  `EonStore` (`get/set/delete`) with an in-memory default; the session layer should offer
+  the same shape so identity survives restarts without per-provider glue.
+* **`CatchupManager` and `EpgManager` do not say who owns "the programme at a time"** for
+  day-based endpoints; Eon's `get_epg` re-filters by overlap, a shared helper would
+  remove that duplication (see the deliberately-not-added `get_entry_at`).
 
 **Tooling still to ship** (the README above already assumes it):
 
@@ -1817,3 +1982,19 @@ wiring snippets. It never edits your wiring and never registers anything.
 * **Variant A / B** — native `AuthProtocol` class / session adapter (§9).
 * **StreamFormat** — `DASH` / `HLS` (`base/stream_format.py`); `None` = unknown. The
   `streaming_format` field is only a hint; the backend sniffs the manifest (§11).
+
+### 19.5 Eon — what it is the reference for
+
+`providers/eon/` (live TV + radio, EPG, catchup, clear HLS, no DRM). Use it when you
+meet one of these:
+
+| Situation | Where | README |
+|---|---|---|
+| white-label platform, brand ≠ country, discovery before login | `constants.py` (`EonConfig`), `bootstrap.py` (`EonEndpoints`) | §4, §5.1 |
+| catalogues that need a session, TTL + lock | `bootstrap.py` (`EonCatalog`) | §5.1 |
+| client token + device + user session, recovery ladder, OTP | `auth.py`, `errors.py` | §9 |
+| one place for "401 → recover → retry once" | `api.py` | §8, §9 |
+| locally signed, short-lived manifest URL | `stream_url.py`, `channel_manager.py` | §11 |
+| day-based EPG with a boundary programme | `epg_manager.py` | §6.3 |
+| per-channel, server-supplied catchup window; catchup via the channel manager | `catchup_manager.py` | §6.6 |
+| offline tests with a route-table fake and the real ABCs | `tests/` | §15 |
