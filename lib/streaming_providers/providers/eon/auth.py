@@ -372,7 +372,21 @@ class EonAuth:
 
     def _grant_refresh(self, refresh: str) -> EonTokenResponse:
         if self._oidc is None:
-            return self._grant({"grant_type": "refresh_token", "refresh_token": refresh})
+            # Browser capture: parameters in the query, EMPTY multipart body
+            # (just the closing boundary -- 44 bytes with a WebKit-style boundary).
+            boundary = "----WebKitFormBoundary" + secrets.token_hex(8)
+            body = f"--{boundary}--\r\n".encode("ascii")
+            headers = {
+                "User-Agent": self._config.user_agent,
+                "Accept": "application/json, text/plain, */*",
+                "Authorization": self._config.basic_auth_value(),
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                **self._config.origin_headers(),
+            }
+            return self._grant(
+                {"grant_type": "refresh_token", "refresh_token": refresh},
+                data=body, headers=headers,
+            )
         client = self._config.oidc_client
         # UNVERIFIED against a browser capture: the standard refresh (same Basic auth as the code exchange)
         # request. A rejection just falls through to a full login (see _login).
@@ -448,6 +462,7 @@ class EonAuth:
             "Accept": "application/json",
             "Authorization": self._config.basic_auth_value(),
             "Content-Type": f"multipart/form-data; boundary={boundary}",
+            **self._config.origin_headers(),
         }
         # 400/401 = wrong credentials (permanent); a 403 may be a WAF -> transient.
         return self._grant({"grant_type": "password"}, data=body.encode("utf-8"), headers=headers,

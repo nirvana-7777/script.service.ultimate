@@ -1,5 +1,4 @@
 # streaming_providers/providers/eon/provider.py
-# streaming_providers/providers/eon/provider.py
 """
 Eon provider -- orchestrator only.
 
@@ -8,10 +7,11 @@ endpoints, auth, api, catalog, caches) and BUILDS the managers. Everything
 identical across providers is inherited from ManagedProvider.
 
 Eon is a white-label platform: `config["brand"]` (vivacom, nova, sbb,
-telemach, telemach-hr, telemach-si) picks the operator, `config["platform"]`
-("web" / "androidtv") the client identity. Geo-unblocking users also need
-Kodi's global proxy: the CDN requests are made by inputstream.adaptive, which
-does not use the backend's ProxyConfig.
+telemach-ba, telemach-me, telemach-hr, telemach-si) picks the operator,
+`config["platform"]` ("web" / "androidtv") the client identity. When no
+brand is configured, the construction country picks the default brand.
+Geo-unblocking users also need Kodi's global proxy: the CDN requests are made
+by inputstream.adaptive, which does not use the backend's ProxyConfig.
 """
 
 from typing import ClassVar, Dict, List, Optional
@@ -61,8 +61,9 @@ class EonProvider(ManagedProvider):
         super().__init__(country=country)
         self.country = self.country.lower()
 
-        # 1. ONE config object, shared by every layer.
-        self.provider_config = EonConfig(config or {})
+        # 1. ONE config object, shared by every layer. The country selects the
+        #    default brand when config has no explicit "brand".
+        self.provider_config = EonConfig(config or {}, country=self.country)
 
         # 2. HTTP manager.
         self.http_manager = self._setup_http_manager(

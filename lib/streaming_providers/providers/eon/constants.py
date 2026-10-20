@@ -102,15 +102,35 @@ class EonDefaults:
     # 604800000 ms = 168 h in every sample seen).
     CATCHUP_WINDOW_HOURS = 168
 
+    # --- Browser origin (web platform only) ------------------------------
+    # The web client sends these on its token calls; an Origin/Referer check
+    # on the token endpoint would explain a 403 otherwise.
+    WEB_ORIGIN = "https://eon.tv"
+    WEB_REFERER = "https://eon.tv/"
 
-# brand key (config) -> CDN identifier as the broker knows it
+
+# brand key (config) -> broker identifier (v2/brands)
 BRAND_IDENTIFIERS: Dict[str, str] = {
     "sbb": "sbb-qa",
-    "telemach": "telemach",
+    # Legacy alias: existing configs may still carry brand: "telemach".
+    "telemach": "telemach-ba",
+    "telemach-ba": "telemach-ba",
+    "telemach-me": "telemach-me",
     "telemach-hr": "telemach-hr",
     "telemach-si": "telemach-si",
-    "vivacom": "vivacom",
     "nova": "nova",
+    "vivacom": "vivacom",
+}
+
+# Used when config has no explicit "brand". Keys are lower-case country codes.
+COUNTRY_DEFAULT_BRANDS: Dict[str, str] = {
+    "ba": "telemach-ba",
+    "me": "telemach-me",
+    "hr": "telemach-hr",
+    "si": "telemach-si",
+    "rs": "sbb",
+    "gr": "nova",
+    "bg": "vivacom",
 }
 
 
@@ -235,10 +255,15 @@ class EonConfig:
     bootstrap and managers. Never rebuild a second config from a subset.
     """
 
-    def __init__(self, config_dict: Optional[dict] = None):
+    def __init__(self, config_dict: Optional[dict] = None, country: Optional[str] = None):
         c = config_dict or {}
 
-        self.brand = str(c.get("brand", EonDefaults.DEFAULT_BRAND)).lower()
+        # Brand: explicit config wins, else the country's default brand,
+        # else the global default.
+        default_brand = COUNTRY_DEFAULT_BRANDS.get(
+            (country or "").lower(), EonDefaults.DEFAULT_BRAND
+        )
+        self.brand = str(c.get("brand", default_brand)).lower()
         if self.brand not in BRAND_IDENTIFIERS:
             raise ConfigurationError(
                 f"{EonDefaults.PROVIDER_LABEL}: unknown brand {self.brand!r} "
@@ -326,3 +351,9 @@ class EonConfig:
         API headers (tokens).
         """
         return {"User-Agent": self.user_agent}
+
+    def origin_headers(self) -> dict:
+        """Browser origin the web client sends on token calls (web platform only)."""
+        if self.platform.is_android_tv:
+            return {}
+        return {"Origin": EonDefaults.WEB_ORIGIN, "Referer": EonDefaults.WEB_REFERER}
