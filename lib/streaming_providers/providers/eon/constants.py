@@ -26,11 +26,11 @@ from ...base.errors import ConfigurationError
 class EonDefaults:
     PROVIDER_NAME = "eon"
     PROVIDER_LABEL = "EON"
-    PROVIDER_LOGO = ""   # TODO: no logo URL known yet
+    PROVIDER_LOGO = "https://int.eon.tv/img/picture/eon-white-logo.png"
 
     # One entry pins the registry's construction country (UPPERCASE).
     # Brands are not 1:1 with countries; the default brand is Vivacom (BG).
-    SUPPORTED_COUNTRIES = ("BA", "BG", "HR", "GR", "ME", "SI", "RS")
+    SUPPORTED_COUNTRIES = ("ba", "bg", "hr", "gr", "me", "si", "rs")
 
     DEFAULT_BRAND = "vivacom"
     DEFAULT_PLATFORM = "web"
