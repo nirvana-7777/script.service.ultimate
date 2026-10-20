@@ -4,8 +4,9 @@ Eon authentication -- the auth class itself satisfies AuthProtocol
 (get_access_token / build_headers / invalidate); managers get it directly.
 
 Three identities are involved (see PVREon / HttpClient):
-  * client token   -- OAuth client_credentials at the broker; only used for
-                      device registration. Re-fetched on 401.
+  * client token   -- OAuth client_credentials at the broker; shared with
+                      EonEndpoints (brand / CDN discovery) and used for device
+                      registration. Owned by EonClientToken, re-fetched on 401.
   * device         -- serial (client-generated), deviceId / deviceNumber
                       (server-minted). CLIENT IDENTITY: persisted, never
                       cleared with the session.
@@ -59,7 +60,7 @@ from ...base.errors import AuthError, ProviderError, ServerError, error_from_exc
 from ...base.utils.logger import logger
 from ...base.utils.transport import transport_errors
 from .constants import EonConfig, EonDefaults
-from .bootstrap import EonEndpoints
+from .bootstrap import EonClientToken, EonEndpoints
 from .errors import EonLoginRejected, EonOtpRequiredError
 from .models import EonDeviceRegistration, EonTokenResponse
 
@@ -118,6 +119,7 @@ class EonAuth:
         http_manager: Any,
         config: EonConfig,
         endpoints: EonEndpoints,
+        client_token: EonClientToken,
         store: Optional[EonStore] = None,
         credentials: Any = None,
         credentials_loader: Optional[Callable[[], Any]] = None,
@@ -126,6 +128,7 @@ class EonAuth:
         self._http = http_manager
         self._config = config
         self._endpoints = endpoints
+        self._client_token = client_token
         self._store: EonStore = store if store is not None else MemoryStore()
         self._credentials = credentials      # object with .username / .password
         self._credentials_loader = credentials_loader   # lazy: no disk/network in __init__
@@ -133,10 +136,8 @@ class EonAuth:
         self._stream_user: Optional[str] = None
         self._access_token: Optional[str] = None
         self._expires_at: Optional[float] = None
-        self._generic_token: Optional[str] = None
         self._pending_otp: Optional[str] = None
         self._lock = threading.RLock()
-        self._generic_lock = threading.RLock()
         self._clock = clock
         self.last_error: Optional[Exception] = None
         self._permanent: Optional[Exception] = None
@@ -385,29 +386,8 @@ class EonAuth:
             raise AuthError(f"{_PROVIDER}: the one-time code was not confirmed or has expired") from exc
 
     # ------------------------------------------------------------------
-    # Client token + device registration
+    # Generic client-token calls + device registration
     # ------------------------------------------------------------------
-    def _client_token(self, *, force: bool = False) -> str:
-        with self._generic_lock:
-            if self._generic_token and not force:
-                return self._generic_token
-            with transport_errors("client token", _PROVIDER):
-                try:
-                    resp = self._http.post(
-                        EonDefaults.BROKER_URL + EonDefaults.PATH_OAUTH_TOKEN,
-                        params={"grant_type": "client_credentials"},
-                        json={},
-                        headers=self._config.basic_headers(),
-                        operation="auth",
-                    )
-                    token = resp.json().get("access_token")
-                except HTTPError as exc:
-                    raise error_from_exception(exc) from exc
-            if not token:
-                raise ServerError(f"{_PROVIDER}: client token response has no access_token")
-            self._generic_token = token
-            return token
-
     def _generic_call(self, method: str, path: str, *, params: Optional[Dict[str, Any]] = None,
                       body: Optional[Dict[str, Any]] = None) -> Any:
         """Call with the client token; one retry after refreshing it on 401.
@@ -417,7 +397,7 @@ class EonAuth:
             raise NotImplementedError(f"http_manager has no {method}()")
         url = self._endpoints.url(path)
         for attempt in (1, 2):
-            headers = self._config.bearer_headers(self._client_token(force=attempt == 2))
+            headers = self._config.bearer_headers(self._client_token.get(force=attempt == 2))
             kwargs: Dict[str, Any] = {"headers": headers, "operation": "api", "raise_for_status": False}
             if params:
                 kwargs["params"] = params

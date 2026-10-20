@@ -2,12 +2,15 @@
 """
 Lazy bootstrap data. Nothing here runs in __init__ (no network there).
 
-EonEndpoints  -- resolves the brand's API host via the broker (v2/brands ->
-                 cdnIdentifier, v1/cdninfo -> domains.baseApi[selector]).
-                 Needs NO login: broker calls carry the client credentials.
-EonCatalog    -- rendering profiles, streaming servers and the service-provider
-                 id. These need a logged-in session, so they sit behind EonApi
-                 and are cached with a TTL.
+EonClientToken -- OAuth client_credentials token at the broker. Needed by the
+                  broker calls (brand / CDN discovery) and by the device
+                  registration; no user, no device involved.
+EonEndpoints   -- resolves the brand's API host via the broker (v2/brands ->
+                  cdnIdentifier, v1/cdninfo -> domains.baseApi[selector]).
+                  Needs the CLIENT TOKEN, no user login.
+EonCatalog     -- rendering profiles, streaming servers and the service-provider
+                  id. These need a logged-in session, so they sit behind EonApi
+                  and are cached with a TTL.
 
 Brand resolution is by IDENTIFIER, never by list position: the broker's list
 has changed before. An unknown brand falls back to the CDN the broker marks
@@ -18,7 +21,9 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from ...base.errors import ConfigurationError, ServerError
+from requests.exceptions import HTTPError
+
+from ...base.errors import ConfigurationError, ServerError, error_from_exception
 from ...base.utils.logger import logger
 from ...base.utils.transport import transport_errors
 from .constants import EonConfig, EonDefaults
@@ -27,10 +32,42 @@ from .models import EonRenderingProfile, EonServer
 _PROVIDER = EonDefaults.PROVIDER_LABEL
 
 
-class EonEndpoints:
+class EonClientToken:
+    """OAuth client_credentials token at the broker. No user, no device."""
+
     def __init__(self, *, http_manager: Any, config: EonConfig):
         self._http = http_manager
         self._config = config
+        self._lock = threading.RLock()
+        self._token: Optional[str] = None
+
+    def get(self, *, force: bool = False) -> str:
+        with self._lock:
+            if self._token and not force:
+                return self._token
+            with transport_errors("client token", _PROVIDER):
+                try:
+                    resp = self._http.post(
+                        EonDefaults.BROKER_URL + EonDefaults.PATH_OAUTH_TOKEN,
+                        params={"grant_type": "client_credentials"},
+                        json={},
+                        headers=self._config.basic_headers(),
+                        operation="auth",
+                    )
+                    token = resp.json().get("access_token")
+                except HTTPError as exc:
+                    raise error_from_exception(exc) from exc
+            if not token:
+                raise ServerError(f"{_PROVIDER}: client token response has no access_token")
+            self._token = token
+            return token
+
+
+class EonEndpoints:
+    def __init__(self, *, http_manager: Any, config: EonConfig, client_token: EonClientToken):
+        self._http = http_manager
+        self._config = config
+        self._client_token = client_token
         self._lock = threading.RLock()
         self._api_base: Optional[str] = None
         self._images_base: Optional[str] = None
@@ -87,12 +124,18 @@ class EonEndpoints:
 
     def _broker_get(self, path: str, what: str) -> Any:
         with transport_errors(what, _PROVIDER):
-            resp = self._http.get(
-                EonDefaults.BROKER_URL + path,
-                headers=self._config.basic_headers(),
-                operation="api",
-            )
-            return resp.json()
+            for attempt in (1, 2):
+                token = self._client_token.get(force=attempt == 2)
+                resp = self._http.get(
+                    EonDefaults.BROKER_URL + path,
+                    headers=self._config.bearer_headers(token),
+                    operation="api",
+                    raise_for_status=False,
+                )
+                if resp.status_code != 401 or attempt == 2:
+                    resp.raise_for_status()
+                    return resp.json()
+            raise ServerError(f"{_PROVIDER}: unreachable")  # pragma: no cover
 
     def _brand_cdn_identifier(self) -> str:
         brands = self._broker_get(EonDefaults.PATH_BRANDS, "brands")

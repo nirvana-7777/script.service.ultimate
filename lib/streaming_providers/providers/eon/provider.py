@@ -1,10 +1,11 @@
 # streaming_providers/providers/eon/provider.py
+# streaming_providers/providers/eon/provider.py
 """
 Eon provider -- orchestrator only.
 
-The provider owns the SHARED resources (config, http_manager, endpoints,
-auth, api, catalog, caches) and BUILDS the managers. Everything identical
-across providers is inherited from ManagedProvider.
+The provider owns the SHARED resources (config, http_manager, client_token,
+endpoints, auth, api, catalog, caches) and BUILDS the managers. Everything
+identical across providers is inherited from ManagedProvider.
 
 Eon is a white-label platform: `config["brand"]` (vivacom, nova, sbb,
 telemach, telemach-hr, telemach-si) picks the operator, `config["platform"]`
@@ -19,7 +20,7 @@ from ...base.managed_provider import ManagedProvider
 from ...base.models.proxy_models import ProxyConfig
 from .api import EonApi
 from .auth import EonAuth, EonStore
-from .bootstrap import EonCatalog, EonEndpoints
+from .bootstrap import EonCatalog, EonClientToken, EonEndpoints
 from .catchup_manager import EonCatchupManager
 from .channel_manager import EonChannelManager
 from .constants import EonConfig, EonDefaults
@@ -80,12 +81,17 @@ class EonProvider(ManagedProvider):
         )
 
         # 4. Lazy collaborators: no network in __init__.
-        self.endpoints = EonEndpoints(
+        self.client_token = EonClientToken(
             http_manager=self.http_manager, config=self.provider_config
+        )
+        self.endpoints = EonEndpoints(
+            http_manager=self.http_manager, config=self.provider_config,
+            client_token=self.client_token,
         )
         self.auth = EonAuth(
             http_manager=self.http_manager, config=self.provider_config,
             endpoints=self.endpoints,
+            client_token=self.client_token,
             store=store if store is not None else default_store,
             credentials_loader=credentials_loader,
         )
