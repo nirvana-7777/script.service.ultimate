@@ -30,11 +30,11 @@ class EonDefaults:
 
     # One entry pins the registry's construction country (UPPERCASE).
     # Brands are not 1:1 with countries; the default brand is Vivacom (BG).
-    SUPPORTED_COUNTRIES = ("BG",)
+    SUPPORTED_COUNTRIES = ("BA", "BG", "HR", "GR", "ME", "SI", "RS")
 
     DEFAULT_BRAND = "vivacom"
     DEFAULT_PLATFORM = "web"
-    DEFAULT_LANGUAGE = "bg"
+    DEFAULT_LANGUAGE = "en"
 
     # --- Broker (brand / CDN discovery, generic client token) ------------
     BROKER_URL = "https://broker.global.united.cloud/"
