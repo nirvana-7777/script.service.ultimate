@@ -13,9 +13,14 @@ Three identities are involved (see PVREon / HttpClient):
   * user session   -- access / refresh token + stream key + stream user. The
                       stream key is also the AES key of the CDN URL.
 
-Login flows (platform-dependent):
-  web        refresh_token grant, else password grant (username SHA-256 in
-             upper-case hex + password + deviceNumber, multipart form)
+Login flows (platform- and brand-dependent):
+  web        refresh_token grant, else the brand's flow (config.login_flow):
+               password  password grant (username SHA-256 in upper-case hex +
+                         password + deviceNumber, multipart form)
+               oidc      authorization code + PKCE through the brand's own
+                         identity provider (Vivacom BG, see oidc_login.py);
+                         the token endpoint mints the device itself, so there
+                         is NO separate device registration in this flow
   androidtv  refresh_token grant, else OTP: the server hands out a code the
              user confirms in the operator's portal (EonOtpRequiredError),
              the next attempt exchanges it.
@@ -53,6 +58,7 @@ import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Protocol, Type
+from urllib.parse import urlencode
 
 from requests.exceptions import HTTPError
 
@@ -63,6 +69,7 @@ from .constants import EonConfig, EonDefaults
 from .bootstrap import EonClientToken, EonEndpoints
 from .errors import EonLoginRejected, EonOtpRequiredError
 from .models import EonDeviceRegistration, EonTokenResponse
+from .oidc_login import EonOidcLogin
 
 _PROVIDER = EonDefaults.PROVIDER_LABEL
 
@@ -72,6 +79,7 @@ K_DEVICE_NUMBER = "device_number"
 K_REFRESH_TOKEN = "refresh_token"
 
 _SERIAL_ALPHABET = string.digits + string.ascii_letters + "-"
+_OIDC_SERIAL_ALPHABET = string.digits + string.ascii_letters
 _TOKEN_REFRESH_BUFFER_SECONDS = 60
 BACKOFF_BASE_SECONDS = 30
 BACKOFF_MAX_SECONDS = 900
@@ -143,6 +151,10 @@ class EonAuth:
         self._permanent: Optional[Exception] = None
         self._failures = 0
         self._retry_at = 0.0
+        self._oidc: Optional[EonOidcLogin] = (
+            EonOidcLogin(http_manager=http_manager, config=config, endpoints=endpoints)
+            if config.login_flow == EonDefaults.LOGIN_FLOW_OIDC else None
+        )
 
     # ------------------------------------------------------------------
     # Credentials
@@ -239,7 +251,11 @@ class EonAuth:
             return
         except EonOtpRequiredError:
             raise
-        except AuthError:
+        except AuthError as exc:
+            if self._oidc is not None and isinstance(exc, EonLoginRejected):
+                # The IdP's verdict on the password: a new device cannot change
+                # it, and a second attempt risks locking the account.
+                raise
             logger.warning(f"{_PROVIDER}: login failed; re-registering the device")
         self._reset_device()                # rung 3
         self._login()                       # AuthError propagates
@@ -285,7 +301,7 @@ class EonAuth:
         refresh = self._store.get(K_REFRESH_TOKEN)
         if refresh:
             try:
-                self._apply(self._grant({"grant_type": "refresh_token", "refresh_token": refresh}))
+                self._apply(self._grant_refresh(refresh))
                 return
             except AuthError:
                 logger.info(f"{_PROVIDER}: refresh token rejected")
@@ -300,8 +316,11 @@ class EonAuth:
                 f"{_PROVIDER}: no credentials configured. "
                 f"Set username and password in the addon settings."
             )
-        self._ensure_device()
-        self._apply(self._grant_password())
+        if self._oidc is not None:
+            self._apply(self._login_oidc())
+        else:
+            self._ensure_device()
+            self._apply(self._grant_password())
         logger.info(f"{_PROVIDER}: authenticated")
 
     def _apply(self, tok: EonTokenResponse) -> None:
@@ -322,12 +341,20 @@ class EonAuth:
     def _grant(self, params: Dict[str, str], *, data: Optional[bytes] = None,
                headers: Optional[Dict[str, str]] = None,
                rejected: Type[AuthError] = AuthError,
-               rejected_statuses: tuple = (400, 401, 403)) -> EonTokenResponse:
-        url = self._endpoints.url(EonDefaults.PATH_OAUTH_TOKEN)
+               rejected_statuses: tuple = (400, 401, 403),
+               path: str = EonDefaults.PATH_OAUTH_TOKEN,
+               label: Optional[str] = None) -> EonTokenResponse:
+        """POST to a token endpoint. `params` go into the query string (the
+        broker-style endpoints); the OIDC endpoint takes everything in `data`
+        and passes an empty `params`."""
+        label = label or params["grant_type"]
+        url = self._endpoints.url(path)
         hdrs = headers if headers is not None else self._config.basic_headers()
-        with transport_errors(f"token ({params['grant_type']})", _PROVIDER):
+        with transport_errors(f"token ({label})", _PROVIDER):
             try:
-                kwargs: Dict[str, Any] = {"params": params, "headers": hdrs, "operation": "auth"}
+                kwargs: Dict[str, Any] = {"headers": hdrs, "operation": "auth"}
+                if params:
+                    kwargs["params"] = params
                 if data is not None:
                     kwargs["data"] = data
                 else:
@@ -338,8 +365,67 @@ class EonAuth:
                 status = exc.response.status_code if exc.response is not None else None
                 if status in (400, 401, 403):
                     kind = rejected if status in rejected_statuses else AuthError
-                    raise kind(f"{_PROVIDER}: {params['grant_type']} grant rejected (HTTP {status})") from exc
+                    raise kind(f"{_PROVIDER}: {label} grant rejected (HTTP {status})") from exc
                 raise error_from_exception(exc) from exc
+            except ValueError as exc:       # 200 but not a token response
+                raise ServerError(f"{_PROVIDER}: {label} response is not a token: {exc}") from exc
+
+    def _grant_refresh(self, refresh: str) -> EonTokenResponse:
+        if self._oidc is None:
+            return self._grant({"grant_type": "refresh_token", "refresh_token": refresh})
+        client = self._config.oidc_client
+        # UNVERIFIED against a browser capture: the standard public-client refresh
+        # request. A rejection just falls through to a full login (see _login).
+        body = urlencode({
+            "grant_type": "refresh_token",
+            "refresh_token": refresh,
+            "client_id": client.client_id,
+        }).encode("ascii")
+        return self._grant({}, data=body, headers=self._oidc_headers(), label="refresh_token",
+                           path=EonDefaults.PATH_OAUTH2_TOKEN)
+
+    # ------------------------------------------------------------------
+    # OIDC flow (brands with an external identity provider)
+    # ------------------------------------------------------------------
+    def _oidc_headers(self) -> Dict[str, str]:
+        client = self._config.oidc_client
+        return {
+            "User-Agent": self._config.user_agent,
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": client.origin,
+            "Referer": client.origin + "/",
+        }
+
+    def _login_oidc(self) -> EonTokenResponse:
+        creds = self._current_credentials()
+        authz = self._oidc.authorize(creds.username, creds.password)   # type: ignore[union-attr]
+        client = self._config.oidc_client
+        body = urlencode({
+            "grant_type": "authorization_code",
+            "client_id": client.client_id,
+            "code": authz.code,
+            "redirect_uri": client.redirect_uri,
+            "code_verifier": authz.code_verifier,
+            "serial_number": self._oidc_serial(authz.identity_key),
+            "device_type": client.device_type,
+            "platform_identifier": client.platform_identifier,
+        }).encode("ascii")
+        # A rejected code is NOT a wrong-password verdict (that was the IdP's call
+        # in authorize()): plain AuthError, so the ladder may retry with a new device.
+        return self._grant({}, data=body, headers=self._oidc_headers(),
+                           label="authorization_code", path=EonDefaults.PATH_OAUTH2_TOKEN)
+
+    def _oidc_serial(self, identity_key: str) -> str:
+        """Stable random seed (persisted, masked key) + the server's identity_key,
+        as the web app builds it. A seed of another length (left by the password
+        flow) is replaced: that device is useless for this flow anyway."""
+        seed = self._store.get(K_DEVICE_SERIAL)
+        if not seed or len(seed) != EonDefaults.OIDC_SERIAL_SEED_LENGTH:
+            seed = "".join(secrets.choice(_OIDC_SERIAL_ALPHABET)
+                           for _ in range(EonDefaults.OIDC_SERIAL_SEED_LENGTH))
+            self._store.set(K_DEVICE_SERIAL, seed)
+        return seed + identity_key
 
     def _grant_password(self) -> EonTokenResponse:
         device_number = self._store.get(K_DEVICE_NUMBER)
@@ -437,6 +523,11 @@ class EonAuth:
         self.invalidate()
         self._store.delete(K_DEVICE_ID)
         self._store.delete(K_DEVICE_NUMBER)
+        if self._oidc is not None:
+            # No registration call in this flow: a new serial makes the token
+            # endpoint mint a new device on the next login.
+            self._store.delete(K_DEVICE_SERIAL)
+            return
         self._register_device()
 
     def _register_device(self) -> None:

@@ -43,6 +43,16 @@ class EonDefaults:
     PATH_CDNINFO = "v1/cdninfo"
     PATH_OAUTH_TOKEN = "oauth/token"
 
+    # --- OIDC login (brands whose accounts live at an external IdP) -------
+    # Relative to the resolved api base. Used by the "oidc" login flow only.
+    PATH_OAUTH2_AUTHORIZE = "oauth2/authorize"
+    PATH_OAUTH2_TOKEN = "oauth2/token"
+    LOGIN_FLOW_PASSWORD = "password"
+    LOGIN_FLOW_OIDC = "oidc"
+    # The web app's serial is 35 random characters + the `identity_key` the
+    # server appends to the redirect (observed in a browser capture).
+    OIDC_SERIAL_SEED_LENGTH = 35
+
     # --- API (relative to the resolved api base) -------------------------
     PATH_OTP = "v1/otp"
     PATH_DEVICES_V1 = "v1/devices"
@@ -101,6 +111,36 @@ BRAND_IDENTIFIERS: Dict[str, str] = {
     "telemach-si": "telemach-si",
     "vivacom": "vivacom",
     "nova": "nova",
+}
+
+
+# brand key -> login flow. Brands not listed use the password grant.
+# Vivacom (BG) delegates the login to its own identity provider
+# (login.vivacom.bg, WSO2): authorization code + PKCE, no password grant.
+BRAND_LOGIN_FLOWS: Dict[str, str] = {
+    "vivacom": EonDefaults.LOGIN_FLOW_OIDC,
+}
+
+
+@dataclass(frozen=True)
+class EonOidcClient:
+    """Public OAuth client of the operator's web app (no secret: PKCE)."""
+    client_id: str
+    redirect_uri: str
+    scope: str = "openid"
+    device_type: str = "Browser"
+    platform_identifier: str = "web"
+
+    @property
+    def origin(self) -> str:
+        return self.redirect_uri.rstrip("/")
+
+
+BRAND_OIDC_CLIENTS: Dict[str, EonOidcClient] = {
+    "vivacom": EonOidcClient(
+        client_id="b5826897-1736-4646-af04-0a0cf891e0ac",
+        redirect_uri="https://eontv.bg",
+    ),
 }
 
 
@@ -205,6 +245,28 @@ class EonConfig:
                 f"(known: {', '.join(sorted(PLATFORMS))})"
             )
         self.platform = PLATFORMS[platform_key]
+
+        # Login flow: explicit config wins, else the brand's default.
+        self.login_flow = str(
+            c.get("login_flow")
+            or BRAND_LOGIN_FLOWS.get(self.brand, EonDefaults.LOGIN_FLOW_PASSWORD)
+        ).lower()
+        if self.login_flow not in (EonDefaults.LOGIN_FLOW_PASSWORD, EonDefaults.LOGIN_FLOW_OIDC):
+            raise ConfigurationError(
+                f"{EonDefaults.PROVIDER_LABEL}: unknown login_flow {self.login_flow!r} "
+                f"(known: {EonDefaults.LOGIN_FLOW_PASSWORD}, {EonDefaults.LOGIN_FLOW_OIDC})"
+            )
+        self.oidc_client: Optional[EonOidcClient] = None
+        if self.login_flow == EonDefaults.LOGIN_FLOW_OIDC:
+            base = BRAND_OIDC_CLIENTS.get(self.brand)
+            client_id = c.get("oidc_client_id") or (base.client_id if base else "")
+            redirect_uri = c.get("oidc_redirect_uri") or (base.redirect_uri if base else "")
+            if not client_id or not redirect_uri:
+                raise ConfigurationError(
+                    f"{EonDefaults.PROVIDER_LABEL}: brand {self.brand!r} has no known OIDC "
+                    f"client; set oidc_client_id and oidc_redirect_uri"
+                )
+            self.oidc_client = EonOidcClient(client_id=client_id, redirect_uri=redirect_uri)
 
         self.user_agent = c.get("user_agent") or self.platform.user_agent
         self.timeout = c.get("timeout", EonDefaults.TIMEOUT)
