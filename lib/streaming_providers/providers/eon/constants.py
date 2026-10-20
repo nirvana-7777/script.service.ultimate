@@ -124,9 +124,12 @@ BRAND_LOGIN_FLOWS: Dict[str, str] = {
 
 @dataclass(frozen=True)
 class EonOidcClient:
-    """Public OAuth client of the operator's web app (no secret: PKCE)."""
+    """OAuth client of the operator's web app. PKCE, but the token endpoint
+    ALSO wants Basic client auth (the secret ships in the web app's JS, like
+    the PLATFORMS secrets). Never log it."""
     client_id: str
     redirect_uri: str
+    client_secret: str = ""
     scope: str = "openid"
     device_type: str = "Browser"
     platform_identifier: str = "web"
@@ -135,11 +138,16 @@ class EonOidcClient:
     def origin(self) -> str:
         return self.redirect_uri.rstrip("/")
 
+    def basic_auth_value(self) -> str:
+        raw = f"{self.client_id}:{self.client_secret}"
+        return "Basic " + base64.b64encode(raw.encode("ascii")).decode("ascii")
+
 
 BRAND_OIDC_CLIENTS: Dict[str, EonOidcClient] = {
     "vivacom": EonOidcClient(
         client_id="b5826897-1736-4646-af04-0a0cf891e0ac",
         redirect_uri="https://eontv.bg",
+        client_secret="9xk3m5f2e7q1z0r4h8c6dypoavwsgntulbjmi",
     ),
 }
 
@@ -266,7 +274,10 @@ class EonConfig:
                     f"{EonDefaults.PROVIDER_LABEL}: brand {self.brand!r} has no known OIDC "
                     f"client; set oidc_client_id and oidc_redirect_uri"
                 )
-            self.oidc_client = EonOidcClient(client_id=client_id, redirect_uri=redirect_uri)
+            self.oidc_client = EonOidcClient(
+                client_id=client_id, redirect_uri=redirect_uri,
+                client_secret=c.get("oidc_client_secret") or (base.client_secret if base else ""),
+            )
 
         self.user_agent = c.get("user_agent") or self.platform.user_agent
         self.timeout = c.get("timeout", EonDefaults.TIMEOUT)

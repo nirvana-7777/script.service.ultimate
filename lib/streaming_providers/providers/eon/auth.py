@@ -374,7 +374,7 @@ class EonAuth:
         if self._oidc is None:
             return self._grant({"grant_type": "refresh_token", "refresh_token": refresh})
         client = self._config.oidc_client
-        # UNVERIFIED against a browser capture: the standard public-client refresh
+        # UNVERIFIED against a browser capture: the standard refresh (same Basic auth as the code exchange)
         # request. A rejection just falls through to a full login (see _login).
         body = urlencode({
             "grant_type": "refresh_token",
@@ -395,6 +395,8 @@ class EonAuth:
             "Content-Type": "application/x-www-form-urlencoded",
             "Origin": client.origin,
             "Referer": client.origin + "/",
+            "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
+            **({"Authorization": client.basic_auth_value()} if client.client_secret else {}),
         }
 
     def _login_oidc(self) -> EonTokenResponse:
