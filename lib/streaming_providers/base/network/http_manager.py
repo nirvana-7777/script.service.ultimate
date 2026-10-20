@@ -275,6 +275,13 @@ class HTTPManager:
         """Perform DELETE request with proxy support"""
         return self._make_request("DELETE", url, operation, **kwargs)
 
+    def patch(self, url: str, operation: str = "api", **kwargs) -> requests.Response:
+        """Perform PATCH request with proxy support.
+
+        Not retried on 429 (PATCH is not idempotent, see _IDEMPOTENT_METHODS).
+        Takes the same kwargs as put(), including `raise_for_status=False`."""
+        return self._make_request("PATCH", url, operation, **kwargs)
+
     # ------------------------------------------------------------------
     # Core request logic
     # ------------------------------------------------------------------

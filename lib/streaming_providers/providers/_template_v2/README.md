@@ -988,9 +988,26 @@ apart in one auth class instead of one `token` field:
   **permanent** until `set_credentials()`; everything else is **transient** with
   exponential backoff (30 s … 900 s) and **no network while backing off**; a pending OTP
   is neither. Without this every failing call retried a full login against the SSO.
-* Persisted state is behind a small `Store` protocol (`get/set/delete`) with a
-  non-durable in-memory default **that is loudly documented as such**: without a durable
-  store every restart registers a new device (§12.1b).
+* **Persisted state is behind a small `Store` protocol** (`get / set / set_many / delete`)
+  with a non-durable `MemoryStore` default that is loudly documented as such: without a
+  durable store every restart registers a new device (§12.1b). The durable one is
+  `persistence.SessionStore` on top of `SessionManager` (one dict at
+  `session.json[<provider>][<country>]`, country lower-case; `save_session` REPLACES that
+  dict, so the store keeps a write-through cache and writes the whole thing, batched with
+  `set_many`, skipped when nothing changed). `default_persistence()` finds the
+  `SessionManager` and the credentials loader the way `BaseAuthenticator` does (injected
+  settings manager, else its own) and degrades to `MemoryStore` with a warning, never to
+  an exception. Credentials are loaded **lazily at the first login**
+  (`settings_manager.get_provider_credentials(provider, country)`), not in `__init__`.
+* **Persist only what cannot be re-derived.** Eon stores device serial / id / number and the
+  refresh token. The stream key and stream user (the AES key of the CDN URL) come back with
+  every token response, including the refresh grant, so they stay in memory.
+  `SessionManager` logs the **values of keys it does not know at INFO** on every
+  `save_session` / `load_session`; only its mask list (`access_token`, `refresh_token`,
+  `client_secret`, `password`, `persona_*`) is hidden. `session_manager_patch.diff` masks by
+  key-name fragment (`token`, `secret`, `password`, `jwt`, `serial`, `device_number`).
+  Test both: a restart reuses the device and the refresh token (no password grant, no new
+  device), and the stream key never appears in captured log output.
 * Never log the stream key, tokens, device serial or a signed URL — not even at DEBUG.
 
 ### Credentials API on the provider (OPTIONAL — only if v1 has it)
@@ -1767,6 +1784,8 @@ Things that already cost time. Each is covered by a test or the contract unless 
 79. Recording a login failure inside the recovery ladder (a stale-device `400` then
     blocks the provider permanently) or treating every `AuthError` — including a WAF
     `403` — as "wrong credentials" (§9).
+80. Persisting a re-derivable secret (stream key, anything the next token response
+    returns) through `SessionManager`: unknown keys are logged in clear at INFO (§9).
 
 ---
 
@@ -1802,9 +1821,11 @@ Known gaps in the base, so you don't hunt for them:
   `_IDEMPOTENT_METHODS`) adds it. Raw/multipart bodies already work: `post(url, data=<bytes>,
   headers={"Content-Type": "multipart/form-data; boundary=…"})`, and `json=` passes
   through `**kwargs`.
-* **No shared persisted-state protocol for Variant A providers**: Eon ships its own
-  `EonStore` (`get/set/delete`) with an in-memory default; the session layer should offer
-  the same shape so identity survives restarts without per-provider glue.
+* **No ready-made `Store` for Variant A providers**: `SessionManager` offers
+  `load_session` / `save_session` (a dict per provider + country) and scoped tokens (which
+  insist on `access_token` and expiry fields), not a key/value store, and it logs unknown
+  values in clear. Eon's `persistence.SessionStore` is the adapter; moving it (and the
+  masking patch) into `base/auth` would remove the per-provider glue.
 * **`CatchupManager` and `EpgManager` do not say who owns "the programme at a time"** for
   day-based endpoints; Eon's `get_epg` re-filters by overlap, a shared helper would
   remove that duplication (see the deliberately-not-added `get_entry_at`).
@@ -1994,6 +2015,7 @@ meet one of these:
 | catalogues that need a session, TTL + lock | `bootstrap.py` (`EonCatalog`) | §5.1 |
 | client token + device + user session, recovery ladder, OTP | `auth.py`, `errors.py` | §9 |
 | one place for "401 → recover → retry once" | `api.py` | §8, §9 |
+| durable device identity + credentials from the settings manager | `persistence.py` | §9 |
 | locally signed, short-lived manifest URL | `stream_url.py`, `channel_manager.py` | §11 |
 | day-based EPG with a boundary programme | `epg_manager.py` | §6.3 |
 | per-channel, server-supplied catchup window; catchup via the channel manager | `catchup_manager.py` | §6.6 |

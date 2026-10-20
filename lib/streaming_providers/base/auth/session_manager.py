@@ -9,6 +9,11 @@ from ..utils.vfs import VFS
 from .base_auth import BaseAuthToken
 
 
+# Any session key whose NAME contains one of these is masked in the INFO logs of
+# save_session / load_session / save_scoped_token (unknown keys are logged in clear).
+_SENSITIVE_KEY_PARTS = ("token", "secret", "password", "jwt", "serial", "device_number")
+
+
 class SessionManager:
     """
     Manages persistent session data including tokens and device IDs
@@ -667,7 +672,7 @@ class SessionManager:
                 "password",
                 "persona_token",
                 "persona_jwt",
-            ]:  # ← ADD THESE TWO FIELDS
+            ] or any(part in str(key).lower() for part in _SENSITIVE_KEY_PARTS):
                 safe_data[key] = f"<present>" if value else f"<missing>"
             elif isinstance(value, dict):
                 # Recursively handle nested dicts (for scoped tokens)

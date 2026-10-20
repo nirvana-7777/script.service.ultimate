@@ -34,6 +34,12 @@ login is recorded ONCE, after the whole ladder has run --
     signal (stale device), not a verdict, and is not recorded.
 `last_error` keeps the original exception for the auth-status UI.
 
+Persistence: only what cannot be re-derived is stored -- device serial / id /
+number (client identity) and the refresh token. The STREAM KEY and stream user
+come back with every token response (also the refresh grant) and live in
+memory only: they are the AES key of the CDN URL, and SessionManager logs the
+values of unknown keys in clear at INFO.
+
 Rules: lazy (no network in __init__), one login for concurrent callers,
 typed errors only, nothing secret in logs (lengths at most).
 """
@@ -63,8 +69,6 @@ K_DEVICE_SERIAL = "device_serial"
 K_DEVICE_ID = "device_id"
 K_DEVICE_NUMBER = "device_number"
 K_REFRESH_TOKEN = "refresh_token"
-K_STREAM_KEY = "stream_key"
-K_STREAM_USER = "stream_user"
 
 _SERIAL_ALPHABET = string.digits + string.ascii_letters + "-"
 _TOKEN_REFRESH_BUFFER_SECONDS = 60
@@ -77,6 +81,7 @@ class EonStore(Protocol):
 
     def get(self, key: str) -> Optional[str]: ...
     def set(self, key: str, value: str) -> None: ...
+    def set_many(self, values: Dict[str, str]) -> None: ...
     def delete(self, key: str) -> None: ...
 
 
@@ -91,6 +96,9 @@ class MemoryStore:
 
     def set(self, key: str, value: str) -> None:
         self._data[key] = value
+
+    def set_many(self, values: Dict[str, str]) -> None:
+        self._data.update(values)
 
     def delete(self, key: str) -> None:
         self._data.pop(key, None)
@@ -112,6 +120,7 @@ class EonAuth:
         endpoints: EonEndpoints,
         store: Optional[EonStore] = None,
         credentials: Any = None,
+        credentials_loader: Optional[Callable[[], Any]] = None,
         clock: Callable[[], float] = time.monotonic,
     ):
         self._http = http_manager
@@ -119,6 +128,9 @@ class EonAuth:
         self._endpoints = endpoints
         self._store: EonStore = store if store is not None else MemoryStore()
         self._credentials = credentials      # object with .username / .password
+        self._credentials_loader = credentials_loader   # lazy: no disk/network in __init__
+        self._stream_key: Optional[str] = None           # memory only (see docstring)
+        self._stream_user: Optional[str] = None
         self._access_token: Optional[str] = None
         self._expires_at: Optional[float] = None
         self._generic_token: Optional[str] = None
@@ -134,9 +146,17 @@ class EonAuth:
     # ------------------------------------------------------------------
     # Credentials
     # ------------------------------------------------------------------
+    def _current_credentials(self) -> Any:
+        if self._credentials is None and self._credentials_loader is not None:
+            try:
+                self._credentials = self._credentials_loader()
+            except Exception as exc:     # a broken settings backend is "no credentials"
+                logger.warning(f"{_PROVIDER}: could not load stored credentials: {exc!r}")
+        return self._credentials
+
     @property
     def has_credentials(self) -> bool:
-        c = self._credentials
+        c = self._current_credentials()
         return bool(c and getattr(c, "username", None) and getattr(c, "password", None))
 
     def set_credentials(self, credentials: Any) -> None:
@@ -186,8 +206,9 @@ class EonAuth:
             self._access_token = None
             self._expires_at = None
             self._pending_otp = None
-            for key in (K_REFRESH_TOKEN, K_STREAM_KEY, K_STREAM_USER):
-                self._store.delete(key)
+            self._stream_key = None
+            self._stream_user = None
+            self._store.delete(K_REFRESH_TOKEN)
 
     # ------------------------------------------------------------------
     # Eon-specific
@@ -195,12 +216,12 @@ class EonAuth:
     def stream_credentials(self) -> StreamCredentials:
         """Stream key / user / device number, logging in first if needed."""
         self.get_access_token()
-        key = self._store.get(K_STREAM_KEY)
-        user = self._store.get(K_STREAM_USER)
         number = self._store.get(K_DEVICE_NUMBER)
-        if not (key and user and number):
+        if not (self._stream_key and self._stream_user and number):
             raise ServerError(f"{_PROVIDER}: the session carries no stream credentials")
-        return StreamCredentials(stream_key=key, stream_user=user, device_number=number)
+        return StreamCredentials(
+            stream_key=self._stream_key, stream_user=self._stream_user, device_number=number
+        )
 
     def recover(self, failed_token: Optional[str]) -> None:
         """Repair the session after a 401 with `failed_token`."""
@@ -285,14 +306,17 @@ class EonAuth:
     def _apply(self, tok: EonTokenResponse) -> None:
         self._access_token = tok.access_token
         self._expires_at = time.time() + tok.expires_in if tok.expires_in else None
-        for key, value in (
-            (K_REFRESH_TOKEN, tok.refresh_token),
-            (K_STREAM_KEY, tok.stream_key),
-            (K_STREAM_USER, tok.stream_user),
-            (K_DEVICE_NUMBER, tok.device_number),
-        ):
-            if value:
-                self._store.set(key, value)
+        if tok.stream_key:
+            self._stream_key = tok.stream_key
+        if tok.stream_user:
+            self._stream_user = tok.stream_user
+        durable = {}
+        if tok.refresh_token:
+            durable[K_REFRESH_TOKEN] = tok.refresh_token
+        if tok.device_number:
+            durable[K_DEVICE_NUMBER] = tok.device_number
+        if durable:
+            self._store.set_many(durable)
 
     def _grant(self, params: Dict[str, str], *, data: Optional[bytes] = None,
                headers: Optional[Dict[str, str]] = None,
@@ -321,9 +345,10 @@ class EonAuth:
         if not device_number:
             raise AuthError(f"{_PROVIDER}: no device number; device registration failed")
         boundary = "----EonBoundary" + secrets.token_hex(8)
-        username_hash = hashlib.sha256(self._credentials.username.encode("utf-8")).hexdigest().upper()
+        creds = self._current_credentials()
+        username_hash = hashlib.sha256(creds.username.encode("utf-8")).hexdigest().upper()
         fields = (("username", username_hash),
-                  ("password", self._credentials.password),
+                  ("password", creds.password),
                   ("device_number", device_number))
         body = "".join(
             f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'
@@ -487,6 +512,5 @@ class EonAuth:
             reg = EonDeviceRegistration.from_api_response(resp.json())
         except ValueError as exc:
             raise ServerError(f"{_PROVIDER}: {exc}") from exc
-        self._store.set(K_DEVICE_ID, reg.device_id)
-        self._store.set(K_DEVICE_NUMBER, reg.device_number)
+        self._store.set_many({K_DEVICE_ID: reg.device_id, K_DEVICE_NUMBER: reg.device_number})
         logger.info(f"{_PROVIDER}: device registered")

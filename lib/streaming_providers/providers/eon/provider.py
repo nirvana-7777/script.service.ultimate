@@ -24,6 +24,7 @@ from .catchup_manager import EonCatchupManager
 from .channel_manager import EonChannelManager
 from .constants import EonConfig, EonDefaults
 from .epg_manager import EonEpgManager
+from .persistence import default_persistence
 
 __all__ = ["EonProvider"]
 
@@ -54,6 +55,7 @@ class EonProvider(ManagedProvider):
         config: Optional[Dict] = None,
         proxy_config: Optional[ProxyConfig] = None,
         store: Optional[EonStore] = None,
+        settings_manager=None,
     ):
         super().__init__(country=country)
         self.country = self.country.lower()
@@ -69,13 +71,23 @@ class EonProvider(ManagedProvider):
             timeout=self.provider_config.timeout,
         )
 
-        # 3. Lazy collaborators: no network in __init__.
+        # 3. Persistence: device identity + refresh token via SessionManager,
+        #    credentials via the settings manager (loaded lazily at first login).
+        #    `store` overrides it (tests).
+        default_store, credentials_loader = default_persistence(
+            provider=EonDefaults.PROVIDER_NAME, country=self.country,
+            settings_manager=settings_manager,
+        )
+
+        # 4. Lazy collaborators: no network in __init__.
         self.endpoints = EonEndpoints(
             http_manager=self.http_manager, config=self.provider_config
         )
         self.auth = EonAuth(
             http_manager=self.http_manager, config=self.provider_config,
-            endpoints=self.endpoints, store=store,
+            endpoints=self.endpoints,
+            store=store if store is not None else default_store,
+            credentials_loader=credentials_loader,
         )
         self.api = EonApi(
             http_manager=self.http_manager, auth=self.auth,
@@ -83,10 +95,10 @@ class EonProvider(ManagedProvider):
         )
         self.catalog = EonCatalog(api=self.api, config=self.provider_config)
 
-        # 4. Provider-owned caches, borrowed by managers by reference.
+        # 5. Provider-owned caches, borrowed by managers by reference.
         self._url_cache: Dict = {}
 
-        # 5. Managers. NOTE: self.channels is now the ChannelManager.
+        # 6. Managers. NOTE: self.channels is now the ChannelManager.
         self._init_managers()
 
     def _build_channels(self):
