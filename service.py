@@ -880,6 +880,10 @@ class UltimateService:
         this just appends the stream URL built from stream_path.
 
         Args:
+            base_url: Prefix for the stream URL. Pass "" to emit a RELATIVE
+                      URL (/api/providers/...) — the M3U cache is
+                      host-independent; routes/m3u.py absolutizes at the
+                      response boundary using the current request's base URL.
             stream_path: Relative path (optionally with a query string) after
                          .../channels/{channel_id}/. There's only one real
                          channel stream route now — "stream/index.mpd" — so
@@ -897,7 +901,9 @@ class UltimateService:
             drm_directives=drm_directives,
             include_catchup=include_catchup,
         )
-        stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/{stream_path}"
+        stream_url = f"/api/providers/{provider_name}/channels/{channel_id}/{stream_path}"
+        if base_url:
+            stream_url = f"{base_url}{stream_url}"
         return header + f"{stream_url}\n"
 
     def _iter_m3u_provider_channels(self, providers_to_process):
@@ -952,6 +958,10 @@ class UltimateService:
         happening at generation time, unlike the dynamic-DRM "clientdrm"
         variant below.
 
+        Stream URLs are emitted RELATIVE and cached that way. routes/m3u.py
+        absolutizes at the response boundary so a single cached playlist
+        serves every client (IP or hostname) correctly.
+
         Args:
             providers: List of provider names, or None for all providers
             save_to_cache: Whether to save to cache
@@ -971,8 +981,8 @@ class UltimateService:
                 {"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"}
             )
 
-        # Get base URL for absolute stream URLs
-        base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
+        # Stream URLs stay relative; routes/m3u.py absolutizes.
+        base_url = ""
 
         # Start M3U content
         m3u_content = "#EXTM3U\n"
@@ -1013,8 +1023,12 @@ class UltimateService:
         logger.info(f"Plain M3U: included {channels_included} channels")
 
         # Save to cache if requested — safe here (see docstring: nothing on
-        # this path is request-time-volatile).
-        if save_to_cache and cache_filename:
+        # this path is request-time-volatile, and URLs are relative).
+        # Never cache an empty playlist: a failed provider lookup (unknown
+        # name, upstream outage) would otherwise be served for the whole TTL.
+        if save_to_cache and cache_filename and not channels_included:
+            logger.warning(f"Plain M3U has 0 channels — not caching {cache_filename}")
+        elif save_to_cache and cache_filename:
             if self.vfs.write_text(cache_filename, m3u_content):
                 logger.info(f"M3U playlist cached to {cache_filename}")
             else:
@@ -1027,6 +1041,11 @@ class UltimateService:
         Fast generation of decrypted M3U content with ffmpeg piping for specified providers.
         Includes ALL channels with highest quality video and ffmpeg-piped stream URLs.
         No DRM filtering, no caching - maximum speed.
+
+        Stream URLs (inside the pipe:// command) are emitted RELATIVE; the
+        serve-time absolutizer in routes/m3u.py rewrites them together with
+        the plain format, so this endpoint's URLs also follow the incoming
+        request's host.
 
         Args:
             providers: List of provider names, or None for all providers
@@ -1043,8 +1062,8 @@ class UltimateService:
                 {"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"}
             )
 
-        # Get base URL for absolute stream URLs
-        base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
+        # Stream URLs stay relative; routes/m3u.py absolutizes.
+        base_url = ""
 
         # Start M3U content
         m3u_content = "#EXTM3U\n"
@@ -1073,7 +1092,9 @@ class UltimateService:
                     stream_path = self.stream_path_for(
                         channel, "stream/index.mpd?client_drm=false&highest_quality_only=true"
                     )
-                    stream_url = f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/{stream_path}"
+                    stream_url = f"/api/providers/{provider_name}/channels/{channel_id}/{stream_path}"
+                    if base_url:
+                        stream_url = f"{base_url}{stream_url}"
 
                     # Build ffmpeg pipe command
                     ffmpeg_cmd = self._build_ffmpeg_pipe_command(stream_url, channel_name)
@@ -1126,6 +1147,8 @@ class UltimateService:
         Internal method to generate filtered decrypted M3U content for specified providers.
         Only includes channels with ClearKey DRM or unencrypted channels.
 
+        Stream URLs are emitted RELATIVE; routes/m3u.py absolutizes.
+
         Args:
             providers: List of provider names, or None for all providers
             save_to_cache: Whether to save to cache
@@ -1139,8 +1162,8 @@ class UltimateService:
             logger.error("Cannot generate decrypted M3U: MEDIA_PROXY_URL not set")
             return None
 
-        # Get base URL for absolute stream URLs
-        base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
+        # Stream URLs stay relative; routes/m3u.py absolutizes.
+        base_url = ""
 
         # Start M3U content
         m3u_content = "#EXTM3U\n"
@@ -1235,8 +1258,10 @@ class UltimateService:
             f"Filtered decrypted M3U: included {channels_included} channels, skipped {channels_skipped}"
         )
 
-        # Save to cache if requested
-        if save_to_cache and cache_filename:
+        # Save to cache if requested (never an empty playlist)
+        if save_to_cache and cache_filename and not channels_included:
+            logger.warning(f"Filtered M3U has 0 channels — not caching {cache_filename}")
+        elif save_to_cache and cache_filename:
             if self.vfs.write_text(cache_filename, m3u_content):
                 logger.info(f"Filtered decrypted M3U playlist cached to {cache_filename}")
             else:
@@ -1263,6 +1288,8 @@ class UltimateService:
         and the pre-existing "/m3u/noproxy" playlists, which combine
         client-side decrypt with a forced non-proxied stream route.
 
+        Stream URLs are emitted RELATIVE; routes/m3u.py absolutizes.
+
         Args:
             providers: List of provider names, or None for all providers
             save_to_cache: Whether to save to cache
@@ -1274,8 +1301,8 @@ class UltimateService:
         Returns:
             M3U content as string
         """
-        # Get base URL for absolute stream URLs
-        base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
+        # Stream URLs stay relative; routes/m3u.py absolutizes.
+        base_url = ""
 
         # Start M3U content
         m3u_content = "#EXTM3U\n"
@@ -1314,6 +1341,8 @@ class UltimateService:
         # every entry here would silently mismatch its own KODIPROP directives.
         stream_path = "stream/index.mpd?client_drm=true&no_proxy=true" if no_proxy else "stream/index.mpd?client_drm=true"
 
+        channels_included = 0
+
         for provider_name, provider_label, channels in self._iter_m3u_provider_channels(providers_to_process):
             try:
                 # Add each channel to M3U
@@ -1323,6 +1352,7 @@ class UltimateService:
                         stream_path=stream_path,
                         provider_label=provider_label,
                     )
+                    channels_included += 1
 
             except Exception as provider_err:
                 logger.warning(
@@ -1330,8 +1360,10 @@ class UltimateService:
                 )
                 continue
 
-        # Save to cache if requested
-        if save_to_cache and cache_filename:
+        # Save to cache if requested (never an empty playlist)
+        if save_to_cache and cache_filename and not channels_included:
+            logger.warning(f"M3U has 0 channels — not caching {cache_filename}")
+        elif save_to_cache and cache_filename:
             if self.vfs.write_text(cache_filename, m3u_content):
                 logger.info(f"M3U playlist cached to {cache_filename}")
             else:
@@ -1393,6 +1425,11 @@ class UltimateService:
 
         Deliberately UNCACHED — raw URLs and header tokens can both be
         short-lived. Never log header values.
+
+        NOTE: because this function emits ABSOLUTE UPSTREAM URLs (never
+        /api/providers/...), the serve-time absolutizer in routes/m3u.py
+        leaves the body alone. Intentional — the client should hit the
+        provider directly, not our server.
 
         Returns:
             (m3u_content, channels_included, channels_skipped)

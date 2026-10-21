@@ -3,10 +3,13 @@
 M3U playlist route handlers
 """
 
+import re
 import time
 
-from bottle import request, response
+from bottle import response
 from streaming_providers.base.utils import logger
+
+from ._url_utils import build_base_url
 
 # TTL for the plain M3U cache ("/api/m3u", "/api/providers/<provider>/m3u")
 # only. Nothing embedded there goes stale from a security standpoint
@@ -28,6 +31,53 @@ FALLBACK_WARN_INTERVAL_SECONDS = 60 * 60
 M3U_MODE_PLAIN = "plain"
 M3U_MODE_CLIENTDRM_FALLBACK = "clientdrm-fallback"
 M3U_MODE_NOPROXY_RAW = "noproxy-raw"
+
+# ---------------------------------------------------------------------------
+# Serve-time absolutization of cached playlists.
+#
+# M3U files on disk carry RELATIVE stream URLs (`/api/providers/.../channels/
+# .../stream/index.mpd...`) so that one cached file serves every client,
+# regardless of which hostname/IP they used to reach the server. The absolute
+# base is derived per-request here, in the response path, from the current
+# connection (see _url_utils.build_base_url).
+#
+# Two shapes need rewriting:
+#   1. A standalone relative stream-URL line (the plain M3U format).
+#   2. The -i "<url>" argument inside an ffmpeg pipe:// command (the
+#      /proxied/ffmpeg variant wraps the stream URL in an ffmpeg invocation).
+#
+# External absolute URLs (tvg-logo="https://...") and catchup-source query
+# fragments ("?start_time=...") are deliberately untouched — they were never
+# host-dependent.
+# ---------------------------------------------------------------------------
+# A cache file written before the relative-URL change has an absolute
+# "http://oldhost:port/api/providers/..." baked in (standalone line or inside
+# the ffmpeg -i "..." argument). _absolutize deliberately leaves those alone,
+# so _serve_cached detects them and treats the file as a cache miss, which
+# regenerates it in the new (relative) format.
+_LEGACY_ABSOLUTE_STREAM_URL_RE = re.compile(
+    r'(?m)^https?://[^/\s]+/api/providers/'
+    r'|-i "https?://[^/"\s]+/api/providers/'
+)
+
+_RELATIVE_STREAM_URL_RE = re.compile(
+    r'(?m)^(?P<plain>/api/providers/\S+)$'
+    r'|'
+    r'(?P<ffmpeg_prefix>-i ")(?P<ffmpeg_url>/api/providers/[^"]+)'
+)
+
+
+def _absolutize(body: str, base_url: str) -> str:
+    """Prefix relative `/api/providers/...` stream URLs with `base_url`."""
+    if not body or "/api/providers/" not in body:
+        return body
+
+    def repl(m):
+        if m.group("plain"):
+            return f"{base_url}{m.group('plain')}"
+        return f"{m.group('ffmpeg_prefix')}{base_url}{m.group('ffmpeg_url')}"
+
+    return _RELATIVE_STREAM_URL_RE.sub(repl, body)
 
 
 def setup_m3u_routes(app, manager, service):
@@ -66,6 +116,9 @@ def setup_m3u_routes(app, manager, service):
         (or, when ttl_seconds is given, if the sidecar meta file shows the
         cache is older than that — triggering a regeneration the same as
         a cold cache would).
+
+        The returned body is the raw cached text with RELATIVE stream URLs;
+        _handle_m3u_route absolutizes it at the response boundary.
         """
         if ttl_seconds is not None:
             meta = service.vfs.read_json(_cache_meta_key(cache_key))
@@ -87,6 +140,12 @@ def setup_m3u_routes(app, manager, service):
         cached = service.vfs.read_text(cache_key)
         if not cached:
             return None
+        if _LEGACY_ABSOLUTE_STREAM_URL_RE.search(cached):
+            logger.info(
+                f"Cache {cache_key} holds legacy absolute stream URLs — "
+                f"discarding and regenerating with relative URLs"
+            )
+            return None
         logger.info(f"Serving cached M3U: {cache_key}")
         response.content_type = "audio/x-mpegurl; charset=utf-8"
         response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
@@ -95,12 +154,15 @@ def setup_m3u_routes(app, manager, service):
     def _handle_m3u_route(generate_fn, log_ctx, cache_key=None, filename=None,
                            ttl_seconds=None, force=False):
         """
-        Shared cache-check / error-handling wrapper for M3U routes.
+        Shared cache-check / error-handling / absolutization wrapper for M3U
+        routes.
 
         generate_fn: no-arg callable that returns the M3U string. It is
         responsible for its own success-path response headers (all the
         service.generate_* methods already do this) and, for the
-        proxy-gated "fast" endpoints, for their own 503 handling.
+        proxy-gated "fast" endpoints, for their own 503 handling. It MUST
+        emit relative stream URLs; the absolutization below is applied to
+        whatever string it returns.
 
         cache_key: pass None for routes that must always regenerate live
         (the uncached clientdrm endpoints, the ffmpeg endpoint, and the
@@ -120,7 +182,7 @@ def setup_m3u_routes(app, manager, service):
             if cache_key and not force:
                 cached = _serve_cached(cache_key, filename, ttl_seconds=ttl_seconds)
                 if cached is not None:
-                    return cached
+                    return _absolutize(cached, build_base_url())
                 logger.info(f"No valid cache found, generating M3U: {log_ctx}")
 
             result = generate_fn()
@@ -134,12 +196,22 @@ def setup_m3u_routes(app, manager, service):
             # A failed meta write must not turn a successful generation
             # into a 500: the worst case is a missing sidecar, which
             # _serve_cached already treats as "expired" and regenerates.
-            if cache_key and ttl_seconds is not None and isinstance(result, str):
+            #
+            # Only for a real playlist: not for an error body (status >= 400)
+            # and not for a 0-channel result, which the service does not
+            # write to the cache either. Touching the meta in that case would
+            # extend the life of the OLD cache file by another full TTL.
+            if (
+                cache_key and ttl_seconds is not None and isinstance(result, str)
+                and response.status_code < 400 and "#EXTINF" in result
+            ):
                 try:
                     _touch_cache_meta(cache_key)
                 except Exception as meta_err:
                     logger.warning(f"Could not write cache metadata for {cache_key}: {meta_err}")
 
+            if isinstance(result, str):
+                return _absolutize(result, build_base_url())
             return result
 
         except ValueError as val_err:
@@ -159,6 +231,19 @@ def setup_m3u_routes(app, manager, service):
         except Exception:
             pass  # cache file may not exist yet - fine
         return _handle_m3u_route(generate_fn, log_ctx)
+
+    def _for_provider(provider: str, generate_fn):
+        """
+        Wrap a per-provider generator so an unknown provider name raises
+        ValueError (-> 404 in _handle_m3u_route) before anything is generated
+        or cached. Without this, any URL segment would generate a 0-channel
+        playlist and create `<name>.m3u` + meta files on disk.
+        """
+        def wrapped():
+            if provider not in manager.list_providers():
+                raise ValueError(f"Unknown provider '{provider}'")
+            return generate_fn()
+        return wrapped
 
     # ── Plain playlists (cached, 24h TTL) ──────────────────────────────────
     # Server-side decrypt, bare stream URLs (no "?client_drm=false" — that's
@@ -272,8 +357,10 @@ def setup_m3u_routes(app, manager, service):
             cache_key=f"{provider}.m3u",
             filename=f"{provider}_playlist.m3u8",
             log_ctx=f"/api/providers/{provider}/m3u",
-            plain_fn=lambda: service.generate_m3u_plain_provider(provider, save_to_cache=True),
-            fallback_fn=lambda: service.generate_m3u_clientdrm_provider(provider),
+            plain_fn=_for_provider(
+                provider, lambda: service.generate_m3u_plain_provider(provider, save_to_cache=True)),
+            fallback_fn=_for_provider(
+                provider, lambda: service.generate_m3u_clientdrm_provider(provider)),
         )
 
     @app.route("/api/providers/<provider>/m3u/generate")
@@ -285,8 +372,10 @@ def setup_m3u_routes(app, manager, service):
             cache_key=f"{provider}.m3u",
             filename=f"{provider}_playlist.m3u8",
             log_ctx=f"/api/providers/{provider}/m3u/generate",
-            plain_fn=lambda: service.generate_m3u_plain_provider(provider, save_to_cache=True),
-            fallback_fn=lambda: service.generate_m3u_clientdrm_provider(provider),
+            plain_fn=_for_provider(
+                provider, lambda: service.generate_m3u_plain_provider(provider, save_to_cache=True)),
+            fallback_fn=_for_provider(
+                provider, lambda: service.generate_m3u_clientdrm_provider(provider)),
             force=True,
         )
 
@@ -344,7 +433,8 @@ def setup_m3u_routes(app, manager, service):
     def get_m3u_provider_noproxy(provider):
         """Generates no-proxy M3U playlist for a specific provider."""
         return _handle_m3u_route(
-            lambda: service.generate_m3u_noproxy_provider(provider, save_to_cache=True),
+            _for_provider(
+                provider, lambda: service.generate_m3u_noproxy_provider(provider, save_to_cache=True)),
             log_ctx=f"/api/providers/{provider}/m3u/noproxy",
             cache_key=f"{provider}_noproxy.m3u",
             filename=f"{provider}_playlist_noproxy.m3u8",
@@ -354,7 +444,8 @@ def setup_m3u_routes(app, manager, service):
     def generate_m3u_provider_noproxy(provider):
         """Force regeneration of no-proxy M3U playlist for a specific provider."""
         return _handle_m3u_route(
-            lambda: service.generate_m3u_noproxy_provider(provider, save_to_cache=True),
+            _for_provider(
+                provider, lambda: service.generate_m3u_noproxy_provider(provider, save_to_cache=True)),
             log_ctx=f"/api/providers/{provider}/m3u/noproxy/generate",
         )
 
@@ -372,6 +463,9 @@ def setup_m3u_routes(app, manager, service):
     # Unlike /api/m3u/noproxy, entries carry no catchup attributes: the raw
     # upstream live URL can't take the start/end times the redirect route
     # translates.
+    #
+    # These entries carry ABSOLUTE upstream URLs (never /api/providers/...),
+    # so the serve-time absolutizer leaves them alone. Good.
 
     @app.route("/api/m3u/noproxy/raw")
     def get_m3u_all_noproxy_raw():
@@ -432,7 +526,9 @@ def setup_m3u_routes(app, manager, service):
     def get_m3u_proxied_filtered_provider(provider):
         """Generates filtered proxied M3U for a specific provider."""
         return _handle_m3u_route(
-            lambda: service.generate_m3u_proxied_filtered_provider(provider, save_to_cache=True),
+            _for_provider(
+                provider,
+                lambda: service.generate_m3u_proxied_filtered_provider(provider, save_to_cache=True)),
             log_ctx=f"/api/providers/{provider}/m3u/proxied/filtered",
             cache_key=f"{provider}_proxied_filtered.m3u",
             filename=f"{provider}_proxied_filtered_playlist.m3u8",
@@ -443,7 +539,9 @@ def setup_m3u_routes(app, manager, service):
         """Force regeneration of filtered proxied M3U for a specific provider."""
         return _force_regenerate(
             f"{provider}_proxied_filtered.m3u",
-            lambda: service.generate_m3u_proxied_filtered_provider(provider, save_to_cache=True),
+            _for_provider(
+                provider,
+                lambda: service.generate_m3u_proxied_filtered_provider(provider, save_to_cache=True)),
             log_ctx=f"/api/providers/{provider}/m3u/proxied/filtered/generate",
         )
 
@@ -453,13 +551,17 @@ def setup_m3u_routes(app, manager, service):
     # M3U content directly (they were never moved into service.py) - only
     # the boilerplate around them is shared via the same helpers used
     # everywhere else.
+    #
+    # Stream URLs here are emitted RELATIVE so the cache is host-independent;
+    # _handle_m3u_route absolutizes at the response boundary, same as the
+    # service-side generators.
 
     def _generate_m3u_subscribed(proxied: bool = False):
         if proxied and not service.media_proxy_url:
             response.status = 503
             return {"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"}
 
-        base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
+        # Stream URLs stay relative; _handle_m3u_route absolutizes.
         m3u_content = "#EXTM3U\n"
 
         for provider_name in manager.list_providers():
@@ -501,8 +603,9 @@ def setup_m3u_routes(app, manager, service):
                         else "stream/index.mpd?client_drm=true"
                     )
                     stream_path = service.stream_path_for(channel, stream_path)
+                    # RELATIVE: absolutized at the response boundary.
                     stream_url = (
-                        f"{base_url}/api/providers/{provider_name}/channels/{channel_id}/{stream_path}"
+                        f"/api/providers/{provider_name}/channels/{channel_id}/{stream_path}"
                     )
 
                     m3u_content += (
@@ -535,7 +638,7 @@ def setup_m3u_routes(app, manager, service):
         # Proxied variant is deliberately uncached — proxy/DRM session state
         # can shift between requests, same rationale as the "fast" proxied
         # playlists above.
-        if not proxied:
+        if not proxied and "#EXTINF" in m3u_content:
             if service.vfs.write_text("playlist_subscribed.m3u", m3u_content):
                 logger.info("Subscribed M3U playlist cached to playlist_subscribed.m3u")
 
