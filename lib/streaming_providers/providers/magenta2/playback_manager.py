@@ -13,9 +13,29 @@ Responsibilities
   manifest URL — no separate SMIL fetch required.
 - Inject ``smil_base_url`` from the recording-URL cache so callers (e.g.
   DRMOperations) only need to pass a ``content_id``.
+- Resolve numeric station ids to entitled release pids for live/catchup
+  requests, AFTER the live caches are populated (see "Live id resolution").
 
-The class holds NO state of its own beyond references to the managers and
-callbacks passed at construction time.  All caches belong to ChannelManager.
+The class holds one piece of state beyond the manager/callback references:
+the rate-limit timestamp guarding get_channels() re-population attempts
+(see ``_LIVE_CACHE_RETRY_INTERVAL``).  All caches belong to ChannelManager.
+
+Live id resolution
+------------------
+Numeric station ids must be resolved to release pids through
+ChannelManager's station-to-pid map, but that map only holds entitled
+RELEASE pids after get_channels() has run — before that it holds
+station-metadata MEDIA pids, which the SMIL path rejects (observed as
+error SMILs for live channels).  Resolution therefore happens inside
+PlaybackManager, strictly after cache population (``_prepare_live_pid``),
+never in the provider before the playback call.
+
+Whether the map is safe to resolve through is signalled by
+``ChannelManager.has_release_pid_map()`` (set when a get_channels() feed
+load completes) — NOT by the live manifest/pid caches, which
+``populate_streaming_data()`` (channel-playlist endpoint) also fills
+without ever updating the station map.  Keying on the caches would let
+a playlist-only population vouch for a map that still holds media pids.
 
 Catchup routing
 ---------------
@@ -33,10 +53,14 @@ DRM for catchup is identical to live — the same Widevine licence URL applies �
 so ``get_drm`` routes catchup requests through the same fast-path as live.
 
 If the live manifest URL is not yet cached when a catchup request arrives,
-``_ensure_live_cache()`` is called to populate it before building the URL.
+the live caches are (re)populated before building the URL — on a pid miss
+this refresh is rate-limited to one attempt per ``_LIVE_CACHE_RETRY_INTERVAL``
+so an unentitled or stale id cannot storm the feed.
 SmilManager is NOT used for catchup on this provider.
 """
 import base64
+import enum
+import threading
 import time
 from typing import Callable, Dict, List, Optional
 from urllib.parse import urlencode, urlparse, urlunparse, parse_qs
@@ -54,6 +78,29 @@ from ..lib_theplatform import (
     build_licence_url,
     build_widevine_drm_config,
 )
+
+
+class _LiveCachePopulateResult(enum.Enum):
+    """
+    Outcome of a ``PlaybackManager._populate_live_caches()`` call.
+
+    Tri-state so callers can distinguish "did not try" from "tried and
+    failed" — both are falsy outcomes for the purposes of re-resolving
+    ids, but they mean different things operationally (back off vs.
+    degrade) and are logged differently by the caller.
+    """
+
+    # A fetch was attempted AND succeeded — the map/caches were refreshed,
+    # so a caller may re-resolve ids against them.
+    POPULATED = "populated"
+
+    # Skipped: within _LIVE_CACHE_RETRY_INTERVAL of the last attempt
+    # (shared negative cache across cold-starts, failures and pid misses).
+    RATE_LIMITED = "rate-limited"
+
+    # A fetch was attempted but raised — logged here; playback degrades
+    # to the SMIL path with whatever id state exists.
+    FAILED = "failed"
 
 
 class PlaybackManager:
@@ -93,6 +140,13 @@ class PlaybackManager:
         for recordings fetched via RecordingsManager.
     """
 
+    # Minimum seconds between ChannelManager.get_channels() (re)population
+    # attempts triggered from the playback path (cold cache, feed failure,
+    # or an entitled-cache pid miss). Bounds feed traffic when callers retry
+    # unentitled/stale ids — get_channels() has no negative caching of its
+    # own.
+    _LIVE_CACHE_RETRY_INTERVAL: float = 300.0
+
     def __init__(
         self,
         channel_manager: ChannelManager,
@@ -117,6 +171,14 @@ class PlaybackManager:
         self._session_id = session_id
         self._call_id = call_id_callback
 
+        # Rate-limit state for get_channels() (re)population attempts. A
+        # single shared negative cache: cold-starts, failed fetches and pid
+        # misses all consume the same interval. -inf so the first attempt
+        # always fires regardless of process uptime (time.monotonic() can
+        # be small early after boot).
+        self._last_populate_attempt: float = float("-inf")
+        self._populate_lock = threading.Lock()
+
     # ------------------------------------------------------------------ #
     # Public API                                                           #
     # ------------------------------------------------------------------ #
@@ -127,28 +189,62 @@ class PlaybackManager:
         """
         Return the MPD manifest URL for *content_id*.
 
+        *content_id* may be a numeric station_id or a playback pid for
+        live/catchup requests (station ids are resolved here, after the
+        live caches are populated — see ``_prepare_live_pid``); VOD and
+        recording ids pass through untouched.
+
         Routing logic
         ~~~~~~~~~~~~~
         1. **Catchup** (``start_time`` + ``end_time`` present in kwargs):
            Appends ``begin``/``end`` to the cached live manifest URL.
-           No SMIL round-trip.  The live cache is populated on demand if empty.
+           No SMIL round-trip.  The live cache is (re)populated on demand.
         2. **Live** (``content_type == CONTENT_TYPE_LIVE``, no time window):
-           Served directly from the ChannelManager cache when available.
+           Served directly from the ChannelManager cache when the resolved
+           pid is entitled.  On a miss the request degrades to SmilManager
+           with the resolved id; if SMIL also fails, the cache is re-read
+           once (narrow race: a concurrent refresh may have populated it
+           while the SMIL fetch was in flight).
         3. **VOD / recordings**: Fall through to ``SmilManager.get_manifest``.
         """
         if self._is_catchup_request(kwargs):
-            return self._get_catchup_manifest(content_id, kwargs)
+            pid = self._prepare_live_pid(content_id)
+            logger.debug(
+                f"get_manifest: catchup request for {pid} "
+                f"(start={kwargs['start_time']}, end={kwargs['end_time']})"
+            )
+            return self._build_begin_end_manifest_url(
+                pid, kwargs["start_time"], kwargs["end_time"]
+            )
 
+        lookup_id = content_id
         if content_type == CONTENT_TYPE_LIVE:
-            self._ensure_live_cache()
-            if content_id in self._channel_manager._live_manifest_cache:
-                logger.debug(f"get_manifest: cache hit for live channel {content_id}")
-                return self._channel_manager._live_manifest_cache[content_id]
+            lookup_id = self._prepare_live_pid(content_id)
+            mpd = self._channel_manager.get_live_manifest_url(lookup_id)
+            if mpd:
+                logger.debug(f"get_manifest: cache hit for live channel {lookup_id}")
+                return mpd
+            logger.debug(
+                f"get_manifest: no entitled manifest for {lookup_id} — degrading to SMIL"
+            )
 
         if not self._smil_manager:
             raise RuntimeError("SmilManager not available")
-        self._inject_smil_base_url(content_id, kwargs)
-        return self._smil_manager.get_manifest(content_id, content_type, **kwargs)
+        self._inject_smil_base_url(lookup_id, kwargs)
+        result = self._smil_manager.get_manifest(lookup_id, content_type, **kwargs)
+
+        if result is None and content_type == CONTENT_TYPE_LIVE:
+            # Post-SMIL fallback (narrow race): another thread may have
+            # populated the live cache while the SMIL fetch was in flight.
+            # One dict read — never a re-fetch.
+            mpd = self._channel_manager.get_live_manifest_url(lookup_id)
+            if mpd:
+                logger.warning(
+                    f"get_manifest: SMIL returned no MPD for {lookup_id}; using "
+                    "entitled-feed MPD (may lack the SMIL path's session binding)"
+                )
+                return mpd
+        return result
 
     def get_drm(
         self, content_id: str, content_type: str = CONTENT_TYPE_LIVE, **kwargs
@@ -160,40 +256,50 @@ class PlaybackManager:
         ~~~~~~~~~~~~~
         1. **Catchup** (``start_time`` + ``end_time`` present in kwargs):
            DRM is identical to live — same Widevine licence URL applies to the
-           DVR window.  Routes through the live fast-path using the pid cache.
-           Falls back to SmilManager if the pid is not cached.
+           DVR window.  Routes through the live fast-path using the
+           entitled-pid cache.  Falls back to SmilManager if the pid is not
+           entitled.
         2. **Live** (``content_type == CONTENT_TYPE_LIVE``, no time window):
-           For live channels whose releasePid is cached, the Widevine licence
-           URL is built directly using lib_theplatform — no SMIL fetch needed.
+           For ids whose resolved pid is in the entitled-pid cache, the
+           Widevine licence URL is built directly using lib_theplatform — no
+           SMIL fetch needed.  If the pid is NOT in the entitled cache the
+           request degrades to SmilManager.  It must NOT direct-build in that
+           case: pid-cache membership is the entitlement verification for the
+           direct licence path, and callers cache non-empty DRM results — an
+           unverified releasePid would turn a self-healing empty result into
+           a cached, persistent wrong-licence config.
         3. **VOD / recordings**: Fall through to ``SmilManager.get_drm``.
         """
-        if self._is_catchup_request(kwargs):
-            # Catchup uses the same Widevine licence as live — reuse the fast-path.
-            self._ensure_live_cache()
-            if content_id in self._channel_manager._live_pid_cache:
-                logger.debug(
-                    f"get_drm: catchup request for {content_id} — reusing live DRM fast-path"
+        lookup_id = content_id
+        if self._is_catchup_request(kwargs) or content_type == CONTENT_TYPE_LIVE:
+            lookup_id = self._prepare_live_pid(content_id)
+            if self._channel_manager.is_entitled_live_pid(lookup_id):
+                if self._is_catchup_request(kwargs):
+                    logger.debug(
+                        f"get_drm: catchup for {lookup_id} — reusing live DRM fast-path"
+                    )
+                return self._build_live_drm(lookup_id)
+            if self._is_catchup_request(kwargs):
+                # pid not entitled — fall through to SmilManager as a best-effort.
+                logger.warning(
+                    f"get_drm: catchup for {lookup_id} but pid not in live cache; "
+                    "falling back to SmilManager"
                 )
-                return self._build_live_drm(content_id)
-            # pid not cached yet — fall through to SmilManager as a best-effort.
-            logger.warning(
-                f"get_drm: catchup for {content_id} but pid not in live cache; "
-                "falling back to SmilManager"
-            )
-            if not self._smil_manager:
-                raise RuntimeError("SmilManager not available")
-            self._inject_smil_base_url(content_id, kwargs)
-            return self._smil_manager.get_drm(content_id, content_type, **kwargs)
-
-        if content_type == CONTENT_TYPE_LIVE:
-            self._ensure_live_cache()
-            if content_id in self._channel_manager._live_pid_cache:
-                return self._build_live_drm(content_id)
+            else:
+                # Symmetric with get_manifest's degradation log, so the
+                # reason a SMIL round-trip happened is visible on the DRM
+                # path too. This is the deliberate veto case: pid-cache
+                # membership is the entitlement verification for a direct
+                # licence build (see _build_live_drm).
+                logger.debug(
+                    f"get_drm: {lookup_id} not in entitled pid cache — "
+                    "degrading to SMIL"
+                )
 
         if not self._smil_manager:
             raise RuntimeError("SmilManager not available")
-        self._inject_smil_base_url(content_id, kwargs)
-        return self._smil_manager.get_drm(content_id, content_type, **kwargs)
+        self._inject_smil_base_url(lookup_id, kwargs)
+        return self._smil_manager.get_drm(lookup_id, content_type, **kwargs)
 
     def get_catchup_manifest(
         self, content_id: str, start_time: int, end_time: int, drm_variant: Optional[str] = "auto", **kwargs
@@ -210,13 +316,16 @@ class PlaybackManager:
         Parameters
         ----------
         content_id:
-            The live channel content_id (same key used in the live cache).
+            The live channel content_id — a numeric station_id or a playback
+            pid (the same key used in the live cache; station ids are
+            resolved here, after cache population).
         start_time:
             Unix timestamp (seconds) of the catchup window start.
         end_time:
             Unix timestamp (seconds) of the catchup window end.
         """
-        return self._build_begin_end_manifest_url(content_id, start_time, end_time)
+        pid = self._prepare_live_pid(content_id)
+        return self._build_begin_end_manifest_url(pid, start_time, end_time)
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
@@ -233,19 +342,6 @@ class PlaybackManager:
             and kwargs.get("end_time") is not None
         )
 
-    def _get_catchup_manifest(self, content_id: str, kwargs: Dict) -> Optional[str]:
-        """
-        Build a programme-bounded catchup manifest URL for a catchup request
-        arriving via ``get_manifest`` (``start_time``/``end_time`` in kwargs).
-        """
-        start_time: int = kwargs["start_time"]
-        end_time: int = kwargs["end_time"]
-        logger.debug(
-            f"get_manifest: catchup request for {content_id} "
-            f"(start={start_time}, end={end_time})"
-        )
-        return self._build_begin_end_manifest_url(content_id, start_time, end_time)
-
     def _build_begin_end_manifest_url(
         self, content_id: str, start_time: int, end_time: int
     ) -> Optional[str]:
@@ -254,12 +350,10 @@ class PlaybackManager:
         ``begin``/``end`` programme window (basic-ISO UTC). ``end`` is clamped to
         now so a running programme never requests beyond the live edge.
 
-        Returns ``None`` if the channel is not found in the live cache even after
-        attempting to populate it.
+        Returns ``None`` if the channel is not found in the live cache (the
+        caller is responsible for cache population via ``_prepare_live_pid``).
         """
-        self._ensure_live_cache()
-
-        live_url = self._channel_manager._live_manifest_cache.get(content_id)
+        live_url = self._channel_manager.get_live_manifest_url(content_id)
         if not live_url:
             logger.error(
                 f"_build_begin_end_manifest_url: no live manifest cached for {content_id}; "
@@ -282,18 +376,141 @@ class PlaybackManager:
         logger.debug(f"_build_begin_end_manifest_url: {content_id} → {catchup_url}")
         return catchup_url
 
-    def _ensure_live_cache(self) -> None:
+    def _prepare_live_pid(self, content_id: str) -> str:
         """
-        Bootstrap the live-manifest / live-pid caches on demand by calling
-        ChannelManager.get_channels() if they are empty.
+        Resolve *content_id* to the best available live pid, with the
+        ordering the live fast paths depend on.
+
+        Ordering (the observed "error SMIL for a live channel" bug):
+        ChannelManager's station-to-pid map holds station-metadata MEDIA
+        pids until get_channels() runs and overwrites them with entitled
+        RELEASE pids.  Resolving a numeric station_id through a pre-feed
+        map therefore yields a media pid, which the SMIL path rejects.  So:
+        populate first, resolve second; and on a pid miss, one rate-limited
+        refresh followed by a re-resolve (a refreshed map can fix a stale
+        pid, not just a cache miss).
+
+        The map's safety signal is ``has_release_pid_map()`` (a feed load
+        completed), NOT the live manifest/pid caches — those are also
+        filled by populate_streaming_data (channel-playlist endpoint),
+        which never updates the station map.
+
+        Never raises: a failed feed fetch degrades to resolving against
+        whatever map state exists, and callers fall through to SmilManager.
         """
-        if not self._channel_manager._live_manifest_cache:
-            logger.debug("Live channel cache is empty — auto-populating via get_channels()")
+        if not self._channel_manager.has_release_pid_map():
+            result = self._populate_live_caches()
+            if result is not _LiveCachePopulateResult.POPULATED:
+                logger.debug(
+                    f"_prepare_live_pid: initial population {result.value}; "
+                    "the station map still pre-dates the feed"
+                )
+        pid = self._resolve_station_id(content_id)
+        if not self._channel_manager.is_entitled_live_pid(pid):
+            result = self._populate_live_caches()
+            if result is _LiveCachePopulateResult.POPULATED:
+                pid = self._resolve_station_id(content_id)
+            elif result is _LiveCachePopulateResult.RATE_LIMITED:
+                logger.debug(
+                    "_prepare_live_pid: refresh rate-limited — skipping re-resolve"
+                )
+            else:  # FAILED
+                logger.debug(
+                    "_prepare_live_pid: feed fetch failed — degrading with the "
+                    f"current pid ({pid})"
+                )
+        if pid == content_id and content_id.isdigit():
+            # Explicit degraded-path signal: the live fast paths will miss
+            # on a raw numeric station id (their caches are keyed by pids)
+            # and SMIL will fail predictably — a numeric station id is not
+            # an MPX guid. Logged here rather than relying on the SMIL
+            # error to make itself understood.
+            logger.debug(
+                f"_prepare_live_pid: cannot resolve station id {content_id} to "
+                "a release pid — skipping the live fast path for it"
+            )
+        return pid
+
+    def _resolve_station_id(self, content_id: str) -> str:
+        """
+        Numeric station_id → release pid via the station-to-pid map;
+        anything else (already a pid, or a VOD id) passes through unchanged.
+        """
+        if not (content_id and content_id.isdigit()):
+            return content_id
+        if not self._channel_manager.has_release_pid_map():
+            # The map provably pre-dates any feed load (get_channels() has
+            # never completed), so any mapping it holds for this station is
+            # a media pid — do not resolve through it. Keyed on the
+            # release-map flag, NOT on the live caches: those are also
+            # filled by populate_streaming_data (channel-playlist
+            # endpoint), which never touches the station map — a
+            # playlist-only population must not vouch for it.
+            # Debug, not warning: the failed/attempted fetch that led here
+            # is already logged by _populate_live_caches, and this fires
+            # once per playback request while the negative cache holds.
+            logger.debug(
+                f"Station map not feed-sourced yet; cannot resolve station "
+                f"{content_id} to a release pid — passing the raw station id "
+                "through"
+            )
+            return content_id
+        playback_id = self._channel_manager.get_playback_id_for_station(content_id)
+        if playback_id:
+            logger.debug(f"Resolved station {content_id} -> pid {playback_id}")
+            return playback_id
+        logger.warning(
+            f"Station {content_id} has no playback pid in the station map; "
+            "passing the raw id through"
+        )
+        return content_id
+
+    def _populate_live_caches(self) -> _LiveCachePopulateResult:
+        """
+        (Re)populate the live caches via ChannelManager.get_channels(),
+        guarded by:
+
+        - a shared rate limit / negative cache — at most one attempt per
+          ``_LIVE_CACHE_RETRY_INTERVAL`` across cold-starts, failed fetches
+          and pid misses alike, so a failing feed or a caller retrying an
+          unentitled/stale id cannot storm the feed (get_channels() has no
+          negative caching of its own);
+        - a no-raise policy — a feed outage logs and degrades playback to
+          the SMIL path instead of raising out of every live request.
+
+        Returns ``_LiveCachePopulateResult.POPULATED`` only when a fetch
+        was attempted AND succeeded (so a caller may re-resolve ids against
+        the refreshed map); ``RATE_LIMITED`` when the attempt was skipped
+        by the shared interval, and ``FAILED`` when the fetch raised. The
+        two non-POPULATED outcomes are indistinguishable to the caller's
+        control flow (neither can produce a fresher map) but are logged
+        differently — rate-limiting is routine back-off, failure is a
+        degradation worth its own line in _populate_live_caches.
+        """
+        with self._populate_lock:
+            now = time.monotonic()
+            if now - self._last_populate_attempt < self._LIVE_CACHE_RETRY_INTERVAL:
+                return _LiveCachePopulateResult.RATE_LIMITED
+            self._last_populate_attempt = now
+        try:
+            logger.debug(
+                "Live cache cold or pid miss — (re)populating via get_channels()"
+            )
             self._channel_manager.get_channels()
+            return _LiveCachePopulateResult.POPULATED
+        except Exception as exc:
+            logger.warning(
+                f"Live-cache population failed ({exc}); degrading to SMIL path"
+            )
+            return _LiveCachePopulateResult.FAILED
 
     def _build_live_drm(self, content_id: str) -> List[DRMConfig]:
         """
         Build a Widevine DRMConfig directly for a live channel, bypassing SMIL.
+
+        *content_id* must be an ENTITLED release pid — callers gate this on
+        ``ChannelManager.is_entitled_live_pid`` (the entitled-feed
+        verification), because a non-empty DRM result is cached upstream.
         """
         release_pid = content_id
         logger.debug(

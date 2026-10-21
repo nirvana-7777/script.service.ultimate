@@ -1,10 +1,10 @@
-# streaming_providers/providers/magenta2/smil_manager.py
 """
 Magenta2 SMIL / Playback Manager
 
 Handles all SMIL fetching, parsing, caching, and DRM resolution for the
-Magenta2 provider.  This is the shared playback layer used by live channels,
-VOD items, and recordings — content type does not affect the code path.
+Magenta2 provider.  This is the shared playback layer used by VOD items,
+recordings, and live channels that miss PlaybackManager's entitled-feed
+fast path — content type does not affect the code path.
 
 SMIL URL strategy
 -----------------
@@ -31,19 +31,28 @@ Public interface
 ----------------
     smil_manager.get_smil_data(content_id)  -> Optional[Dict]
     smil_manager.get_manifest(content_id)   -> Optional[str]
-    smil_manager.get_catchup_manifest(channel_id, start_time, end_time) -> Optional[str]
     smil_manager.get_drm(content_id)        -> List[DRMConfig]
+
+(Catchup manifests are NOT served here — PlaybackManager builds them from
+the cached live manifest URL.  A former get_catchup_manifest() was removed
+because it was unreachable in the provider's routing and behaved differently
+from PlaybackManager's version: no clamping of ``end`` to the live edge and a
+naive ``?``/``&`` append instead of parse_qs/urlencode.)
 """
 
 import base64
-import json
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import quote
 
-from ...base.models import DRMConfig, DRMSystem, LicenseConfig
+from ...base.models import DRMConfig
 from ...base.utils.logger import logger
+
+from ..lib_theplatform import (
+    build_licence_url,
+    build_widevine_drm_config,
+    extract_persona_jwt,
+)
 
 from .constants import (
     CONTENT_TYPE_LIVE,
@@ -145,46 +154,6 @@ class SmilManager:
         smil_data = self.get_smil_data(content_id, smil_base_url=smil_base_url)
         return smil_data.get("mpd_url") if smil_data else None
 
-    def get_catchup_manifest(
-        self, channel_id: str, start_time: int, end_time: int, **kwargs
-    ) -> Optional[str]:
-        """
-        Return a live manifest extended with catchup time-range parameters.
-
-        Args:
-            channel_id:  MPX GUID for the live channel.
-            start_time:  Catchup start as Unix epoch seconds.
-            end_time:    Catchup end as Unix epoch seconds.
-        """
-        from ...base.utils.timestamp_converter import TimestampConverter
-
-        base_manifest = self.get_manifest(channel_id, **kwargs)
-        if not base_manifest:
-            logger.warning(
-                f"{self._provider}: Channel {channel_id} has no manifest for catchup"
-            )
-            return None
-
-        try:
-            start_iso = TimestampConverter.epoch_to_iso(
-                start_time, format_type="basic", as_utc=True
-            )
-            end_iso = TimestampConverter.epoch_to_iso(end_time, format_type="basic", as_utc=True)
-            separator = "&" if "?" in base_manifest else "?"
-            catchup_url = f"{base_manifest}{separator}begin={start_iso}&end={end_iso}"
-            logger.debug(
-                f"{self._provider}: Catchup manifest for {channel_id}: {catchup_url}"
-            )
-            return catchup_url
-        except Exception as e:
-            logger.error(
-                f"{self._provider}: Error building catchup manifest for {channel_id}: {e}"
-            )
-            logger.warning(
-                f"{self._provider}: Falling back to live manifest for {channel_id}"
-            )
-            return base_manifest
-
     def get_drm(
         self,
         content_id: str,
@@ -194,6 +163,15 @@ class SmilManager:
     ) -> List[DRMConfig]:
         """
         Return a Widevine DRMConfig for *content_id*.
+
+        The licence URL and DRMConfig are built with the shared
+        lib_theplatform helpers (build_licence_url /
+        build_widevine_drm_config / extract_persona_jwt) — the same
+        construction PlaybackManager._build_live_drm uses for its live
+        fast path, so the SMIL/VOD path and the live fast path share one
+        licence-URL/DRMConfig construction. The paths still differ
+        deliberately in how the release pid is obtained (parsed from SMIL
+        tracking data here vs. taken from the entitled feed there).
 
         Args:
             smil_base_url: Full theplatform selector URL when already known.
@@ -217,7 +195,7 @@ class SmilManager:
                 return []
 
             persona_token = self._auth()
-            raw_jwt = self._extract_persona_jwt(persona_token)
+            raw_jwt = extract_persona_jwt(persona_token)
             if not raw_jwt:
                 logger.error(f"{self._provider}: Failed to extract persona JWT")
                 return []
@@ -229,34 +207,18 @@ class SmilManager:
                 )
                 return []
 
-            account_uri = self._get_account_uri()
-            license_url = (
-                f"{widevine_endpoint}?"
-                f"schema=1.0&"
-                f"releasePid={release_pid}&"
-                f"token={raw_jwt}&"
-                f"account={quote(account_uri, safe='')}"
+            licence_url = build_licence_url(
+                widevine_endpoint=widevine_endpoint,
+                release_pid=release_pid,
+                persona_jwt=raw_jwt,
+                account_uri=self._get_account_uri(),
             )
 
-            call_id = self._call_id()
-            cid = f"{self._session_id}::{call_id}"
-
-            drm_config = DRMConfig(
-                system=DRMSystem.WIDEVINE,
-                priority=1,
-                license=LicenseConfig.create_with_req_data(
-                    req_data_template="{CHA-RAW}",
-                    server_url=license_url,
-                    server_certificate=None,
-                    req_headers=json.dumps(
-                        {
-                            "User-Agent": self._ua_subscriber,
-                            "Content-Type": "application/octet-stream",
-                            "CID": cid,
-                        }
-                    ),
-                    use_http_get_request=False,
-                ),
+            drm_config = build_widevine_drm_config(
+                licence_url=licence_url,
+                user_agent=self._ua_subscriber,
+                session_id=self._session_id,
+                call_id=self._call_id(),
             )
             logger.info(
                 f"{self._provider}: DRM config for {content_id} "
@@ -294,6 +256,7 @@ class SmilManager:
         # ── Direct URL supplied (recordings, already-resolved VOD) ───────
         # smil_base_url known upfront — strip any existing query string and
         # derive cache key from the GUID tail.  Skip all prefix dispatch.
+        is_live_request = False
         if smil_base_url:
             smil_base_url = smil_base_url.split("?")[0]
             tail = smil_base_url.rsplit("/media/", 1)
@@ -331,6 +294,7 @@ class SmilManager:
         # ── Live channel — content_id IS the bare MPX GUID ───────────────
         else:
             cache_key = content_id
+            is_live_request = True
 
         # ── Cache check ──────────────────────────────────────────────────
         now = time.time()
@@ -359,6 +323,27 @@ class SmilManager:
 
             mpd_url = self._parse_mpd_url(smil_content, cache_key)
             release_pid = self._parse_release_pid(smil_content)
+
+            if is_live_request and release_pid:
+                if release_pid != cache_key:
+                    # Monitored invariant: for live requests the pid we send
+                    # is expected to BE the releasePid the SMIL echoes back
+                    # in trackingData.  A mismatch means the id we sent was
+                    # (probably) a station-metadata media pid or a stale pid,
+                    # and the manifest/DRM built from this SMIL may describe
+                    # a different asset than the one the caller asked for.
+                    # Warning, not error: behaviour is unchanged, but the
+                    # assumption is now observable in the wild.
+                    logger.warning(
+                        f"{self._provider}: live pid mismatch: SMIL releasePid="
+                        f"{release_pid} != requested pid={cache_key} — requested "
+                        f"id may be a media/stale pid; manifest and DRM may "
+                        f"target a different asset"
+                    )
+                else:
+                    logger.debug(
+                        f"{self._provider}: releasePid invariant holds for {cache_key}"
+                    )
 
             smil_data: Dict[str, Any] = {
                 "content": smil_content,
@@ -681,28 +666,6 @@ class SmilManager:
     # =========================================================================
     # Private – token / account helpers
     # =========================================================================
-
-    @staticmethod
-    def _extract_persona_jwt(persona_token: str) -> Optional[str]:
-        """
-        Extract the raw JWT from a Base64-encoded persona token.
-
-        Persona token format:  Base64(account_uri + ":" + jwt)
-        """
-        try:
-            decoded = base64.b64decode(persona_token).decode("utf-8")
-            idx = decoded.rfind(":")
-            if idx == -1:
-                logger.error("No colon in decoded persona token")
-                return None
-            jwt = decoded[idx + 1:]
-            if not jwt.startswith("eyJ"):
-                logger.error("Extracted token is not a JWT")
-                return None
-            return jwt
-        except Exception as e:
-            logger.error(f"Error extracting persona JWT: {e}")
-            return None
 
     def _get_account_uri(self) -> str:
         """Return the MPX account URI, falling back to the hardcoded constant."""

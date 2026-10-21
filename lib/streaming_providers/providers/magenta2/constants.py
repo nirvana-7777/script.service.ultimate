@@ -21,7 +21,7 @@ MAGENTA2_LOGO = "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e4/Magen
 # manifest response — see config_models.BootstrapConfig / ManifestConfig.
 #
 # Versions below are confirmed from real-device captures/logs:
-#   - android-tv / atv-launcher: 3.180.7748 (Sebastian's current AndroidTV,
+#   - android-tv / atv-launcher: 3.180.7748 (Current AndroidTV,
 #     shape confirmed against real AndroidTV request logs). SMIL, DRM and
 #     concurrency request *shapes* were only ever captured on atv-launcher
 #     (v3.136.4682) — carried over to android-tv on the assumption the

@@ -96,6 +96,25 @@ class ChannelManager:
         # release_pid -> release_pid (fast membership test for PlaybackManager)
         self._live_pid_cache: Dict[str, str] = {}
 
+        # True once get_channels() has COMPLETED and overwritten the
+        # station->pid map with feed-sourced release pids. Until then the
+        # map holds only station-metadata MEDIA pids (from
+        # _fetch_station_metadata, which runs once in __init__).
+        #
+        # Deliberately NOT reset by invalidate_cache(): the entries a
+        # completed feed load wrote remain release pids afterwards, and
+        # refusing to resolve through them would degrade playback to raw
+        # station ids for no benefit. Pids gone stale after a feed change
+        # are handled by the rate-limited re-fetch on pid miss
+        # (PlaybackManager._prepare_live_pid).
+        #
+        # Note the live manifest/pid caches above are a DIFFERENT signal:
+        # populate_streaming_data() also fills them (channel-playlist
+        # endpoint) without ever touching the station map, so their
+        # non-emptiness must not be used to vouch for the map — see
+        # has_release_pid_map() vs has_entitled_live_channels().
+        self._station_pids_are_release: bool = False
+
         # Pre-fetched station metadata (unauthenticated)
         self.station_metadata: Dict[str, Dict] = self._fetch_station_metadata()
 
@@ -259,6 +278,15 @@ class ChannelManager:
                 f"({len(self.station_metadata)} stations with metadata)"
             )
             channels.sort(key=lambda ch: (ch.channel_number is None, ch.channel_number or 0))
+            # A feed load completed: every map entry written above is a
+            # release pid, so station-id resolution may trust the map from
+            # here on (see has_release_pid_map). Set even when some (or
+            # all) channels were skipped — the flag vouches for the
+            # PROVENANCE of the entries written, not for completeness;
+            # stations the feed skipped keep their constructor-era media
+            # pids and fail entitlement downstream, which is the honest
+            # outcome for a non-entitled station.
+            self._station_pids_are_release = True
             self._cached_channels = channels
             return channels
 
@@ -290,6 +318,69 @@ class ChannelManager:
                 if part.startswith("pid="):
                     return part.split("=", 1)[1]
         return None
+
+    def get_live_manifest_url(self, playback_id: str) -> Optional[str]:
+        """
+        MPD URL for a live channel, as delivered by the entitled-channels
+        feed (or the channel-playlist endpoint) — known before any SMIL
+        call is ever made.
+
+        Returns None for non-live / unknown ids.
+        """
+        return self._live_manifest_cache.get(playback_id)
+
+    def is_entitled_live_pid(self, playback_id: str) -> bool:
+        """
+        True if *playback_id* is a release pid delivered by the
+        entitled-channels feed.
+
+        Membership is the entitlement verification for PlaybackManager's
+        live fast paths (manifest cache hit / direct licence build): a pid
+        in this cache came from the entitled feed; a pid outside it may be
+        a station-metadata media pid, a stale post-refresh pid, or an
+        unentitled one, and must not be promoted to a releasePid without
+        the SMIL round-trip.
+        """
+        return playback_id in self._live_pid_cache
+
+    def has_entitled_live_channels(self) -> bool:
+        """
+        True once the live manifest cache has been populated by an
+        entitled source — the entitled-channels feed (get_channels) or the
+        channel-playlist endpoint (populate_streaming_data). Both are
+        legitimately "entitled" sources: the playlist endpoint requires
+        an entitlement token and restricted channels are skipped.
+
+        NOTE: this does NOT imply the station-to-pid map holds release
+        pids — populate_streaming_data() fills this cache without ever
+        touching that map. Whether resolving a numeric station id through
+        the map is safe is signalled by has_release_pid_map() instead.
+        """
+        return bool(self._live_manifest_cache)
+
+    def has_release_pid_map(self) -> bool:
+        """
+        True once get_channels() has completed and overwritten the
+        station-to-pid map with feed-sourced RELEASE pids — the signal
+        that resolving a numeric station id through the map is safe.
+
+        This, not has_entitled_live_channels(), is the guard
+        PlaybackManager._resolve_station_id keys on: the live manifest/pid
+        caches are also populated by populate_streaming_data()
+        (channel-playlist endpoint), which never updates the station map,
+        so keying on those caches would let a playlist-only population
+        vouch for a map that still holds station-metadata MEDIA pids —
+        the "error SMIL for a live channel" bug re-entered through the
+        playlist door.
+
+        Once True it stays True for the instance's lifetime: the only
+        writer of media pids is _fetch_station_metadata(), which runs once
+        in __init__. invalidate_cache() deliberately does not reset it —
+        map entries written by a completed feed load remain release pids,
+        and ones gone stale after a feed change are refreshed by the
+        rate-limited re-fetch on pid miss.
+        """
+        return self._station_pids_are_release
 
     def get_entitlement_token(
         self, content_id: str, content_type: str = CONTENT_TYPE_LIVE
@@ -477,6 +568,11 @@ class ChannelManager:
         return successful_channels
 
     def invalidate_cache(self) -> None:
+        # _station_pids_are_release is deliberately NOT reset here: it
+        # tracks the PROVENANCE of the station->pid map (feed-written
+        # release pids), which invalidation does not undo — only a fresh
+        # instance (whose map holds constructor-era media pids) starts
+        # False again. See has_release_pid_map().
         self._cached_channels = None
         self._live_manifest_cache.clear()
         self._live_pid_cache.clear()

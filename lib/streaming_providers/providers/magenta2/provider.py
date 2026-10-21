@@ -1096,34 +1096,19 @@ class Magenta2Provider(StreamingProvider):
     ) -> List[Event]:
         return []
 
-    @staticmethod
-    def _get_playback_id(content_id: str, channel_manager: ChannelManager) -> str:
-        """
-        Convert station_id to playback_id if needed, using the given
-        ChannelManager so the conversion and the subsequent playback call
-        operate on the same manager generation.
-
-        If content_id is numeric (station_id), convert to playback_id.
-        Otherwise return as-is (already a playback_id or VOD ID).
-        """
-        if content_id.isdigit():
-            playback_id = channel_manager.get_playback_id_for_station(content_id)
-            if playback_id:
-                logger.debug(f"Converted station_id {content_id} -> playback_id {playback_id}")
-                return playback_id
-            logger.warning(f"No playback_id found for station_id {content_id}")
-            return content_id
-        return content_id
-
     def get_manifest(
             self, content_id: str, content_type: str = CONTENT_TYPE_LIVE, **kwargs: Any
     ) -> Optional[str]:
-        # Snapshot one manager generation: the station→pid conversion and
-        # the playback call must not straddle a refresh swap.
+        # Snapshot one manager generation: the id resolution PlaybackManager
+        # performs inside this call and the playback call itself must not
+        # straddle a refresh swap.
         managers = self._managers
-        # Convert station_id -> playback_id for live channels
-        if content_type == CONTENT_TYPE_LIVE:
-            content_id = self._get_playback_id(content_id, managers.channel)
+        # Deliberately NO station_id -> pid pre-resolution here.
+        # PlaybackManager resolves the id AFTER populating the live caches
+        # (PlaybackManager._prepare_live_pid). Pre-resolving here reads the
+        # station->pid map before the entitled-channels feed has run on a
+        # cold start — handing SMIL a media pid instead of the release pid
+        # (the "error SMIL" bug this patch set fixes).
         return managers.playback.get_manifest(content_id, content_type, **kwargs)
 
     def get_drm(
@@ -1156,9 +1141,8 @@ class Magenta2Provider(StreamingProvider):
                 f"get_drm(content_id, content_type={drm_variant!r})"
             )
         managers = self._managers
-        # Convert station_id -> playback_id for live channels
-        if content_type == CONTENT_TYPE_LIVE:
-            content_id = self._get_playback_id(content_id, managers.channel)
+        # No station_id pre-resolution here either — PlaybackManager owns
+        # the resolution (same cold-start rationale as get_manifest above).
         return managers.playback.get_drm(content_id, content_type, **kwargs)
 
     def get_catchup_manifest(
@@ -1192,7 +1176,9 @@ class Magenta2Provider(StreamingProvider):
                 f"which looks like a drm_variant — pass drm_variant by keyword"
             )
         managers = self._managers
-        content_id = self._get_playback_id(content_id, managers.channel)
+        # No station_id pre-resolution: PlaybackManager.get_catchup_manifest
+        # resolves through _prepare_live_pid (populate-then-resolve), the
+        # same as the live paths above.
         return managers.playback.get_catchup_manifest(
             content_id, start_time, end_time, drm_variant, **kwargs
         )
