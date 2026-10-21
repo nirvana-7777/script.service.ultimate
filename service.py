@@ -5,11 +5,13 @@ import os
 import sys
 import threading
 import time
+from socketserver import ThreadingMixIn
 from urllib.parse import parse_qsl, quote, urlencode
 from typing import Optional
+from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 import requests
 
-from bottle import Bottle, redirect, request, response, run
+from bottle import Bottle, ServerAdapter, redirect, request, response, run
 
 # Add lib path for imports
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1995,6 +1997,54 @@ class UltimateService:
             """Redirect root to config page"""
             redirect("/config")
 
+        @self.app.route("/health")
+        def health():
+            """
+            Liveness probe for Docker/Unraid healthchecks. Deliberately touches
+            no provider, session or disk state, so it answers instantly even
+            while other requests are busy (e.g. an interactive login).
+            """
+            response.content_type = "application/json"
+            response.set_header("Cache-Control", "no-store")
+            return {"status": "ok"}
+
+
+class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
+    """wsgiref server that handles each request in its own thread."""
+
+    daemon_threads = True  # don't block shutdown on in-flight requests
+    request_queue_size = 128  # socketserver default is 5
+
+
+class _QuietRequestHandler(WSGIRequestHandler):
+    def log_message(self, format, *args):  # noqa: A002
+        pass
+
+
+class ThreadedWSGIRefServer(ServerAdapter):
+    """
+    Bottle's default server ('wsgiref') is single-threaded: one slow request
+    (an interactive login, a long upstream call, a large proxied segment)
+    blocks every other request, including healthchecks, so an orchestrator
+    sees an unresponsive container and kills it. This adapter is the same
+    stdlib server with ThreadingMixIn, so it needs no extra dependency and
+    also works inside Kodi's Python.
+    """
+
+    def run(self, handler):
+        handler_cls = _QuietRequestHandler if self.quiet else WSGIRequestHandler
+        server = make_server(
+            self.host,
+            self.port,
+            handler,
+            server_class=_ThreadingWSGIServer,
+            handler_class=handler_cls,
+        )
+        try:
+            server.serve_forever()
+        finally:
+            server.server_close()
+
 
 def start_service(service_instance):
     """Start the Bottle server"""
@@ -2006,6 +2056,7 @@ def start_service(service_instance):
 
     run(
         service_instance.app,
+        server=ThreadedWSGIRefServer,
         host="0.0.0.0",
         port=port,
         quiet=not debug_mode,
