@@ -15,6 +15,7 @@ that delegates to the domain managers:
     Magenta2EpgManager – EPG grid + programme-details (ThePlatform API)
 """
 import hashlib
+import os
 import random
 import threading
 import uuid
@@ -28,6 +29,7 @@ from ...base.models.auth import AuthState
 from ...base.models.epg_models import EPGEntry, EPGProgramDetails
 from ...base.models.proxy_models import ProxyConfig
 from ...base.network import HTTPManagerFactory, ProxyConfigManager
+from ...base.settings.provider_settings_store import ProviderSettingsStore
 from ...base.provider import StreamingProvider
 from ...base.utils.logger import logger
 from .recordings_manager import RecordingsManager
@@ -112,7 +114,7 @@ class Magenta2Provider(StreamingProvider):
     def __init__(
         self,
         country: str = DEFAULT_COUNTRY,
-        platform: str = DEFAULT_PLATFORM,
+        platform: Optional[str] = None,
         config_dir: Optional[str] = None,
         proxy_config: Optional[ProxyConfig] = None,
         proxy_url: Optional[str] = None,
@@ -126,11 +128,13 @@ class Magenta2Provider(StreamingProvider):
                 f"Unsupported country: {country}. Must be one of: {SUPPORTED_COUNTRIES}"
             )
 
+        # Platform resolution: explicit arg > MAGENTA2_PLATFORM env var >
+        # persisted setting (provider_settings.json) > DEFAULT_PLATFORM.
+        # ProviderRegistry only passes `country`, so in production this is
+        # what actually selects the emulated client. An unknown value raises
+        # (no silent fallback) so a typo can't quietly change client identity.
+        platform = self._resolve_platform(platform, config_dir, country)
         self.platform = platform
-        if platform not in MAGENTA2_PLATFORMS:
-            raise ValueError(
-                f"Unknown platform '{platform}'. Supported: {list(MAGENTA2_PLATFORMS.keys())}"
-            )
         self.platform_config = MAGENTA2_PLATFORMS[platform]
         self.user_agent_plain = render_user_agent(platform, subscriber_suffix=False)
         self.user_agent_subscriber = render_user_agent(platform, subscriber_suffix=True)
@@ -153,6 +157,11 @@ class Magenta2Provider(StreamingProvider):
         # and its TokenFlowManager all resolve the SAME session.json through
         # the same VFS paths (one device_id / serial_number per installation).
         self._session_manager: SessionManager = SessionManager(config_dir)
+
+        # Tokens, device_id and serial_number all belong to ONE emulated client
+        # identity. If the configured platform differs from the one the stored
+        # session was created for, reset the session BEFORE device_id is read.
+        self._bind_session_to_platform(platform)
 
         # device_id: read from the SAME persisted source TokenFlowManager
         # already uses (SessionManager.get_device_id), which itself
@@ -372,6 +381,82 @@ class Magenta2Provider(StreamingProvider):
         if isinstance(value, str) and any(p in _key.lower() for p in _SENSITIVE_KEY_PARTS):
             return f"<redacted len={len(value)} fp={cls._token_fingerprint(value)}>"
         return value
+
+    # ------------------------------------------------------------------ #
+    # Platform selection                                                   #
+    # ------------------------------------------------------------------ #
+
+    PLATFORM_ENV_VAR: ClassVar[str] = "MAGENTA2_PLATFORM"
+    PLATFORM_SETTING_KEY: ClassVar[str] = "platform"
+
+    @staticmethod
+    def _validate_platform(platform: str) -> str:
+        if platform not in MAGENTA2_PLATFORMS:
+            raise ValueError(
+                f"Unknown platform '{platform}'. Supported: {list(MAGENTA2_PLATFORMS.keys())}"
+            )
+        return platform
+
+    @classmethod
+    def _resolve_platform(
+        cls, explicit: Optional[str], config_dir: Optional[str], country: str
+    ) -> str:
+        """explicit arg > env var > persisted setting > DEFAULT_PLATFORM."""
+        candidate = explicit or os.environ.get(cls.PLATFORM_ENV_VAR)
+        if not candidate:
+            try:
+                candidate = ProviderSettingsStore(config_dir).get(
+                    "magenta2", country, cls.PLATFORM_SETTING_KEY
+                )
+            except Exception as e:
+                # Unreadable settings file must not take the provider down;
+                # an invalid *value* still raises below.
+                logger.warning(f"Could not read Magenta2 platform setting: {e}")
+        return cls._validate_platform(candidate or DEFAULT_PLATFORM)
+
+    @classmethod
+    def set_platform_setting(
+        cls, platform: str, country: str = DEFAULT_COUNTRY, config_dir: Optional[str] = None
+    ) -> bool:
+        """
+        Persist the platform choice. Takes effect on the next instantiation,
+        e.g. registry.reinitialize_provider("magenta2"). Ignored while the
+        MAGENTA2_PLATFORM env var is set (it takes precedence).
+        """
+        cls._validate_platform(platform)
+        return ProviderSettingsStore(config_dir).set(
+            "magenta2", country, cls.PLATFORM_SETTING_KEY, platform
+        )
+
+    def _bind_session_to_platform(self, platform: str) -> None:
+        """
+        Stamp the session with the platform it was created for and reset it
+        when the platform changes.
+
+        Sessions that predate this marker were necessarily created as
+        DEFAULT_PLATFORM (the registry never passed another one), so a
+        marker-less, non-empty session is treated as DEFAULT_PLATFORM rather
+        than wiped on first start after upgrade.
+
+        Known cost: the abandoned device_id may still count against
+        Telekom's device limit, so avoid flipping platforms repeatedly.
+        """
+        session = self._session_manager.load_session(self.provider_name, self.country) or {}
+        stored = session.get("client_platform")
+        if stored is None and session:
+            stored = DEFAULT_PLATFORM
+
+        if stored and stored != platform:
+            logger.warning(
+                f"Magenta2 platform changed ({stored} -> {platform}): "
+                f"resetting session (tokens, device_id, serial_number)"
+            )
+            self._session_manager.clear_session(self.provider_name, self.country)
+            session = {}
+
+        if session.get("client_platform") != platform:
+            session["client_platform"] = platform
+            self._session_manager.save_session(self.provider_name, session, self.country)
 
     def _get_or_create_serial_number(self) -> str:
         """

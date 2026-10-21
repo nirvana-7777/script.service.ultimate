@@ -1276,7 +1276,8 @@ class Magenta2Authenticator(BaseAuthenticator):
 
         Saves:
         - tvhubs scope: access_token only
-        - Provider level: refresh_token and device_id only
+        - Provider level: refresh_token and device_id, merged into the
+          existing session (other keys are preserved)
         """
         # Save ONLY the access token data under 'tvhubs' scope
         scoped_token_data = {
@@ -1291,20 +1292,24 @@ class Magenta2Authenticator(BaseAuthenticator):
             self.provider_name, "tvhubs", scoped_token_data, self.country
         )
 
-        # Save provider session data without access_token and without persona fields
-        # Only keep refresh_token and device_id
-        provider_session_data = {
-            "refresh_token": token.refresh_token,
-            "device_id": self._device_id,
-        }
+        # Merge refresh_token and device_id into the existing provider session.
+        # save_session() REPLACES the whole [provider][country] blob, so it must
+        # be handed the loaded session — a fresh dict here would erase the
+        # 'tvhubs' scope saved just above, plus serial_number, client_platform
+        # and every other scope.
+        session_manager = self.settings_manager.session_manager
+        provider_session_data = (
+            session_manager.load_session(self.provider_name, self.country) or {}
+        )
+        provider_session_data["refresh_token"] = token.refresh_token
+        provider_session_data["device_id"] = self._device_id
 
-        # Save provider session data
-        self.settings_manager.session_manager.save_session(
+        session_manager.save_session(
             self.provider_name, provider_session_data, self.country
         )
 
         logger.info(
-            "✓ Access token saved under 'tvhubs' scope, only refresh_token and device_id saved at provider level"
+            "✓ Access token saved under 'tvhubs' scope, refresh_token and device_id merged at provider level"
         )
 
     @staticmethod
