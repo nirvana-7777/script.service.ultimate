@@ -108,9 +108,11 @@ RUN if [ ! -f /config/config.json ]; then \
 # Expose port
 EXPOSE ${ULTIMATE_PORT}
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:${ULTIMATE_PORT}/api/providers || exit 1
+# Health check: /health is a pure liveness probe (no provider/session/disk
+# access). /api/providers does real work, so a busy or slow request made the
+# probe time out and the container look dead.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -fsS http://localhost:${ULTIMATE_PORT}/health || exit 1
 
 # Labels
 LABEL maintainer="nirvana-7777" \

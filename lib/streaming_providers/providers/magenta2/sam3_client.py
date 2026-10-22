@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, urlparse
 
 from ...base.network import HTTPManager
 from ...base.utils.logger import logger
-from .constants import DEFAULT_REQUEST_TIMEOUT, GRANT_TYPES, SSO_USER_AGENT
+from .constants import DEFAULT_PLATFORM, DEFAULT_REQUEST_TIMEOUT, GRANT_TYPES, SSO_USER_AGENT
 
 
 @dataclass
@@ -52,9 +52,14 @@ class Sam3Client:
         backchannel_start_url: str = None,
         qr_code_url_template: str = None,
         provider_name: str = "MagentaTV",
+        platform: str = DEFAULT_PLATFORM,
     ):
         """
         Initialize SAM3 client with all required endpoints
+
+        platform: emulated client platform; forwarded to the remote login
+        handler so the backchannel/token requests present the same client
+        identity as the rest of the flow.
         """
         self.http_manager = http_manager
         self.session_id = session_id
@@ -87,6 +92,7 @@ class Sam3Client:
         self._remote_login_handler: Optional["RemoteLoginHandler"] = None
 
         self.provider_name = provider_name
+        self.platform = platform
 
         logger.debug(
             f"SAM3 client initialized - "
@@ -467,6 +473,7 @@ class Sam3Client:
             token_endpoint=self._get_token_endpoint(),
             qr_code_url_template=self.qr_code_url_template,
             provider_name=self.provider_name,  # ← add this
+            platform=self.platform,
         )
 
         logger.info(
@@ -501,6 +508,37 @@ class Sam3Client:
             self.refresh_token = token_data["refresh_token"]
             logger.info("✓ Remote login successful, refresh token obtained")
 
+        return token_data
+
+    # --- Non-blocking remote login --------------------------------------
+    # remote_login() blocks for up to ~5 minutes, which is unusable inside an
+    # HTTP request. These three methods drive the handler's background mode.
+
+    def start_remote_login_background(self, scope: str = "tvhubs offline_access"):
+        """
+        Start a remote login without blocking, or join the one already
+        running (same login code). Returns the handler's BackgroundLoginStatus,
+        or None if remote login is unavailable.
+        """
+        handler = self._get_remote_login_handler()
+        if not handler:
+            logger.error("Remote login not available")
+            return None
+        return handler.start_background_login(scope)
+
+    def get_background_login_status(self):
+        """Current BackgroundLoginStatus, or None if remote login is unavailable.
+        Never creates a handler or starts a login."""
+        handler = self._remote_login_handler
+        return handler.get_background_status() if handler else None
+
+    def take_remote_login_token(self) -> Optional[Dict[str, Any]]:
+        """Return the token data of a finished background login (once)."""
+        handler = self._remote_login_handler
+        token_data = handler.take_background_token() if handler else None
+        if token_data and "refresh_token" in token_data:
+            self.refresh_token = token_data["refresh_token"]
+            logger.info("✓ Remote login successful, refresh token obtained")
         return token_data
 
     def get_remote_login_status(self) -> Optional[Dict[str, Any]]:

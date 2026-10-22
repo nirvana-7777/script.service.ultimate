@@ -1,4 +1,5 @@
 # streaming_providers/base/auth/session_manager.py
+import functools
 import time
 import uuid
 from typing import Any, Dict, Optional
@@ -12,6 +13,18 @@ from .base_auth import BaseAuthToken
 # Any session key whose NAME contains one of these is masked in the INFO logs of
 # save_session / load_session / save_scoped_token (unknown keys are logged in clear).
 _SENSITIVE_KEY_PARTS = ("token", "secret", "password", "jwt", "serial", "device_number")
+
+
+def _locked(method):
+    """Run a read-modify-write method while holding session.json's process-wide
+    lock, so concurrent request threads cannot overwrite each other's changes."""
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._file_lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
 
 
 class SessionManager:
@@ -40,6 +53,9 @@ class SessionManager:
 
         # Ensure base directory exists
         self.vfs.mkdirs("")
+
+        # Shared by every SessionManager/VFS instance that targets this file
+        self._file_lock = self.vfs.file_lock(self.session_file)
 
         logger.debug(f"SessionManager initialized with VFS base: {self.vfs.base_path}")
         logger.debug(f"Session file: {self.vfs.join_path(self.session_file)}")
@@ -107,6 +123,7 @@ class SessionManager:
             logger.error(f"Error loading session for {provider}{country_str}: {e}")
             return None
 
+    @_locked
     def save_session(
         self, provider: str, session_data: Dict[str, Any], country: Optional[str] = None
     ) -> bool:
@@ -210,6 +227,7 @@ class SessionManager:
             logger.error(f"Full traceback: {traceback.format_exc()}")
             return False
 
+    @_locked
     def save_scoped_token(
         self,
         provider: str,
@@ -432,6 +450,7 @@ class SessionManager:
         # No refresh token or no expiration info
         return False
 
+    @_locked
     def save_token(
         self, provider: str, token: BaseAuthToken, country: Optional[str] = None
     ) -> bool:
@@ -527,6 +546,7 @@ class SessionManager:
 
         return device_id
 
+    @_locked
     def clear_session(self, provider: str, country: Optional[str] = None) -> bool:
         """Clear session data for a provider and optional country"""
         country_str = f" (country: {country})" if country else ""
@@ -569,6 +589,7 @@ class SessionManager:
             logger.error(f"Error clearing session for {provider}{country_str}: {e}")
             return False
 
+    @_locked
     def clear_scoped_token(self, provider: str, scope: str, country: Optional[str] = None) -> bool:
         """
         Clear token for a specific scope
@@ -601,6 +622,7 @@ class SessionManager:
             logger.error(f"Error clearing scoped token for {provider}{country_str}/{scope}: {e}")
             return False
 
+    @_locked
     def clear_token(self, provider: str, country: Optional[str] = None) -> bool:
         """Clear only token data but keep other session data (legacy compatibility)"""
         country_str = f" (country: {country})" if country else ""

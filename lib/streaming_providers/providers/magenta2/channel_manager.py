@@ -9,6 +9,7 @@ import re
 import time
 from typing import Callable, Dict, List, Optional
 
+from ...base.errors import AuthPendingError, ProviderError
 from ...base.models import StreamingChannel
 from ...base.utils.logger import logger
 from ..lib_theplatform import paginate_feed, PaginationError
@@ -290,8 +291,13 @@ class ChannelManager:
             self._cached_channels = channels
             return channels
 
+        except ProviderError:
+            # Typed errors (AuthPendingError, AuthError, RateLimitError, ...)
+            # must reach the route unchanged so it can pick the right status;
+            # wrapping them in a bare Exception turned every one into a 500.
+            raise
         except Exception as e:
-            raise Exception(f"Error fetching channels from Magenta2 API: {e}")
+            raise Exception(f"Error fetching channels from Magenta2 API: {e}") from e
 
     def get_playback_id_for_station(self, station_id: str) -> Optional[str]:
         """Get the playback ID (opaque PID) for a station ID."""
@@ -450,6 +456,8 @@ class ChannelManager:
 
         except Magenta2PlaybackRestrictedException:
             raise
+        except ProviderError:
+            raise
         except KeyError as e:
             logger.error(f"No entitlement token in response for {content_id}: {e}")
             raise Exception(f"No entitlement token in response for {content_id}: {e}")
@@ -550,6 +558,11 @@ class ChannelManager:
                 except Magenta2PlaybackRestrictedException as e:
                     logger.warning(f"Playback restricted for {channel.name}: {e}")
                     is_restricted = True
+
+                except AuthPendingError:
+                    # Retrying 3x per channel while waiting for the user would
+                    # just burn time; surface it immediately.
+                    raise
 
                 except Exception as e:
                     retries += 1

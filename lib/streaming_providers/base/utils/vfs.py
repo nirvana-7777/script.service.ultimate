@@ -6,6 +6,7 @@ Provides transparent file operations for both Kodi and regular Python environmen
 
 import json
 import os
+import tempfile
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -14,6 +15,23 @@ from .environment import get_environment_manager, is_kodi_environment
 
 # Import centralized logger
 from .logger import logger
+
+
+# One re-entrant lock per absolute file path, shared by ALL VFS instances in
+# the process (SessionManager, the provider's own SessionManager and the
+# authenticator's settings manager each own a separate VFS pointing at the
+# same session.json, so a per-instance lock would not protect anything).
+_file_locks: Dict[str, "threading.RLock"] = {}
+_file_locks_guard = threading.Lock()
+
+
+def _lock_for_path(abs_path: str) -> "threading.RLock":
+    key = os.path.normcase(os.path.abspath(abs_path)) if "://" not in abs_path else abs_path
+    lock = _file_locks.get(key)
+    if lock is None:
+        with _file_locks_guard:
+            lock = _file_locks.setdefault(key, threading.RLock())
+    return lock
 
 
 class VFS:
@@ -151,6 +169,21 @@ class VFS:
             logger.error(f"Error creating directory {dirpath}: {e}")
             return False
 
+    def file_lock(self, filepath: str) -> "threading.RLock":
+        """
+        Process-wide re-entrant lock for one file. Hold it around a whole
+        read-modify-write sequence so concurrent request threads cannot lose
+        each other's updates:
+
+            with vfs.file_lock("session.json"):
+                data = vfs.read_json("session.json") or {}
+                data["x"] = 1
+                vfs.write_json("session.json", data)
+        """
+        if not os.path.isabs(filepath):
+            filepath = self.join_path(filepath)
+        return _lock_for_path(filepath)
+
     def read_text(self, filepath: str, encoding: str = "utf-8") -> Optional[str]:
         """
         Read text content from file
@@ -166,22 +199,23 @@ class VFS:
             if not os.path.isabs(filepath):
                 filepath = self.join_path(filepath)
 
-            if is_kodi_environment():
-                import xbmcvfs
+            with _lock_for_path(filepath):
+                if is_kodi_environment():
+                    import xbmcvfs
 
-                if not xbmcvfs.exists(filepath):
-                    return None
-                with xbmcvfs.File(filepath, "r") as f:
-                    content = f.read()
-                    return content if content else None
-            else:
-                import pathlib
+                    if not xbmcvfs.exists(filepath):
+                        return None
+                    with xbmcvfs.File(filepath, "r") as f:
+                        content = f.read()
+                        return content if content else None
+                else:
+                    import pathlib
 
-                path = pathlib.Path(filepath)
-                if not path.exists():
-                    return None
-                with open(path, "r", encoding=encoding) as f:
-                    return f.read()
+                    path = pathlib.Path(filepath)
+                    if not path.exists():
+                        return None
+                    with open(path, "r", encoding=encoding) as f:
+                        return f.read()
         except Exception as e:
             logger.error(f"Error reading file {filepath}: {e}")
             return None
@@ -202,31 +236,62 @@ class VFS:
             if not os.path.isabs(filepath):
                 filepath = self.join_path(filepath)
 
-            if is_kodi_environment():
-                import xbmcvfs
+            with _lock_for_path(filepath):
+                if is_kodi_environment():
+                    import xbmcvfs
 
-                # Ensure directory exists
-                dir_path = "/".join(filepath.split("/")[:-1])
-                if dir_path and not xbmcvfs.exists(dir_path):
-                    xbmcvfs.mkdirs(dir_path)
+                    # Ensure directory exists
+                    dir_path = "/".join(filepath.split("/")[:-1])
+                    if dir_path and not xbmcvfs.exists(dir_path):
+                        xbmcvfs.mkdirs(dir_path)
 
-                with xbmcvfs.File(filepath, "w") as f:
-                    bytes_written = f.write(content)
-                    logger.debug(
-                        f"Kodi file write: {bytes_written} bytes to {filepath}"
-                    )
-                    return bytes_written > 0
-            else:
-                import pathlib
+                    # xbmcvfs has no atomic replace; the lock still keeps
+                    # in-process readers from seeing a half-written file.
+                    with xbmcvfs.File(filepath, "w") as f:
+                        bytes_written = f.write(content)
+                        logger.debug(
+                            f"Kodi file write: {bytes_written} bytes to {filepath}"
+                        )
+                        return bytes_written > 0
+                else:
+                    import pathlib
 
-                path = pathlib.Path(filepath)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                with open(path, "w", encoding=encoding) as f:
-                    f.write(content)
-                return True
+                    path = pathlib.Path(filepath)
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    self._atomic_write(path, content.encode(encoding))
+                    return True
         except Exception as e:
             logger.error(f"Error writing file {filepath}: {e}")
             return False
+
+    @staticmethod
+    def _atomic_write(path, data: bytes) -> None:
+        """
+        Write to a temp file in the same directory, fsync, then os.replace().
+        A reader (or a crash/restart mid-write) sees either the complete old
+        file or the complete new one, never a truncated session.json.
+        """
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            try:
+                # keep the original file's permissions if it already exists
+                if path.exists():
+                    os.chmod(tmp_name, path.stat().st_mode & 0o7777)
+            except OSError:
+                pass
+            os.replace(tmp_name, path)
+        except BaseException:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
 
     def write_binary(self, filepath: str, data: bytes) -> bool:
         """

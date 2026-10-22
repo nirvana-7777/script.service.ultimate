@@ -32,23 +32,25 @@ class ProviderSettingsStore:
         return country_data.get(key, default)
 
     def set(self, provider: str, country: str, key: str, value: Any) -> bool:
-        data = self.vfs.read_json(self.FILE) or {}
-        provider_data = data.get(provider)
-        if not isinstance(provider_data, dict):
-            provider_data = data[provider] = {}
-        country_data = provider_data.get(country)
-        if not isinstance(country_data, dict):
-            country_data = provider_data[country] = {}
-        country_data[key] = value
-        ok = self.vfs.write_json(self.FILE, data)
+        with self.vfs.file_lock(self.FILE):
+            data = self.vfs.read_json(self.FILE) or {}
+            provider_data = data.get(provider)
+            if not isinstance(provider_data, dict):
+                provider_data = data[provider] = {}
+            country_data = provider_data.get(country)
+            if not isinstance(country_data, dict):
+                country_data = provider_data[country] = {}
+            country_data[key] = value
+            ok = self.vfs.write_json(self.FILE, data)
         if not ok:
             logger.error(f"Failed to write {self.FILE}")
         return ok
 
     def clear(self, provider: str, country: str, key: str) -> bool:
-        data = self.vfs.read_json(self.FILE) or {}
-        country_data = (data.get(provider) or {}).get(country)
-        if isinstance(country_data, dict) and key in country_data:
-            del country_data[key]
-            return self.vfs.write_json(self.FILE, data)
-        return True
+        with self.vfs.file_lock(self.FILE):
+            data = self.vfs.read_json(self.FILE) or {}
+            country_data = (data.get(provider) or {}).get(country)
+            if isinstance(country_data, dict) and key in country_data:
+                del country_data[key]
+                return self.vfs.write_json(self.FILE, data)
+            return True

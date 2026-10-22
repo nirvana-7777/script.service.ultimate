@@ -21,6 +21,7 @@ from typing import Any, Dict, Optional
 from ...base.auth.base_auth import BaseAuthenticator, BaseAuthToken, TokenAuthLevel
 from ...base.auth.base_oauth2_auth import OIDCConfiguration
 from ...base.auth.credentials import ClientCredentials
+from ...base.errors import AuthPendingError
 from ...base.utils.logger import logger
 from .constants import (
     DEFAULT_COUNTRY,
@@ -40,6 +41,10 @@ from .sso_client import SsoClient
 from .taa_client import TaaClient
 from .token_flow_manager import TokenFlowManager
 from .token_utils import JWTParser, PersonaTokenComposer
+
+# Suggested client retry interval while an interactive login is pending
+# (matches the backchannel polling interval).
+REMOTE_LOGIN_RETRY_AFTER_SECONDS = 10
 
 
 @dataclass
@@ -717,6 +722,7 @@ class Magenta2Authenticator(BaseAuthenticator):
                     backchannel_start_url=backchannel_start_url,
                     qr_code_url_template=qr_code_url_template,
                     provider_name="MagentaTV",
+                    platform=self.platform,
                 )
 
                 logger.info(
@@ -779,6 +785,7 @@ class Magenta2Authenticator(BaseAuthenticator):
             Base64-encoded persona token
 
         Raises:
+            AuthPendingError: an interactive (QR/code) login is in progress
             Exception: If persona token cannot be obtained
         """
         if not self.token_flow_manager:
@@ -787,6 +794,9 @@ class Magenta2Authenticator(BaseAuthenticator):
         persona_result = self.token_flow_manager.get_persona_token(force_refresh=force_refresh)
 
         if not persona_result.success:
+            pending = self.get_pending_login_error()
+            if pending is not None:
+                raise pending
             raise Exception(f"Failed to get persona token: {persona_result.error}")
 
         return persona_result.persona_token
@@ -1113,11 +1123,45 @@ class Magenta2Authenticator(BaseAuthenticator):
         if not self._sam3_client:
             return None
 
+        # Non-blocking: never hold the calling HTTP request for the whole
+        # login window. Starting is idempotent while a login is pending, so
+        # repeated requests reuse the same code instead of issuing new ones.
         try:
-            return self._sam3_client.remote_login(scope="tvhubs offline_access")
+            status = self._sam3_client.start_remote_login_background(
+                scope="tvhubs offline_access"
+            )
+            if status is None:
+                return None
+            if status.state == "completed":
+                # The user finished since the last request: hand the token to
+                # TokenFlowManager, which continues the normal chain.
+                return self._sam3_client.take_remote_login_token()
+            # Still pending: report "no token yet"; get_persona_token() turns
+            # this into AuthPendingError for the caller.
+            return None
         except Exception as e:
             logger.error(f"Remote login flow failed: {e}")
             return None
+
+    def get_pending_login_error(self) -> Optional[AuthPendingError]:
+        """
+        AuthPendingError describing the running interactive login, or None.
+
+        Public so AuthBridge (which calls TokenFlowManager directly, not
+        get_persona_token()) can raise it without touching private state.
+        """
+        if not self._sam3_client:
+            return None
+        status = self._sam3_client.get_background_login_status()
+        if status is None or status.state != "pending":
+            return None
+        return AuthPendingError(
+            "Interactive login pending: enter the code to continue",
+            login_code=status.login_code,
+            qr_target_url=status.qr_target_url,
+            remaining_seconds=status.remaining_seconds,
+            retry_after=REMOTE_LOGIN_RETRY_AFTER_SECONDS,
+        )
 
     # ========================================================================
     # TAA Validation and Debugging

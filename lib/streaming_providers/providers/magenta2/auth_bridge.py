@@ -92,8 +92,10 @@ class AuthBridge:
         Return a valid persona token, using an in-memory TTL cache.
 
         Raises:
-            RuntimeError: If TokenFlowManager is not available.
-            Exception:    If the underlying token flow fails.
+            AuthPendingError: An interactive (QR/code) login is waiting for
+                              the user; callers should surface the code.
+            RuntimeError:     If TokenFlowManager is not available.
+            Exception:        If the underlying token flow fails.
         """
         if not force_refresh and self._persona_cache and self._persona_cache.success:
             expires_at: float = self._persona_cache.expires_at
@@ -111,6 +113,13 @@ class AuthBridge:
 
         persona_result: PersonaResult = tfm.get_persona_token(force_refresh=force_refresh)
         if not persona_result.success:
+            # A login that is merely waiting for the user is not a failure:
+            # raise it typed so the HTTP layer can answer 202 with the code
+            # instead of a generic 500.
+            pending_check = getattr(self._authenticator, "get_pending_login_error", None)
+            pending = pending_check() if callable(pending_check) else None
+            if pending is not None:
+                raise pending
             raise Exception(f"Failed to get persona token: {persona_result.error}")
 
         self._persona_cache = persona_result

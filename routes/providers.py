@@ -3,8 +3,60 @@
 Provider-related route handlers
 """
 
+import functools
+from typing import Optional
+
 from bottle import request, response
+from streaming_providers.base.errors import ProviderError
+from streaming_providers.base.http_errors import error_to_http, log_detail
 from streaming_providers.base.utils import logger
+
+
+def handle_provider_errors(context: str, *, value_error_status: Optional[int] = None):
+    """
+    Route decorator: translate the shared provider error hierarchy into a
+    proper HTTP status (see base/http_errors.py) instead of a blanket 500
+    that echoes str(exception).
+
+    A pending interactive login becomes 202 with the login code in the body.
+    Unknown exceptions are logged with a traceback and answered with a
+    generic 500 so internals don't leak.
+
+    value_error_status: ChannelOperations signals "provider not found or
+    disabled" with a plain ValueError (the stream routes already treat it as
+    404). Pass e.g. 404 to map ValueError that way for a route; the default
+    leaves ValueError as an unexpected error (500).
+    """
+
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001 - this IS the boundary
+                if (
+                    value_error_status is not None
+                    and isinstance(exc, ValueError)
+                    and not isinstance(exc, ProviderError)
+                ):
+                    logger.warning(f"{context}: {exc}")
+                    response.status = value_error_status
+                    return {"error": str(exc)}
+                status, body, headers = error_to_http(exc)
+                detail = log_detail(exc, context)
+                if detail is not None:
+                    if status >= 500:
+                        logger.error(detail, exc_info=True)
+                    else:
+                        logger.warning(detail)
+                response.status = status
+                for name, value in headers.items():
+                    response.set_header(name, value)
+                return body
+
+        return wrapper
+
+    return decorator
 
 
 def setup_provider_routes(app, manager, service):
@@ -93,50 +145,48 @@ def setup_provider_routes(app, manager, service):
             return {"error": str(api_err)}
 
     @app.route("/api/providers/<provider>/channels")
+    @handle_provider_errors(
+        "GET /api/providers/<provider>/channels", value_error_status=404
+    )
     def get_channels(provider):
-        try:
-            channels = manager.get_channels(
-                provider_name=provider,
-                fetch_manifests=request.query.get("fetch_manifests", "false").lower()
-                                == "true",
-                country=request.query.get("country"),
-            )
+        channels = manager.get_channels(
+            provider_name=provider,
+            fetch_manifests=request.query.get("fetch_manifests", "false").lower()
+                            == "true",
+            country=request.query.get("country"),
+        )
 
-            # Get provider instance to check catchup support
-            provider_instance = manager.get_provider(provider)
-            provider_catchup_hours = getattr(
-                provider_instance, "catchup_window", 0
-            )  # CHANGE
-            epg_window = getattr(provider_instance, "epg_window", (0, 0))
+        # Get provider instance to check catchup support
+        provider_instance = manager.get_provider(provider)
+        provider_catchup_hours = getattr(
+            provider_instance, "catchup_window", 0
+        )  # CHANGE
+        epg_window = getattr(provider_instance, "epg_window", (0, 0))
 
-            # Build channel list with catchup info
-            channels_data = []
-            for c in channels:
-                channel_dict = c.to_dict()
+        # Build channel list with catchup info
+        channels_data = []
+        for c in channels:
+            channel_dict = c.to_dict()
 
-                # Add catchup hours - use channel-specific if available, else provider default
-                if hasattr(c, "catchup_hours"):  # CHANGE
-                    channel_dict["CatchupHours"] = c.catchup_hours  # CHANGE
-                else:
-                    channel_dict["CatchupHours"] = provider_catchup_hours  # CHANGE
+            # Add catchup hours - use channel-specific if available, else provider default
+            if hasattr(c, "catchup_hours"):  # CHANGE
+                channel_dict["CatchupHours"] = c.catchup_hours  # CHANGE
+            else:
+                channel_dict["CatchupHours"] = provider_catchup_hours  # CHANGE
 
-                channels_data.append(channel_dict)
+            channels_data.append(channel_dict)
 
-            return {
-                "provider": provider,
-                "country": provider_instance.country if provider_instance else "DE",
-                "catchup_window_hours": provider_catchup_hours,  # CHANGE
-                "epg_window": {
-                    "past_days": epg_window[0],
-                    "future_days": epg_window[1],
-                    "implements_epg": epg_window != (0, 0),
-                },
-                "channels": channels_data,
-            }
-        except Exception as api_err:
-            logger.error(f"API Error in /api/providers/{provider}: {str(api_err)}")
-            response.status = 500
-            return {"error": str(api_err)}
+        return {
+            "provider": provider,
+            "country": provider_instance.country if provider_instance else "DE",
+            "catchup_window_hours": provider_catchup_hours,  # CHANGE
+            "epg_window": {
+                "past_days": epg_window[0],
+                "future_days": epg_window[1],
+                "implements_epg": epg_window != (0, 0),
+            },
+            "channels": channels_data,
+        }
 
     @app.route("/api/providers/<provider>/auth/status")
     def get_provider_auth_status(provider):

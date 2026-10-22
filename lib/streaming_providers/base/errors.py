@@ -147,6 +147,40 @@ class SessionExpiredError(AuthError):
     """Server-side session is gone; a full re-login is required."""
 
 
+class AuthPendingError(AuthError):
+    """
+    An interactive login (QR / device code) has been started and is waiting
+    for the user. Not a failure: the caller should show the code and retry.
+
+    Subclasses AuthError so generic "needs login" handling still applies;
+    HTTP layers should check for it first and answer 202 with the payload.
+
+    Attributes:
+        login_code:        short code for manual entry
+        qr_target_url:     URL to encode in a QR code (may be None)
+        remaining_seconds: time left before the code expires
+        retry_after:       suggested seconds before the caller retries
+    """
+
+    def __init__(
+        self,
+        message: str = "Interactive login pending",
+        *,
+        login_code: Optional[str] = None,
+        qr_target_url: Optional[str] = None,
+        remaining_seconds: Optional[int] = None,
+        retry_after: Optional[int] = None,
+        status: Optional[int] = None,
+        url: Optional[str] = None,
+        code: Optional[str] = None,
+    ) -> None:
+        super().__init__(message, status=status, url=url, code=code)
+        self.login_code = login_code
+        self.qr_target_url = qr_target_url
+        self.remaining_seconds = remaining_seconds
+        self.retry_after = retry_after
+
+
 # ---------------------------------------------------------------------------
 # Access control
 # ---------------------------------------------------------------------------
