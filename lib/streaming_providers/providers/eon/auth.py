@@ -51,7 +51,6 @@ typed errors only, nothing secret in logs (lengths at most).
 """
 
 import hashlib
-import json
 import secrets
 import string
 import threading
