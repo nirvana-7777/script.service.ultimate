@@ -361,16 +361,28 @@ class PlaybackManager:
             )
             return None
 
-        end_time = min(int(end_time), int(time.time()))
+        now = int(time.time())
+        start_time = int(start_time)
+        end_time = int(end_time)
+
         begin_iso = TimestampConverter.epoch_to_iso(
-            int(start_time), format_type="basic", as_utc=True
+            start_time, format_type="basic", as_utc=True
         )
-        end_iso = TimestampConverter.epoch_to_iso(end_time, format_type="basic", as_utc=True)
 
         parsed = urlparse(live_url)
         existing: Dict[str, List[str]] = parse_qs(parsed.query, keep_blank_values=True)
         existing["begin"] = [begin_iso]
-        existing["end"] = [end_iso]
+
+        if end_time <= now:
+            # Programme has already finished: request a static, bounded manifest.
+            existing["end"] = [
+                TimestampConverter.epoch_to_iso(end_time, format_type="basic", as_utc=True)
+            ]
+        else:
+            # Programme is still running: omit "end" so the origin returns a dynamic
+            # manifest that follows the live edge instead of a snapshot ending "now".
+            existing.pop("end", None)
+
         new_query = urlencode({k: v[0] for k, v in existing.items()}, safe="")
         catchup_url = urlunparse(parsed._replace(query=new_query))
         logger.debug(f"_build_begin_end_manifest_url: {content_id} → {catchup_url}")
