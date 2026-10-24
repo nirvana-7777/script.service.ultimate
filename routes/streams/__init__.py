@@ -30,7 +30,7 @@ import base64
 import json
 import re
 import time
-from urllib.parse import urljoin
+from urllib.parse import urlencode, urljoin, urlsplit
 
 from bottle import redirect, request, response
 from streaming_providers.base.stream_format import (
@@ -40,6 +40,7 @@ from streaming_providers.base.stream_format import (
     detect_format,
 )
 from streaming_providers.base.utils import logger
+from streaming_providers.base.utils.proxy_url import decode_url, encode_url
 from streaming_providers.base.utils.manifest_utils import ManifestUtils
 
 # ---------------------------------------------------------------------------
@@ -584,6 +585,126 @@ def make_helpers(manager, service):
             logger.debug(f"Redirecting to manifest: {manifest_url}")
             return redirect(manifest_url)
 
+    def _header_context(
+            content_type: str,
+            country,
+            is_catchup: bool,
+            start_time,
+            end_time,
+            epg_id,
+    ) -> dict:
+        """Provider header context, the same keyword set _stream_needs_headers
+        passes to get_manifest_headers / get_segment_headers."""
+        kwargs = {}
+        if country:
+            kwargs["country"] = country
+        if is_catchup and content_type == CONTENT_TYPE_CHANNEL:
+            kwargs.update(start_time=start_time, end_time=end_time, epg_id=epg_id)
+        return kwargs
+
+    def _proxied_hls_playlist(
+            content_type: str,
+            provider: str,
+            content_id: str,
+            upstream_url: str,
+            country,
+            is_catchup: bool,
+            start_time,
+            end_time,
+            epg_id,
+    ):
+        """Serve one upstream playlist rewritten for the media proxy (Option A).
+
+        Nested playlists (variants, audio/subtitle renditions, I-frame playlists)
+        point back at THIS endpoint: the current URL with the query unchanged plus
+        `playlist=<base64url upstream URL>`. Everything that selects the stream
+        (country, catchup times, drm_variant, ...) therefore rides along in the
+        query and no extra state or route is needed. Segment, init and key URLs
+        become media-proxy URLs inside service.get_proxied_hls_playlist.
+
+        Assumes the backend is reachable only by trusted clients (LAN): the
+        `playlist` value is not signed, exactly like the DASH proxy tokens. If this
+        endpoint is ever exposed externally it needs signing, otherwise a crafted
+        value makes the backend send provider headers to an arbitrary host.
+        """
+        parts = request.urlparts
+        # Whatever extension the client used, nested playlists are .m3u8.
+        path = re.sub(r"index\.mpd$", "index.m3u8", parts.path)
+        base = f"{parts.scheme}://{parts.netloc}{path}"
+        carried = [(k, v) for k, v in request.query.allitems() if k != "playlist"]
+
+        def build_playlist_url(url: str) -> str:
+            return f"{base}?{urlencode(carried + [('playlist', encode_url(url))])}"
+
+        return service.get_proxied_hls_playlist(
+            provider, content_id, upstream_url,
+            build_playlist_url=build_playlist_url,
+            # The output embeds `base` and the carried query, so they scope the cache.
+            cache_scope=f"{base}?{urlencode(carried)}",
+            header_kwargs=_header_context(
+                content_type, country, is_catchup, start_time, end_time, epg_id
+            ),
+        )
+
+    def _serve_hls_variant(
+            content_type: str,
+            provider: str,
+            content_id: str,
+            playlist_ref: str,
+            country,
+            is_catchup: bool,
+            start_time,
+            end_time,
+            epg_id,
+    ):
+        """A `?playlist=` request: a nested playlist the player fetched from a
+        rewritten master. Skips format/DRM resolution and catchup-window
+        validation on purpose: the initial request already did both, and a live
+        playlist refresh must not fail because the window edge moved."""
+        try:
+            upstream_url = decode_url(playlist_ref)
+        except ValueError:
+            response.status = 400
+            return {"error": "Invalid playlist reference"}
+        if urlsplit(upstream_url).scheme not in ("http", "https"):
+            response.status = 400
+            return {"error": "Invalid playlist reference"}
+        return _proxied_hls_playlist(
+            content_type, provider, content_id, upstream_url,
+            country, is_catchup, start_time, end_time, epg_id,
+        )
+
+    def _hls_needs_media_proxy(
+            provider: str,
+            content_type: str,
+            content_id: str,
+            country,
+            is_catchup: bool,
+            start_time,
+            end_time,
+            epg_id,
+    ) -> bool:
+        """Should this HLS stream go through the backend + media proxy?
+
+        - provider with an HTTP/geo proxy (needs_proxy): yes — a redirect would
+          leave from a different IP.
+        - header-gated CDN: only for providers that opt in with
+          `hls_requires_proxy = True` AND actually return headers. Unlike DASH, a
+          plain "needs headers" is deliberately NOT enough: HLS playlists that work
+          through the redirect (ZDF/KiKA sends a Referer but plays fine) must keep
+          doing so until header KODIPROPs are proven insufficient on a device.
+        """
+        if manager.needs_proxy(provider):
+            return True
+        provider_instance = manager.get_provider(provider)
+        if provider_instance and getattr(provider_instance, "hls_requires_proxy", False):
+            return _stream_needs_headers(
+                content_type, provider, content_id, country,
+                is_catchup=is_catchup, start_time=start_time,
+                end_time=end_time, epg_id=epg_id,
+            )
+        return False
+
     def _serve_hls_passthrough(
             content_type: str,
             provider: str,
@@ -595,35 +716,74 @@ def make_helpers(manager, service):
             end_time,
             epg_id,
             is_unencrypted: bool,
+            no_proxy: bool = False,
     ):
         """
-        HLS phase 1: hand the client the upstream playlist WITHOUT rewriting.
+        HLS entry point (the DASH routing in _resolve_stream_unified — ClearKey
+        rewrite, proxied manifest — never runs for HLS: MPDRewriter cannot parse a
+        playlist).
 
-        There is no HLS rewriter or proxy path yet — MPDRewriter and the media
-        proxy are DASH-only. The DASH routing in _resolve_stream_unified
-        (ClearKey rewrite, proxied manifest) must therefore never run for HLS:
-        MPDRewriter cannot parse a playlist and the request would end in a 502.
-        Instead the playlist is redirected to (or, for providers with
-        requires_manifest_context, fetched and absolutised by
-        _redirect_or_fetch).
+        Two outcomes:
+          * proxied (Option A): when _hls_needs_media_proxy says so, a media proxy
+            is configured and no_proxy is not set, the playlist is fetched through
+            the provider's HTTP manager and rewritten (service.get_proxied_hls_playlist).
+            Segments go through the media proxy, nested playlists come back to this
+            endpoint via `?playlist=`.
+          * passthrough (phase 1): otherwise the upstream playlist is redirected to
+            (or, for requires_manifest_context providers, fetched and absolutised by
+            _redirect_or_fetch).
 
-        Limits until an HLS proxy path exists: providers whose manifest or
-        segment fetches need an HTTP proxy cannot be served this way, and
-        provider headers only reach the client via x-kodi-stream-headers /
-        KODIPROPs. Encrypted or undecidable HLS (e.g. AES-128, SAMPLE-AES) is
-        passed through as-is; the client's player and the x-kodi-drm-configs
-        header have to cope with it.
+        Encrypted or undecidable HLS (AES-128, SAMPLE-AES, Widevine, FairPlay) is
+        passed on as it is; the client's player and the x-kodi-drm-configs header have
+        to cope with it.
         """
         if not is_unencrypted:
             logger.debug(
                 f"HLS {provider}/{content_id}: not verified clear — passing the "
                 f"playlist through unchanged"
             )
-        if manager.needs_proxy(provider):
+
+        wants_proxy = not no_proxy and _hls_needs_media_proxy(
+            provider, content_type, content_id, country,
+            is_catchup, start_time, end_time, epg_id,
+        )
+        if wants_proxy and service.media_proxy_url:
+            if is_catchup:
+                manifest_url = manager.get_catchup_manifest(
+                    provider_name=provider,
+                    channel_id=content_id,
+                    start_time=start_time,
+                    end_time=end_time,
+                    epg_id=epg_id,
+                    country=country,
+                    drm_variant=drm_variant,
+                )
+                if not manifest_url:
+                    response.status = 404
+                    return {
+                        "error": f'Catchup manifest not available for channel "{content_id}"'
+                    }
+            else:
+                manifest_url = _get_manifest_url(
+                    content_type, provider, content_id,
+                    country=country, drm_variant=drm_variant,
+                )
+                if not manifest_url:
+                    response.status = 404
+                    return {
+                        "error": (
+                            f'Manifest not available for {content_type} '
+                            f'"{content_id}" from provider "{provider}"'
+                        )
+                    }
+            return _proxied_hls_playlist(
+                content_type, provider, content_id, manifest_url,
+                country, is_catchup, start_time, end_time, epg_id,
+            )
+        if wants_proxy:
             logger.warning(
-                f"HLS {provider}/{content_id}: provider uses an HTTP proxy but HLS "
-                f"proxying is not implemented — redirecting to the upstream "
-                f"playlist; playback may fail"
+                f"HLS {provider}/{content_id}: needs the media proxy but MEDIA_PROXY_URL "
+                f"is not set — redirecting to the upstream playlist; playback may fail"
             )
 
         if is_catchup:
@@ -716,6 +876,15 @@ def make_helpers(manager, service):
                            catchup content that turns out unencrypted. Meaningless
                            when no_proxy=True (plain redirect, no rewriter involved).
         """
+        # --- Nested HLS playlist (?playlist=...): handled before everything else,
+        # see _serve_hls_variant. ---
+        playlist_ref = request.query.get("playlist")
+        if playlist_ref:
+            return _serve_hls_variant(
+                content_type, provider, content_id, playlist_ref,
+                country, is_catchup, start_time, end_time, epg_id,
+            )
+
         # --- Catchup window validation (channels only), before anything else —
         # previously duplicated between channels.py (for auto/noproxy) and
         # _resolve_decrypted_stream (for decrypt); now the single source of truth
@@ -761,12 +930,14 @@ def make_helpers(manager, service):
         is_unencrypted = "none" in drm_dict
 
         # ==================================================================
-        # HLS: no rewriter exists, so none of the DASH routing below applies.
+        # HLS: own routing (proxied playlist rewrite or passthrough); none of the
+        # DASH routing below applies.
         # ==================================================================
         if stream_format is StreamFormat.HLS:
             return _serve_hls_passthrough(
                 content_type, provider, content_id, country, drm_variant,
                 is_catchup, start_time, end_time, epg_id, is_unencrypted,
+                no_proxy=no_proxy,
             )
 
         # ==================================================================

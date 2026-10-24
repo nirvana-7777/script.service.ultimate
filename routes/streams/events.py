@@ -14,6 +14,7 @@ directly through _resolve_stream_unified.
 """
 
 from bottle import HTTPResponse, request, response
+from streaming_providers.base.stream_format import StreamFormat
 from streaming_providers.base.utils import logger
 
 
@@ -22,6 +23,7 @@ def setup_event_routes(app, manager, service, helpers):
 
     CONTENT_TYPE_EVENT = helpers["CONTENT_TYPE_EVENT"]
     _build_drm_header = helpers["_build_drm_header"]
+    _attach_drm_header = helpers["_attach_drm_header"]
     _build_stream_headers = helpers["_build_stream_headers"]
     _resolve_stream_unified = helpers["_resolve_stream_unified"]
     _get_drm_configs = helpers["_get_drm_configs"]
@@ -92,16 +94,24 @@ def setup_event_routes(app, manager, service, helpers):
             country = request.query.get("country")
             base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
             qs = f"?country={country}" if country else ""
+            # Resolve first: the detected format decides which alias the URL
+            # points at. Both aliases hit the same handler — the extension only
+            # helps clients that pick their player from the URL. Unknown
+            # format (None) keeps index.mpd, i.e. the pre-HLS behaviour.
+            stream_info = _attach_drm_header(
+                CONTENT_TYPE_EVENT, provider, event_id, country=country
+            )
+            stream_format = stream_info.stream_format if stream_info else None
+            index_name = "index.m3u8" if stream_format is StreamFormat.HLS else "index.mpd"
             stream_url = (
                 f"{base_url}/api/providers/{provider}/events/{event_id}"
-                f"/stream/index.mpd{qs}"
+                f"/stream/{index_name}{qs}"
             )
             sw_drm_qs_sep = "&" if qs else "?"
             sw_drm_stream_url = (
                 f"{stream_url}{sw_drm_qs_sep}drm_variant=software&client_drm=true"
             )
 
-            _build_drm_header(CONTENT_TYPE_EVENT, provider, event_id, country=country)
             _build_stream_headers(CONTENT_TYPE_EVENT, provider, event_id, country=country)
 
             return {
@@ -109,6 +119,7 @@ def setup_event_routes(app, manager, service, helpers):
                 "event_id": event_id,
                 "manifest_url": stream_url,
                 "sw_drm_manifest_url": sw_drm_stream_url,
+                "stream_format": stream_format.value if stream_format else None,
             }
 
         except ValueError as e:
@@ -121,9 +132,12 @@ def setup_event_routes(app, manager, service, helpers):
             return {"error": f"Internal server error: {str(e)}"}
 
     @app.route("/api/providers/<provider>/events/<event_id>/stream/index.mpd")
+    @app.route("/api/providers/<provider>/events/<event_id>/stream/index.m3u8")
     def get_event_stream(provider, event_id):
         """
-        Single stream endpoint for event playback. Replaces the former
+        Single stream endpoint for event playback. index.m3u8 is an alias of
+        index.mpd served by the same handler; the format actually returned
+        follows the upstream manifest, not the extension. Replaces the former
         /stream/sw-drm/, /stream/proxied/, and /stream/proxied/ffmpeg/
         routes, which are removed. Every combination those routes used to
         hardcode is now expressed via independent, freely-combinable query

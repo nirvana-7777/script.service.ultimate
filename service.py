@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import hashlib
 import json
 import math
 import os
@@ -25,12 +26,23 @@ try:
     # Add EPG Manager import
     from streaming_providers.base.epg.epg_manager import EPGManager
     from streaming_providers.base.models import StreamingChannel
-    from streaming_providers.base.stream_format import StreamFormat
+    from streaming_providers.base.stream_format import (
+        StreamFormat,
+        content_type_for,
+        detect_format,
+    )
     from streaming_providers.base.settings.provider_enable_manager import (
         ProviderEnableManager,
     )
     from streaming_providers.base.utils import MPDCacheManager, MPDRewriter, logger
+    from streaming_providers.base.utils.hls_rewriter import (
+        HLSResource,
+        hls_cache_ttl,
+        rewrite_hls_playlist,
+    )
     from streaming_providers.base.utils.init_kid_resolver import get_init_kid_resolver
+    from streaming_providers.base.utils.proxy_url import make_media_proxy_url_builder
+    from streaming_providers.base.utils.single_flight import SingleFlight
     from streaming_providers.base.utils.environment import (
         get_environment_manager,
         get_vfs_instance,
@@ -41,6 +53,29 @@ except ImportError as import_err:
         f"Ultimate Backend: Critical import failed - {str(import_err)}", file=sys.stderr
     )
     raise
+
+
+def _manifest_content_type(content: Optional[str]) -> str:
+    """Content-Type for a manifest body, from the content itself (the source
+    of truth, same rule as detect_format). Unknown falls back to DASH, which is
+    what every manifest route served before HLS existed."""
+    # Cached manifests may come back as bytes, and a content type must never be
+    # the reason a manifest request fails: anything undecodable stays DASH.
+    if isinstance(content, (bytes, bytearray)):
+        content = bytes(content[:8192]).decode("utf-8", errors="ignore")
+    if not isinstance(content, str):
+        return content_type_for(None)
+    return content_type_for(detect_format(content))
+
+
+def _require_dash(manifest_text: str, label: str) -> None:
+    """The DASH rewrite paths must never be fed an HLS playlist: MPDRewriter
+    would fail with an opaque XML parse error. HLS goes through
+    UltimateService.get_proxied_hls_playlist."""
+    if detect_format(manifest_text) is StreamFormat.HLS:
+        raise ValueError(
+            f"{label}: upstream returned an HLS playlist on the DASH rewrite path"
+        )
 
 
 class UltimateService:
@@ -83,6 +118,11 @@ class UltimateService:
         logger.info(f"MPD cache initialized: {self.mpd_cache.vfs.base_path}")
 
         self._decrypted_cache = {}  # key -> (content, expiry_ts) — memory-only, never persisted
+        # Rewritten HLS playlists: memory-only like the decrypted cache (they carry
+        # baked-in segment headers and session tokens, so never persisted).
+        self._hls_cache = {}  # sha256 key -> (content, expiry_ts)
+        self._hls_cache_lock = threading.Lock()
+        self._hls_flight = SingleFlight()
 
         # 1. Determine EPG URL FIRST (with proper precedence)
         self.epg_url = self._determine_epg_url()
@@ -350,9 +390,14 @@ class UltimateService:
             provider: str,
             channel_id: str,
             manifest_url: str,
+            header_kwargs: Optional[dict] = None,
     ) -> tuple:
         """
         Fetch a manifest and collect everything MPDRewriter needs.
+
+        header_kwargs (country, start_time, end_time, epg_id, ...) are passed to the
+        provider's get_manifest_headers / get_segment_headers, as the route layer's
+        _build_stream_headers does. None keeps the historical behaviour (channel id only).
 
         Returns:
             (manifest_text, ttl, provider_proxy_url, segment_headers, effective_manifest_url)
@@ -370,12 +415,13 @@ class UltimateService:
 
         # Resolve manifest headers from the provider so auth tokens etc. are sent
         provider_instance = self.manager.get_provider(provider)
+        header_kwargs = header_kwargs or {}
         manifest_headers = (
-            provider_instance.get_manifest_headers(channel_id)
+            provider_instance.get_manifest_headers(channel_id, **header_kwargs)
             if provider_instance else {}
         )
         segment_headers = (
-            provider_instance.get_segment_headers(channel_id)
+            provider_instance.get_segment_headers(channel_id, **header_kwargs)
             if provider_instance else {}
         )
 
@@ -447,7 +493,7 @@ class UltimateService:
             content, ttl = fetch_fn()
             if cacheable:
                 cache_set(content, ttl)
-            response.content_type = "application/dash+xml; charset=utf-8"
+            response.content_type = _manifest_content_type(content)
             return content
         except ValueError as e:
             # Config error (e.g. no HTTP manager) — not transient, don't mask with stale cache
@@ -461,7 +507,7 @@ class UltimateService:
                 stale = cache_get_stale(stale_window)
                 if stale:
                     logger.warning(f"Serving stale {label} due to fetch failure")
-                    response.content_type = "application/dash+xml; charset=utf-8"
+                    response.content_type = _manifest_content_type(stale)
                     return stale
             logger.error(f"Failed to fetch {label}: {fetch_err}")
             response.status = 502
@@ -474,7 +520,7 @@ class UltimateService:
         if not highest_quality_only:
             cached_mpd = self.mpd_cache.get(provider, channel_id)
             if cached_mpd:
-                response.content_type = "application/dash+xml; charset=utf-8"
+                response.content_type = _manifest_content_type(cached_mpd)
                 return cached_mpd
 
         if not self.media_proxy_url:
@@ -495,6 +541,7 @@ class UltimateService:
             manifest_text, ttl, provider_proxy_url, segment_headers, effective_url = self.fetch_manifest_for_rewriter(
                 provider, channel_id, manifest_url
             )
+            _require_dash(manifest_text, f"{provider}/{channel_id}")
             rewriter = MPDRewriter(
                 self.media_proxy_url, provider_proxy_url, None, highest_quality_only,
                 provider=provider, channel=channel_id, segment_headers=segment_headers,
@@ -518,7 +565,7 @@ class UltimateService:
 
         cached_mpd = self.mpd_cache.get(provider, cache_key)
         if cached_mpd:
-            response.content_type = "application/dash+xml; charset=utf-8"
+            response.content_type = _manifest_content_type(cached_mpd)
             return cached_mpd
 
         logger.info(f"Cache miss for catchup {provider}/{channel_id}, fetching manifest")
@@ -541,6 +588,7 @@ class UltimateService:
             manifest_text, ttl, provider_proxy_url, segment_headers, effective_url = self.fetch_manifest_for_rewriter(
                 provider, channel_id, manifest_url
             )
+            _require_dash(manifest_text, f"{provider}/{channel_id} (catchup)")
             rewriter = MPDRewriter(
                 self.media_proxy_url, provider_proxy_url, None, False,
                 provider=provider, channel=channel_id, segment_headers=segment_headers,
@@ -558,6 +606,135 @@ class UltimateService:
             label=f"catchup manifest for {provider}/{channel_id}",
         )
 
+    # ------------------------------------------------------------------
+    # HLS playlists through the media proxy (phase 2, Option A)
+    #
+    # The backend fetches, rewrites and serves EVERY playlist; the media proxy
+    # only carries segments / init segments / (later) keys. Cache is memory-only
+    # and keyed by a hash of everything the output depends on.
+    # ------------------------------------------------------------------
+    _HLS_CACHE_MAX_ENTRIES = 256
+    _HLS_STALE_KEEP = 30  # seconds an expired entry stays for the stale fallback
+
+    @staticmethod
+    def _hls_cache_key(provider: str, content_id: str, upstream_url: str,
+                       header_kwargs: Optional[dict], cache_scope: str, proxy_keys: bool) -> str:
+        """Hash, so session tokens inside upstream URLs never show up in logs."""
+        raw = json.dumps(
+            [provider, content_id, upstream_url, sorted((header_kwargs or {}).items()),
+             cache_scope, bool(proxy_keys)],
+            default=str,
+        )
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _get_hls_cached(self, key: str, max_stale: float = 0) -> Optional[str]:
+        entry = self._hls_cache.get(key)
+        if not entry:
+            return None
+        content, expiry = entry
+        overdue = time.time() - expiry
+        if overdue < 0:
+            return content
+        if max_stale and overdue <= max_stale:
+            logger.warning(f"Serving STALE HLS playlist ({overdue:.1f}s past expiry)")
+            return content
+        # Expired entries are NOT deleted here (unlike _get_decrypted_cached): the
+        # stale fallback runs after this lookup and still needs them. _set prunes.
+        return None
+
+    def _set_hls_cached(self, key: str, content: str, ttl: float) -> None:
+        now = time.time()
+        with self._hls_cache_lock:
+            self._hls_cache[key] = (content, now + ttl)
+            if len(self._hls_cache) <= self._HLS_CACHE_MAX_ENTRIES:
+                return
+            for k, (_, expiry) in list(self._hls_cache.items()):
+                if expiry < now - self._HLS_STALE_KEEP:
+                    del self._hls_cache[k]
+            overflow = len(self._hls_cache) - self._HLS_CACHE_MAX_ENTRIES
+            if overflow > 0:
+                for k, _ in sorted(self._hls_cache.items(), key=lambda kv: kv[1][1])[:overflow]:
+                    del self._hls_cache[k]
+
+    def get_proxied_hls_playlist(
+            self,
+            provider: str,
+            content_id: str,
+            upstream_url: str,
+            *,
+            build_playlist_url,
+            cache_scope: str = "",
+            header_kwargs: Optional[dict] = None,
+            proxy_keys: bool = False,
+    ) -> str:
+        """
+        Fetch one upstream HLS playlist (master or media) through the provider's
+        HTTP manager and return it rewritten for the media proxy.
+
+        build_playlist_url(upstream_url) -> URL of the backend playlist endpoint for a
+            nested playlist (variant, audio/subtitle rendition, I-frame). Supplied by
+            the endpoint, which owns token signing and the request's base URL.
+        cache_scope: anything else the OUTPUT depends on that is not in the other
+            arguments — in practice the request's base URL, because the playlist URLs
+            built above embed it.
+        header_kwargs: provider header context (country, start_time, end_time, epg_id);
+            forwarded to get_manifest_headers/get_segment_headers and part of the cache key.
+        proxy_keys: also route AES-128 key URIs through the media proxy.
+
+        Segment/init/key URLs become media-proxy URLs carrying the provider's segment
+        headers and provider proxy, exactly like the DASH path. Concurrent identical
+        requests share one fetch + rewrite (single-flight); the result is cached for
+        a fraction of the target duration (see hls_cache_ttl). Errors follow
+        _fetch_and_cache_manifest: config/rewrite errors -> 502 JSON, transient fetch
+        errors -> short stale fallback, else 502.
+        """
+        if not self.media_proxy_url:
+            response.status = 503
+            response.content_type = "application/json"
+            return json.dumps({"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"})
+
+        key = self._hls_cache_key(provider, content_id, upstream_url, header_kwargs, cache_scope, proxy_keys)
+        cached = self._get_hls_cached(key)
+        if cached:
+            response.content_type = _manifest_content_type(cached)
+            return cached
+
+        def produce():
+            # A previous flight may have finished between our cache check and becoming leader.
+            hit = self._get_hls_cached(key)
+            if hit:
+                return hit, 0
+            text, _http_ttl, provider_proxy_url, segment_headers, effective_url = self.fetch_manifest_for_rewriter(
+                provider, content_id, upstream_url, header_kwargs=header_kwargs
+            )
+            provider_instance = self.manager.get_provider(provider)
+            media_url = make_media_proxy_url_builder(
+                self.media_proxy_url,
+                provider_proxy_url=provider_proxy_url,
+                segment_headers=segment_headers,
+            )
+
+            def build_url(url: str, kind: HLSResource) -> str:
+                return build_playlist_url(url) if kind is HLSResource.PLAYLIST else media_url(url)
+
+            rewritten = rewrite_hls_playlist(
+                text, effective_url, build_url,
+                inherit_query=bool(getattr(provider_instance, "inherit_manifest_query_on_segments", True)),
+                proxy_keys=proxy_keys,
+            )
+            ttl = hls_cache_ttl(text)
+            self._set_hls_cached(key, rewritten, ttl)
+            return rewritten, ttl
+
+        return self._fetch_and_cache_manifest(
+            lambda: self._hls_flight.do(key, produce),
+            cache_set=lambda content, ttl: None,  # produce() already stored it, once per flight
+            cache_get_stale=lambda max_stale: self._get_hls_cached(key, max_stale),
+            cacheable=True,
+            stale_window=6,
+            label=f"HLS playlist for {provider}/{content_id}",
+        )
+
     def get_decrypted_manifest(self, provider: str, channel_id: str, keyids: dict,
                                 highest_quality_only: bool = False, receiver_side: bool = False,
                                 drm_variant: str = "auto") -> str:
@@ -567,7 +744,7 @@ class UltimateService:
         if not highest_quality_only:
             cached_mpd = self._get_decrypted_cached(cache_key)
             if cached_mpd:
-                response.content_type = "application/dash+xml; charset=utf-8"
+                response.content_type = _manifest_content_type(cached_mpd)
                 return cached_mpd
 
         if not self.media_proxy_url:
@@ -621,7 +798,7 @@ class UltimateService:
         if not highest_quality_only:
             cached_mpd = self._get_decrypted_cached(cache_key)
             if cached_mpd:
-                response.content_type = "application/dash+xml; charset=utf-8"
+                response.content_type = _manifest_content_type(cached_mpd)
                 return cached_mpd
 
         if not self.media_proxy_url:

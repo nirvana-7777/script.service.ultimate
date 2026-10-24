@@ -14,6 +14,7 @@ _resolve_stream_unified.
 """
 
 from bottle import HTTPResponse, request, response
+from streaming_providers.base.stream_format import StreamFormat
 from streaming_providers.base.utils import logger
 
 
@@ -22,6 +23,7 @@ def setup_vod_routes(app, manager, service, helpers):
 
     CONTENT_TYPE_VOD = helpers["CONTENT_TYPE_VOD"]
     _build_drm_header = helpers["_build_drm_header"]
+    _attach_drm_header = helpers["_attach_drm_header"]
     _build_stream_headers = helpers["_build_stream_headers"]
     _resolve_stream_unified = helpers["_resolve_stream_unified"]
     _get_drm_configs = helpers["_get_drm_configs"]
@@ -79,9 +81,12 @@ def setup_vod_routes(app, manager, service, helpers):
             return {"error": f"Internal server error: {str(e)}"}
 
     @app.route("/api/providers/<provider>/vod/<path:path>/stream/index.mpd")
+    @app.route("/api/providers/<provider>/vod/<path:path>/stream/index.m3u8")
     def get_vod_stream(provider, path):
         """
-        Single stream endpoint for VOD playback. Replaces the former
+        Single stream endpoint for VOD playback. index.m3u8 is an alias of
+        index.mpd served by the same handler; the format actually returned
+        follows the upstream manifest, not the extension. Replaces the former
         /stream/proxied/ and /stream/proxied/ffmpeg/ routes, which are
         removed. Every combination those routes used to hardcode is now
         expressed via independent, freely-combinable query params (see
@@ -99,19 +104,28 @@ def setup_vod_routes(app, manager, service, helpers):
         try:
             country = request.query.get("country")
             base_url = f"{request.urlparts.scheme}://{request.urlparts.netloc}"
+            # Resolve first: the detected format decides which alias the URL
+            # points at. Both aliases hit the same handler — the extension only
+            # helps clients that pick their player from the URL. Unknown
+            # format (None) keeps index.mpd, i.e. the pre-HLS behaviour.
+            stream_info = _attach_drm_header(
+                CONTENT_TYPE_VOD, provider, vod_id, country=country
+            )
+            stream_format = stream_info.stream_format if stream_info else None
+            index_name = "index.m3u8" if stream_format is StreamFormat.HLS else "index.mpd"
             stream_url = (
-                f"{base_url}/api/providers/{provider}/vod/{vod_id}/stream/index.mpd"
+                f"{base_url}/api/providers/{provider}/vod/{vod_id}/stream/{index_name}"
             )
             if country:
                 stream_url += f"?country={country}"
 
-            _build_drm_header(CONTENT_TYPE_VOD, provider, vod_id, country=country)
             _build_stream_headers(CONTENT_TYPE_VOD, provider, vod_id, country=country)
 
             return {
                 "provider": provider,
                 "vod_id": vod_id,
                 "manifest_url": stream_url,
+                "stream_format": stream_format.value if stream_format else None,
             }
 
         except ValueError as e:

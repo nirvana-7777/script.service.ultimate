@@ -1157,19 +1157,22 @@ thousands of manifests, so it uses the hint: HLS-hinted channels get the
 HLS), never per provider. Leave `None` for dynamic-manifest items — **unknown is not
 DASH**; without a hint nothing changes for existing DASH providers.
 
-**HLS limits** — state them in the provider docstring (phase 1, no HLS rewriter or
-media-proxy path yet):
+**HLS limits** — state them in the provider docstring. HLS can be served through the
+backend and the media proxy (phase 2); what is still missing is in this table and in §17.
 
 | Situation | Behaviour today |
 |---|---|
 | Clear HLS, CDN needs no proxy and no special headers | works: the backend answers with a redirect to the upstream playlist |
 | `requires_manifest_context = True` | the backend fetches the playlist and makes every relative URI absolute (HLS has no `<BaseURL>`); the manifest query (token) is inherited unless `inherit_manifest_query_on_segments = False` |
-| Provider needs an HTTP proxy (`needs_proxy`) | **not supported yet**: redirected anyway, a warning is logged; geo-proxied HLS will not play |
-| CDN needs headers for manifest/segments | **unverified**: a redirect carries none; headers reach the client only via `x-kodi-stream-headers` / KODIPROPs. Prove it on a device before you rely on it (§12.7) |
-| `METHOD=AES-128` | reported as unknown (never "clear"); passed through unchanged, the player fetches the key itself |
+| Provider needs an HTTP proxy (`needs_proxy`) | **works when `MEDIA_PROXY_URL` is set** and the request has no `no_proxy=true`: the backend fetches every playlist through the provider's HTTP manager and rewrites it. Segments and `EXT-X-MAP` init segments become `{MEDIA_PROXY_URL}/api/proxy/<token>` (provider segment headers and proxy inside the token, as for DASH); nested playlists (variants, audio/subtitle renditions) point back at the same stream URL as `…/index.m3u8?<query>&playlist=<base64url upstream URL>`. Without `MEDIA_PROXY_URL`: redirect plus a warning, geo-proxied HLS will not play |
+| CDN needs headers for manifest/segments | **unverified, and not proxied by default.** Unlike DASH, "needs headers" alone does not select the proxy path, so a redirect that already plays keeps playing. A provider whose CDN is header-gated sets `hls_requires_proxy = True` and must return the headers from `get_manifest_headers` / `get_segment_headers`. Header-only gating through `x-kodi-stream-headers` / KODIPROPs on the redirect is still unproven: prove it on a device before you rely on either (§12.7) |
+| `METHOD=AES-128` | reported as unknown (never "clear"); passed through unchanged, the player fetches the key itself. Key URIs are not routed through the media proxy yet (the rewriter can do it; the policy is undecided) |
 | `SAMPLE-AES`, Widevine/FairPlay HLS | detected as encrypted and passed through; no PSSH extraction, no server-side handling |
 | Only the first variant is probed | separately encrypted audio renditions are not checked |
-| `index.m3u8` alias | channels only; events, VOD and recordings still expose `index.mpd` |
+| Low-latency HLS (`EXT-X-PART`, preload hints) | rejected on the proxied path (502 with the reason); not affected on the redirect path |
+| `index.m3u8` alias | channels, events, VOD and recordings; `…/manifest` returns `stream_format` and points at the alias for HLS |
+| `playlist` query parameter | reserved on stream URLs: it carries a nested playlist of the proxied path and skips the format and catchup-window checks of the first request |
+| Proxied playlists: cache and trust | rewritten playlists are cached in memory only (about half the target duration for live, 30 s for a master, 120 s for VOD) and concurrent identical requests share one fetch. The `playlist` value and the media-proxy tokens are **unsigned**: backend and media proxy must only be reachable by trusted clients (LAN) |
 
 **Locally minted, short-lived manifest URLs (Eon).** When the provider builds the
 manifest URL itself (an AES-encrypted payload with a server `ctime` and a session id):
@@ -1757,9 +1760,10 @@ Things that already cost time. Each is covered by a test or the contract unless 
     backend sniffs the content; never branch on the extension (§11).
 67. Setting `streaming_format` per provider, or `"dash"` as a "default" — unknown
     is `None`; a wrong hint sends playlists to the wrong alias (§13).
-68. HLS from a provider that needs an HTTP proxy or CDN headers: the redirect loses
-    both; it logs a warning and does not play. Document it, do not "fix" it in the
-    provider (§11).
+68. HLS from a provider whose CDN needs an HTTP proxy or headers: with `needs_proxy` and
+    `MEDIA_PROXY_URL` the backend proxies it; without `MEDIA_PROXY_URL`, or for a
+    header-gated CDN without `hls_requires_proxy`, the redirect loses both and the stream
+    does not play. Document it, do not "fix" it in the provider (§11).
 69. Treating `METHOD=AES-128` HLS as clear (it is *unknown* to the backend) or
     returning DRM configs for it (§11).
 70. Brand/operator modelled as country, or resolved by list position (§4).
@@ -1786,6 +1790,14 @@ Things that already cost time. Each is covered by a test or the contract unless 
     `403` — as "wrong credentials" (§9).
 80. Persisting a re-derivable secret (stream key, anything the next token response
     returns) through `SessionManager`: unknown keys are logged in clear at INFO (§9).
+81. Exposing the backend or the media proxy beyond a trusted LAN: the `playlist` value and
+    the proxy tokens are unsigned base64, so a crafted one makes the proxy fetch any URL
+    and makes the backend send provider headers to any host. Signing comes first (§11,
+    §17).
+82. Assuming the backend and the player see the same playlist for a redirecting or
+    tokenised CDN (observed with ZDF/KiKA): the "clear" verdict and the proxied rewrite
+    come from the backend's own fetch, the redirect path hands the player the CDN's answer
+    (§11).
 
 ---
 
@@ -1810,10 +1822,14 @@ Known gaps in the base, so you don't hunt for them:
 * `README` v1 (`_template`) describes the old shape; it is not rewritten.
 * Provider-specific features outside the ABCs (restart, `get_restart`) are free-form;
   there is no `RestartInfo` type yet.
-* **HLS**: no HLS rewriter / media-proxy path (proxied or header-gated HLS and
-  geo-proxied providers do not play), AES-128 policy undecided, encrypted HLS only
-  passed through, only the first variant probed, `index.m3u8` alias for channels
-  only (§11).
+* **HLS**: the proxied path exists for `needs_proxy` providers and `hls_requires_proxy`
+  opt-ins (§11). Open: AES-128 key proxying (policy undecided, `_analyse_hls`
+  unchanged), low-latency HLS is rejected, encrypted HLS only passed through, only the
+  first variant probed, header-only gating unverified on a device. **No signing:**
+  `playlist` values and media-proxy tokens are plain base64, so backend and media proxy
+  stay LAN-only until signing is added. The media proxy still has to be adapted to the
+  HLS expectations (segments and keys, Range, redirects, content types). The VOD and
+  recordings M3U exports were not reviewed for the `index.m3u8` alias.
 * **`HTTPManager` has no `patch()`** (`_make_request("PATCH", …)` exists, only the public
   wrapper is missing). Eon needs `PATCH v2/devices`; until it is added the provider
   `hasattr`-checks and falls back to the `v1` POST (which mints a *new* device number).
