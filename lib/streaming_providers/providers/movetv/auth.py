@@ -96,7 +96,7 @@ class MoveTVAuthenticator(BaseAuthenticator):
 
     def _get_auth_headers(self) -> Dict[str, str]:
         """Headers for the authentication request."""
-        return MoveTVConfig.get_base_headers()
+        return MoveTVConfig.get_base_headers(dev_id=self.get_device_id())
 
     def _build_auth_payload(self) -> Dict[str, Any]:
         """Build the login payload from current credentials."""
@@ -110,6 +110,7 @@ class MoveTVAuthenticator(BaseAuthenticator):
             "deviceName": MoveTVConfig.DEVICE_NAME,
             "deviceModelId": MoveTVConfig.DEVICE_MODEL_ID,
             "uid": uid,
+            "debugMac": uid,
             "appVersion": MoveTVConfig.APP_VERSION,
         }
 
@@ -217,8 +218,10 @@ class MoveTVAuthenticator(BaseAuthenticator):
                 status, f"move.tv: login failed (HTTP {status})", url=self.auth_endpoint
             ) from exc
         if isinstance(status, int) and status >= 400:
+            body = (getattr(response, "text", "") or "")[:300]
+            logger.warning(f"move.tv: login failed (HTTP {status}): {body}")
             raise default_error_for_status_heuristic(
-                status, f"move.tv: login failed (HTTP {status})", url=self.auth_endpoint
+                status, f"move.tv: login failed (HTTP {status}): {body}", url=self.auth_endpoint
             )
         try:
             data = response.json()
@@ -255,13 +258,11 @@ class MoveTVAuthenticator(BaseAuthenticator):
             logger.debug("move.tv: validate_token called with empty access_token, skipping")
             return False
 
-        headers = {
-            **MoveTVConfig.get_base_headers(),
-            "x-auth-token": token.access_token,
-            "x-refresh-token": token.refresh_token or "",
-        }
+        headers = MoveTVConfig.get_base_headers(token.access_token, dev_id=token.device_id)
+        headers[MoveTVConfig.HEADER_REFRESH_TOKEN] = token.refresh_token or ""
         payload = {
             "customerId": token.customer_id,
+            "debugMac": token.device_id,
             "appVersion": MoveTVConfig.APP_VERSION,
         }
 
@@ -279,7 +280,8 @@ class MoveTVAuthenticator(BaseAuthenticator):
             response.raise_for_status()
             data = response.json()
         except Exception as exc:
-            logger.debug(f"move.tv: Token validation request failed: {exc}")
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            logger.warning(f"move.tv: Token validation request failed (HTTP {status}): {exc}")
             return False
 
         if data.get("message") == "Token active.":
@@ -312,10 +314,8 @@ class MoveTVAuthenticator(BaseAuthenticator):
             logger.debug("move.tv: refresh_token called but no refresh_token stored, skipping")
             return None
 
-        headers = {
-            **MoveTVConfig.get_base_headers(),
-            "x-refresh-token": token.refresh_token,
-        }
+        headers = MoveTVConfig.get_base_headers(dev_id=token.device_id)
+        headers[MoveTVConfig.HEADER_REFRESH_TOKEN] = token.refresh_token
         payload = {
             "customerProfileId": token.customer_profile_id,
             "appVersion": MoveTVConfig.APP_VERSION,

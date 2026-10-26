@@ -109,7 +109,7 @@ def api_post(
     response: Any = None
     for attempt in (1, 2):
         info = session.info(need_profile=need_profile)   # raises typed AuthError & co.
-        headers = MoveTVConfig.get_api_headers(info["auth_token"])
+        headers = MoveTVConfig.get_api_headers(info["auth_token"], dev_id=info.get("uid"))
         try:
             response = http_manager.post(
                 url, operation=operation, json=build_payload(info), headers=headers

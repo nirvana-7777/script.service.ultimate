@@ -58,8 +58,8 @@ class MoveTVConfig:
     # -------------------------------------------------------------------------
     PARTNER_ID: int = 2
     DEVICE_MODEL_ID: int = 10
-    DEVICE_NAME: str = "Chrome 146"
-    APP_VERSION: str = "3.4.8"
+    DEVICE_NAME: str = "Chrome 155"
+    APP_VERSION: str = "3.5.41"
 
     # -------------------------------------------------------------------------
     # Language / locale defaults
@@ -70,9 +70,9 @@ class MoveTVConfig:
     # HTTP / request defaults
     # -------------------------------------------------------------------------
     USER_AGENT: str = (
-        "Mozilla/5.0 (X11; Linux x86_64) "
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/146.0.0.0 Safari/537.36"
+        "Chrome/155.0.0.0 Safari/537.36"
     )
     TIMEOUT: int = 30
 
@@ -96,6 +96,8 @@ class MoveTVConfig:
     PLAY_AUTH_EARLY_EXPIRY_SECONDS: int = 60
     PLAY_AUTH_EXPIRY_PATTERN: str = r"expires-(\d+)"
     HEADER_PLAY_AUTH: str = "X-Play-Auth"
+    HEADER_DEV_ID: str = "X-Dev-Id"
+    HEADER_REFRESH_TOKEN: str = "X-Refresh-Token"
 
     # VOD: browse tag per content-type NAME (as in v1)
     TAG_ID_BY_CONTENT_TYPE_NAME: Dict[str, int] = {"Film": 1, "Serija": 2}
@@ -135,27 +137,36 @@ class MoveTVConfig:
     # -------------------------------------------------------------------------
 
     @classmethod
-    def get_base_headers(cls, auth_token: Optional[str] = None) -> Dict[str, str]:
+    def get_base_headers(
+        cls, auth_token: Optional[str] = None, dev_id: Optional[str] = None
+    ) -> Dict[str, str]:
         """
         Returns headers shared by every request.
 
         When *auth_token* is None the unauthenticated sentinel value is used
-        (as observed in the login request capture).
+        (as observed in the login request capture). *dev_id* is the local
+        device uid; the web client sends it as X-Dev-Id on every call.
         """
-        return {
+        headers = {
             "Accept": "*/*",
-            "Accept-Encoding": "gzip, deflate, br, zstd",
+            # Only encodings the HTTP stack is sure to decode (no br / zstd).
+            "Accept-Encoding": "gzip, deflate",
             "Content-Type": "application/json",
             "Origin": cls.WEB_ORIGIN,
             "Referer": cls.WEB_REFERER,
             "User-Agent": cls.USER_AGENT,
             "X-Auth-Token": auth_token if auth_token else cls.UNAUTHENTICATED_TOKEN,
         }
+        if dev_id:
+            headers[cls.HEADER_DEV_ID] = dev_id
+        return headers
 
     @classmethod
-    def get_api_headers(cls, auth_token: Optional[str] = None) -> Dict[str, str]:
+    def get_api_headers(
+        cls, auth_token: Optional[str] = None, dev_id: Optional[str] = None
+    ) -> Dict[str, str]:
         """Headers for authenticated JSON API calls (channels, manifest source, VOD)."""
-        return cls.get_base_headers(auth_token)
+        return cls.get_base_headers(auth_token, dev_id=dev_id)
 
     @classmethod
     def stream_headers(cls, play_auth: Optional[str] = None) -> Dict[str, str]:

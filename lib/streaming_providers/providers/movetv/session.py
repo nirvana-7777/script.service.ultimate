@@ -67,10 +67,13 @@ class MoveTvSession:
         return self.authenticator.get_current_token()
 
     def _ready(self) -> bool:
+        # No local is_expired check: the token's real lifetime is decided by
+        # the server (401 -> recover()). A locally "expired" but server-valid
+        # token would otherwise be re-validated on every call.
         token = self._token()
         return bool(
             self._logged_in and token is not None
-            and getattr(token, "access_token", None) and not token.is_expired
+            and getattr(token, "access_token", None)
         )
 
     # ---- failure bookkeeping ---------------------------------------------
@@ -165,7 +168,9 @@ class MoveTvSession:
         return self._token().access_token
 
     def build_headers(self) -> Dict[str, str]:
-        return self.config.get_api_headers(self.get_access_token())
+        access_token = self.get_access_token()
+        dev_id = getattr(self._token(), "device_id", None)
+        return self.config.get_api_headers(access_token, dev_id=dev_id)
 
     def invalidate(self) -> None:
         self.authenticator.invalidate_token()   # memory AND persisted storage
