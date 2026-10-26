@@ -185,8 +185,10 @@ class SmilManager:
 
             release_pid = smil_data.get("release_pid")
             if not release_pid:
+                error_exception = smil_data.get("error_exception")
                 logger.error(
                     f"{self._provider}: No releasePid in SMIL for {content_id}"
+                    + (f" [{error_exception}]" if error_exception else "")
                 )
                 if smil_data.get("content"):
                     logger.debug(
@@ -350,6 +352,12 @@ class SmilManager:
                 "mpd_url": mpd_url,
                 "release_pid": release_pid,
                 "channel_id": cache_key,
+                # Failure reason carried by an error-SMIL body (observed:
+                # UserAgentBlocked — the selector refuses this content for
+                # the requesting user agent). None for successful resolves;
+                # lets callers and logs distinguish "not entitled" from
+                # "selector blocked" without re-parsing the raw content.
+                "error_exception": SmilManager._parse_error_exception(smil_content),
             }
 
             if mpd_url or release_pid:
@@ -582,8 +590,10 @@ class SmilManager:
                 title = error_match.group(1)
                 abstract = error_match.group(2)
                 if "errorFiles/Unavailable.flv" in smil_content:
+                    exception = SmilManager._parse_error_exception(smil_content)
                     logger.error(
                         f"SMIL unavailable content for {content_id}: {title}"
+                        + (f" (exception={exception})" if exception else "")
                     )
                     return None
                 if "Invalid Token" in title or "InvalidAuthToken" in smil_content:
@@ -638,6 +648,25 @@ class SmilManager:
 
         except Exception as e:
             logger.error(f"Error parsing SMIL for {content_id}: {e}")
+            return None
+
+    @staticmethod
+    def _parse_error_exception(smil_content: str) -> Optional[str]:
+        """
+        Platform error code from an error-SMIL body, if any.
+
+        Error SMILs carry the failure reason as a <param name="exception">
+        (observed values: UserAgentBlocked — the selector refuses this
+        content for the requesting user agent; InvalidAuthToken). Success
+        SMILs have no such param.
+        """
+        try:
+            m = re.search(
+                r'<param\s+name="exception"\s+value="([^"]+)"', smil_content
+            )
+            return m.group(1) if m else None
+        except Exception as e:
+            logger.debug(f"Error extracting SMIL exception code: {e}")
             return None
 
     @staticmethod

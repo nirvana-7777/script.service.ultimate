@@ -6,8 +6,10 @@ population for the Magenta2 provider.
 """
 import json
 import re
+import threading
 import time
-from typing import Callable, Dict, List, Optional
+import uuid
+from typing import Callable, Dict, List, Optional, Tuple
 
 from ...base.errors import AuthPendingError, ProviderError
 from ...base.models import StreamingChannel
@@ -20,6 +22,7 @@ from .constants import (
     DEFAULT_REQUEST_TIMEOUT,
     DISTRIBUTION_PACKAGE_NAMES,
     DRM_SYSTEM_WIDEVINE,
+    ENTITLED_FEED_FALLBACK_MIN_INTERVAL,
     ERROR_CODES,
     MODE_LIVE,
 )
@@ -97,6 +100,16 @@ class ChannelManager:
         # release_pid -> release_pid (fast membership test for PlaybackManager)
         self._live_pid_cache: Dict[str, str] = {}
 
+        # release_pid -> hls_url (feed-delivered HLS variant, if any).
+        # Written by the same writers as _live_manifest_cache.
+        self._live_hls_cache: Dict[str, str] = {}
+
+        # Playback-time feed fallback (resolve_release_pid_via_feed):
+        # serialises concurrent fallback fetches and rate-limits how often
+        # an unvouched pid may trigger an entitled-channels feed refetch.
+        self._feed_fallback_lock = threading.Lock()
+        self._feed_fallback_last_run: float = 0.0
+
         # True once get_channels() has COMPLETED and overwritten the
         # station->pid map with feed-sourced release pids. Until then the
         # map holds only station-metadata MEDIA pids (from
@@ -108,6 +121,13 @@ class ChannelManager:
         # station ids for no benefit. Pids gone stale after a feed change
         # are handled by the rate-limited re-fetch on pid miss
         # (PlaybackManager._prepare_live_pid).
+        #
+        # resolve_release_pid_via_feed() is a SECOND feed-loading writer:
+        # at playback time it re-fetches the entitled-channels feed and
+        # overwrites the map with release pids under the same provenance
+        # argument (see that method for why: the SMIL/selector path can be
+        # unusable for a live pid — e.g. UserAgentBlocked — while the feed
+        # still carries both the release pid and the direct streamingUrl).
         #
         # Note the live manifest/pid caches above are a DIFFERENT signal:
         # populate_streaming_data() also fills them (channel-playlist
@@ -136,34 +156,11 @@ class ChannelManager:
             return list(self._cached_channels)
 
         try:
-            import uuid
-            cid = f"{self._session_id}::{str(uuid.uuid4())}"
-            user_agent = self._ua_subscriber
-
-            # ── Step 1: distribution rights ──────────────────────────────────
-            rights_url = (
-                self._provider_config.manifest.mpx.license_service_url
-                if self._provider_config and self._provider_config.manifest
-                else None
-            )
-            if not rights_url:
-                raise RuntimeError("No license_service_url available")
-
-            persona_token = self._ensure_authenticated()
-            auth_headers = {
-                "Authorization": f"Basic {persona_token}",
-                "Origin": "https://www.magenta.tv",
-                "Referer": "https://www.magenta.tv/",
-            }
-
-            distribution_rights = fetch_distribution_rights(
-                http_manager=self._http,
-                rights_url=rights_url,
-                cid=cid,
-                user_agent=user_agent,
-                timeout=DEFAULT_REQUEST_TIMEOUT,
-                extra_headers=auth_headers,
-            )
+            # ── Steps 1+2: distribution rights + entitled-channels feed ──
+            # Shared with the playback-time fallback
+            # (resolve_release_pid_via_feed) so both paths issue
+            # byte-identical requests.
+            distribution_rights, tp_channels = self._fetch_entitled_feed_data()
 
             def _dist_uri_to_int(uri) -> Optional[int]:
                 try:
@@ -179,22 +176,6 @@ class ChannelManager:
             logger.info(f"Active subscription packages ({len(package_names)}):")
             for pkg in package_names:
                 logger.info(f"  · {pkg}")
-
-            # ── Step 2: entitled-channels feed ───────────────────────────────
-            feed_url = (
-                self._endpoint_manager.get_endpoint("mpx_feed_entitledChannelsFeed")
-                if self._endpoint_manager
-                else None
-            ) or "https://feed.entertainment.tv.theplatform.eu/f/mdeprod/mdeprod-entitled-channels"
-
-            tp_channels: List[TheplatformChannel] = fetch_entitled_channels_feed(
-                http_manager=self._http,
-                feed_url=feed_url,
-                distribution_rights=distribution_rights,
-                cid=cid,
-                user_agent=user_agent,
-                timeout=DEFAULT_REQUEST_TIMEOUT,
-            )
 
             # ── Step 3: merge with station metadata and build channels ──────
             channels: List[StreamingChannel] = []
@@ -239,8 +220,15 @@ class ChannelManager:
                         manifest_script_parts.append(f"pid={playback_id}")
                     manifest_script = " ".join(manifest_script_parts) if manifest_script_parts else ""
 
-                    # Store mapping for DRM lookup
-                    self._station_to_playback_id[station_id] = playback_id
+                    # Store mapping for DRM lookup + feed the live caches
+                    # (shared writer with resolve_release_pid_via_feed so
+                    # both feed-loading paths record identical semantics)
+                    self._cache_live_pid(
+                        station_id=station_id,
+                        playback_id=playback_id,
+                        mpd_url=tp_ch.mpd_url,
+                        hls_url=tp_ch.hls_url,
+                    )
 
                     magenta2_channel = Magenta2Channel(
                         name=name,
@@ -265,9 +253,6 @@ class ChannelManager:
 
                     if tp_ch.hls_url:
                         streaming_channel.hls_url = tp_ch.hls_url
-
-                    self._live_manifest_cache[playback_id] = tp_ch.mpd_url
-                    self._live_pid_cache[playback_id] = playback_id  # For PlaybackManager fast-path
 
                     channels.append(streaming_channel)
                 except Exception as exc:
@@ -328,12 +313,21 @@ class ChannelManager:
     def get_live_manifest_url(self, playback_id: str) -> Optional[str]:
         """
         MPD URL for a live channel, as delivered by the entitled-channels
-        feed (or the channel-playlist endpoint) — known before any SMIL
-        call is ever made.
+        feed (get_channels / resolve_release_pid_via_feed) or the
+        channel-playlist endpoint — known before any SMIL call is ever
+        made.
 
         Returns None for non-live / unknown ids.
         """
         return self._live_manifest_cache.get(playback_id)
+
+    def get_live_hls_manifest_url(self, playback_id: str) -> Optional[str]:
+        """
+        HLS (M3U/CMAF) URL for a live channel, as delivered by the
+        entitled-channels feed alongside the DASH MPD — None when the feed
+        carried no HLS variant for this pid.
+        """
+        return self._live_hls_cache.get(playback_id)
 
     def is_entitled_live_pid(self, playback_id: str) -> bool:
         """
@@ -352,8 +346,9 @@ class ChannelManager:
     def has_entitled_live_channels(self) -> bool:
         """
         True once the live manifest cache has been populated by an
-        entitled source — the entitled-channels feed (get_channels) or the
-        channel-playlist endpoint (populate_streaming_data). Both are
+        entitled source — the entitled-channels feed (get_channels or the
+        playback-time fallback resolve_release_pid_via_feed) or the
+        channel-playlist endpoint (populate_streaming_data). All are
         legitimately "entitled" sources: the playlist endpoint requires
         an entitlement token and restricted channels are skipped.
 
@@ -366,9 +361,11 @@ class ChannelManager:
 
     def has_release_pid_map(self) -> bool:
         """
-        True once get_channels() has completed and overwritten the
-        station-to-pid map with feed-sourced RELEASE pids — the signal
-        that resolving a numeric station id through the map is safe.
+        True once a full entitled-feed load has completed and overwritten
+        the station-to-pid map with feed-sourced RELEASE pids — via
+        get_channels() or the playback-time fallback
+        resolve_release_pid_via_feed() — the signal that resolving a
+        numeric station id through the map is safe.
 
         This, not has_entitled_live_channels(), is the guard
         PlaybackManager._resolve_station_id keys on: the live manifest/pid
@@ -387,6 +384,125 @@ class ChannelManager:
         rate-limited re-fetch on pid miss.
         """
         return self._station_pids_are_release
+
+    def resolve_release_pid_via_feed(
+        self, station_id: str, force: bool = False
+    ) -> Optional[str]:
+        """
+        Playback-time fallback: (re)resolve *station_id*'s RELEASE pid from
+        the entitled-channels feed, bypassing the SMIL/selector round trip.
+
+        Why this exists: a live channel can reach SMIL with a pid the
+        platform refuses to resolve — a station-metadata MEDIA pid left in
+        the map when the feed never (re)ran, a stale pid after a feed
+        change, or content whose selector is user-agent-gated (observed:
+        ``UserAgentBlocked`` / "User Agent Restriction" error-SMIL, HTTP
+        200 + 539-byte error body, for a Sky Sport UHD station). The
+        entitled-channels feed carries BOTH the release pid and the direct
+        CDN streamingUrl (DASH MPD + HLS), so manifest AND DRM can be
+        served without SMIL at all:
+
+            pid      = channel_manager.resolve_release_pid_via_feed(sid)
+            manifest = channel_manager.get_live_manifest_url(pid)
+            drm      = live fast-path construction with release_pid=pid
+
+        Behaviour:
+          * Vouched fast path: if the station already maps to a pid that is
+            in the entitled pid cache, it is returned WITHOUT a fetch.
+          * Rate limit: at most one feed refetch per
+            ENTITLED_FEED_FALLBACK_MIN_INTERVAL seconds per instance, so a
+            genuinely unentitled station cannot hammer the feed on every
+            playback attempt. force=True bypasses (user-initiated retry,
+            admin refresh). Concurrent callers serialise on a lock; the
+            loser profits from the winner's refreshed maps.
+          * On the rate-limited path the current map entry is returned ONLY
+            if it is vouched; a media/stale pid yields None (returning it
+            would recreate the exact failure this method exists to fix).
+
+        Side effects on a completed refetch: station->pid map and the live
+        manifest/pid/hls caches are rewritten for EVERY feed entry (not
+        just *station_id*), `_station_pids_are_release` is set, and a
+        cached channel list is dropped so the next get_channels() rebuilds
+        with the fresh pids.
+
+        Returns the release pid, or None if the station is not in the feed
+        (not entitled on this account) or the feed could not be fetched.
+        Never raises.
+        """
+        vouched = self._vouched_pid_for_station(station_id)
+        if vouched:
+            return vouched
+
+        if not force and (time.time() - self._feed_fallback_last_run) < (
+            ENTITLED_FEED_FALLBACK_MIN_INTERVAL
+        ):
+            logger.debug(
+                f"resolve_release_pid_via_feed: rate-limited — no feed refetch "
+                f"for station {station_id}"
+            )
+            return None
+
+        with self._feed_fallback_lock:
+            # Re-check under the lock: a concurrent caller may have just
+            # refreshed the maps (and the rate-limit timestamp).
+            vouched = self._vouched_pid_for_station(station_id)
+            if vouched:
+                return vouched
+            if not force and (time.time() - self._feed_fallback_last_run) < (
+                ENTITLED_FEED_FALLBACK_MIN_INTERVAL
+            ):
+                return None
+
+            logger.info(
+                f"resolve_release_pid_via_feed: re-resolving station {station_id} "
+                f"from the entitled-channels feed (pid not vouched or SMIL "
+                f"path unusable)"
+            )
+            try:
+                _, tp_channels = self._fetch_entitled_feed_data()
+                applied = 0
+                for tp_ch in tp_channels:
+                    sid = self._extract_station_id(tp_ch.station_id)
+                    if not sid or not tp_ch.release_pid:
+                        continue
+                    self._cache_live_pid(
+                        station_id=sid,
+                        playback_id=tp_ch.release_pid,
+                        mpd_url=tp_ch.mpd_url,
+                        hls_url=tp_ch.hls_url,
+                    )
+                    applied += 1
+            except Exception as exc:
+                logger.warning(
+                    f"resolve_release_pid_via_feed: entitled-feed refetch failed "
+                    f"for station {station_id}: {exc}"
+                )
+                return None
+            finally:
+                self._feed_fallback_last_run = time.time()
+
+            if applied:
+                # Same provenance argument as a completed get_channels()
+                # feed load: every entry written above is a feed-sourced
+                # release pid.
+                self._station_pids_are_release = True
+                # Cached StreamingChannels embed the old pids (cdm /
+                # manifest_script); force a rebuild on next get_channels().
+                self._cached_channels = None
+
+            pid = self._vouched_pid_for_station(station_id)
+            if pid:
+                logger.info(
+                    f"resolve_release_pid_via_feed: station {station_id} -> "
+                    f"release pid {pid}"
+                )
+                return pid
+
+            logger.warning(
+                f"resolve_release_pid_via_feed: station {station_id} is not in "
+                f"the entitled-channels feed (not entitled on this account?)"
+            )
+            return None
 
     def get_entitlement_token(
         self, content_id: str, content_type: str = CONTENT_TYPE_LIVE
@@ -589,6 +705,7 @@ class ChannelManager:
         self._cached_channels = None
         self._live_manifest_cache.clear()
         self._live_pid_cache.clear()
+        self._live_hls_cache.clear()
         logger.debug("ChannelManager: caches cleared")
 
     # ------------------------------------------------------------------ #
@@ -621,6 +738,102 @@ class ChannelManager:
         except Exception as e:
             logger.warning(f"Error extracting playback ID from entry: {e}")
             return None
+
+    def _vouched_pid_for_station(self, station_id: str) -> Optional[str]:
+        """
+        The station's map pid ONLY if it is a vouched release pid (member
+        of the entitled pid cache — see is_entitled_live_pid). Media and
+        stale pids yield None: playback must not be built on them.
+        """
+        pid = self._station_to_playback_id.get(station_id)
+        if pid and pid in self._live_pid_cache:
+            return pid
+        return None
+
+    def _cache_live_pid(
+        self,
+        station_id: str,
+        playback_id: str,
+        mpd_url: Optional[str],
+        hls_url: Optional[str],
+    ) -> None:
+        """
+        Single writer for the live mappings: station -> playback pid plus
+        the pid-keyed live caches (DASH MPD, HLS, entitled-pid set).
+
+        Shared by get_channels() and resolve_release_pid_via_feed() so the
+        two feed-loading paths can never diverge on what a recorded entry
+        means. mpd_url/hls_url are stored only when truthy: the entitled
+        feed always carries streamingUrl, but skipping falsy values keeps
+        cache-miss semantics clean (a stored None would be indistinguishable
+        from "known to have no URL").
+        """
+        self._station_to_playback_id[station_id] = playback_id
+        if mpd_url:
+            self._live_manifest_cache[playback_id] = mpd_url
+        if hls_url:
+            self._live_hls_cache[playback_id] = hls_url
+        self._live_pid_cache[playback_id] = playback_id
+
+    def _fetch_entitled_feed_data(
+        self,
+    ) -> Tuple[List[str], List[TheplatformChannel]]:
+        """
+        Steps 1-2 shared by get_channels() and the playback-time feed
+        fallback (resolve_release_pid_via_feed):
+
+          1. getApplicableDistributionRights — license_service_url with
+             Basic persona auth (cid correlation header).
+          2. mdeprod-entitled-channels feed — filtered by the account's
+             distribution rights, paginated by fetch_entitled_channels_feed.
+
+        Returns (distribution_rights, tp_channels); raises on failure so
+        callers choose their own degradation (get_channels wraps it into a
+        ProviderError-preserving exception chain, the fallback logs and
+        returns None).
+        """
+        rights_url = (
+            self._provider_config.manifest.mpx.license_service_url
+            if self._provider_config and self._provider_config.manifest
+            else None
+        )
+        if not rights_url:
+            raise RuntimeError("No license_service_url available")
+
+        cid = f"{self._session_id}::{uuid.uuid4()}"
+        user_agent = self._ua_subscriber
+
+        persona_token = self._ensure_authenticated()
+        auth_headers = {
+            "Authorization": f"Basic {persona_token}",
+            "Origin": "https://www.magenta.tv",
+            "Referer": "https://www.magenta.tv/",
+        }
+
+        distribution_rights = fetch_distribution_rights(
+            http_manager=self._http,
+            rights_url=rights_url,
+            cid=cid,
+            user_agent=user_agent,
+            timeout=DEFAULT_REQUEST_TIMEOUT,
+            extra_headers=auth_headers,
+        )
+
+        feed_url = (
+            self._endpoint_manager.get_endpoint("mpx_feed_entitledChannelsFeed")
+            if self._endpoint_manager
+            else None
+        ) or "https://feed.entertainment.tv.theplatform.eu/f/mdeprod/mdeprod-entitled-channels"
+
+        tp_channels: List[TheplatformChannel] = fetch_entitled_channels_feed(
+            http_manager=self._http,
+            feed_url=feed_url,
+            distribution_rights=distribution_rights,
+            cid=cid,
+            user_agent=user_agent,
+            timeout=DEFAULT_REQUEST_TIMEOUT,
+        )
+        return distribution_rights, tp_channels
 
     def _fetch_station_metadata(self) -> Dict[str, Dict]:
         metadata: Dict[str, Dict] = {}

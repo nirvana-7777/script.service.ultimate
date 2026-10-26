@@ -37,6 +37,16 @@ load completes) — NOT by the live manifest/pid caches, which
 without ever updating the station map.  Keying on the caches would let
 a playlist-only population vouch for a map that still holds media pids.
 
+When neither the map nor a get_channels() refresh yields a vouched pid
+(rate-limited refresh, stale map entry after a feed change), numeric
+station ids get one last chance through the entitled-channels feed
+fallback — ``ChannelManager.resolve_release_pid_via_feed`` (wrapped in
+``_feed_fallback_pid``).  That feed carries both the release pid and the
+direct streamingUrl, so live manifest, DRM and catchup can be served
+without any SMIL round-trip; it is the escape hatch for content whose
+selector is user-agent-gated (observed: ``UserAgentBlocked`` error-SMIL,
+"User Agent Restriction", for a Sky Sport UHD station).
+
 Catchup routing
 ---------------
 Magenta2 catchup reuses the live DASH manifest URL with ``begin``/``end``
@@ -55,7 +65,9 @@ so ``get_drm`` routes catchup requests through the same fast-path as live.
 If the live manifest URL is not yet cached when a catchup request arrives,
 the live caches are (re)populated before building the URL — on a pid miss
 this refresh is rate-limited to one attempt per ``_LIVE_CACHE_RETRY_INTERVAL``
-so an unentitled or stale id cannot storm the feed.
+so an unentitled or stale id cannot storm the feed.  If the refresh
+does not yield a vouched pid either, the entitled-channels feed fallback
+may rewrite the caches (see ``_prepare_live_pid`` / ``_feed_fallback_pid``).
 SmilManager is NOT used for catchup on this provider.
 """
 import base64
@@ -178,6 +190,11 @@ class PlaybackManager:
         # be small early after boot).
         self._last_populate_attempt: float = float("-inf")
         self._populate_lock = threading.Lock()
+        # One-shot warning flag for the (unsupported) case of a
+        # ChannelManager without resolve_release_pid_via_feed — i.e. this
+        # patched PlaybackManager running against an un-patched
+        # channel_manager.py.  See _feed_fallback_pid.
+        self._warned_no_feed_fallback: bool = False
 
     # ------------------------------------------------------------------ #
     # Public API                                                           #
@@ -204,7 +221,10 @@ class PlaybackManager:
            pid is entitled.  On a miss the request degrades to SmilManager
            with the resolved id; if SMIL also fails, the cache is re-read
            once (narrow race: a concurrent refresh may have populated it
-           while the SMIL fetch was in flight).
+           while the SMIL fetch was in flight) and, for numeric station
+           ids, the station is re-resolved once too (a concurrent
+           feed-fallback refresh may have REWRITTEN the station->pid
+           mapping, changing the pid itself).
         3. **VOD / recordings**: Fall through to ``SmilManager.get_manifest``.
         """
         if self._is_catchup_request(kwargs):
@@ -237,11 +257,23 @@ class PlaybackManager:
             # Post-SMIL fallback (narrow race): another thread may have
             # populated the live cache while the SMIL fetch was in flight.
             # One dict read — never a re-fetch.
-            mpd = self._channel_manager.get_live_manifest_url(lookup_id)
+            fallback_pid = lookup_id
+            mpd = self._channel_manager.get_live_manifest_url(fallback_pid)
+            if not mpd and content_id.isdigit():
+                # A concurrent feed-fallback refresh
+                # (ChannelManager.resolve_release_pid_via_feed) can also
+                # REWRITE the station->pid map — the pid itself may have
+                # changed while the SMIL fetch was in flight.  One map read
+                # plus one cache read; still never a re-fetch.
+                re_resolved = self._resolve_station_id(content_id)
+                if re_resolved != lookup_id:
+                    fallback_pid = re_resolved
+                    mpd = self._channel_manager.get_live_manifest_url(fallback_pid)
             if mpd:
                 logger.warning(
                     f"get_manifest: SMIL returned no MPD for {lookup_id}; using "
-                    "entitled-feed MPD (may lack the SMIL path's session binding)"
+                    f"entitled-feed MPD for {fallback_pid} "
+                    "(may lack the SMIL path's session binding)"
                 )
                 return mpd
         return result
@@ -267,7 +299,11 @@ class PlaybackManager:
            case: pid-cache membership is the entitlement verification for the
            direct licence path, and callers cache non-empty DRM results — an
            unverified releasePid would turn a self-healing empty result into
-           a cached, persistent wrong-licence config.
+           a cached, persistent wrong-licence config.  (The resolved pid
+           reaches this check only after the get_channels() refresh and —
+           for numeric station ids — the entitled-channels feed fallback
+           in ``_prepare_live_pid``; a pid still unvouched after both has
+           genuinely resisted two feed-level rescue attempts.)
         3. **VOD / recordings**: Fall through to ``SmilManager.get_drm``.
         """
         lookup_id = content_id
@@ -395,6 +431,20 @@ class PlaybackManager:
         filled by populate_streaming_data (channel-playlist endpoint),
         which never updates the station map.
 
+        If the pid is STILL unvouched after that and *content_id* is a
+        numeric station id, the entitled-channels feed fallback
+        (``_feed_fallback_pid`` → ChannelManager.resolve_release_pid_via_feed)
+        gets the last word: it re-resolves the station from the feed,
+        which carries both the release pid and the direct streamingUrl,
+        so the live fast paths can serve manifest and DRM with no SMIL
+        at all — the escape hatch for user-agent-gated selectors
+        (``UserAgentBlocked`` error SMILs) and stale-map entries alike.
+        Its refetch is rate-limited independently of the get_channels()
+        refresh above (one attempt per ENTITLED_FEED_FALLBACK_MIN_INTERVAL,
+        shared across stations) and it never raises; on failure the
+        possibly-stale pid passes through and the caller degrades to
+        SmilManager.
+
         Never raises: a failed feed fetch degrades to resolving against
         whatever map state exists, and callers fall through to SmilManager.
         """
@@ -419,6 +469,27 @@ class PlaybackManager:
                     "_prepare_live_pid: feed fetch failed — degrading with the "
                     f"current pid ({pid})"
                 )
+            if (
+                not self._channel_manager.is_entitled_live_pid(pid)
+                and content_id.isdigit()
+            ):
+                # Entitled-channels-feed fallback: the pid is still not
+                # vouched — a stale map entry, a media pid from a map that
+                # pre-dates any feed load, or a station the (rate-limited)
+                # refresh could not fix.  The feed carries release pid AND
+                # direct streamingUrl, so the live fast paths below can
+                # serve manifest/DRM/catchup without SMIL.  Vouched fast
+                # path inside; refetch rate-limited independently of the
+                # refresh above; never raises (see _feed_fallback_pid).
+                feed_pid = self._feed_fallback_pid(content_id)
+                if feed_pid:
+                    pid = feed_pid
+                else:
+                    logger.debug(
+                        "_prepare_live_pid: entitled-feed fallback yielded no "
+                        f"vouched pid for station {content_id} — degrading to "
+                        "SMIL with the current id"
+                    )
         if pid == content_id and content_id.isdigit():
             # Explicit degraded-path signal: the live fast paths will miss
             # on a raw numeric station id (their caches are keyed by pids)
@@ -503,6 +574,49 @@ class PlaybackManager:
                 f"Live-cache population failed ({exc}); degrading to SMIL path"
             )
             return _LiveCachePopulateResult.FAILED
+
+    def _feed_fallback_pid(self, station_id: str) -> Optional[str]:
+        """
+        Entitled-channels-feed fallback: wrap
+        ``ChannelManager.resolve_release_pid_via_feed`` for
+        ``_prepare_live_pid``.
+
+        The wrapped method re-resolves *station_id* from the
+        entitled-channels feed — served from the
+        ``mpx_feed_entitledChannelsFeed`` endpoint (never a hardcoded
+        URL) — rewrites the station->pid map and the live
+        manifest/pid/HLS caches for every feed entry, and returns the
+        vouched release pid.  None means the station is not in the feed
+        (not entitled on this account), the feed could not be fetched, or
+        the refetch was rate-limited; the caller then degrades to
+        SmilManager with the current id.  Never raises.
+
+        The getattr guard keeps this PlaybackManager usable against an
+        un-patched ChannelManager (the fallback patch spans several
+        files — channel_manager.py, constants.py, smil_manager.py and
+        this one); playback then degrades exactly as before, with one
+        warning instead of an AttributeError on every live request.
+        """
+        resolver = getattr(
+            self._channel_manager, "resolve_release_pid_via_feed", None
+        )
+        if resolver is None:
+            if not self._warned_no_feed_fallback:
+                self._warned_no_feed_fallback = True
+                logger.warning(
+                    "ChannelManager has no resolve_release_pid_via_feed — "
+                    "apply the magenta2 feed-fallback patch to "
+                    "channel_manager.py to enable the playback-time fallback"
+                )
+            return None
+        try:
+            return resolver(station_id)
+        except Exception as exc:  # defensive: never break live playback
+            logger.warning(
+                f"_feed_fallback_pid: entitled-feed fallback failed for "
+                f"station {station_id}: {exc}"
+            )
+            return None
 
     def _build_live_drm(self, content_id: str) -> List[DRMConfig]:
         """

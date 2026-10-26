@@ -269,6 +269,14 @@ OPENID_CONFIG_CACHE_DURATION = 86400  # 24 hours
 MANIFEST_CACHE_DURATION = 7200    # 2 hours
 SMIL_CACHE_DURATION = 3600        # 1 hour
 
+# Minimum seconds between entitled-channels feed refetches triggered by a
+# playback-time pid miss (ChannelManager.resolve_release_pid_via_feed — the
+# fallback that bypasses the SMIL/selector path when it is unusable, e.g.
+# UserAgentBlocked). Keeps a genuinely unentitled station from re-hitting the
+# feed on every playback attempt; force=True on that method bypasses the gate
+# (user-initiated retry / admin refresh).
+ENTITLED_FEED_FALLBACK_MIN_INTERVAL = 300
+
 # ============================================================================
 # Error Codes
 # ============================================================================
