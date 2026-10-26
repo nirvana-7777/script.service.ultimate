@@ -3,6 +3,11 @@
 """
 Manages channel discovery, metadata enrichment, entitlement, and streaming-data
 population for the Magenta2 provider.
+
+This module also owns the magenta2 thePlatform feed pipeline — distribution
+rights, entitled-channels fetch/parse and the playback-time fallback's
+generic-right query. It deliberately does NOT live in the shared
+lib_theplatform.py, which keeps only provider-agnostic utilities.
 """
 import json
 import re
@@ -10,12 +15,12 @@ import threading
 import time
 import uuid
 from typing import Callable, Dict, List, Optional, Tuple
-from urllib.parse import quote
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from ...base.errors import AuthPendingError, ProviderError
 from ...base.models import StreamingChannel
 from ...base.utils.logger import logger
-from ..lib_theplatform import paginate_feed, PaginationError
+from ..lib_theplatform import PaginationError, paginate_feed, TheplatformChannel
 from .constants import (
     CONTENT_TYPE_LIVE,
     DEFAULT_EPG_WINDOW_HOURS,
@@ -30,10 +35,24 @@ from .constants import (
 from .endpoint_manager import EndpointManager
 from .config_models import ProviderConfig
 from .models import Magenta2Channel, Magenta2PlaybackRestrictedException
-from ..lib_theplatform import (
-    TheplatformChannel,
-    fetch_distribution_rights,
-    fetch_entitled_channels_feed,
+
+# "DT baseline" distribution right carried by (effectively) every entry of
+# the mdeprod entitled-channels feed — every Sky-family, DFB, RedBullTV,
+# MoreThanSports, DABEI … entry in a captured feed carries it.  It is NOT
+# one of the account's applicable (entitlement) rights: querying the feed
+# with it enumerates the FULL channel universe (~436 entries) instead of
+# the account-entitled subset (~255 that the applicable rights select).
+# The playback-time fallback resolver (resolve_release_pid_via_feed →
+# _fetch_full_channel_universe) queries with exactly this right so
+# user-agent-gated stations (UserAgentBlocked error SMILs — observed for a
+# Sky Sport UHD station) can still be resolved to a release pid + direct
+# streamingUrl.  Entitlement is NOT weakened: the Widevine licence server
+# remains the enforcement point; the filter only decides which entries the
+# resolution table holds.  Mirrors the manually verified query:
+#   .../mdeprod-entitled-channels
+#       ?byDistributionRightId=…/DistributionRight/268234924&range=1-1000
+_GENERIC_DISTRIBUTION_RIGHT_URL = (
+    "http://data.entitlement.theplatform.eu/eds/data/DistributionRight/268234924"
 )
 
 
@@ -158,9 +177,14 @@ class ChannelManager:
 
         try:
             # ── Steps 1+2: distribution rights + entitled-channels feed ──
-            # Shared with the playback-time fallback
-            # (resolve_release_pid_via_feed) so both paths issue
-            # byte-identical requests.
+            # The account's ENTITLED lineup (feed filtered by the
+            # applicable distribution rights). NOT shared with the
+            # playback-time fallback (resolve_release_pid_via_feed →
+            # _fetch_full_channel_universe), which deliberately queries the
+            # GENERIC distribution right instead — the full channel
+            # universe — because it exists for stations OUTSIDE this
+            # account's entitled subset (observed: Sky Sport UHD absent
+            # from the 255-entry lineup, UserAgentBlocked on the SMIL path).
             distribution_rights, tp_channels = self._fetch_entitled_feed_data()
 
             def _dist_uri_to_int(uri) -> Optional[int]:
@@ -407,12 +431,20 @@ class ChannelManager:
             manifest = channel_manager.get_live_manifest_url(pid)
             drm      = live fast-path construction with release_pid=pid
 
+        The feed is queried with the GENERIC distribution right
+        (_GENERIC_DISTRIBUTION_RIGHT_URL) — the FULL channel universe, NOT
+        the account's applicable rights. The fallback exists precisely for
+        stations outside the entitled subset; filtering by the applicable
+        rights would hide them (observed: the 12-right query returns 255
+        entries, Sky Sport UHD not among them, while the generic-right
+        query returns 436 including it).
+
         Behaviour:
           * Vouched fast path: if the station already maps to a pid that is
             in the entitled pid cache, it is returned WITHOUT a fetch.
           * Rate limit: at most one feed refetch per
             ENTITLED_FEED_FALLBACK_MIN_INTERVAL seconds per instance, so a
-            genuinely unentitled station cannot hammer the feed on every
+            genuinely unavailable station cannot hammer the feed on every
             playback attempt. force=True bypasses (user-initiated retry,
             admin refresh). Concurrent callers serialise on a lock; the
             loser profits from the winner's refreshed maps.
@@ -426,9 +458,9 @@ class ChannelManager:
         cached channel list is dropped so the next get_channels() rebuilds
         with the fresh pids.
 
-        Returns the release pid, or None if the station is not in the feed
-        (not entitled on this account) or the feed could not be fetched.
-        Never raises.
+        Returns the release pid, or None if the station is not even in the
+        full channel universe (feed queried under the generic right) or
+        the feed could not be fetched. Never raises.
         """
         vouched = self._vouched_pid_for_station(station_id)
         if vouched:
@@ -460,7 +492,7 @@ class ChannelManager:
                 f"path unusable)"
             )
             try:
-                _, tp_channels = self._fetch_entitled_feed_data()
+                tp_channels = self._fetch_full_channel_universe()
                 applied = 0
                 for tp_ch in tp_channels:
                     sid = self._extract_station_id(tp_ch.station_id)
@@ -501,9 +533,9 @@ class ChannelManager:
 
             logger.warning(
                 f"resolve_release_pid_via_feed: station {station_id} is not in "
-                f"the entitled-channels feed (not entitled on this account, or "
-                f"its distribution right is not among the byDistributionRightId "
-                f"values the feed was queried with)"
+                f"the entitled-channels feed even under the generic "
+                f"distribution right (full universe, {applied} entries "
+                f"applied) — no release pid / streamingUrl exists for it"
             )
             return None
 
@@ -778,30 +810,97 @@ class ChannelManager:
             self._live_hls_cache[playback_id] = hls_url
         self._live_pid_cache[playback_id] = playback_id
 
+    # ------------------------------------------------------------------ #
+    # thePlatform feed pipeline (magenta2-specific — lives HERE, not in   #
+    # the shared lib_theplatform)                                         #
+    # ------------------------------------------------------------------ #
+
     def _fetch_entitled_feed_data(
         self,
     ) -> Tuple[List[str], List[TheplatformChannel]]:
         """
-        Steps 1-2 shared by get_channels() and the playback-time feed
-        fallback (resolve_release_pid_via_feed):
+        Steps 1-2 of get_channels(): the account's ENTITLED lineup.
 
           1. getApplicableDistributionRights — license_service_url with
              Basic persona auth (cid correlation header).
-          2. mdeprod-entitled-channels feed — queried with
-             byDistributionRightId (see _append_distribution_rights_param:
-             WITHOUT this param the feed serves only its default set,
-             which excludes rights-gated premium channels — observed in
-             production: 255 base entries, station 752027688388 absent,
-             while the same feed queried with the rights param returns
-             its DASH release pid), paginated by
-             fetch_entitled_channels_feed. If the filtered fetch fails or
-             comes back empty, it is retried ONCE unfiltered so the
-             added param can never blank the channel list.
+          2. mdeprod-entitled-channels feed, filtered by those rights
+             (pipe-joined byDistributionRightId — see
+             _fetch_entitled_feed_channels, the single owner of that
+             parameter).
+
+        Deliberately NOT shared with the playback-time fallback
+        (resolve_release_pid_via_feed → _fetch_full_channel_universe):
+        that path queries the GENERIC distribution right instead, because
+        it exists for stations OUTSIDE the entitled subset.
+
+        Resilience: if the rights-filtered query fails or returns nothing,
+        it is retried once UNFILTERED (feed default set) so a param form
+        the server rejects can never blank the channel list. Playback
+        entitlement is enforced by the licence server, not by this list.
 
         Returns (distribution_rights, tp_channels); raises on failure so
         callers choose their own degradation (get_channels wraps it into a
         ProviderError-preserving exception chain, the fallback logs and
         returns None).
+        """
+        distribution_rights = self._fetch_distribution_rights()
+        if not distribution_rights:
+            logger.warning(
+                "_fetch_entitled_feed_data: no distribution rights — cannot "
+                "fetch the entitled lineup"
+            )
+            return [], []
+
+        try:
+            tp_channels: List[TheplatformChannel] = self._fetch_entitled_feed_channels(
+                distribution_rights
+            )
+        except Exception as exc:
+            logger.warning(
+                f"_fetch_entitled_feed_data: rights-filtered feed fetch failed "
+                f"({exc}); retrying unfiltered (feed default set)"
+            )
+            tp_channels = self._fetch_entitled_feed_channels()
+
+        if not tp_channels:
+            # "Server accepted the param but matched nothing" — the account
+            # demonstrably has packages, so an empty filtered result is a
+            # query problem, not an entitlement state.
+            logger.warning(
+                "_fetch_entitled_feed_data: rights-filtered feed returned no "
+                "channels — retrying unfiltered (feed default set)"
+            )
+            tp_channels = self._fetch_entitled_feed_channels()
+
+        return distribution_rights, tp_channels
+
+    def _fetch_full_channel_universe(self) -> List[TheplatformChannel]:
+        """
+        Playback-time fallback fetch: the FULL channel universe via the
+        generic DT baseline distribution right, ONE request — mirroring
+        the manually verified query:
+
+            .../mdeprod-entitled-channels
+                ?byDistributionRightId=…/DistributionRight/268234924&range=1-1000
+
+        Every entry carries a release pid + direct streamingUrl (DASH MPD,
+        plus HLS where present). Entitlement is NOT weakened by this: the
+        Widevine licence server remains the enforcement point; this table
+        only resolves station -> pid + URL.
+
+        Raises on failure; the caller (resolve_release_pid_via_feed)
+        catches, logs and degrades.
+        """
+        return self._fetch_entitled_feed_channels(
+            distribution_rights=[_GENERIC_DISTRIBUTION_RIGHT_URL],
+            items_per_page=1000,
+        )
+
+    def _fetch_distribution_rights(self) -> List[str]:
+        """
+        getApplicableDistributionRights: the account's applicable
+        DistributionRight URIs. Empty list on request failure; raises
+        RuntimeError when no license_service_url is configured.
         """
         rights_url = (
             self._provider_config.manifest.mpx.license_service_url
@@ -811,130 +910,229 @@ class ChannelManager:
         if not rights_url:
             raise RuntimeError("No license_service_url available")
 
-        cid = f"{self._session_id}::{uuid.uuid4()}"
-        user_agent = self._ua_subscriber
-
         persona_token = self._ensure_authenticated()
-        auth_headers = {
+        headers = {
+            "User-Agent": self._ua_subscriber,
+            "Accept": "application/json",
             "Authorization": f"Basic {persona_token}",
             "Origin": "https://www.magenta.tv",
             "Referer": "https://www.magenta.tv/",
         }
 
-        distribution_rights = fetch_distribution_rights(
-            http_manager=self._http,
-            rights_url=rights_url,
-            cid=cid,
-            user_agent=user_agent,
-            timeout=DEFAULT_REQUEST_TIMEOUT,
-            extra_headers=auth_headers,
-        )
+        try:
+            response = self._http.get(
+                rights_url,
+                operation="get_distribution_rights",
+                headers=headers,
+                params={
+                    "form": "json",
+                    "schema": "1.2",
+                    "cid": f"{self._session_id}::{uuid.uuid4()}",
+                },
+                timeout=DEFAULT_REQUEST_TIMEOUT,
+            )
+            if response.status_code != 200:
+                logger.error(
+                    f"_fetch_distribution_rights: request failed "
+                    f"[{response.status_code}]"
+                )
+                return []
 
+            rights = response.json().get("getApplicableDistributionRightsResponse", [])
+            logger.debug(f"_fetch_distribution_rights: obtained {len(rights)} distribution rights")
+            return rights
+
+        except Exception as exc:
+            logger.error(f"_fetch_distribution_rights: error fetching distribution rights: {exc}")
+            return []
+
+    def _fetch_entitled_feed_channels(
+        self,
+        distribution_rights: Optional[List[str]] = None,
+        items_per_page: int = 100,
+    ) -> List[TheplatformChannel]:
+        """
+        Fetch the entitled-channels feed and parse it into
+        TheplatformChannel records.
+
+        SINGLE OWNER of the ``byDistributionRightId`` parameter: any copy
+        already present in the endpoint URL is stripped
+        (_strip_distribution_rights_params), then the parameter is added
+        exactly ONCE via request params, pipe-joined (``id1|id2``) — the
+        form the feed's own description mandates ("Must be queried with
+        byDistritbutionRightId=id1|id2..."). Baking it into the URL AND
+        sending it as a param returns ``400 BadParameterException:
+        Duplicate query parameters are not allowed`` (observed in
+        production).
+
+        Args:
+            distribution_rights: DistributionRight URIs to filter by.
+                None queries the feed's DEFAULT result set (used only by
+                _fetch_entitled_feed_data's resilience retries).
+            items_per_page: 100 paginates (lineup path); 1000 fetches the
+                whole feed in ONE request, range=1-1000 (fallback path,
+                mirroring the manually verified generic-right query).
+
+        Raises PaginationError (via paginate_feed) when a page fails with
+        no partial data; partial data is used (with a loud log) when some
+        pages succeeded.
+        """
         feed_url = (
             self._endpoint_manager.get_endpoint("mpx_feed_entitledChannelsFeed")
             if self._endpoint_manager
             else None
         ) or "https://feed.entertainment.tv.theplatform.eu/f/mdeprod/mdeprod-entitled-channels"
 
-        # The one layer this provider controls end-to-end: bake the
-        # account's distribution rights into the query so rights-gated
-        # premium channels (Sky Sport UHD, …) come back from the feed.
-        # fetch_entitled_channels_feed paginates but does not add this
-        # filter itself (observed in production logs: the feed GET goes
-        # out with range only, and the response is the feed's default
-        # set). The param is percent-encoded, comma-joined, and appended
-        # once; an endpoint template that already carries it wins.
-        filtered_url = self._append_distribution_rights_param(
-            feed_url, distribution_rights
+        # Single-owner guard: never send byDistributionRightId twice.
+        feed_url = self._strip_distribution_rights_params(feed_url)
+
+        cid = f"{self._session_id}::{uuid.uuid4()}"
+        headers = {"User-Agent": self._ua_subscriber, "Accept": "application/json"}
+        rights_param = "|".join(distribution_rights) if distribution_rights else None
+
+        logger.debug(
+            f"_fetch_entitled_feed_channels: {feed_url} "
+            f"[byDistributionRightId: {'|'.join(distribution_rights) if distribution_rights else '(none — default set)'}]"
         )
-        if filtered_url != feed_url:
-            logger.debug(f"entitled feed URL (rights-filtered): {filtered_url}")
+
+        def _fetch_page(start_index: int, page_size: int) -> Optional[Dict]:
+            params: Dict[str, str] = {
+                "range": f"{start_index}-{start_index + page_size - 1}",
+                "cid": cid,
+            }
+            if rights_param:
+                params["byDistributionRightId"] = rights_param
+            try:
+                response = self._http.get(
+                    feed_url,
+                    operation="entitled_channels_feed",
+                    headers=headers,
+                    params=params,
+                    timeout=DEFAULT_REQUEST_TIMEOUT,
+                )
+                response.raise_for_status()
+                return response.json()
+            except Exception as exc:
+                logger.warning(f"_fetch_entitled_feed_channels: page fetch failed: {exc}")
+                return None
 
         try:
-            tp_channels: List[TheplatformChannel] = fetch_entitled_channels_feed(
-                http_manager=self._http,
-                feed_url=filtered_url,
-                distribution_rights=distribution_rights,
-                cid=cid,
-                user_agent=user_agent,
-                timeout=DEFAULT_REQUEST_TIMEOUT,
+            entries = paginate_feed(
+                _fetch_page,
+                items_per_page=items_per_page,
+                max_pages=20,
+                feed_name="entitled_channels",
             )
-        except Exception as exc:
-            if filtered_url == feed_url:
+        except PaginationError as exc:
+            if not exc.partial_entries:
+                logger.error(f"_fetch_entitled_feed_channels: {exc} — no channels fetched")
                 raise
-            # Safety net: a param the server rejects must not take the
-            # whole channel list down — retry the query that has always
-            # worked and surface the failure loudly.
-            logger.warning(
-                f"_fetch_entitled_feed_data: rights-filtered feed fetch failed "
-                f"({exc}); retrying unfiltered feed {feed_url}"
+            logger.error(
+                f"_fetch_entitled_feed_channels: {exc} — channel lineup "
+                f"INCOMPLETE, using {len(exc.partial_entries)} raw entries "
+                f"fetched before failure"
             )
-            tp_channels = fetch_entitled_channels_feed(
-                http_manager=self._http,
-                feed_url=feed_url,
-                distribution_rights=distribution_rights,
-                cid=cid,
-                user_agent=user_agent,
-                timeout=DEFAULT_REQUEST_TIMEOUT,
-            )
+            entries = exc.partial_entries
 
-        if not tp_channels and filtered_url != feed_url:
-            # Same safety net for the "server accepted the param but matched
-            # nothing" case (e.g. a multi-value form it does not support):
-            # the account demonstrably has packages, so an empty filtered
-            # result is a query problem, not an entitlement state.
-            logger.warning(
-                "_fetch_entitled_feed_data: rights-filtered feed returned no "
-                "channels — retrying unfiltered (check that the server "
-                "accepts the byDistributionRightId value form)"
-            )
-            tp_channels = fetch_entitled_channels_feed(
-                http_manager=self._http,
-                feed_url=feed_url,
-                distribution_rights=distribution_rights,
-                cid=cid,
-                user_agent=user_agent,
-                timeout=DEFAULT_REQUEST_TIMEOUT,
-            )
-        return distribution_rights, tp_channels
+        channels = self._parse_entitled_feed_entries(entries)
+        logger.info(f"_fetch_entitled_feed_channels: fetched {len(channels)} channels total")
+        return channels
 
     @staticmethod
-    def _append_distribution_rights_param(
-        feed_url: str, distribution_rights: List[str]
-    ) -> str:
+    def _strip_distribution_rights_params(feed_url: str) -> str:
         """
-        Append ``byDistributionRightId`` to *feed_url*, thePlatform-style.
+        Remove any ``byDistributionRightId`` parameter from *feed_url*
+        (case-insensitive; path and all other parameters preserved).
 
-        Why here: the player's proven working request for the entitled
-        feed is the endpoint template plus
-        ``byDistributionRightId=http://data.entitlement.theplatform.eu/eds/data/DistributionRight/<id>``
-        (full right URIs, comma-joined for several values, plus range).
-        Without the param the feed answers with its DEFAULT result set,
-        which excludes rights-gated premium channels — the production
-        failure this helper exists for: station 752027688388 (Sky Sport
-        UHD) was absent from the default set, its station->pid map entry
-        stayed an unvouched era$mediaPids media pid (d94Qlc88N3kS), SMIL
-        on that pid returned UserAgentBlocked, and the feed fallback
-        honestly reported "not in the feed" because with the unfiltered
-        query it genuinely wasn't.
-
-        Rules: idempotent (skipped when the URL already carries the
-        param — an endpoint-manager template with its own filter wins),
-        order-preserving, de-duplicated, percent-encoded as one value
-        (commas encoded too, decoded server-side by thePlatform EDS).
+        _fetch_entitled_feed_channels is the SINGLE OWNER of that
+        parameter — the feed rejects duplicates with
+        ``400 BadParameterException: Duplicate query parameters are not
+        allowed`` (observed when a copy baked into the URL met a second
+        copy sent via request params). Malformed URLs pass through
+        untouched and fail loudly at request time.
         """
-        if not distribution_rights:
+        try:
+            parts = urlsplit(feed_url)
+            if not parts.query:
+                return feed_url
+            kept = [
+                (key, value)
+                for key, value in parse_qsl(parts.query, keep_blank_values=True)
+                if key.lower() != "bydistributionrightid"
+            ]
+            return urlunsplit(parts._replace(query=urlencode(kept)))
+        except Exception:
             return feed_url
-        if "bydistributionrightid=" in feed_url.lower():
-            return feed_url
-        rights = [str(r).strip() for r in distribution_rights if str(r).strip()]
-        if not rights:
-            return feed_url
-        seen = set()
-        ordered = [r for r in rights if not (r in seen or seen.add(r))]
-        param = quote(",".join(ordered), safe="")
-        sep = "&" if "?" in feed_url else "?"
-        return f"{feed_url}{sep}byDistributionRightId={param}"
+
+    @staticmethod
+    def _parse_entitled_feed_entries(entries: List[Dict]) -> List[TheplatformChannel]:
+        """
+        Parse raw entitled-channels feed entries into TheplatformChannel
+        records.
+
+        Expected shape (one entry):
+            {
+              "media": [{"content": [
+                  {"format": "MPEG-DASH",
+                   "releases": [{"pid": "uEkSomCvvBMX"}],
+                   "streamingUrl": "https://…/DASH/index.mpd"},
+                  {"format": "M3U",
+                   "releases": [{"pid": "bMchet033yZ0"}],
+                   "streamingUrl": "https://…/HLS_CMAF/index.m3u8"}
+              ]}],
+              "listings": [{"stationId": "http://…/Station/265808936224"}],
+              "dt$channelNumber": 880,
+              "distributionRightIds": ["http://…/DistributionRight/268234924", …]
+            }
+        """
+        channels: List[TheplatformChannel] = []
+
+        for entry in entries:
+            try:
+                # Station ID
+                listings = entry.get("listings", [])
+                if not listings:
+                    continue
+                station_id = listings[0].get("stationId", "")
+                if not station_id:
+                    continue
+
+                # Content items
+                content_items = (entry.get("media") or [{}])[0].get("content", [])
+
+                mpd_url = ""
+                release_pid = ""
+                hls_url = None
+
+                for item in content_items:
+                    fmt = item.get("format", "")
+                    url = item.get("streamingUrl", "")
+                    pid = (item.get("releases") or [{}])[0].get("pid", "")
+
+                    if fmt == "MPEG-DASH" and url:
+                        mpd_url = url
+                        release_pid = pid
+                    elif fmt == "M3U" and url:
+                        hls_url = url
+
+                if not mpd_url:
+                    logger.debug(f"_parse_entitled_feed_entries: no DASH URL for station {station_id}, skipping")
+                    continue
+
+                channels.append(TheplatformChannel(
+                    station_id=station_id,
+                    mpd_url=mpd_url,
+                    release_pid=release_pid,
+                    hls_url=hls_url,
+                    channel_number=entry.get("dt$channelNumber"),
+                    extra={"distributionRightIds": entry.get("distributionRightIds", [])},
+                ))
+
+            except Exception as exc:
+                logger.warning(f"_parse_entitled_feed_entries: error parsing feed entry: {exc}")
+
+        logger.debug(f"_parse_entitled_feed_entries: parsed {len(channels)} channels from entitled-channels feed")
+        return channels
 
     def _fetch_station_metadata(self) -> Dict[str, Dict]:
         metadata: Dict[str, Dict] = {}
@@ -1045,7 +1243,7 @@ class ChannelManager:
         `profile` comes from station_metadata[station_id]["special_rights_profile"],
         which _fetch_station_metadata reads from the station feed's
         dt$clientData.specialRightsProfile. It is NOT read from the
-        entitled-channels feed's tp_ch.extra — parse_entitled_channels_feed
+        entitled-channels feed's tp_ch.extra — _parse_entitled_feed_entries
         only carries distributionRightIds into `extra`, never dt$clientData,
         so reading it from there would always fail open (nothing filtered).
 

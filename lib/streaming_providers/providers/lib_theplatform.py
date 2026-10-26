@@ -1,6 +1,6 @@
 # streaming_providers/providers/lib_theplatform.py
 """
-Shared theplatform playback utilities.
+Shared theplatform playback utilities — provider-agnostic only.
 
 Both magenta2 (DE) and magentaeu (AT/PL/HR/HU/ME) ultimately deliver the
 same three playback artefacts for every live channel:
@@ -9,37 +9,31 @@ same three playback artefacts for every live channel:
     release_pid   – the Widevine releasePid for licence acquisition
     station_id    – the theplatform Station URI (used as the channel key)
 
-They obtain those artefacts differently:
+HOW each provider discovers those artefacts is provider-specific and lives
+in the provider packages — never here:
 
-    magenta2   → getApplicableDistributionRights  → entitled-channels feed
-    magentaeu  → bifrost /epg/channel
+    magenta2   → getApplicableDistributionRights + entitled-channels feed
+                 (streaming_providers/providers/magenta2/channel_manager.py)
+    magentaeu  → bifrost /epg/channel (entry parser below; the fetch
+                 itself lives in the magentaeu provider)
 
-This module contains the logic that is identical once the artefacts are in
-hand:
+This module contains only what is identical once the artefacts are in hand:
 
-    TheplatformChannel          – canonical dataclass for one channel's data
-    parse_entitled_channels_feed()  – parses the magenta2 JSON feed
-    parse_bifrost_epg_channel()     – parses one magentaeu bifrost entry
-    build_catchup_url()         – appends begin/end to any manifest URL
-    build_widevine_drm_config() – builds a DRMConfig from a licence URL
-    build_licence_url()         – assembles the theplatform WV licence URL
-    extract_persona_jwt()       – decodes Base64 persona token → raw JWT
+    TheplatformChannel             – canonical dataclass for one channel
+    PaginationError / paginate_feed() – generic feed pagination
+    parse_bifrost_epg_channel()    – parses one magentaeu bifrost entry
+    build_catchup_url()            – appends begin/end to any manifest URL
+    build_widevine_drm_config()    – builds a DRMConfig from a licence URL
+    build_licence_url()            – assembles the theplatform WV licence URL
+    extract_persona_jwt()          – decodes a Base64 thePlatform persona
+                                      token → raw JWT
 
-Usage (magenta2):
-    channels = parse_entitled_channels_feed(feed_json)
-    drm      = build_widevine_drm_config(
-                   build_licence_url(widevine_endpoint, ch.release_pid,
-                                     extract_persona_jwt(persona_token),
-                                     account_uri),
-                   user_agent)
-
-Usage (magentaeu):
-    ch  = parse_bifrost_epg_channel(entry)
+Usage (both providers, once release_pid + persona token are in hand):
     drm = build_widevine_drm_config(
-              build_licence_url(WV_URL, ch.release_pid,
-                                persona_token_from_jwt_claim,
+              build_licence_url(widevine_endpoint, release_pid,
+                                extract_persona_jwt(persona_token),
                                 account_uri),
-              USER_AGENT)
+              user_agent)
 """
 from __future__ import annotations
 
@@ -158,76 +152,8 @@ class TheplatformChannel:
 
 
 # ---------------------------------------------------------------------------
-# Feed parsers
+# magentaeu feed parser
 # ---------------------------------------------------------------------------
-
-def parse_entitled_channels_feed(feed: dict) -> List[TheplatformChannel]:
-    """
-    Parse the magenta2 entitled-channels feed response.
-
-    Expected shape (one entry):
-        {
-          "media": [{"content": [
-              {"format": "MPEG-DASH",
-               "releases": [{"pid": "uEkSomCvvBMX"}],
-               "streamingUrl": "https://…/DASH/index.mpd"},
-              {"format": "M3U",
-               "releases": [{"pid": "bMchet033yZ0"}],
-               "streamingUrl": "https://…/HLS_CMAF/index.m3u8"}
-          ]}],
-          "listings": [{"stationId": "http://…/Station/265808936224"}],
-          "dt$channelNumber": 880
-        }
-    """
-    channels: List[TheplatformChannel] = []
-
-    for entry in feed.get("entries", []):
-        try:
-            # Station ID
-            listings = entry.get("listings", [])
-            if not listings:
-                continue
-            station_id = listings[0].get("stationId", "")
-            if not station_id:
-                continue
-
-            # Content items
-            content_items = (entry.get("media") or [{}])[0].get("content", [])
-
-            mpd_url = ""
-            release_pid = ""
-            hls_url = None
-
-            for item in content_items:
-                fmt = item.get("format", "")
-                url = item.get("streamingUrl", "")
-                pid = (item.get("releases") or [{}])[0].get("pid", "")
-
-                if fmt == "MPEG-DASH" and url:
-                    mpd_url = url
-                    release_pid = pid
-                elif fmt == "M3U" and url:
-                    hls_url = url
-
-            if not mpd_url:
-                logger.debug(f"lib_theplatform: no DASH URL for station {station_id}, skipping")
-                continue
-
-            channels.append(TheplatformChannel(
-                station_id=station_id,
-                mpd_url=mpd_url,
-                release_pid=release_pid,
-                hls_url=hls_url,
-                channel_number=entry.get("dt$channelNumber"),
-                extra={"distributionRightIds": entry.get("distributionRightIds", [])},
-            ))
-
-        except Exception as exc:
-            logger.warning(f"lib_theplatform: error parsing feed entry: {exc}")
-
-    logger.debug(f"lib_theplatform: parsed {len(channels)} channels from entitled-channels feed")
-    return channels
-
 
 def parse_bifrost_epg_channel(entry: dict) -> Optional[TheplatformChannel]:
     """
@@ -280,127 +206,19 @@ def parse_bifrost_epg_channel(entry: dict) -> Optional[TheplatformChannel]:
 
 
 # ---------------------------------------------------------------------------
-# Distribution-rights helper (magenta2)
-# ---------------------------------------------------------------------------
-
-def fetch_distribution_rights(
-    http_manager,
-    rights_url: str,
-    cid: str,
-    user_agent: str,
-    timeout: int = 30,
-    extra_headers: Optional[dict] = None,
-) -> List[str]:
-    """
-    Call getApplicableDistributionRights and return the list of right URLs.
-
-    Args:
-        http_manager:  HTTPManager instance.
-        rights_url:    manifest.mpx.license_service_url
-                       (basicUrlGetApplicableDistributionRights)
-        cid:           Correlation ID string  "session_id::call_id"
-        user_agent:    Platform user-agent string.
-        timeout:       HTTP timeout in seconds.
-        extra_headers: Optional additional headers merged on top of the
-                       default set (e.g. Authorization, Origin, Referer).
-                       Caller-supplied keys take precedence.
-
-    Returns:
-        List of DistributionRight URL strings, empty on failure.
-    """
-    try:
-        headers = {"User-Agent": user_agent, "Accept": "application/json"}
-        if extra_headers:
-            headers.update(extra_headers)
-        response = http_manager.get(
-            rights_url,
-            operation="get_distribution_rights",
-            headers=headers,
-            params={"form": "json", "schema": "1.2", "cid": cid},
-            timeout=timeout,
-        )
-        if response.status_code != 200:
-            logger.error(
-                f"lib_theplatform: distribution rights request failed [{response.status_code}]"
-            )
-            return []
-
-        data = response.json()
-        rights = data.get("getApplicableDistributionRightsResponse", [])
-        logger.debug(f"lib_theplatform: obtained {len(rights)} distribution rights")
-        return rights
-
-    except Exception as exc:
-        logger.error(f"lib_theplatform: error fetching distribution rights: {exc}")
-        return []
-
-
-def fetch_entitled_channels_feed(
-    http_manager,
-    feed_url: str,
-    distribution_rights: List[str],
-    cid: str,
-    user_agent: str,
-    timeout: int = 30,
-) -> List[TheplatformChannel]:
-    if not distribution_rights:
-        logger.warning("lib_theplatform: no distribution rights — cannot fetch entitled channels")
-        return []
-
-    rights_param = "|".join(distribution_rights)
-    headers = {"User-Agent": user_agent, "Accept": "application/json"}
-
-    def fetch_page(start_index: int, page_size: int) -> Optional[Dict[str, Any]]:
-        params = {
-            "byDistributionRightId": rights_param,
-            "range": f"{start_index}-{start_index + page_size - 1}",
-            "cid": cid,
-        }
-        try:
-            response = http_manager.get(
-                feed_url,
-                operation="entitled_channels_feed",
-                headers=headers,
-                params=params,
-                timeout=timeout,
-            )
-            response.raise_for_status()
-            return response.json()
-        except Exception as exc:
-            logger.warning(f"lib_theplatform: entitled channels page fetch failed: {exc}")
-            return None
-
-    try:
-        entries = paginate_feed(
-            fetch_page, items_per_page=100, max_pages=20, feed_name="entitled_channels"
-        )
-    except PaginationError as exc:
-        if not exc.partial_entries:
-            logger.error(f"lib_theplatform: {exc} — no entitled channels fetched")
-            raise
-        logger.error(
-            f"lib_theplatform: {exc} — channel lineup INCOMPLETE, "
-            f"using {len(exc.partial_entries)} raw entries fetched before failure"
-        )
-        entries = exc.partial_entries
-
-    channels = parse_entitled_channels_feed({"entries": entries})
-    logger.info(f"lib_theplatform: fetched {len(channels)} entitled channels total")
-    return channels
-
-
-# ---------------------------------------------------------------------------
 # DRM helpers
 # ---------------------------------------------------------------------------
 
 def extract_persona_jwt(persona_token: str) -> Optional[str]:
     """
-    Extract the raw JWT from a Base64-encoded persona token.
+    Extract the raw JWT from a Base64-encoded thePlatform persona token.
 
     Persona token format:  Base64( account_uri + ":" + jwt )
 
-    This is the magenta2 format returned by the theplatform persona endpoint.
-    The magentaeu provider reads the JWT directly from the dc_cts_personaToken
+    This is the thePlatform persona-token encoding as returned by the
+    magenta2 persona endpoint; the decoding itself is provider-agnostic
+    (pure format utility — no endpoints, params or feed semantics). The
+    magentaeu provider reads the JWT directly from the dc_cts_personaToken
     JWT claim and therefore does not need this function.
 
     Returns:
