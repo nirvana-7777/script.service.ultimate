@@ -1,6 +1,7 @@
 # streaming_providers/base/channel_cache.py
 """
-In-memory channel-list cache for the provider layer.
+In-memory channel-list cache with single-flight loading, stale-while-
+revalidate and a per-provider circuit breaker.
 
 What it gives the PVR client:
   * a warm cache: GET /api/providers/<p>/channels is answered from memory
@@ -8,13 +9,29 @@ What it gives the PVR client:
     upstream load per (provider, params); nobody logs in twice in parallel
   * stale-while-revalidate: past the TTL the old list is served at once and
     refreshed in a background thread; only a cold miss blocks
-  * a status per provider (idle / warming / ready / error) for /api/providers
+  * a status per provider for /api/providers (see status())
+
+Circuit breaker (never changes configuration, only controls RETRYING):
+  A load counts as failed when it raises OR returns no channels (many
+  providers log the error and return []). Consecutive failures back off:
+
+      kind        delays (s)                          why
+      transient   60, 300, 900, 3600, 10800, 21600    timeouts, 5xx, ...
+      empty       900, 3600, 10800, 21600             swallowed error / no channels
+      rate_limit  3600, 10800, 43200 (>= Retry-After) HTTP 429 / RateLimitError
+      auth        21600, 86400                        401/403, AuthError, ...
+      geo         86400                               GeoBlockError
+
+  Both the lazy request path and the background refresher honour the delay,
+  so a failing login is never repeated by client retries or refresh ticks.
+  A list that was loaded successfully is NEVER replaced by a failed or empty
+  reload. invalidate() (credentials changed, reinitialize, enable/disable,
+  rediscover) resets the breaker of that provider.
 
 Memory only, by design: channel objects are not serialised anywhere yet.
-invalidate() must be called whenever the provider instance or its account
-changes (credentials, reinitialize, enable/disable, rediscover). A load that
-was already running when invalidate() was called is delivered to its waiters
-but never stored (generation counter).
+A load that was already running when invalidate() was called is delivered to
+its waiters but never stored (generation counter); a list, failure or running
+load that belongs to a replaced provider INSTANCE is never served (owner).
 """
 
 import re
@@ -25,11 +42,17 @@ from typing import Any, Callable, Dict, Hashable, List, Optional, Tuple
 
 from .utils.logger import logger
 
-DEFAULT_TTL = 24 * 3600.0       # channel lists are stable: fresh for 24 h
+DEFAULT_TTL = 24 * 3600.0            # channel lists are stable: fresh for 24 h
 DEFAULT_MAX_STALE = 7 * 24 * 3600.0  # serve stale (and refresh) up to 7 days; older = cold miss
-EMPTY_RESULT_TTL = 30.0         # an empty list is probably a transient failure: retry soon
-REFRESH_BACKOFF = 60.0          # after a failed background refresh, wait before the next one
-ERROR_TTL = 60.0                # a failed COLD load is remembered: no upstream login per client retry
+EMPTY_TTL = 30.0                     # an empty list is shown as stale at once (its retry is governed by the breaker)
+
+BACKOFF: Dict[str, Tuple[float, ...]] = {
+    "transient": (60, 300, 900, 3600, 10800, 21600),
+    "empty": (900, 3600, 10800, 21600),
+    "rate_limit": (3600, 10800, 43200),
+    "auth": (21600, 86400),
+    "geo": (86400,),
+}
 
 Key = Tuple[str, Hashable]
 
@@ -41,6 +64,32 @@ def _safe_error(exc: BaseException) -> str:
     return _URL_RE.sub("<url>", f"{type(exc).__name__}: {exc}")[:200]
 
 
+def classify_error(exc: BaseException) -> str:
+    """
+    transient | rate_limit | auth | geo. By class NAME and HTTP status so that
+    providers still raising raw requests.HTTPError (not yet migrated to
+    base.errors) are classified too.
+    """
+    names = {cls.__name__ for cls in type(exc).__mro__}
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if "RateLimitError" in names or status == 429:
+        return "rate_limit"
+    if names & {"AuthError", "InvalidCredentialsError", "EntitlementError"} or status in (401, 403):
+        return "auth"
+    if "GeoBlockError" in names:
+        return "geo"
+    return "transient"
+
+
+def _retry_after(exc: Optional[BaseException]) -> float:
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    try:
+        value = float(headers.get("Retry-After")) if headers else 0.0
+    except (TypeError, ValueError, AttributeError):
+        return 0.0
+    return value if 0 < value <= 86400 else 0.0
+
+
 @dataclass
 class _Entry:
     channels: List[Any]
@@ -48,6 +97,13 @@ class _Entry:
     ttl: float
     retry_after: float = 0.0
     owner: Any = None  # the provider instance this list came from
+
+
+@dataclass
+class _Health:
+    failures: int
+    next_retry: float
+    kind: str
 
 
 class _Flight:
@@ -66,22 +122,19 @@ class ChannelCache:
         self,
         ttl: float = DEFAULT_TTL,
         max_stale: float = DEFAULT_MAX_STALE,
-        empty_ttl: float = EMPTY_RESULT_TTL,
-        refresh_backoff: float = REFRESH_BACKOFF,
-        error_ttl: float = ERROR_TTL,
+        empty_ttl: float = EMPTY_TTL,
         clock: Callable[[], float] = time.monotonic,
     ):
         self._ttl = ttl
         self._max_stale = max_stale
         self._empty_ttl = empty_ttl
-        self._backoff = refresh_backoff
-        self._error_ttl = error_ttl
         self._clock = clock
         self._lock = threading.Lock()
         self._entries: Dict[Key, _Entry] = {}
         self._flights: Dict[Key, _Flight] = {}
         self._generation: Dict[str, int] = {}
         self._last_error: Dict[str, str] = {}
+        self._health: Dict[str, _Health] = {}
         self._failures: Dict[Key, Tuple[BaseException, float, Any]] = {}
 
     # ------------------------------------------------------------------
@@ -98,8 +151,7 @@ class ChannelCache:
         Return the channel list, loading it through `loader` when needed.
 
         `owner` is the provider instance. A list (or failure, or running load)
-        that belongs to a DIFFERENT instance is never served: replacing an
-        instance invalidates its cache by identity, whatever code path did it.
+        that belongs to a DIFFERENT instance is never served.
         """
         key: Key = (provider, params)
         ttl = self._ttl if ttl is None else ttl
@@ -124,13 +176,11 @@ class ChannelCache:
             if key not in self._flights:
                 failure = self._failures.get(key)
                 if failure is not None:
-                    if owner is not None and failure[2] is not owner:
+                    if (owner is not None and failure[2] is not owner) or now >= failure[1]:
                         del self._failures[key]
-                    elif now - failure[1] < self._error_ttl:
+                    else:
                         # Same answer as the failed load, without asking the upstream again.
                         raise failure[0].with_traceback(None)
-                    else:
-                        del self._failures[key]
             flight, created = self._flight_locked(key, owner)
 
         if created:
@@ -175,8 +225,14 @@ class ChannelCache:
                 if now - e.fetched_at >= e.ttl * fraction and now >= e.retry_after
             ]
 
+    def can_retry(self, provider: str) -> bool:
+        """False while the provider's circuit breaker is in a backoff window."""
+        with self._lock:
+            health = self._health.get(provider)
+            return health is None or self._clock() >= health.next_retry
+
     def invalidate(self, provider: Optional[str] = None) -> None:
-        """Drop cached lists (one provider, or all) and discard loads in flight."""
+        """Drop cached lists (one provider, or all), reset the breaker, discard loads in flight."""
         with self._lock:
             if provider is None:
                 names = (
@@ -187,23 +243,41 @@ class ChannelCache:
                 self._entries.clear()
                 self._last_error.clear()
                 self._failures.clear()
+                self._health.clear()
             else:
                 names = {provider}
                 for key in [k for k in self._entries if k[0] == provider]:
                     del self._entries[key]
                 self._last_error.pop(provider, None)
+                self._health.pop(provider, None)
                 for key in [k for k in self._failures if k[0] == provider]:
                     del self._failures[key]
             for name in names:
                 self._generation[name] = self._generation.get(name, 0) + 1
 
     def status(self, provider: str) -> Dict[str, Any]:
-        """Snapshot for the API: state is idle | warming | ready | error."""
+        """
+        Snapshot for the API.
+
+        state:        idle | warming | ready | error
+        ready:        channel_count, age_seconds, stale (True = list is old; THIS is
+                      the signal for "old", not `state`), refreshing
+        any state:    error (sanitised text), error_kind, failures, retry_in
+                      (seconds until the next automatic attempt)
+        """
         now = self._clock()
         with self._lock:
             entries = [e for k, e in self._entries.items() if k[0] == provider]
             loading = any(k[0] == provider for k in self._flights)
             error = self._last_error.get(provider)
+            health = self._health.get(provider)
+        extra: Dict[str, Any] = {"error": error}
+        if health is not None:
+            extra.update(
+                error_kind=health.kind,
+                failures=health.failures,
+                retry_in=max(0, int(health.next_retry - now)),
+            )
         if entries:
             newest = max(entries, key=lambda e: e.fetched_at)
             age = now - newest.fetched_at
@@ -213,12 +287,12 @@ class ChannelCache:
                 "age_seconds": int(age),
                 "stale": age >= newest.ttl,
                 "refreshing": loading,
-                "error": error,
+                **extra,
             }
         if loading:
-            return {"state": "warming", "error": error}
+            return {"state": "warming", **extra}
         if error:
-            return {"state": "error", "error": error}
+            return {"state": "error", **extra}
         return {"state": "idle"}
 
     # ------------------------------------------------------------------
@@ -233,11 +307,25 @@ class ChannelCache:
         self._flights[key] = flight
         return flight, True
 
+    def _record_failure_locked(self, provider: str, kind: str, exc: Optional[BaseException]) -> _Health:
+        previous = self._health.get(provider)
+        count = (previous.failures if previous else 0) + 1
+        table = BACKOFF[kind]
+        delay = table[min(count, len(table)) - 1]
+        if kind == "rate_limit":
+            delay = max(delay, _retry_after(exc))
+        health = _Health(count, self._clock() + delay, kind)
+        self._health[provider] = health
+        logger.info(
+            f"ChannelCache: '{provider}' {kind} failure #{count}, next automatic attempt in {int(delay)}s"
+        )
+        return health
+
     def _spawn_refresh(self, key, provider, loader, flight, ttl) -> None:
         def work():
             try:
                 self._run(key, provider, loader, flight, ttl)
-            except Exception as exc:  # already recorded in _last_error
+            except Exception as exc:  # already recorded in the breaker
                 logger.warning(f"ChannelCache: background refresh of '{provider}' failed: {exc}")
 
         threading.Thread(target=work, name=f"channel-refresh-{provider}", daemon=True).start()
@@ -249,24 +337,34 @@ class ChannelCache:
             flight.error = exc
             with self._lock:
                 if self._generation.get(provider, 0) == flight.gen:
+                    health = self._record_failure_locked(provider, classify_error(exc), exc)
                     self._last_error[provider] = _safe_error(exc)
-                    self._failures[key] = (exc, self._clock(), flight.owner)
+                    self._failures[key] = (exc, health.next_retry, flight.owner)
                     entry = self._entries.get(key)
-                    if entry is not None:  # keep serving stale, but do not hammer upstream
-                        entry.retry_after = self._clock() + self._backoff
+                    if entry is not None:  # keep serving the old list, retry later
+                        entry.retry_after = health.next_retry
             raise
         else:
             flight.result = channels
             with self._lock:
                 if self._generation.get(provider, 0) == flight.gen:
-                    self._entries[key] = _Entry(
-                        channels,
-                        self._clock(),
-                        ttl if channels else min(ttl, self._empty_ttl),
-                        owner=flight.owner,
-                    )
-                    self._last_error.pop(provider, None)
-                    self._failures.pop(key, None)
+                    now = self._clock()
+                    if channels:
+                        self._entries[key] = _Entry(channels, now, ttl, owner=flight.owner)
+                        self._health.pop(provider, None)
+                        self._last_error.pop(provider, None)
+                        self._failures.pop(key, None)
+                    else:
+                        health = self._record_failure_locked(provider, "empty", None)
+                        self._last_error[provider] = "no channels returned"
+                        old = self._entries.get(key)
+                        if old is not None and old.channels and (flight.owner is None or old.owner is flight.owner):
+                            old.retry_after = health.next_retry  # never replace a good list by an empty one
+                        else:
+                            self._entries[key] = _Entry(
+                                [], now, min(ttl, self._empty_ttl),
+                                retry_after=health.next_retry, owner=flight.owner,
+                            )
         finally:
             with self._lock:
                 if self._flights.get(key) is flight:

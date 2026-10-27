@@ -84,7 +84,12 @@ class ChannelOperations:
         Goes through get_channels(), so auth + fetch happen exactly as for a
         client request and concurrent requests join the running load.
         """
-        names = list(provider_names) if provider_names is not None else self.registry.list_providers()
+        if provider_names is not None:
+            names = list(provider_names)  # explicit request (new credentials, enabled): always
+        else:
+            # Startup: skip providers that opt out (WARMUP_ON_START = False), e.g. those
+            # with an expensive or rate-limited login. They load on the first client request.
+            names = [n for n in self.registry.list_providers() if self._warm_on_start(n)]
         if not names:
             return
 
@@ -115,28 +120,26 @@ class ChannelOperations:
         self,
         check_interval: float = 900.0,
         refresh_fraction: float = 0.8,
-        error_retry: float = 3600.0,
         max_parallel: int = 4,
     ) -> None:
         """
         Background thread that, every `check_interval` seconds:
           * reloads lists that reached `refresh_fraction` of their TTL, so a
             client never meets a stale or cold list while the backend runs
-          * (re)loads providers that have NO list yet: never loaded (idle) at
-            once, failed ones (error) at most every `error_retry` seconds, so
-            wrong credentials are not retried against the upstream login
-            every few minutes.
-        A failed reload keeps the old list. Idempotent.
+          * loads providers that have NO list yet (idle), unless they opt out
+            with WARMUP_ON_START = False
+        Every attempt honours the cache's circuit breaker, so a failing login
+        is not repeated every tick. A failed reload keeps the old list.
+        Idempotent.
         """
         if self._refresher is not None and self._refresher.is_alive():
             return
         self._refresher_stop.clear()
-        attempts: Dict[str, float] = {}
 
         def loop():
             while not self._refresher_stop.wait(check_interval):
                 try:
-                    self.refresh_tick(refresh_fraction, error_retry, attempts, max_parallel)
+                    self.refresh_tick(refresh_fraction, max_parallel)
                 except Exception as exc:
                     logger.warning(f"ChannelOperations: refresh tick failed: {exc}")
 
@@ -150,8 +153,6 @@ class ChannelOperations:
     def refresh_tick(
         self,
         refresh_fraction: float,
-        error_retry: float,
-        attempts: Dict[str, float],
         max_parallel: int = 4,
         join_timeout: float = 300.0,
     ) -> None:
@@ -160,15 +161,16 @@ class ChannelOperations:
         A hung provider cannot block the refresher beyond `join_timeout`; its
         load keeps running and is skipped by later ticks (single-flight).
         """
-        now = time.monotonic()
         targets: Dict[Any, Dict[str, Any]] = {}
         for name, params in self.cache.due(refresh_fraction):
             targets[(name, params)] = dict(params)
         for name in self.registry.list_providers():
             state = self.cache.status(name)["state"]
-            if state == "idle" or (state == "error" and now - attempts.get(name, 0.0) >= error_retry):
-                attempts[name] = now
-                targets[(name, ())] = {}
+            if state not in ("idle", "error") or not self.cache.can_retry(name):
+                continue
+            if state == "idle" and not self._warm_on_start(name):
+                continue
+            targets[(name, ())] = {}
         if not targets:
             return
 
@@ -200,6 +202,9 @@ class ChannelOperations:
         deadline = time.monotonic() + join_timeout
         for t in threads:
             t.join(max(0.0, deadline - time.monotonic()))
+
+    def _warm_on_start(self, name: str) -> bool:
+        return getattr(self.registry.get_provider(name), "WARMUP_ON_START", True) is not False
 
     def get_channel_state(self, provider_name: str) -> Dict[str, Any]:
         """idle | warming | ready | error (+ count/age/stale for ready)."""
