@@ -341,8 +341,30 @@ class ProviderRegistry:
                     if instance:
                         self.providers[instance_name] = instance
 
+        self._migrate_enable_default()
+
         logger.info(f"ProviderRegistry: Discovered {len(discovered)} provider instances")
         return discovered
+
+    def _migrate_enable_default(self) -> None:
+        """
+        One-time: freeze the just-discovered enable state in providers_enabled.json
+        and make "disabled" the default for providers without an entry.
+        M3U groups share the single enable key "m3u".
+        """
+        try:
+            from .settings.provider_enable_manager import ProviderEnableManager
+
+            manager = ProviderEnableManager()
+            if not manager.needs_default_migration():
+                return
+            states = {
+                ("m3u" if m.plugin_name == "m3u" else name): m.enabled
+                for name, m in self.provider_metadata.items()
+            }
+            manager.migrate_default_to_disabled(states)
+        except Exception as e:
+            logger.warning(f"ProviderRegistry: enable-default migration skipped: {e}")
 
     def _discover_m3u_groups(self, plugin_class, default_country: str) -> List[str]:
         """

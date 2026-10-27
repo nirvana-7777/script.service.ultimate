@@ -67,6 +67,9 @@ def setup_provider_routes(app, manager, service):
         try:
             # Get metadata for ALL providers (enabled + disabled)
             all_metadata = manager.get_all_providers_metadata()
+            for metadata in all_metadata:
+                if metadata["enabled"]:
+                    metadata["channel_state"] = manager.get_channel_state(metadata["name"])
 
             # For backward compatibility, also get details for enabled providers
             enabled_providers = []
@@ -131,6 +134,8 @@ def setup_provider_routes(app, manager, service):
                             "enabled": metadata["enabled"],
                             "instance_ready": metadata["instance_ready"],
                             "requires_credentials": metadata["requires_credentials"],
+                            # idle | warming | ready | error (+ channel_count, age_seconds, stale)
+                            "channel_state": metadata.get("channel_state"),
                         }
                         enabled_providers.append(provider_details)
 

@@ -82,6 +82,9 @@ class ProviderManager:
         """
         logger.info(f"ProviderManager: Re-discovering providers for country '{country}'...")
         discovered = self.registry.discover_all_providers(country)
+        # Rediscovery builds fresh instances (auth state is gone): drop cached lists.
+        self.channel_ops.invalidate_channels()
+        self.channel_ops.warm_up()
         logger.info(f"ProviderManager: Re-discovery complete. Found {len(discovered)} providers")
         return discovered
 
@@ -89,16 +92,38 @@ class ProviderManager:
         return self.registry.get_provider(provider_name)
 
     def set_provider_enabled(self, provider_name: str, enabled: bool) -> bool:
-        return self.registry.set_provider_enabled(provider_name, enabled)
+        success = self.registry.set_provider_enabled(provider_name, enabled)
+        self.channel_ops.invalidate_channels(provider_name)
+        if success and enabled:
+            self.channel_ops.warm_up([provider_name])
+        return success
 
     def get_all_providers_metadata(self) -> List[Dict[str, Any]]:
         return self.registry.get_all_providers_metadata()
 
     def reinitialize_provider(self, provider_name: str) -> bool:
-        return self.registry.reinitialize_provider(provider_name)
+        success = self.registry.reinitialize_provider(provider_name)
+        # New instance / possibly new account: the cached list is not trustworthy.
+        self.channel_ops.invalidate_channels(provider_name)
+        if success:
+            self.channel_ops.warm_up([provider_name])
+        return success
 
     def reinitialize_providers(self, provider_names: List[str]) -> Dict[str, bool]:
-        return {name: self.registry.reinitialize_provider(name) for name in provider_names}
+        return {name: self.reinitialize_provider(name) for name in provider_names}
+
+    def warm_up(self, provider_names: Optional[List[str]] = None) -> None:
+        """Preload channel lists of enabled providers in the background."""
+        self.channel_ops.warm_up(provider_names)
+
+    def start_auto_refresh(self, **kwargs) -> None:
+        self.channel_ops.start_auto_refresh(**kwargs)
+
+    def stop_auto_refresh(self) -> None:
+        self.channel_ops.stop_auto_refresh()
+
+    def get_channel_state(self, provider_name: str) -> Dict[str, Any]:
+        return self.channel_ops.get_channel_state(provider_name)
 
     def reinitialize_all_providers(self) -> Dict[str, bool]:
         enabled = self.registry.get_enabled_providers()
@@ -112,6 +137,7 @@ class ProviderManager:
 
     def clear_providers(self):
         self.registry.clear_providers()
+        self.channel_ops.invalidate_channels()
 
     @staticmethod
     def get_provider_class(provider_name: str):

@@ -2231,14 +2231,24 @@ def start_service(service_instance):
     # Determine if we should run in debug mode
     debug_mode = service_instance.env_manager.get_config("debug_mode", False)
 
-    run(
-        service_instance.app,
-        server=ThreadedWSGIRefServer,
-        host="0.0.0.0",
-        port=port,
-        quiet=not debug_mode,
-        debug=debug_mode,
-    )
+    # Preload channel lists in the background; the server below starts at once.
+    try:
+        service_instance.manager.warm_up()
+        service_instance.manager.start_auto_refresh()
+    except Exception as e:
+        logger.warning(f"Channel warm-up could not be started: {e}")
+
+    try:
+        run(
+            service_instance.app,
+            server=ThreadedWSGIRefServer,
+            host="0.0.0.0",
+            port=port,
+            quiet=not debug_mode,
+            debug=debug_mode,
+        )
+    finally:
+        service_instance.manager.stop_auto_refresh()
 
 
 def run_kodi_service():

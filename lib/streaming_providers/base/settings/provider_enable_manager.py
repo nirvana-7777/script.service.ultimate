@@ -3,7 +3,8 @@
 Provider Enable Manager - Handles provider enable/disable status with precedence:
 1. Kodi settings (if in Kodi environment and setting exists)
 2. providers_enabled.json file
-3. Default to enabled (True)
+3. Default from the file's "default_enabled" (True for legacy files without the key,
+   False once migrate_default_to_disabled() has run)
 
 Works in both Kodi and standalone environments.
 """
@@ -116,6 +117,10 @@ class ProviderEnableManager:
                             f"ProviderEnableManager: Invalid value for {provider}, removing"
                         )
                         del data["providers"][provider]
+
+            # Persisted default for providers without an explicit entry
+            if "default_enabled" in data and not isinstance(data["default_enabled"], bool):
+                del data["default_enabled"]
 
             # Add last_updated if missing
             if "last_updated" not in data:
@@ -230,7 +235,7 @@ class ProviderEnableManager:
         Precedence:
         1. Kodi settings (if in Kodi and setting exists)
         2. providers_enabled.json file
-        3. Default to True
+        3. File's "default_enabled" (legacy files: True; migrated files: False)
 
         Args:
             provider_name: Provider name (e.g., "joyn_de", "rtlplus")
@@ -250,8 +255,8 @@ class ProviderEnableManager:
         if file_enabled is not None:
             return file_enabled
 
-        # 3. Default to enabled
-        return True
+        # 3. Persisted default (legacy files have no key -> unchanged behaviour)
+        return bool(data.get("default_enabled", True))
 
     def get_enabled_source(self, provider_name: str) -> EnableSource:
         """
@@ -422,6 +427,7 @@ class ProviderEnableManager:
             default_data = {
                 "version": self.DEFAULT_VERSION,
                 "last_updated": time.time(),
+                "default_enabled": False,
                 "providers": {},
             }
 
@@ -463,6 +469,51 @@ class ProviderEnableManager:
                 else "vfs"
             ),
         }
+
+    def needs_default_migration(self) -> bool:
+        """
+        True if providers_enabled.json is missing or readable but has no
+        "default_enabled" key. An unreadable / malformed file returns False:
+        never rewrite what we cannot parse, the legacy default (True) stays.
+        """
+        try:
+            if not self.vfs.exists(self.DEFAULT_FILENAME):
+                return True
+            raw = self.vfs.read_json(self.DEFAULT_FILENAME)
+        except Exception as e:
+            logger.warning(f"ProviderEnableManager: cannot read file for migration check: {e}")
+            return False
+        if not isinstance(raw, dict):
+            return False
+        return "default_enabled" not in raw
+
+    def migrate_default_to_disabled(self, current_states: Dict[str, bool]) -> Tuple[bool, str, int]:
+        """
+        One-time migration: freeze today's effective state, then flip the default.
+
+        Every provider in `current_states` (name -> enabled as it was just
+        discovered under the OLD default) gets an explicit entry unless the file
+        already has one; afterwards providers WITHOUT an entry default to
+        disabled. Existing installs therefore keep exactly what they have.
+
+        Returns (success, message, entries_added). Idempotent.
+        """
+        if not self.needs_default_migration():
+            return True, "default already migrated (or file unreadable)", 0
+
+        data = self._load_file(force_reload=True)
+        added = 0
+        for name, enabled in current_states.items():
+            if name not in data["providers"]:
+                data["providers"][name] = bool(enabled)
+                added += 1
+        data["default_enabled"] = False
+
+        if not self._save_file(data):
+            return False, "Failed to save migrated provider defaults", 0
+        message = f"Default flipped to disabled; froze {added} provider entries"
+        logger.info(f"ProviderEnableManager: {message}")
+        return True, message, added
 
     def migrate_from_kodi(self) -> Tuple[bool, str, int]:
         """
