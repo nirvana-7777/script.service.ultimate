@@ -8,13 +8,17 @@ import threading
 import time
 from typing import Any, Dict, Iterable, List, Optional
 
-from .channel_cache import ChannelCache
+from .channel_cache import ChannelCache, safe_error
 from .models import StreamingChannel
 from .utils.logger import logger
 
 
 class ChannelOperations:
     """Handles all channel-related operations."""
+
+    # How many providers warm-up / refresher load at the same time.
+    # Set to 1 to rule out concurrency problems between provider instances.
+    MAX_PARALLEL = 4
 
     def __init__(self, registry, cache: Optional[ChannelCache] = None):
         self.registry = registry
@@ -77,7 +81,7 @@ class ChannelOperations:
     # ------------------------------------------------------------------
     # Warm-up / cache state
     # ------------------------------------------------------------------
-    def warm_up(self, provider_names: Optional[Iterable[str]] = None, max_parallel: int = 4) -> None:
+    def warm_up(self, provider_names: Optional[Iterable[str]] = None, max_parallel: Optional[int] = None) -> None:
         """
         Load channel lists into the cache in the background (returns at once).
 
@@ -94,13 +98,13 @@ class ChannelOperations:
             return
 
         def run_all():
-            gate = threading.Semaphore(max(1, max_parallel))
+            gate = threading.Semaphore(max(1, max_parallel or self.MAX_PARALLEL))
 
             def one(name: str):
                 try:
                     self.get_channels(name)
                 except Exception as exc:
-                    logger.warning(f"ChannelOperations: warm-up of '{name}' failed: {exc}")
+                    logger.warning(f"ChannelOperations: warm-up of '{name}' failed: {safe_error(exc)}")
                 finally:
                     gate.release()
 
@@ -120,7 +124,7 @@ class ChannelOperations:
         self,
         check_interval: float = 900.0,
         refresh_fraction: float = 0.8,
-        max_parallel: int = 4,
+        max_parallel: Optional[int] = None,
     ) -> None:
         """
         Background thread that, every `check_interval` seconds:
@@ -153,7 +157,7 @@ class ChannelOperations:
     def refresh_tick(
         self,
         refresh_fraction: float,
-        max_parallel: int = 4,
+        max_parallel: Optional[int] = None,
         join_timeout: float = 300.0,
     ) -> None:
         """
@@ -174,7 +178,7 @@ class ChannelOperations:
         if not targets:
             return
 
-        gate = threading.Semaphore(max(1, max_parallel))
+        gate = threading.Semaphore(max(1, max_parallel or self.MAX_PARALLEL))
         threads = []
 
         def one(name: str, params, kwargs: Dict[str, Any]):
@@ -190,7 +194,7 @@ class ChannelOperations:
                     owner=provider,
                 )
             except Exception as exc:
-                logger.warning(f"ChannelOperations: refresh of '{name}' failed: {exc}")
+                logger.warning(f"ChannelOperations: refresh of '{name}' failed: {safe_error(exc)}")
             finally:
                 gate.release()
 

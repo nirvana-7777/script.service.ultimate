@@ -15,12 +15,18 @@ Circuit breaker (never changes configuration, only controls RETRYING):
   A load counts as failed when it raises OR returns no channels (many
   providers log the error and return []). Consecutive failures back off:
 
-      kind        delays (s)                          why
-      transient   60, 300, 900, 3600, 10800, 21600    timeouts, 5xx, ...
-      empty       900, 3600, 10800, 21600             swallowed error / no channels
-      rate_limit  3600, 10800, 43200 (>= Retry-After) HTTP 429 / RateLimitError
-      auth        21600, 86400                        401/403, AuthError, ...
-      geo         86400                               GeoBlockError
+      kind          delays (s)                          why
+      transient     60, 300, 900, 3600, 10800, 21600    timeouts, 5xx, ...
+      empty         900, 3600, 10800, 21600             swallowed error / no channels
+      rate_limit    3600, 10800, 43200 (>= Retry-After) HTTP 429 / RateLimitError
+      unauthorized  900, 3600, 21600, 86400             HTTP 401/403 (token may be stale)
+      auth          21600, 86400                        wrong credentials (AuthError, ...)
+      geo           86400                               GeoBlockError
+
+  Classification looks at the exception, its __cause__/__context__ chain, the
+  HTTP status found there or in the message ("401 Client Error", "(HTTP 406)")
+  and a few credential phrases, so wrapped and not yet migrated providers are
+  handled; providers that raise base.errors classes are classified exactly.
 
   Both the lazy request path and the background refresher honour the delay,
   so a failing login is never repeated by client retries or refresh ticks.
@@ -50,6 +56,7 @@ BACKOFF: Dict[str, Tuple[float, ...]] = {
     "transient": (60, 300, 900, 3600, 10800, 21600),
     "empty": (900, 3600, 10800, 21600),
     "rate_limit": (3600, 10800, 43200),
+    "unauthorized": (900, 3600, 21600, 86400),
     "auth": (21600, 86400),
     "geo": (86400,),
 }
@@ -59,35 +66,72 @@ Key = Tuple[str, Hashable]
 _URL_RE = re.compile(r"https?://\S+")
 
 
-def _safe_error(exc: BaseException) -> str:
-    """Error text for the API: no URLs (they may carry tokens), max 200 chars."""
+def safe_error(exc: BaseException) -> str:
+    """Error text for logs and the API: no URLs (they may carry tokens), max 200 chars."""
     return _URL_RE.sub("<url>", f"{type(exc).__name__}: {exc}")[:200]
 
 
+_STATUS_RE = re.compile(
+    r"\b(\d{3}) (?:Client|Server) Error\b|\bHTTP(?: error)? (\d{3})\b|\(HTTP (\d{3})\)", re.I
+)
+_CREDENTIAL_RE = re.compile(
+    r"authentication failed|invalid credentials|invalid (?:user|password)|wrong password", re.I
+)
+
+
+def _chain(exc: BaseException) -> List[BaseException]:
+    chain: List[BaseException] = []
+    seen = set()
+    while exc is not None and id(exc) not in seen and len(chain) < 5:
+        seen.add(id(exc))
+        chain.append(exc)
+        exc = exc.__cause__ or exc.__context__
+    return chain
+
+
+def _http_status(exc: BaseException) -> Optional[int]:
+    chain = _chain(exc)
+    for e in chain:
+        for obj in (getattr(e, "response", None), e):
+            code = getattr(obj, "status_code", None)
+            if isinstance(code, int):
+                return code
+    for e in chain:
+        match = _STATUS_RE.search(str(e))
+        if match:
+            return int(next(g for g in match.groups() if g))
+    return None
+
+
 def classify_error(exc: BaseException) -> str:
-    """
-    transient | rate_limit | auth | geo. By class NAME and HTTP status so that
-    providers still raising raw requests.HTTPError (not yet migrated to
-    base.errors) are classified too.
-    """
-    names = {cls.__name__ for cls in type(exc).__mro__}
-    status = getattr(getattr(exc, "response", None), "status_code", None)
+    """transient | rate_limit | unauthorized | auth | geo (see module docstring)."""
+    names = {cls.__name__ for e in _chain(exc) for cls in type(e).__mro__}
+    status = _http_status(exc)
     if "RateLimitError" in names or status == 429:
         return "rate_limit"
-    if names & {"AuthError", "InvalidCredentialsError", "EntitlementError"} or status in (401, 403):
-        return "auth"
     if "GeoBlockError" in names:
         return "geo"
+    message = " | ".join(str(e) for e in _chain(exc))
+    if (
+        any(("Auth" in n and "Unauthorized" not in n) or "Credential" in n or "Entitlement" in n for n in names)
+        or _CREDENTIAL_RE.search(message)
+    ):
+        return "auth"
+    if status in (401, 403) or any("Unauthorized" in n for n in names):
+        return "unauthorized"
     return "transient"
 
 
 def _retry_after(exc: Optional[BaseException]) -> float:
-    headers = getattr(getattr(exc, "response", None), "headers", None)
-    try:
-        value = float(headers.get("Retry-After")) if headers else 0.0
-    except (TypeError, ValueError, AttributeError):
-        return 0.0
-    return value if 0 < value <= 86400 else 0.0
+    for e in _chain(exc) if exc is not None else []:
+        headers = getattr(getattr(e, "response", None), "headers", None)
+        try:
+            value = float(headers.get("Retry-After")) if headers else 0.0
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if 0 < value <= 86400:
+            return value
+    return 0.0
 
 
 @dataclass
@@ -326,7 +370,7 @@ class ChannelCache:
             try:
                 self._run(key, provider, loader, flight, ttl)
             except Exception as exc:  # already recorded in the breaker
-                logger.warning(f"ChannelCache: background refresh of '{provider}' failed: {exc}")
+                logger.warning(f"ChannelCache: background refresh of '{provider}' failed: {safe_error(exc)}")
 
         threading.Thread(target=work, name=f"channel-refresh-{provider}", daemon=True).start()
 
@@ -338,7 +382,7 @@ class ChannelCache:
             with self._lock:
                 if self._generation.get(provider, 0) == flight.gen:
                     health = self._record_failure_locked(provider, classify_error(exc), exc)
-                    self._last_error[provider] = _safe_error(exc)
+                    self._last_error[provider] = safe_error(exc)
                     self._failures[key] = (exc, health.next_retry, flight.owner)
                     entry = self._entries.get(key)
                     if entry is not None:  # keep serving the old list, retry later
