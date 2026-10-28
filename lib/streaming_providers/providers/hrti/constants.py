@@ -22,6 +22,13 @@ from typing import Any, ClassVar, Dict, Optional
 
 from ...base.errors import ConfigurationError
 from ...base.utils.logger import logger
+from ..globals import get_identity
+
+
+# One browser identity -> User-Agent AND client type, from the central
+# registry (no drift between the two, and the Chrome version follows the
+# live stable feed rather than a hardcoded literal).
+_HRTI_IDENTITY = get_identity("linux", "chrome")
 
 
 class HRTiDefaults:
@@ -75,13 +82,15 @@ class HRTiDefaults:
     APPLICATION_VERSION = "5.97.6"     # replaced by env.json's applicationVersion
     OS_VERSION = "Linux"
 
-    # One browser version -> User-Agent AND client type (no drift between them)
-    CHROME_MAJOR = 142
+    # One browser identity -> User-Agent AND client type (no drift between
+    # them). Both now follow the central Chrome registry. VERIFY: if the HRTi
+    # backend cross-checks client_type against the User-Agent's Chrome version
+    # on login, the two still match; if it expects a *fixed* historic version
+    # (e.g. the production web app's pinned build), a login rejection will
+    # appear on the first request after deploy — watch the login logs.
+    CHROME_MAJOR = _HRTI_IDENTITY.chrome_major
     CLIENT_TYPE = f"Chrome {CHROME_MAJOR}"
-    USER_AGENT = (
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
-        f"Chrome/{CHROME_MAJOR}.0.0.0 Safari/537.36"
-    )
+    USER_AGENT = _HRTI_IDENTITY.user_agent
 
     # Anonymous (client-credentials) access -- the deliberate fallback
     ANONYMOUS_USERNAME = "anonymoushrt"

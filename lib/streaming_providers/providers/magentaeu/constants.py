@@ -8,6 +8,12 @@ import time
 import uuid
 from typing import Dict, Optional
 
+from ..globals import get_identity
+
+# One browser identity for the whole module -- UA, chrome major and any
+# header value that embeds the version all read from it.
+_IDENTITY = get_identity("linux", "chrome")
+
 # Supported countries
 SUPPORTED_COUNTRIES = ["hr", "pl", "me", "at", "hu"]
 
@@ -79,7 +85,8 @@ MIIBIDANBgkqhkiG9w0BAQEFAAOCAQ0AMIIBCAKCAQEA0EsuGonW8+y5Oq2Hopru5oFCaXEDMBrWPDkz
 APP_VERSION = "02.0.1470"
 OS = "Linux"
 BROWSER = "Chrome"
-BROWSER_VERSION = "149"
+# Derived from the central registry; no hardcoded literal to go stale.
+BROWSER_VERSION = _IDENTITY.chrome_major
 DEVICE_NAME = f"{OS} - {BROWSER}"
 
 # ============================================================================
@@ -93,7 +100,7 @@ DEVICE_MANUFACTURER = f"{OS} x86_64"
 DEVICE_CONCURRENCY_PARAM = "TVSOA-restriction-unmanagedDeviceStreamLimit"
 
 # User agent configuration
-USER_AGENT = f"Mozilla/5.0 (X11; {OS} x86_64) AppleWebKit/537.36 (KHTML, like Gecko) {BROWSER}/{BROWSER_VERSION}.0.0.0 Safari/537.36"
+USER_AGENT = _IDENTITY.user_agent
 X_USER_AGENT = (
     f"{DEVICE_MODEL.lower()}|{DEVICE_TYPE.lower()}|{BROWSER}-{BROWSER_VERSION}|{APP_VERSION}|1"
 )
@@ -269,7 +276,15 @@ def get_guest_headers(country: str, device_id: str, session_id: str) -> Dict[str
         "origin": get_base_url(country),
         "pragma": "akamai-x-cache-on,akamai-x-check-cacheable,akamai-x-get-cache-key",
         "priority": "u=1, i",
-        "sec-ch-ua": '"Google Chrome";v="149", "Chromium";v="149", "Not;A=Brand";v="24"',
+        # Bump ONLY the two Chrome-version tokens; keep the captured brand order
+        # and the GREASE brand ("Not;A=Brand";v="24") exactly as observed. This
+        # string is not assembled from globals -- it is a browser capture, and a
+        # WAF that parses sec-ch-ua order would reject a reassembled value.
+        "sec-ch-ua": (
+            f'"Google Chrome";v="{BROWSER_VERSION}", '
+            f'"Chromium";v="{BROWSER_VERSION}", '
+            f'"Not;A=Brand";v="24"'
+        ),
         "sec-ch-ua-mobile": "?0",
         "sec-ch-ua-platform": '"Linux"',
         "sec-fetch-dest": "empty",

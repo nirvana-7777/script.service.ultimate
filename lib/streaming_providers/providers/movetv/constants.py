@@ -1,6 +1,8 @@
 # streaming_providers/providers/movetv/constants.py
 from typing import Dict, Optional
 
+from ..globals import get_identity
+
 
 class MoveTVConfig:
     """
@@ -58,7 +60,12 @@ class MoveTVConfig:
     # -------------------------------------------------------------------------
     PARTNER_ID: int = 2
     DEVICE_MODEL_ID: int = 10
-    DEVICE_NAME: str = "Chrome 155"
+    # VERIFY: DEVICE_NAME goes into the login payload. It was previously the
+    # literal "Chrome 155"; now it follows the central identity. If the MTS-SI
+    # backend ever validates DEVICE_NAME against a captured client string, a
+    # login rejection will show up immediately on the first request — watch
+    # the login logs after shipping this.
+    DEVICE_NAME: str = get_identity("macos", "chrome").device_name
     APP_VERSION: str = "3.5.41"
 
     # -------------------------------------------------------------------------
@@ -69,11 +76,9 @@ class MoveTVConfig:
     # -------------------------------------------------------------------------
     # HTTP / request defaults
     # -------------------------------------------------------------------------
-    USER_AGENT: str = (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/155.0.0.0 Safari/537.36"
-    )
+    # UA is derived from the central registry; the macOS Chrome pair matches
+    # the previous literal's platform, only the version is now live.
+    USER_AGENT: str = get_identity("macos", "chrome").user_agent
     TIMEOUT: int = 30
 
     # -------------------------------------------------------------------------

@@ -24,6 +24,8 @@ stop working when ZDF rotates them). Override via the provider config dict
 import json
 from typing import Optional
 
+from ..globals import get_identity
+
 
 class ZdfDefaults:
     PROVIDER_NAME = "zdf"
@@ -86,10 +88,12 @@ class ZdfDefaults:
     APP_ID = "ffw-mt-web-37e8d3ae"
 
     # --- Headers -------------------------------------------------------
-    USER_AGENT = (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
-    )
+    # UA is derived from the central registry so it cannot go stale. ZDF's
+    # page / GraphQL / PTMD endpoints only read the UA as a plausibility
+    # signal (no sec-ch-ua checks observed), so macOS Chrome is a safe
+    # impersonation target. VERIFY: re-confirm no WAF appeared if this
+    # provider ever starts failing on the page fetch.
+    USER_AGENT = get_identity("macos", "chrome").user_agent
     ACCEPT_LIST = "application/graphql-response+json,application/json;q=0.9"
     ACCEPT_PTMD = "application/vnd.de.zdf.v1.0+json"
     ACCEPT_LANGUAGE = "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7"
