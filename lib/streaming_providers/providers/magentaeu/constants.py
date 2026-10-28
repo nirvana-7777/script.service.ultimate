@@ -25,6 +25,18 @@ MAGENTA_TV_PL_LOGO = "https://magentatv.pl/client/assets/6700c91b4408a2abe2a4.we
 MAGENTA_TV_AT_LOGO = "https://m.media-amazon.com/images/I/51XY6Cq3ANL.png"
 
 # Country-specific configuration
+#
+# Every field below was captured from the corresponding country's public
+# entry page (window.APP_CONSTANTS in the inline config blob) on 2026-10-28:
+#   AT: https://tv.magenta.at
+#   HR: https://mojmaxtv.hrvatskitelekom.hr
+#   ME: https://magentatv.me
+#   PL: https://magentatv.pl
+#   HU: https://player.telekomtvgo.hu
+#
+# Fields that are NOT in the blob (rsa_key) stay hand-maintained. Fields
+# that ARE in the blob are duplicated here verbatim; magentaeu_version_probe.py
+# can diff the two.
 COUNTRY_CONFIG = {
     "hr": {
         "base_url": "https://mojmaxtv.hrvatskitelekom.hr",
@@ -32,6 +44,10 @@ COUNTRY_CONFIG = {
         "natco_key": "l2lyvGVbUm2EKJE96ImQgcc8PKMZWtbE",
         "app_key": "GWaBW4RTloLwpUgYVzOiW5zUxFLmoMj5",
         "language": "hr",
+        "app_version": "02.0.1470",
+        "media_player_type": 1,
+        "login_type": "native",
+        "login_base_url": "https://gateway-hr-proxy.tv.yo-digital.com/hr-idm/P",
         "rsa_key": """-----BEGIN PUBLIC KEY-----
 MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDMmKReuzuaCk10Wa6vv4ybcqjVN3cruj27IRp9YhdgEw9jcG728Aj9s60mY8B/czzW5ntKJQktyBRBZ98BKznRWBrVN/n9JR/m1UDc38PW4BPe4z5VtBe99dyFcJQ1VJij6HG0BFtw3isPR5NAUAAyGnXpNWKCat5TtBckqVatBQIDAQAB
 -----END PUBLIC KEY-----""",
@@ -42,6 +58,10 @@ MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDMmKReuzuaCk10Wa6vv4ybcqjVN3cruj27IRp9Yhdg
         "natco_key": "ovINYLVrQsLj8wPDQzNYotQMkFha9PFF",
         "app_key": "2zjAjpJ6dRfHR1nIwF47jz75g7Qf4F6z",
         "language": "pl",
+        "app_version": "02.0.1540",
+        "media_player_type": 1,
+        "login_type": "native",
+        "login_base_url": "https://gateway-pl-proxy.tv.yo-digital.com/pl-idm/P",
         "rsa_key": """-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxTkEaSufgfBKbzBAHRzSQreMYYCAg4wtjk44A31qVrt0/IaBNbAlvDNEWmB9kwZXK6s41XiPg1k/xsWNoug0nIU1eTEeTsRDwrMzxwYyn5ObO1jylBK0mEAmcl/cEk8A+DqW+raxoWSNq6IH4pciO3QVxeAzIP73FSBrcj81LEeDQsJY6ySbZ1mcDD1/axuCrUm2masJq3nifNOEZG7mAiy5pvoN54grldvXuc8nBne9tdMnCFRisRIO7f2KG5pQVqtLh41aeRTD0eg9c7SWYDhTcRb5MA+PqluZrtwQ3+J7kBGGlxkYHuQ10slR6YUqEELdd85CE7DtMx+PcGLxWwIDAQAB
 -----END PUBLIC KEY-----""",
@@ -52,6 +72,10 @@ MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxTkEaSufgfBKbzBAHRzSQreMYYCAg4wtjk44
         "natco_key": "ANKB5xVVywklLUd9WtEOh8eyLnlAypTM",
         "app_key": "erYJuNj5fnVXtRgjkr4scxbr3oEkM4I4",
         "language": "me",
+        "app_version": "02.0.1570",
+        "media_player_type": 1,
+        "login_type": "native",
+        "login_base_url": "https://gateway-me-proxy.tv.yo-digital.com/me-idm/P",
         "rsa_key": """-----BEGIN PUBLIC KEY-----
 MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEApoovXHgusvwv7S0cdg+xQYuY3Kb/J50n3GKpW4UmH4xG8NCAD6PBHPKGlVYl6sAnLXofJeq0DsXZJ9xFGH1wTQdd3hxwhGrigstluu4PbpiVRjrFe9AuZto+/Hb0+Ljr5BKFgNMYhpZOaBWgjkqtYWFyMzB1v3VtgUURqxyzMhgiPoCcqYynnqK1weJLGEMSZNlHeWwX46VlK/JqIwPw2ajl5IwvQFzY6BEQvfwXVJxIcvQwkcmeR1A3ACE1E1tvrATb1EPNeKh/E6Kukb8EGTB1O3WJa4IrdX6HI3BJLXftLZ9Y55HuHa+GrGkJRJvchxYCugxgHKSqNOnsT8FWYm1gdZZ6/i/jPo7/tpEdd2U6FxG7/I4rcpk2FzSSd3LKEHGf5v1V982Idbrlm+1LfsjoTx5Go2M8+uBR92pV0qSQlB4YXgQQgqpDUq9f9TwN67nj2jfRECR2hBITkK3+sC9ZxSHYg4Cp3ycHqetxUJ21kVmO6jMG+JsBHLuDKCIc3yrHXHBwhZt4XOhH6K564pUKBOfbe9mZlGrttEla0FK9B/WM315QQ9WgHA5pFyDFmjsB4MvFqKrbsrVUxDZM1COHVC7QbyEte45BDDO/amaB1aa6st5mNIm22m0s0jW8flHarGuulCDNBt9jHI6MnYLb3wpVj00b62Vmx1FX9qkCAwEAAQ==
 -----END PUBLIC KEY-----""",
@@ -62,16 +86,30 @@ MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEApoovXHgusvwv7S0cdg+xQYuY3Kb/J50n3GKp
         "natco_key": "NZu7aIg1vFTNLwHcb0Kjhqk54ql9RJj5",
         "app_key": "CTnKA63ruKM0JM1doxAXwwyQLLmQiEiy",
         "language": "de",
+        "app_version": "02.0.1470",
+        "media_player_type": 1,
+        "login_type": "native",
+        "login_base_url": "https://gateway-at-proxy.tv.yo-digital.com/at-idm/P",
         "rsa_key": """-----BEGIN PUBLIC KEY-----
 MIIBIDANBgkqhkiG9w0BAQEFAAOCAQ0AMIIBCAKCAQEA0EsuGonW8+y5Oq2Hopru5oFCaXEDMBrWPDkzIeY1Vvot3z/l9Q3/bcUQV3Yo6DvbhlARQnMeqiKJ5dutZmdxuj+nhZq9FcL20RUywqGnxTCHaGAEb05Qlovu7Rbld2GeJa4nFP1RY5glUlr/DYVB+tIHqPfZVUSc1PS+l5QkB9TJir57ALxERBJGjT5vhQixXGf6IqmLkxm1okIbuGJa2ttmSWNq0OVi2cF40ZsV64ly7a3m6n2WBYmhqd3ghSprNHXwJBwYwu1L+9CF9oLQXHs9cUDhqyQB+3iDU2Ro/rtZsGcnvnIiDHRIWZ94zcOTOpdUH4pBujc8jF3qdw99UwIBJQ==
 -----END PUBLIC KEY-----""",
     },
     "hu": {
         "base_url": "https://player.telekomtvgo.hu",
+        # HU's BFF has no country prefix in the path (unlike the other four).
         "bifrost_url": "https://tv-hu-prod.yo-digital.com/bifrost",
         "natco_key": "Tydx7H7fJO6HxgjvJok0ZhVWFmX3om0P",
         "app_key": "exSJHBiSAN6wAAeqdWLdTUfdTi2PNark",
         "language": "hu",
+        "app_version": "02.0.1570",
+        # HU serves media_player_type 0, not 1. This is the trailing segment
+        # of X_USER_AGENT and differs from the other four countries.
+        "media_player_type": 0,
+        # HU uses the "web" login flow (not "native"), with a different
+        # gateway host (external-gateway.oa.yo-digital.com, centralauth-prod)
+        # than the four native-login countries.
+        "login_type": "web",
+        "login_base_url": "https://external-gateway.oa.yo-digital.com/centralauth-prod/hu/P",
         "rsa_key": """-----BEGIN PUBLIC KEY-----
 MIIBIDANBgkqhkiG9w0BAQEFAAOCAQ0AMIIBCAKCAQEA0EsuGonW8+y5Oq2Hopru5oFCaXEDMBrWPDkzIeY1Vvot3z/l9Q3/bcUQV3Yo6DvbhlARQnMeqiKJ5dutZmdxuj+nhZq9FcL20RUywqGnxTCHaGAEb05Qlovu7Rbld2GeJa4nFP1RY5glUlr/DYVB+tIHqPfZVUSc1PS+l5QkB9TJir57ALxERBJGjT5vhQixXGf6IqmLkxm1okIbuGJa2ttmSWNq0OVi2cF40ZsV64ly7a3m6n2WBYmhqd3ghSprNHXwJBwYwu1L+9CF9oLQXHs9cUDhqyQB+3iDU2Ro/rtZsGcnvnIiDHRIWZ94zcOTOpdUH4pBujc8jF3qdw99UwIBJQ==
 -----END PUBLIC KEY-----""",
@@ -82,10 +120,14 @@ MIIBIDANBgkqhkiG9w0BAQEFAAOCAQ0AMIIBCAKCAQEA0EsuGonW8+y5Oq2Hopru5oFCaXEDMBrWPDkz
 # Application Configuration
 # ============================================================================
 
-APP_VERSION = "02.0.1470"
+# APP_VERSION, MEDIA_PLAYER_TYPE and LOGIN_TYPE are per-country (see
+# COUNTRY_CONFIG above). They are NOT module-level constants; there is no
+# "default" value that applies to all five countries. Callers that used to
+# read APP_VERSION directly should call get_app_version(country) instead.
+#
+# OS and BROWSER are shared across all countries.
 OS = "Linux"
 BROWSER = "Chrome"
-# Derived from the central registry; no hardcoded literal to go stale.
 BROWSER_VERSION = _IDENTITY.chrome_major
 DEVICE_NAME = f"{OS} - {BROWSER}"
 
@@ -99,11 +141,14 @@ DEVICE_OS = OS
 DEVICE_MANUFACTURER = f"{OS} x86_64"
 DEVICE_CONCURRENCY_PARAM = "TVSOA-restriction-unmanagedDeviceStreamLimit"
 
-# User agent configuration
+# User agent configuration (shared; not country-dependent).
 USER_AGENT = _IDENTITY.user_agent
-X_USER_AGENT = (
-    f"{DEVICE_MODEL.lower()}|{DEVICE_TYPE.lower()}|{BROWSER}-{BROWSER_VERSION}|{APP_VERSION}|1"
-)
+
+# X_USER_AGENT is country-dependent (it embeds app_version and
+# media_player_type). Use get_x_user_agent(country) to build it.
+# The shape is:
+#   "{device_model}|{device_type}|{browser}-{browser_version}|{app_version}|{media_player_type}"
+# which resolves to e.g. "web|web|chrome-156|02.0.1470|1" for AT.
 
 # ============================================================================
 # API Endpoints
@@ -130,9 +175,9 @@ ACC_URL = "http://access.auth.theplatform.com/data/Account"
 # Authentication Configuration
 # ============================================================================
 
-# Login context and type
+# Login context (unchanged; the "login" scope is the same for all countries).
 LOGIN_CONTEXT = "login"
-LOGIN_TYPE = "telekom"
+# LOGIN_TYPE is per-country (see COUNTRY_CONFIG). Use get_login_type(country).
 CHANNEL_ID = "Tv"
 
 # Authentication flows and steps
@@ -193,7 +238,8 @@ AUTH_HEADERS_BASE = {
     "User-Agent": USER_AGENT,
     "Accept": "application/json",
     "Content-Type": "application/json",
-    "X-User-Agent": X_USER_AGENT,
+    # X-User-Agent is country-dependent; get_guest_headers() / build_auth_headers()
+    # fill it in from get_x_user_agent(country).
     "Tenant": "tv",
 }
 
@@ -214,6 +260,14 @@ STREAMING_FORMAT_DASH = "dash"
 MANAGE_DEVICE = False
 BROADCASTING_STREAM_LIMITATION_APPLIES = False
 
+
+# ============================================================================
+# Per-country accessors
+# ============================================================================
+#
+# These replace the old module-level APP_VERSION / LOGIN_TYPE /
+# MEDIA_PLAYER_TYPE constants. auth.py and provider.py should call them
+# with the country they are operating on; nothing in this file assumes AT.
 
 def get_country_config(country: str) -> dict:
     """Get configuration for specific country"""
@@ -250,6 +304,41 @@ def get_rsa_key(country: str) -> str:
     return get_country_config(country)["rsa_key"]
 
 
+def get_app_version(country: str) -> str:
+    """Get APP_VERSION for country (per-country; see COUNTRY_CONFIG)."""
+    return get_country_config(country)["app_version"]
+
+
+def get_media_player_type(country: str) -> int:
+    """Get MEDIA_PLAYER_TYPE for country (1 except HU, which is 0)."""
+    return get_country_config(country)["media_player_type"]
+
+
+def get_login_type(country: str) -> str:
+    """Get LOGIN_TYPE for country ("native" except HU, which is "web")."""
+    return get_country_config(country)["login_type"]
+
+
+def get_login_base_url(country: str) -> str:
+    """Get NATIVE_LOGIN_BASE_URL for country."""
+    return get_country_config(country)["login_base_url"]
+
+
+def get_x_user_agent(country: str) -> str:
+    """
+    Build X-User-Agent for country.
+
+    Shape: "{device_model}|{device_type}|{browser}-{browser_version}|{app_version}|{media_player_type}"
+    e.g. AT: "web|web|chrome-156|02.0.1470|1"
+         HU: "web|web|chrome-156|02.0.1570|0"
+    """
+    return (
+        f"{DEVICE_MODEL.lower()}|{DEVICE_TYPE.lower()}|"
+        f"{BROWSER}-{BROWSER_VERSION}|{get_app_version(country)}|"
+        f"{get_media_player_type(country)}"
+    )
+
+
 def get_base_headers() -> Dict[str, str]:
     """Get base headers for requests"""
     return {
@@ -261,13 +350,11 @@ def get_base_headers() -> Dict[str, str]:
 
 def get_guest_headers(country: str, device_id: str, session_id: str) -> Dict[str, str]:
     """Get headers for guest/unauthenticated requests"""
-    import uuid
-
     headers = {
         "accept": "application/json, text/plain, */*",
         "accept-language": ACCEPT_LANGUAGE,
         "app_key": get_app_key(country),
-        "app_version": APP_VERSION,
+        "app_version": get_app_version(country),
         "bff_token": "",
         "cache-control": "no-cache",
         "device-density": DEVICE_DENSITY,
@@ -276,10 +363,11 @@ def get_guest_headers(country: str, device_id: str, session_id: str) -> Dict[str
         "origin": get_base_url(country),
         "pragma": "akamai-x-cache-on,akamai-x-check-cacheable,akamai-x-get-cache-key",
         "priority": "u=1, i",
-        # Bump ONLY the two Chrome-version tokens; keep the captured brand order
-        # and the GREASE brand ("Not;A=Brand";v="24") exactly as observed. This
-        # string is not assembled from globals -- it is a browser capture, and a
-        # WAF that parses sec-ch-ua order would reject a reassembled value.
+        # Bump only the two Chrome-version tokens; keep the captured brand
+        # order and the GREASE brand ("Not;A=Brand";v="24") exactly as
+        # observed. This string is not assembled from globals -- it is a
+        # browser capture, and a WAF that parses sec-ch-ua order would
+        # reject a reassembled value.
         "sec-ch-ua": (
             f'"Google Chrome";v="{BROWSER_VERSION}", '
             f'"Chromium";v="{BROWSER_VERSION}", '
@@ -295,7 +383,7 @@ def get_guest_headers(country: str, device_id: str, session_id: str) -> Dict[str
         "x-call-type": "GUEST_USER",
         "x-request-session-id": session_id,
         "x-request-tracking-id": str(uuid.uuid4()),
-        "x-user-agent": X_USER_AGENT,
+        "x-user-agent": get_x_user_agent(country),
     }
     return headers
 
@@ -329,8 +417,6 @@ def build_guest_headers(
     fallback UUIDs are generated here -- that's intentional, to avoid a
     mismatch between the header value actually sent and the value hashed
     into x-txn-id.
-
-    (Relocated verbatim from utils.py; utils.py now re-exports this.)
     """
     if tracking_id is None:
         tracking_id = str(uuid.uuid4())
@@ -412,7 +498,7 @@ def build_auth_headers(
         "User-Agent": USER_AGENT,
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "X-User-Agent": X_USER_AGENT,
+        "X-User-Agent": get_x_user_agent(country),
         "X-Call-Type": call_type,
         "X-Tv-Flow": flow,
         "X-Tv-Step": step,
@@ -421,7 +507,7 @@ def build_auth_headers(
         "Tenant": "tv",
         "Origin": get_base_url(country),
         "App_key": get_app_key(country),
-        "App_version": APP_VERSION,
+        "App_version": get_app_version(country),
         "Device-Id": resolved_device_id,
         "Device-Name": DEVICE_NAME,
     }
