@@ -51,6 +51,7 @@ class RemoteLoginHandler:
             qr_code_url_template: str,
             notifier: Optional[NotificationInterface] = None,
             provider_name: str = "MagentaTV",  # Add this parameter with default
+            platform: str = DEFAULT_PLATFORM,
     ):
         """
         Initialize remote login handler
@@ -63,6 +64,7 @@ class RemoteLoginHandler:
             qr_code_url_template: QR code URL template with {code} placeholder
             notifier: Optional notification interface (auto-created if None)
             provider_name: Provider name for notifications (default: "MagentaTV")
+            platform: Emulated client platform, selects config and User-Agent
         """
         self.http_manager = http_manager
         self.sam3_client_id = sam3_client_id
@@ -71,11 +73,12 @@ class RemoteLoginHandler:
         self.qr_code_url_template = qr_code_url_template
         self.provider_name = provider_name  # Store it
 
-        # FIX: Get platform config correctly
-        self.platform_config = MAGENTA2_PLATFORMS[DEFAULT_PLATFORM]
+        self.platform_config = MAGENTA2_PLATFORMS.get(platform)
+        if self.platform_config is None:
+            raise ValueError(f"Unknown platform: {platform}")
         # The platform config has no static "user_agent" key - the UA is
         # rendered from the platform's templates via render_user_agent().
-        self.user_agent = render_user_agent(DEFAULT_PLATFORM)
+        self.user_agent = render_user_agent(platform)
 
         # Get or create notifier with http_manager
         if notifier:
