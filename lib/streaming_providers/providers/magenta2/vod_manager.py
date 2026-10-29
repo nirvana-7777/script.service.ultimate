@@ -101,6 +101,8 @@ _QUALITY_MAP: Dict[str, Quality] = {
 # the actual rental window.
 _DEFAULT_RENTAL_HOURS = 48
 
+_NON_VOD_TILE_TYPES = frozenset({"Broadcast", "Teaser", "WhatsHotTeaser"})
+
 
 def _map_quality(api_quality: Optional[str]) -> Optional[Quality]:
     """Map a raw API videoQualities string to the shared Quality enum."""
@@ -973,6 +975,12 @@ class VodManager:
         seasons_available: Optional[int] = item.get("seasonsAvailable")
 
         if not content_id or not title:
+            return None
+
+        if item_type in _NON_VOD_TILE_TYPES:
+            logger.debug(
+                f"{self._provider}: Skipping {item_type} tile '{title}' ({content_id})"
+            )
             return None
 
         # Season items from UnstructuredGrid (e.g. "WIEDERHOLUNGEN" lane)
