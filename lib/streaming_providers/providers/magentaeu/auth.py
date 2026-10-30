@@ -24,7 +24,6 @@ from ...base.models.proxy_models import ProxyConfig
 from ...base.utils.logger import logger
 from .constants import (
     API_ENDPOINTS,
-    APP_VERSION,
     AUTH_FLOWS,
     AUTH_STEPS,
     BROADCASTING_STREAM_LIMITATION_APPLIES,
@@ -41,16 +40,17 @@ from .constants import (
     DEVICE_TYPE,
     GUEST_SESSION_TTL_SECONDS,
     LOGIN_CONTEXT,
-    LOGIN_TYPE,
     MANAGE_DEVICE,
     SUPPORTED_COUNTRIES,
     USER_AGENT,
-    X_USER_AGENT,
     build_auth_headers,
+    get_app_version,
     get_base_headers,
     get_base_url,
     get_bifrost_url,
     get_language,
+    get_login_type,
+    get_x_user_agent,
 )
 
 
@@ -294,10 +294,14 @@ class MagentaAuthConfig:
         self.http_manager = http_manager
         self.country_config = COUNTRY_CONFIG[country]
 
-        self.app_version = APP_VERSION
+        # Country-scoped values, resolved from COUNTRY_CONFIG via the
+        # accessors in constants.py. These used to read module-level
+        # APP_VERSION / X_USER_AGENT, which were AT's values for every
+        # country (the source of the HU mismatch).
+        self.app_version = get_app_version(country)
         self.device_name = DEVICE_NAME
         self.user_agent = USER_AGENT
-        self.x_user_agent = X_USER_AGENT
+        self.x_user_agent = get_x_user_agent(country)
         self.timeout = DEFAULT_REQUEST_TIMEOUT
 
     def get_auth_headers(
@@ -607,7 +611,7 @@ class MagentaAuthenticator(BaseAuthenticator):
             "appVersion": self._config.app_version,
             "channel": {"id": CHANNEL_ID},
             "natco": self.country,
-            "type": LOGIN_TYPE,
+            "type": get_login_type(self.country),
             "forceRegister": False,
             "context": LOGIN_CONTEXT,
             "device": {
@@ -939,7 +943,7 @@ class MagentaAuthenticator(BaseAuthenticator):
             )
 
             payload = {
-                "clientVersion": APP_VERSION,
+                "clientVersion": self._config.app_version,
                 "deviceId": device_id,
                 "concurrencyLimitParam": DEVICE_CONCURRENCY_PARAM,
             }
