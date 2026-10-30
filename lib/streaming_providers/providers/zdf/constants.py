@@ -30,7 +30,7 @@ from ..globals import get_identity
 class ZdfDefaults:
     PROVIDER_NAME = "zdf"
     PROVIDER_LABEL = "ZDF"              # shown in the UI, without country
-    PROVIDER_LOGO = ""                  # no verified logo URL available
+    PROVIDER_LOGO = "https://thumb.wikimedia.org/wikipedia/commons/thumb/c/c1/ZDF_logo.svg/1280px-ZDF_logo.svg.png"                  # no verified logo URL available
 
     # Single entry: the registry pins the construction country to "DE"
     # (UPPERCASE); the provider lower-cases it for the storage managers.
