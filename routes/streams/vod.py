@@ -13,6 +13,7 @@ query params on the one route, resolved directly through
 _resolve_stream_unified.
 """
 
+from analytics.integration import annotate, tracked
 from bottle import HTTPResponse, request, response
 from streaming_providers.base.stream_format import StreamFormat
 from streaming_providers.base.utils import logger
@@ -28,6 +29,7 @@ def setup_vod_routes(app, manager, service, helpers):
     _resolve_stream_unified = helpers["_resolve_stream_unified"]
     _get_drm_configs = helpers["_get_drm_configs"]
 
+    @tracked("vod")
     def _handle_vod_stream(provider, vod_id):
         """Single implementation backing /stream/index.mpd — the only VOD
         stream route. Replaces the former /stream/proxied/ and
@@ -58,6 +60,14 @@ def setup_vod_routes(app, manager, service, helpers):
                 f"country={country!r} drm_variant={drm_variant} "
                 f"client_drm={client_drm} no_proxy={no_proxy} "
                 f"highest_quality_only={highest_quality_only}"
+            )
+
+            # Analytics context for @tracked: a dict update on request.environ.
+            annotate(
+                drm_variant=drm_variant,
+                client_drm=client_drm,
+                no_proxy=no_proxy,
+                highest_quality_only=highest_quality_only,
             )
 
             return _resolve_stream_unified(

@@ -8,7 +8,9 @@ channel-specific catchup handling logic.
 """
 
 import time
+from typing import Optional
 
+from analytics.integration import annotate, tracked
 from bottle import HTTPResponse, request, response
 from streaming_providers.base.stream_format import StreamFormat
 from streaming_providers.base.utils import logger
@@ -23,6 +25,7 @@ def setup_channel_routes(app, manager, service, helpers):
     _resolve_stream_unified = helpers["_resolve_stream_unified"]
     _get_drm_configs = helpers["_get_drm_configs"]
 
+    @tracked("channel")
     def _handle_channel_stream(provider, channel_id):
         """Single implementation backing /stream/index.mpd — the only channel
         stream route. Replaces the former /stream/sw-drm/, /stream/noproxy/,
@@ -58,8 +61,8 @@ def setup_channel_routes(app, manager, service, helpers):
             # Always defined so the _resolve_stream_unified call below is
             # unconditionally safe, even though the ternary guards already
             # prevent None from being passed when is_catchup is False.
-            start_time_int: int | None = None
-            end_time_int: int | None = None
+            start_time_int: Optional[int] = None
+            end_time_int: Optional[int] = None
 
             if is_catchup:
                 try:
@@ -86,6 +89,16 @@ def setup_channel_routes(app, manager, service, helpers):
 
                 # Window validation (catchup_hours lookup, age check) lives
                 # inside _resolve_stream_unified via _validate_catchup_window.
+
+            # Analytics context for @tracked — a dict update on request.environ,
+            # nothing else. Emission itself happens in the decorator's finally.
+            annotate(
+                is_catchup=is_catchup,
+                drm_variant=drm_variant,
+                client_drm=client_drm,
+                no_proxy=no_proxy,
+                highest_quality_only=highest_quality_only,
+            )
 
             return _resolve_stream_unified(
                 CONTENT_TYPE_CHANNEL, provider, channel_id,

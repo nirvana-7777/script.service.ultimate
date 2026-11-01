@@ -3,6 +3,7 @@ import hashlib
 import json
 import math
 import os
+import signal
 import sys
 import threading
 import time
@@ -48,6 +49,7 @@ try:
         get_vfs_instance,
         is_kodi_environment,
     )
+    from analytics.emitter import configure_from_env, shutdown_emitter
 except ImportError as import_err:
     print(
         f"Ultimate Backend: Critical import failed - {str(import_err)}", file=sys.stderr
@@ -113,6 +115,10 @@ class UltimateService:
         # Initialize VFS for M3U caching
         self.vfs = get_vfs_instance(subdir="m3u_cache")
         logger.info(f"VFS initialized for M3U caching: {self.vfs.base_path}")
+
+        # Analytics: optional, best-effort, disabled unless ANALYTICS_ENDPOINT_URL
+        # is set. configure_from_env() never raises.
+        configure_from_env()
 
         self.mpd_cache = MPDCacheManager()
         logger.info(f"MPD cache initialized: {self.mpd_cache.vfs.base_path}")
@@ -2223,6 +2229,24 @@ class ThreadedWSGIRefServer(ServerAdapter):
             server.server_close()
 
 
+def _install_sigterm_handler():
+    """
+    Turn SIGTERM (docker stop, systemd) into a normal exit so start_service's
+    finally block runs. Python's default SIGTERM action kills the process
+    without running it. No-op outside the main thread (e.g. Kodi mode).
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return
+
+    def _handler(signum, frame):
+        raise SystemExit(0)
+
+    try:
+        signal.signal(signal.SIGTERM, _handler)
+    except (ValueError, OSError):
+        pass
+
+
 def start_service(service_instance):
     """Start the Bottle server"""
     port = service_instance.server_port
@@ -2238,6 +2262,8 @@ def start_service(service_instance):
     except Exception as e:
         logger.warning(f"Channel warm-up could not be started: {e}")
 
+    _install_sigterm_handler()
+
     try:
         run(
             service_instance.app,
@@ -2249,6 +2275,7 @@ def start_service(service_instance):
         )
     finally:
         service_instance.manager.stop_auto_refresh()
+        shutdown_emitter()  # flush queued analytics events (bounded, never raises)
 
 
 def run_kodi_service():
