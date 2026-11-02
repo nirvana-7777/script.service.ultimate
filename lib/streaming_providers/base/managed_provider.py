@@ -76,6 +76,7 @@ from .managers import (
     RecordingsManager,
     VodManager,
 )
+from .epg_capability import EpgCapability
 from .models import StreamingChannel
 from .models.bookmark import Bookmark, ContentType
 from .models.favorite import Favorite, FavoriteType
@@ -200,10 +201,9 @@ class ManagedProvider(StreamingProvider):
 
     @property
     def implements_epg(self) -> bool:
-        # Manager present AND it reports a window (epg_window != (0, 0)).
-        # NOTE: EPGOperations uses this flag to choose between the native
-        # path and the generic XMLTV path, so a manager that forgets to set
-        # epg_window silently switches the provider to XMLTV.
+        # Manager present AND it reports EPG (declared EPG_CAPABILITIES, else
+        # epg_window != (0, 0)). Informational: EPGOperations routes on
+        # epg_capabilities.
         return self.epg is not None and self.epg.implements_epg
 
     @property
@@ -306,6 +306,17 @@ class ManagedProvider(StreamingProvider):
     @property
     def epg_window(self) -> Tuple[int, int]:
         return self.epg.epg_window if self.epg is not None else (0, 0)
+
+    # EPGOperations routes every EPG endpoint on these (not on implements_epg).
+    # The overrides below always exist on this class, so the mixin's override
+    # sniffing would report everything: forward the manager's own answer.
+    @property
+    def epg_capabilities(self) -> EpgCapability:
+        return self.epg.epg_capabilities if self.epg is not None else EpgCapability.NONE
+
+    @property
+    def epg_capabilities_declared(self) -> bool:
+        return self.epg is not None and self.epg.epg_capabilities_declared
 
     def get_epg(
         self,

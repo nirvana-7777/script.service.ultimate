@@ -6,6 +6,7 @@ These routes provide program schedule information for channels.
 
 Endpoints:
   GET /api/epg/status                                         – Cache/config health check
+  GET /api/epg/capabilities                                   – Native EPG capabilities per provider
   GET /api/epg/xmltv-channels                                 – All channel IDs + display names from XMLTV source
   GET /api/providers/<provider>/epg                           – Bulk XMLTV export (download)
   GET /api/providers/<provider>/epg/grid                      – Multi-channel grid view (JSON)
@@ -21,7 +22,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
 from bottle import request, response
-from streaming_providers.base.epg_operations import EPGOperations, EPGWindowError
+from streaming_providers.base.epg_operations import EPGWindowError
 from streaming_providers.base.utils import logger
 
 
@@ -66,10 +67,10 @@ def _open_xml(file_path: str):
 def setup_epg_routes(app, manager, service):
     """Register all EPG-related routes on *app*."""
 
-    # EPGOperations is instantiated once here so that EPGManager, EPGCache,
-    # EPGMapping and their VFS helpers are constructed only a single time,
-    # not on every incoming HTTP request.
-    epg_ops = EPGOperations(manager.registry)
+    # Reuse the ProviderManager's single EPGOperations. A second instance here
+    # would own a second EPGManager/EPGCache/EPGMapping, so manager.clear_epg_cache()
+    # / reload_epg_mapping() would act on a different object than the routes read.
+    epg_ops = manager.epg_ops
 
     # ------------------------------------------------------------------
     # 1. EPG system status
@@ -120,6 +121,25 @@ def setup_epg_routes(app, manager, service):
 
         except Exception as e:
             logger.error(f"Error getting EPG status: {e}")
+            response.status = 500
+            return {"error": str(e)}
+
+    # ------------------------------------------------------------------
+    # 1b. Per-provider EPG capabilities (audit / status)
+    # ------------------------------------------------------------------
+
+    @app.route("/api/epg/capabilities", method="GET")
+    def get_epg_capabilities():
+        """Which EPG endpoints each enabled provider serves natively.
+
+        "declared": false = still on the derived legacy set (no explicit
+        EPG_CAPABILITIES yet); null = the provider does not report it.
+        """
+        try:
+            response.content_type = "application/json; charset=utf-8"
+            return {"providers": epg_ops.list_epg_capabilities()}
+        except Exception as e:
+            logger.error(f"Error getting EPG capabilities: {e}", exc_info=True)
             response.status = 500
             return {"error": str(e)}
 

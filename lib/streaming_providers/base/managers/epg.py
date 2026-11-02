@@ -12,12 +12,35 @@ Public interface
     get_epg_grid(channel_ids, start_time, end_time, **kw)
                                             -> Dict[str, List[EPGEntry]]     [concrete]
     get_program_details(program_id, **kw)   -> Optional[EPGProgramDetails]   [concrete]
+    epg_capabilities                        -> EpgCapability                 [concrete]
 
 Constructor contract
 --------------------
 Four required keyword-only collaborators. No **kwargs.
 
 epg_window returns (past_days, future_days). (0, 0) means no EPG support.
+
+Routing (read this before touching implements_epg)
+--------------------------------------------------
+EPGOperations routes every endpoint on its OWN capability, never on
+implements_epg / epg_window:
+
+    EpgCapability.CHANNEL  get_epg() is a working per-channel query
+                           (Kodi PVR path). Without it the channel endpoint
+                           is served from the system XMLTV source.
+    EpgCapability.GRID     get_epg_grid() is a NATIVE batch implementation that
+                           also accepts channel_ids=None (= all channels). With
+                           only CHANNEL the backend resolves the channel list
+                           itself and the default loop below is used.
+    EpgCapability.DETAILS  get_program_details() returns real data. Without it
+                           the details endpoint answers 404.
+
+implements_epg / epg_window stay informational (status, listings).
+
+Declaring: set the class attribute EPG_CAPABILITIES. Not declared (None) =
+legacy behaviour, derived once from the old signals so nothing changes:
+implements_epg False -> NONE, otherwise CHANNEL plus GRID / DETAILS if the
+class overrides get_epg_grid / get_program_details.
 """
 
 from __future__ import annotations
@@ -26,6 +49,11 @@ from abc import abstractmethod
 from datetime import datetime
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
+from ..epg_capability import (  # noqa: F401  (re-exported)
+    EPG_CAP_ALL,
+    EpgCapability,
+    derive_capabilities,
+)
 from ..errors import AuthError, GeoBlockError, ProviderError, RateLimitError
 from ..models.epg_models import EPGEntry, EPGProgramDetails
 from ..utils.logger import logger
@@ -34,6 +62,12 @@ from ._base import ManagerBase
 
 class EpgManager(ManagerBase):
     """Abstract base for provider EPG managers."""
+
+    # Explicit capability declaration. None = not declared yet: capabilities are
+    # derived from the legacy signals (see module docstring), i.e. no behaviour
+    # change. Declare it as a plain class attribute so it never needs a network
+    # call (unlike a server-advertised epg_window).
+    EPG_CAPABILITIES: ClassVar[Optional[EpgCapability]] = None
 
     # Opt-in (default False = the historical behaviour, unchanged).
     # False: get_epg_grid() lets any exception of ONE channel abort the grid.
@@ -55,8 +89,34 @@ class EpgManager(ManagerBase):
 
     @property
     def implements_epg(self) -> bool:
-        """True when this manager actually provides EPG data."""
+        """
+        True when this manager provides EPG data. Informational: routing uses
+        epg_capabilities. Follows an explicit EPG_CAPABILITIES declaration,
+        otherwise the historical rule (epg_window != (0, 0)). A subclass may
+        still override it (e.g. server-advertised window).
+        """
+        declared = self.EPG_CAPABILITIES
+        if declared is not None:
+            return declared != EpgCapability.NONE
         return self.epg_window != (0, 0)
+
+    @property
+    def epg_capabilities(self) -> EpgCapability:
+        """Capabilities the backend routes on (see module docstring)."""
+        declared = self.EPG_CAPABILITIES
+        if declared is not None:
+            return declared
+        return self._derive_legacy_capabilities()
+
+    @property
+    def epg_capabilities_declared(self) -> bool:
+        """False while this manager still relies on the derived (legacy) set."""
+        return self.EPG_CAPABILITIES is not None
+
+    def _derive_legacy_capabilities(self) -> EpgCapability:
+        # Deliberately based on implements_epg (not epg_window): providers with
+        # a server-advertised window override implements_epg and must keep EPG.
+        return derive_capabilities(self, EpgManager, channel_implied=True)
 
     def handles_channel_id(self, channel_id: str) -> bool:
         """

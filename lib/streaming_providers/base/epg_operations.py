@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 from datetime import datetime, timedelta, timezone
 
 from .epg import EPGManager
+from .epg_capability import EPG_CAP_ALL, EpgCapability
 from .utils.logger import logger
 from .models.epg_models import EPGEntry, EPGProgramDetails
 
@@ -34,9 +35,15 @@ class EPGOperations:
     their VFS helpers to be re-constructed (and re-logged) on every call.
     """
 
-    def __init__(self, registry):
+    def __init__(self, registry, epg_manager=None):
+        """
+        Args:
+            registry:    ProviderRegistry.
+            epg_manager: the system-owned generic (XMLTV-backed) EPGManager.
+                         Created here if omitted (backward compatible).
+        """
         self.registry = registry
-        self.epg_manager = EPGManager()
+        self.epg_manager = epg_manager if epg_manager is not None else EPGManager()
         logger.debug("EPGOperations: Initialized")
 
     # ------------------------------------------------------------------
@@ -49,6 +56,35 @@ class EPGOperations:
         if not provider:
             raise ValueError(f"Provider '{provider_name}' not found or disabled")
         return provider
+
+    @staticmethod
+    def _capabilities(provider) -> EpgCapability:
+        """
+        Capabilities the endpoints route on.
+
+        A provider that does not expose epg_capabilities (legacy
+        StreamingProvider, or a facade that does not forward it yet) keeps the
+        historical meaning of implements_epg: everything native or nothing.
+        """
+        caps = getattr(provider, "epg_capabilities", None)
+        if isinstance(caps, EpgCapability):
+            return caps
+        return EPG_CAP_ALL if getattr(provider, "implements_epg", False) else EpgCapability.NONE
+
+    def list_epg_capabilities(self) -> Dict[str, Dict]:
+        """Per enabled provider: routing capabilities (status / audit endpoint)."""
+        result: Dict[str, Dict] = {}
+        for name in self.registry.get_enabled_providers():
+            provider = self.registry.get_provider(name)
+            if not provider:
+                continue
+            caps = self._capabilities(provider)
+            result[name] = {
+                "capabilities": [c.name for c in EpgCapability if c and c in caps],
+                "declared": getattr(provider, "epg_capabilities_declared", None),
+                "implements_epg": bool(getattr(provider, "implements_epg", False)),
+            }
+        return result
 
     def _validate_epg_window(self, provider, start_time, end_time):
         """
@@ -145,11 +181,11 @@ class EPGOperations:
         """Get EPG data for a specific channel."""
         provider = self._get_provider(provider_name)
 
-        if provider.implements_epg:
+        if EpgCapability.CHANNEL in self._capabilities(provider):
             # Native providers hit a real upstream API per request — clamp/reject
-            # out-of-window requests so we don't overwhelm it. Generic/XMLTV-backed
-            # providers (epg_window == (0, 0)) read from a locally cached feed and
-            # don't need this throttling.
+            # out-of-window requests so we don't overwhelm it. Everything without
+            # a working per-channel query is served from the locally cached
+            # XMLTV feed and doesn't need this throttling.
             try:
                 start_time, end_time = self._validate_epg_window(provider, start_time, end_time)
             except EPGWindowError as e:
@@ -166,7 +202,9 @@ class EPGOperations:
             )
         else:
             logger.debug(f"Using generic EPG for '{provider_name}'")
-            epg_data = self.epg_manager.get_epg(
+            # get_epg_entries (EPGEntry objects), NOT get_epg: that one returns
+            # dicts for the C++ interface and the routes call entry.to_dict().
+            epg_data = self.epg_manager.get_epg_entries(
                 provider_name=provider_name,
                 channel_id=channel_id,
                 start_time=start_time,
@@ -199,15 +237,20 @@ class EPGOperations:
     ) -> Dict[str, List[EPGEntry]]:
         """Get a time-windowed EPG grid across multiple channels."""
         provider = self._get_provider(provider_name)
+        caps = self._capabilities(provider)
 
-        if provider.implements_epg:
+        if caps & (EpgCapability.GRID | EpgCapability.CHANNEL):
             try:
                 start_time, end_time = self._validate_epg_window(provider, start_time, end_time)
             except EPGWindowError as e:
                 logger.warning(f"EPG window validation failed for {provider_name}: {e.message}")
                 raise
 
-            logger.debug(f"Using native EPG grid for '{provider_name}'")
+            # GRID and CHANNEL-only are the same call: the provider's own
+            # get_epg_grid (native batch, or the default loop over get_epg,
+            # which ManagedProvider feeds with its own channel list when
+            # channel_ids is None, exactly as before).
+            logger.debug(f"Using native EPG grid for '{provider_name}' ({caps})")
             return provider.get_epg_grid(
                 start_time=start_time,
                 end_time=end_time,
@@ -218,13 +261,14 @@ class EPGOperations:
         # Fallback: generic EPG manager (XMLTV-backed, no native window throttling needed)
         logger.debug(f"Using generic EPG grid fallback for '{provider_name}'")
         channels = channel_ids or self.epg_manager.get_channel_ids(provider_name)
-        grid: Dict[str, List[Dict]] = {}
+        grid: Dict[str, List[EPGEntry]] = {}
         for cid in channels:
-            entries = self.epg_manager.get_epg(
+            entries = self.epg_manager.get_epg_entries(
                 provider_name=provider_name,
                 channel_id=cid,
                 start_time=start_time,
                 end_time=end_time,
+                country=country,
             ) or []
             grid[cid] = entries
 
@@ -251,13 +295,13 @@ class EPGOperations:
         """
         provider = self._get_provider(provider_name)
 
-        if provider.implements_epg:
+        if EpgCapability.DETAILS in self._capabilities(provider):
             logger.debug(f"Using native program detail for '{provider_name}/{program_id}'")
             return provider.get_program_details(program_id)
 
-        logger.debug(f"Using generic program detail for '{provider_name}/{program_id}'")
+        logger.debug(f"No program detail support for '{provider_name}/{program_id}'")
         # The generic EPGManager has no program-detail index; native providers
-        # must implement get_program_details() to support this endpoint.
+        # must declare EpgCapability.DETAILS to support this endpoint.
         return None
 
     # ------------------------------------------------------------------
@@ -277,8 +321,15 @@ class EPGOperations:
         """
         provider = self._get_provider(provider_name)
 
-        if provider.implements_epg:
-            return provider.get_epg_xmltv(country=country)
+        # Not capability-routed: there is no XMLTV capability. A provider may
+        # override only get_epg_xmltv, so ask it; the mixin default returns None.
+        exporter = getattr(provider, "get_epg_xmltv", None)
+        if callable(exporter):
+            data = exporter(country=country)
+            if data:
+                return data
+            logger.warning(f"Provider '{provider_name}' returned no XMLTV data")
+            return None
 
         logger.warning(f"Provider '{provider_name}' has no XMLTV EPG")
         return None

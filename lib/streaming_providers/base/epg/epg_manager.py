@@ -226,9 +226,14 @@ class EPGManager:
         channel_id: str,
         start_time: Optional[Union[datetime, int, float]] = None,
         end_time: Optional[Union[datetime, int, float]] = None,
+        limit: Optional[int] = None,
+        country: Optional[str] = None,
     ) -> List[EPGEntry]:
         """
         Get EPG data as EPGEntry objects (for internal use).
+
+        limit / country behave exactly as in get_epg() (country is forwarded
+        to the mapping lookup).
 
         INTERNAL INTERFACE: Returns EPGEntry objects for type safety.
 
@@ -244,7 +249,9 @@ class EPGManager:
         logger.info(f"EPGManager: Getting EPG entries for {provider_name}/{channel_id}")
 
         try:
-            epg_channel_id = self.mapping.get_epg_channel_id(provider_name, channel_id)
+            epg_channel_id = self.mapping.get_epg_channel_id(
+                provider_name, channel_id, country=country
+            )
             if not epg_channel_id:
                 logger.warning(f"EPGManager: No EPG mapping found for {provider_name}/{channel_id}")
                 return []
@@ -261,13 +268,16 @@ class EPGManager:
                 start_ts = start_ts if start_ts is not None else default_start
                 end_ts   = end_ts   if end_ts   is not None else default_end
 
-            return self.parser.parse_epg_for_channel(
+            entries = self.parser.parse_epg_for_channel(
                 xml_path,
                 epg_channel_id,
                 start_ts,
                 end_ts,
                 provider_name,  # Enable provider encoding
             )
+            if limit is not None and len(entries) > limit:
+                entries = entries[:limit]
+            return entries
 
         except Exception as e:
             logger.error(f"EPGManager: Error getting EPG entries: {e}", exc_info=True)

@@ -1,12 +1,17 @@
 """Provider EPG (electronic program guide) mixin."""
 
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import ClassVar, Dict, List, Optional, Tuple
 
+from ..epg_capability import EpgCapability, derive_capabilities
 from ..models.epg_models import EPGEntry, EPGProgramDetails
 
 
 class ProviderEpgMixin:
+    # Explicit capability declaration (see EpgManager). None = derived from
+    # which of the methods below the provider actually overrides.
+    EPG_CAPABILITIES: ClassVar[Optional[EpgCapability]] = None
+
     @property
     def epg_window(self) -> Tuple[int, int]:
         """
@@ -22,8 +27,28 @@ class ProviderEpgMixin:
 
     @property
     def implements_epg(self) -> bool:
-        """Check if provider implements EPG."""
+        """Informational (status / listings); routing uses epg_capabilities."""
+        declared = self.EPG_CAPABILITIES
+        if declared is not None:
+            return declared != EpgCapability.NONE
         return self.epg_window != (0, 0)
+
+    @property
+    def epg_capabilities(self) -> EpgCapability:
+        """
+        What the backend may route to this provider. Declared via
+        EPG_CAPABILITIES, otherwise derived: an epg_window alone is not enough,
+        a method must be overridden for its capability to count (the defaults
+        below return nothing).
+        """
+        declared = self.EPG_CAPABILITIES
+        if declared is not None:
+            return declared
+        return derive_capabilities(self, ProviderEpgMixin, channel_implied=False)
+
+    @property
+    def epg_capabilities_declared(self) -> bool:
+        return self.EPG_CAPABILITIES is not None
 
     # ============================================================================
     # EPG METHODS - Optional with sensible defaults
@@ -56,13 +81,18 @@ class ProviderEpgMixin:
         """
         Get EPG data for multiple channels in one operation.
 
-        Override if provider supports batch EPG.
-        Default returns empty dict (no batch EPG).
+        Override if provider supports batch EPG (and declare
+        EpgCapability.GRID).
 
-        Note: If provider only supports per-channel EPG,
-        implement get_epg() and leave this as default.
+        Default: if provider only supports per-channel EPG, loop get_epg() over
+        the given channel_ids. With channel_ids=None it returns {} (unchanged
+        from before; ManagedProvider resolves "all channels" itself).
         """
-        return {}
+        return {
+            cid: self.get_epg(cid, start_time=start_time, end_time=end_time,
+                              country=country, **kwargs)
+            for cid in (channel_ids or [])
+        }
 
     def get_program_details(self, program_id: str, **kwargs) -> Optional["EPGProgramDetails"]:
         """
