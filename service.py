@@ -1792,37 +1792,53 @@ class UltimateService:
         """
         Build the ffmpeg pipe:// command used by the ffmpeg-piped M3U variant.
 
-        Extracted from _generate_m3u_proxied_ffmpeg_fast, which was the only
-        caller and still is — pulled out unchanged so it's reusable/testable
-        on its own, not because behavior needed to change.
+        Input options:
+        - -loglevel error: "fatal" hides reconnect events; "error" keeps stderr
+          clean in normal operation but makes source flapping visible in the
+          tvheadend log.
+        - -fflags +genpts+igndts+discardcorrupt: robustness trio for live remux.
+        - -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 10: retry on
+          dropped connections; the streamed variant because the MPD response is
+          not seekable.
+        - -rw_timeout 15000000 (15s): a stalled TCP connection that never
+          errors out would hang this pipe forever while tvheadend shows a
+          "running" mux with no data. A read timeout makes ffmpeg exit instead,
+          so the pipe gets restarted. Prefer dying over hanging.
+        - -thread_queue_size 2048: large enough to demux multiple audio tracks
+          smoothly.
+        - No -re: the source is live DASH and already arrives in real time;
+          -re would prevent catch-up after a stall, ratcheting latency up
+          permanently.
 
-        - -thread_queue_size 2048: kept large to handle demuxing multiple
-          audio tracks smoothly.
-        - -map 0:v:0: maps the single video stream (only one exists, since
-          the upstream URL is requested with highest_quality_only=true).
-        - -map 0:a?: maps all available audio tracks (channels commonly
-          carry multiple, e.g. German/English AAC + AC-3); "?" makes the
-          map optional so this doesn't fail if a channel has none.
-        - -max_muxing_queue_size 8192: kept high to safely interleave
-          multi-audio timescales.
+        Output options:
+        - -map 0:v:0: single video stream (upstream is requested with
+          highest_quality_only=true).
+        - -map 0:a?: all available audio tracks (channels commonly carry
+          multiple, e.g. German/English AAC + AC-3); "?" keeps this from
+          failing on channels with no audio.
+        - -c copy: pure remux, no transcoding.
+        - -max_muxing_queue_size 8192: safely interleaves multi-audio timescales.
+        - -muxdelay 0 -muxpreload 0 -flush_packets 1: minimal mux/flush latency.
+        - -mpegts_flags resend_headers: PAT/PMT re-sent periodically so
+          tvheadend and newly joined clients can sync mid-stream.
         """
         return (
-            f'pipe://ffmpeg -loglevel fatal '
-            f'-fflags +genpts+igndts+discardcorrupt '
-            f'-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 '
-            f'-thread_queue_size 2048 '
-            f'-re '
+            'pipe://ffmpeg -loglevel fatal '
+            '-fflags +genpts+igndts+discardcorrupt '
+            '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 10 '
+            '-rw_timeout 15000000 '
+            '-thread_queue_size 2048 '
             f'-i "{stream_url}" '
-            f'-map 0:v:0 '
-            f'-map 0:a? '
-            f'-c copy '
-            f'-max_muxing_queue_size 8192 '
-            f'-f mpegts '
-            f'-muxdelay 0 -muxpreload 0 '
-            f'-mpegts_flags resend_headers '
+            '-map 0:v:0 '
+            '-map 0:a? '
+            '-c copy '
+            '-max_muxing_queue_size 8192 '
+            '-f mpegts '
+            '-muxdelay 0 -muxpreload 0 '
+            '-mpegts_flags resend_headers '
             f'-metadata service_name="{channel_name}" '
-            f'-flush_packets 1 '
-            f'pipe:1'
+            '-flush_packets 1 '
+            'pipe:1'
         )
 
     @staticmethod
