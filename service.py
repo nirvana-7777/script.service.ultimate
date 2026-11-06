@@ -57,6 +57,42 @@ except ImportError as import_err:
     raise
 
 
+# --- per-request stage timing (Server-Timing header + log line) --------------------------
+_SERVER_TIMING = os.environ.get("SERVER_TIMING", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+class _stage:
+    """Context manager: records elapsed ms of a named stage on the current request.
+    Best-effort and exception-safe: outside a request it silently does nothing."""
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def __enter__(self):
+        self._t0 = time.perf_counter()
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            request.environ.setdefault("ultimate.timing", []).append(
+                (self.name, (time.perf_counter() - self._t0) * 1000.0)
+            )
+        except Exception:
+            pass
+        return False
+
+
+def _stage_mark(name: str) -> None:
+    try:
+        request.environ.setdefault("ultimate.timing", []).append((name, 0.0))
+    except Exception:
+        pass
+
+
+class _ManifestUnavailable(Exception):
+    """Provider returned no manifest URL (maps to HTTP 404, not a transient failure)."""
+
+
 def _manifest_content_type(content: Optional[str]) -> str:
     """Content-Type for a manifest body, from the content itself (the source
     of truth, same rule as detect_format). Unknown falls back to DASH, which is
@@ -163,6 +199,7 @@ class UltimateService:
         self._hls_cache = {}  # sha256 key -> (content, expiry_ts)
         self._hls_cache_lock = threading.Lock()
         self._hls_flight = SingleFlight()
+        self._dash_flight = SingleFlight()  # concurrent identical DASH cold requests share one resolve+fetch+rewrite
 
         # 1. Determine EPG URL FIRST (with proper precedence)
         self.epg_url = self._determine_epg_url()
@@ -456,19 +493,21 @@ class UltimateService:
         # Resolve manifest headers from the provider so auth tokens etc. are sent
         provider_instance = self.manager.get_provider(provider)
         header_kwargs = header_kwargs or {}
-        manifest_headers = (
-            provider_instance.get_manifest_headers(channel_id, **header_kwargs)
-            if provider_instance else {}
-        )
-        segment_headers = (
-            provider_instance.get_segment_headers(channel_id, **header_kwargs)
-            if provider_instance else {}
-        )
+        with _stage("headers"):
+            manifest_headers = (
+                provider_instance.get_manifest_headers(channel_id, **header_kwargs)
+                if provider_instance else {}
+            )
+            segment_headers = (
+                provider_instance.get_segment_headers(channel_id, **header_kwargs)
+                if provider_instance else {}
+            )
 
-        manifest_response = http_manager.get(
-            manifest_url, headers=manifest_headers, operation="manifest"
-        )
-        manifest_response.raise_for_status()
+        with _stage("upstream"):
+            manifest_response = http_manager.get(
+                manifest_url, headers=manifest_headers, operation="manifest"
+            )
+            manifest_response.raise_for_status()
 
         # Cache TTL: prefer HTTP Cache-Control/Expires, fall back to MPD minimumUpdatePeriod
         ttl = MPDRewriter.extract_cache_ttl(manifest_response.headers)
@@ -535,6 +574,10 @@ class UltimateService:
                 cache_set(content, ttl)
             response.content_type = _manifest_content_type(content)
             return content
+        except _ManifestUnavailable as e:
+            response.status = 404
+            response.content_type = "application/json"
+            return json.dumps({"error": str(e)})
         except ValueError as e:
             # Config error (e.g. no HTTP manager) — not transient, don't mask with stale cache
             logger.error(str(e))
@@ -554,30 +597,51 @@ class UltimateService:
             response.content_type = "application/json"
             return json.dumps({"error": f"Failed to fetch manifest: {str(fetch_err)}"})
 
+    def _dash_produce(self, flight_key: str, fetch_fn, cache_set, cache_peek):
+        """Single-flight resolve -> fetch -> rewrite -> cache for DASH manifests.
+
+        Concurrent identical cold requests (several clients, or Kodi's parallel manifest/stream
+        calls) share ONE provider URL resolution, ONE upstream fetch and ONE rewrite. The leader
+        stores the result; followers get the same (content, ttl). Mirrors the HLS path."""
+        def produce():
+            hit = cache_peek()  # a previous flight may have finished between our cache check and becoming leader
+            if hit:
+                return hit, 0
+            content, ttl = fetch_fn()
+            cache_set(content, ttl)
+            return content, ttl
+
+        with _stage("flight"):
+            return self._dash_flight.do(flight_key, produce)
+
     def get_proxied_manifest(self, provider: str, channel_id: str, highest_quality_only: bool = False) -> str:
         country = request.query.get("country")
+        # The rewritten manifest differs per quality mode, so each mode has its own cache entry
+        # (highest_quality_only used to bypass the cache and pay the full cold path on every request).
+        cache_id = f"{channel_id}_hq" if highest_quality_only else channel_id
 
-        if not highest_quality_only:
-            cached_mpd = self.mpd_cache.get(provider, channel_id)
-            if cached_mpd:
-                response.content_type = _manifest_content_type(cached_mpd)
-                return cached_mpd
+        cached_mpd = self.mpd_cache.get(provider, cache_id)
+        if cached_mpd:
+            _stage_mark("cache_hit")
+            response.content_type = _manifest_content_type(cached_mpd)
+            return cached_mpd
 
         if not self.media_proxy_url:
             response.status = 503
             response.content_type = "application/json"
             return json.dumps({"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"})
 
-        manifest_url = self.manager.get_channel_manifest(
-            provider_name=provider, channel_id=channel_id, country=country
-        )
-        if not manifest_url:
-            response.status = 404
-            response.content_type = "application/json"
-            return json.dumps(
-                {"error": f'Manifest not available for channel "{channel_id}" from provider "{provider}"'})
+        box = {}
 
         def fetch_fn():
+            with _stage("resolve_url"):
+                manifest_url = self.manager.get_channel_manifest(
+                    provider_name=provider, channel_id=channel_id, country=country
+                )
+            if not manifest_url:
+                raise _ManifestUnavailable(
+                    f'Manifest not available for channel "{channel_id}" from provider "{provider}"')
+            box["url"] = manifest_url
             manifest_text, ttl, provider_proxy_url, segment_headers, effective_url = self.fetch_manifest_for_rewriter(
                 provider, channel_id, manifest_url
             )
@@ -586,15 +650,20 @@ class UltimateService:
                 self.media_proxy_url, provider_proxy_url, None, highest_quality_only,
                 provider=provider, channel=channel_id, segment_headers=segment_headers,
             )
-            return rewriter.rewrite_mpd(manifest_text, effective_url), ttl
+            with _stage("rewrite"):
+                return rewriter.rewrite_mpd(manifest_text, effective_url), ttl
 
         return self._fetch_and_cache_manifest(
-            fetch_fn,
-            cache_set=lambda content, ttl: self.mpd_cache.set(
-                provider=provider, channel_id=channel_id, mpd_content=content, ttl=ttl, original_url=manifest_url
+            lambda: self._dash_produce(
+                f"dash:{provider}:{cache_id}", fetch_fn,
+                cache_set=lambda content, ttl: self.mpd_cache.set(
+                    provider=provider, channel_id=cache_id, mpd_content=content, ttl=ttl,
+                    original_url=box.get("url")),
+                cache_peek=lambda: self.mpd_cache.get(provider, cache_id),
             ),
-            cache_get_stale=lambda max_stale: self.mpd_cache.get(provider, channel_id, max_stale=max_stale),
-            cacheable=not highest_quality_only,
+            cache_set=lambda content, ttl: None,  # stored once per flight by _dash_produce
+            cache_get_stale=lambda max_stale: self.mpd_cache.get(provider, cache_id, max_stale=max_stale),
+            cacheable=True,
             stale_window=15,
             label=f"manifest for {provider}/{channel_id}",
         )
@@ -605,6 +674,7 @@ class UltimateService:
 
         cached_mpd = self.mpd_cache.get(provider, cache_key)
         if cached_mpd:
+            _stage_mark("cache_hit")
             response.content_type = _manifest_content_type(cached_mpd)
             return cached_mpd
 
@@ -615,16 +685,17 @@ class UltimateService:
             response.content_type = "application/json"
             return json.dumps({"error": "Media proxy not configured (MEDIA_PROXY_URL not set)"})
 
-        manifest_url = self.manager.get_catchup_manifest(
-            provider_name=provider, channel_id=channel_id, start_time=start_time, end_time=end_time,
-            epg_id=epg_id, country=country,
-        )
-        if not manifest_url:
-            response.status = 404
-            response.content_type = "application/json"
-            return json.dumps({"error": "Catchup manifest not available"})
+        box = {}
 
         def fetch_fn():
+            with _stage("resolve_url"):
+                manifest_url = self.manager.get_catchup_manifest(
+                    provider_name=provider, channel_id=channel_id, start_time=start_time, end_time=end_time,
+                    epg_id=epg_id, country=country,
+                )
+            if not manifest_url:
+                raise _ManifestUnavailable("Catchup manifest not available")
+            box["url"] = manifest_url
             manifest_text, ttl, provider_proxy_url, segment_headers, effective_url = self.fetch_manifest_for_rewriter(
                 provider, channel_id, manifest_url
             )
@@ -633,13 +704,18 @@ class UltimateService:
                 self.media_proxy_url, provider_proxy_url, None, False,
                 provider=provider, channel=channel_id, segment_headers=segment_headers,
             )
-            return rewriter.rewrite_mpd(manifest_text, effective_url), ttl
+            with _stage("rewrite"):
+                return rewriter.rewrite_mpd(manifest_text, effective_url), ttl
 
         return self._fetch_and_cache_manifest(
-            fetch_fn,
-            cache_set=lambda content, ttl: self.mpd_cache.set(
-                provider=provider, channel_id=cache_key, mpd_content=content, ttl=ttl, original_url=manifest_url
+            lambda: self._dash_produce(
+                f"dash:{provider}:{cache_key}", fetch_fn,
+                cache_set=lambda content, ttl: self.mpd_cache.set(
+                    provider=provider, channel_id=cache_key, mpd_content=content, ttl=ttl,
+                    original_url=box.get("url")),
+                cache_peek=lambda: self.mpd_cache.get(provider, cache_key),
             ),
+            cache_set=lambda content, ttl: None,
             cache_get_stale=lambda max_stale: self.mpd_cache.get(provider, cache_key, max_stale=max_stale),
             cacheable=True,
             stale_window=15,
@@ -779,13 +855,19 @@ class UltimateService:
                                 highest_quality_only: bool = False, receiver_side: bool = False,
                                 drm_variant: str = "auto") -> str:
         country = request.query.get("country")
-        cache_key = f"{provider}_{channel_id}_drm_{drm_variant}"
+        # Everything that changes the rewritten output belongs in the key: receiver-side vs
+        # server-side differ in ContentProtection signalling AND in the /api/proxy vs /api/decrypt
+        # endpoints, so they must never share an entry (they did before); same for quality mode.
+        cache_key = (
+            f"{provider}_{channel_id}_drm_{drm_variant}_{'recv' if receiver_side else 'srv'}"
+            f"{'_hq' if highest_quality_only else ''}"
+        )
 
-        if not highest_quality_only:
-            cached_mpd = self._get_decrypted_cached(cache_key)
-            if cached_mpd:
-                response.content_type = _manifest_content_type(cached_mpd)
-                return cached_mpd
+        cached_mpd = self._get_decrypted_cached(cache_key)
+        if cached_mpd:
+            _stage_mark("cache_hit")
+            response.content_type = _manifest_content_type(cached_mpd)
+            return cached_mpd
 
         if not self.media_proxy_url:
             response.status = 503
@@ -797,16 +879,14 @@ class UltimateService:
             f"for {provider}/{channel_id} (highest_quality_only={highest_quality_only}, drm_variant={drm_variant})"
         )
 
-        manifest_url = self.manager.get_channel_manifest(
-            provider_name=provider, channel_id=channel_id, country=country, drm_variant=drm_variant,
-        )
-        if not manifest_url:
-            response.status = 404
-            response.content_type = "application/json"
-            return json.dumps(
-                {"error": f'Manifest not available for channel "{channel_id}" from provider "{provider}"'})
-
         def fetch_fn():
+            with _stage("resolve_url"):
+                manifest_url = self.manager.get_channel_manifest(
+                    provider_name=provider, channel_id=channel_id, country=country, drm_variant=drm_variant,
+                )
+            if not manifest_url:
+                raise _ManifestUnavailable(
+                    f'Manifest not available for channel "{channel_id}" from provider "{provider}"')
             manifest_text, ttl, provider_proxy_url, segment_headers, effective_url = self.fetch_manifest_for_rewriter(
                 provider, channel_id, manifest_url
             )
@@ -816,14 +896,19 @@ class UltimateService:
                 segment_headers=segment_headers,
                 kid_resolver=self._make_kid_resolver(provider, segment_headers),
             )
-            rewritten_mpd = rewriter.rewrite_mpd(manifest_text, effective_url)
+            with _stage("rewrite"):
+                rewritten_mpd = rewriter.rewrite_mpd(manifest_text, effective_url)
             return rewritten_mpd, min(ttl, 10)  # holds key material — keep exposure window short
 
         return self._fetch_and_cache_manifest(
-            fetch_fn,
-            cache_set=lambda content, ttl: self._set_decrypted_cached(cache_key, content, ttl),
+            lambda: self._dash_produce(
+                f"dash:{cache_key}", fetch_fn,
+                cache_set=lambda content, ttl: self._set_decrypted_cached(cache_key, content, ttl),
+                cache_peek=lambda: self._get_decrypted_cached(cache_key),
+            ),
+            cache_set=lambda content, ttl: None,
             cache_get_stale=lambda max_stale: self._get_decrypted_cached(cache_key, max_stale=max_stale),
-            cacheable=not highest_quality_only,
+            cacheable=True,
             stale_window=5,
             label=f"decrypted manifest for {provider}/{channel_id}",
         )
@@ -833,13 +918,16 @@ class UltimateService:
                                         highest_quality_only: bool = False,
                                         receiver_side: bool = False) -> str:
         country = request.query.get("country")
-        cache_key = f"{provider}_{channel_id}_catchup_{start_time}_{end_time}_drm"
+        cache_key = (
+            f"{provider}_{channel_id}_catchup_{start_time}_{end_time}_drm_{'recv' if receiver_side else 'srv'}"
+            f"{'_hq' if highest_quality_only else ''}"
+        )
 
-        if not highest_quality_only:
-            cached_mpd = self._get_decrypted_cached(cache_key)
-            if cached_mpd:
-                response.content_type = _manifest_content_type(cached_mpd)
-                return cached_mpd
+        cached_mpd = self._get_decrypted_cached(cache_key)
+        if cached_mpd:
+            _stage_mark("cache_hit")
+            response.content_type = _manifest_content_type(cached_mpd)
+            return cached_mpd
 
         if not self.media_proxy_url:
             response.status = 503
@@ -852,17 +940,15 @@ class UltimateService:
             f"(start={start_time} end={end_time} highest_quality_only={highest_quality_only})"
         )
 
-        manifest_url = self.manager.get_catchup_manifest(
-            provider_name=provider, channel_id=channel_id, start_time=start_time, end_time=end_time,
-            epg_id=epg_id, country=country,
-        )
-        if not manifest_url:
-            response.status = 404
-            response.content_type = "application/json"
-            return json.dumps(
-                {"error": f'Catchup manifest not available for channel "{channel_id}" from provider "{provider}"'})
-
         def fetch_fn():
+            with _stage("resolve_url"):
+                manifest_url = self.manager.get_catchup_manifest(
+                    provider_name=provider, channel_id=channel_id, start_time=start_time, end_time=end_time,
+                    epg_id=epg_id, country=country,
+                )
+            if not manifest_url:
+                raise _ManifestUnavailable(
+                    f'Catchup manifest not available for channel "{channel_id}" from provider "{provider}"')
             manifest_text, ttl, provider_proxy_url, segment_headers, effective_url = self.fetch_manifest_for_rewriter(
                 provider, channel_id, manifest_url
             )
@@ -872,14 +958,19 @@ class UltimateService:
                 segment_headers=segment_headers,
                 kid_resolver=self._make_kid_resolver(provider, segment_headers),
             )
-            rewritten_mpd = rewriter.rewrite_mpd(manifest_text, effective_url)
+            with _stage("rewrite"):
+                rewritten_mpd = rewriter.rewrite_mpd(manifest_text, effective_url)
             return rewritten_mpd, min(ttl, 30)
 
         return self._fetch_and_cache_manifest(
-            fetch_fn,
-            cache_set=lambda content, ttl: self._set_decrypted_cached(cache_key, content, ttl),
+            lambda: self._dash_produce(
+                f"dash:{cache_key}", fetch_fn,
+                cache_set=lambda content, ttl: self._set_decrypted_cached(cache_key, content, ttl),
+                cache_peek=lambda: self._get_decrypted_cached(cache_key),
+            ),
+            cache_set=lambda content, ttl: None,
             cache_get_stale=lambda max_stale: self._get_decrypted_cached(cache_key, max_stale=max_stale),
-            cacheable=not highest_quality_only,
+            cacheable=True,
             stale_window=10,
             label=f"decrypted catchup manifest for {provider}/{channel_id}",
         )
@@ -2469,8 +2560,13 @@ class UltimateService:
 
         @self.app.hook('after_request')
         def log_response():
+            timing = request.environ.get("ultimate.timing")
+            timing_str = ", ".join(f"{n};dur={d:.1f}" for n, d in timing) if timing else ""
+            if timing_str and _SERVER_TIMING:
+                response.set_header("Server-Timing", timing_str)
             logger.info(
-                f"← {request.method} {request.path} → {response.status_code} (took {time.time() - getattr(request, '_start_time', time.time()):.2f}s)")
+                f"← {request.method} {request.path} → {response.status_code} (took {time.time() - getattr(request, '_start_time', time.time()):.2f}s)"
+                + (f" [{timing_str}]" if timing_str else ""))
 
         # Import route handlers here
         from routes.providers import setup_provider_routes
