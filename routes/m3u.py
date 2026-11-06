@@ -31,6 +31,7 @@ FALLBACK_WARN_INTERVAL_SECONDS = 60 * 60
 M3U_MODE_PLAIN = "plain"
 M3U_MODE_CLIENTDRM_FALLBACK = "clientdrm-fallback"
 M3U_MODE_NOPROXY_RAW = "noproxy-raw"
+M3U_MODE_PROXIED_TS = "proxied-ts"
 
 # ---------------------------------------------------------------------------
 # Serve-time absolutization of cached playlists.
@@ -494,6 +495,41 @@ def setup_m3u_routes(app, manager, service):
         return _handle_m3u_route(
             lambda: service.generate_m3u_proxied_ffmpeg_fast(providers=provider),
             log_ctx=f"/api/providers/{provider}/m3u/proxied/ffmpeg",
+        )
+
+    # ── Streamlink TS playlist (deliberately UNCACHED) ──────────────────
+    # Entries deliver each channel as an endless MPEG-TS stream by pointing
+    # at the streamlink relay service (STREAMLINK_URL) with this backend's
+    # own stream URL (client_drm=false — server-side decrypt) as the source:
+    #     GET {STREAMLINK_URL}/watch?url=<percent-encoded backend stream URL>
+    # Filtered like proxied/filtered (ClearKey/unencrypted only) because
+    # streamlink cannot decrypt DRM itself; live-only (no catchup attrs,
+    # like the ffmpeg variant). Returns 503 when STREAMLINK_URL is unset —
+    # no fallback playlist exists for TS. Uncached: entry URLs embed a base
+    # URL the relay can reach (STREAMLINK_SOURCE_BASE_URL, else this
+    # request's host) and depend on the external relay, so no /generate
+    # variants either. Entry URLs are the relay's absolute URLs, which the
+    # serve-time absolutizer leaves alone. Included/skipped channel counts
+    # are exposed via X-M3U-Channels-Included / -Skipped (skips are
+    # otherwise invisible — a shorter playlist).
+
+    @app.route("/api/m3u/proxied/ts")
+    def get_m3u_proxied_ts_all():
+        """Generates streamlink-relayed TS M3U playlist for all providers. No caching."""
+        response.headers["X-M3U-Mode"] = M3U_MODE_PROXIED_TS
+        return _handle_m3u_route(
+            lambda: service.generate_m3u_proxied_ts_all(),
+            log_ctx="/api/m3u/proxied/ts",
+        )
+
+    @app.route("/api/providers/<provider>/m3u/proxied/ts")
+    def get_m3u_proxied_ts_provider(provider):
+        """Generates streamlink-relayed TS M3U playlist for a provider. No caching."""
+        response.headers["X-M3U-Mode"] = M3U_MODE_PROXIED_TS
+        return _handle_m3u_route(
+            _for_provider(
+                provider, lambda: service.generate_m3u_proxied_ts_provider(provider)),
+            log_ctx=f"/api/providers/{provider}/m3u/proxied/ts",
         )
 
     # ── Filtered proxied playlists (cached; ClearKey or unencrypted only) ─

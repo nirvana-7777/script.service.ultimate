@@ -112,6 +112,40 @@ class UltimateService:
         else:
             logger.info(f"Media proxy URL: {self.media_proxy_url}")
 
+        # Streamlink TS relay (m3u/proxied/ts playlists): optional, valid only
+        # when STREAMLINK_URL points at an HTTP service wrapping streamlink —
+        # "GET {STREAMLINK_URL}/watch?url=<src>" returns an endless MPEG-TS
+        # body. Same opt-in pattern as MEDIA_PROXY_URL: the routes stay
+        # registered and answer 503 when unset, so the API surface is stable.
+        self.streamlink_url = os.environ.get("STREAMLINK_URL", "").strip()
+        if not self.streamlink_url:
+            logger.info(
+                "STREAMLINK_URL environment variable not set - TS playlist endpoints disabled"
+            )
+        else:
+            logger.info(f"Streamlink URL: {self.streamlink_url}")
+
+        # Base URL baked into the source parameter handed to the streamlink
+        # relay: the relay must be able to reach THIS backend, which in a
+        # Docker deployment is usually a network-internal name rather than
+        # the client-visible host. Empty -> fall back to the request's own
+        # base URL at generation time (see _streamlink_source_base_url).
+        self.streamlink_source_base_url = os.environ.get(
+            "STREAMLINK_SOURCE_BASE_URL", ""
+        ).strip()
+        if self.streamlink_source_base_url:
+            logger.info(
+                f"Streamlink source base URL: {self.streamlink_source_base_url}"
+            )
+
+        # Per-instance timestamp backing _warn_clearkey_skip_throttled
+        # (interval: _CLEARKEY_SKIP_WARN_INTERVAL_SECONDS). Instance state,
+        # deliberately NOT a class attribute: a class-level timestamp would
+        # let one instance suppress another's warning wherever multiple
+        # service instances share a process (Kodi mode, tests). A fresh
+        # instance starts at 0.0, so its first ClearKey skip always warns.
+        self._last_clearkey_skip_warning = 0.0
+
         # Initialize VFS for M3U caching
         self.vfs = get_vfs_instance(subdir="m3u_cache")
         logger.info(f"VFS initialized for M3U caching: {self.vfs.base_path}")
@@ -1741,6 +1775,246 @@ class UltimateService:
         )
         return m3u_content, total_included, total_skipped
 
+    # ------------------------------------------------------------------
+    # Streamlink TS playlist (m3u/proxied/ts)
+    #
+    # Each entry's stream URL points at an EXTERNAL streamlink relay service
+    # (STREAMLINK_URL): "GET {STREAMLINK_URL}/watch?url=<encoded source>"
+    # returns an endless MPEG-TS body. The source handed to the relay is this
+    # backend's own stream route with client_drm=false, so provider headers,
+    # geo-proxying and server-side ClearKey decryption all keep working — the
+    # relay only repackages the already-clear stream into TS.
+    #
+    # The relay must be able to reach this backend over the network; the base
+    # URL it uses is STREAMLINK_SOURCE_BASE_URL when set (Docker-internal
+    # name), else the current request's own base URL (see
+    # _streamlink_source_base_url).
+    #
+    # Filtering matches _generate_m3u_proxied_filtered_content: ClearKey or
+    # unencrypted channels only, since streamlink cannot decrypt DRM itself
+    # (ClearKey is playable here only because client_drm=false makes the
+    # server decrypt via the media proxy before the relay ever sees the
+    # stream — without MEDIA_PROXY_URL, ClearKey channels are skipped too).
+    #
+    # Live-only like the ffmpeg variant (include_catchup=False): an endless
+    # TS stream has no seekable DVR window. No KODIPROP directives either —
+    # the entry is a plain HTTP TS URL played by the regular demuxer, not by
+    # inputstream.adaptive.
+    #
+    # Deliberately UNCACHED: entry URLs embed a per-request base URL
+    # (whenever STREAMLINK_SOURCE_BASE_URL is unset) and depend on an
+    # external relay whose sessions may be short-lived. Hence no /generate
+    # route variants either — there is nothing to regenerate.
+    #
+    # Entry URLs are ABSOLUTE (the relay's), never /api/providers/..., so the
+    # serve-time absolutizer in routes/m3u.py leaves them alone — same as the
+    # noproxy/raw variant.
+    # ------------------------------------------------------------------
+
+    # Path on the streamlink relay that serves the TS body for a source URL
+    # passed as the "url" query parameter:
+    #     GET {STREAMLINK_URL}/watch?url=<percent-encoded source>
+    # The url value is percent-encoded (urlencode) — the relay MUST decode
+    # it with standard query parsing (parse_qs / URLSearchParams). A raw
+    # unencoded URL is not a supported shape: a source URL containing '&'
+    # or '#' would corrupt the query string.
+    # Adjust here if the deployed relay exposes a different path.
+    _STREAMLINK_WATCH_PATH = "/watch"
+
+    # Throttle interval for the ClearKey-without-proxy skip warning below:
+    # same one-per-interval shape as FALLBACK_WARN_INTERVAL_SECONDS /
+    # _warn_fallback_throttled in routes/m3u.py (an hour is enough — the
+    # condition is static per deployment). Only the IMMUTABLE interval
+    # lives at class level; the timestamp is per-instance state owned by
+    # __init__, so multiple service instances in one process can never
+    # suppress each other's warnings.
+    _CLEARKEY_SKIP_WARN_INTERVAL_SECONDS = 60 * 60
+
+    def _streamlink_source_base_url(self) -> str:
+        """Base URL the streamlink relay uses to reach THIS backend.
+
+        STREAMLINK_SOURCE_BASE_URL when set (e.g. a Docker-internal service
+        name only the relay can resolve); otherwise the current request's own
+        base URL, on the assumption that the relay can reach the backend via
+        the same address the client used.
+        """
+        if self.streamlink_source_base_url:
+            return self.streamlink_source_base_url.rstrip("/")
+        parts = request.urlparts
+        return f"{parts.scheme}://{parts.netloc}"
+
+    def _warn_clearkey_skip_throttled(self) -> None:
+        """Warn at most once per interval that ClearKey channels are being
+        dropped from the TS playlist because MEDIA_PROXY_URL is unset.
+
+        Without this the only symptom is a silently shorter playlist — a
+        misconfiguration (ClearKey channels exist but nothing can decrypt
+        them for the relay) that deserves to surface somewhere louder than
+        per-channel debug logs. Mirrors _warn_fallback_throttled in
+        routes/m3u.py.
+        """
+        now = time.time()
+        if (
+            now - self._last_clearkey_skip_warning
+            >= self._CLEARKEY_SKIP_WARN_INTERVAL_SECONDS
+        ):
+            self._last_clearkey_skip_warning = now
+            logger.warning(
+                "TS M3U: skipping ClearKey channel(s) - MEDIA_PROXY_URL is "
+                "unset, so client_drm=false cannot decrypt server-side for "
+                "the streamlink relay; only unencrypted channels are "
+                "included. Set MEDIA_PROXY_URL to relay ClearKey channels "
+                "too. (Repeats suppressed for %ss.)"
+                % self._CLEARKEY_SKIP_WARN_INTERVAL_SECONDS
+            )
+
+    def _generate_m3u_proxied_ts_content(self, providers=None):
+        """
+        Internal method to generate the streamlink-relayed TS M3U content
+        for the given providers. See the block comment above for the design.
+
+        Args:
+            providers: List of provider names, or None for all providers
+
+        Returns:
+            (m3u_content, channels_included, channels_skipped), or None
+            when STREAMLINK_URL is unset — the caller (_serve_m3u_proxied_ts)
+            renders the 503 JSON error for that case, mirroring the None
+            sentinel of _generate_m3u_proxied_filtered_content.
+        """
+        # STREAMLINK_URL gates the whole feature: without a relay there is
+        # nothing to point entries at, and unlike the plain playlist's
+        # clientdrm fallback there is no meaningful degraded mode for TS.
+        # Plain None — not a JSON body plus response side effects: the
+        # caller owns the 503 rendering, so this guard can never be fooled
+        # by a status code some other code in the call chain happened to
+        # set (same convention as _generate_m3u_proxied_filtered_content).
+        if not self.streamlink_url:
+            logger.error("Cannot generate TS M3U: STREAMLINK_URL not set")
+            return None
+
+        relay_base = self.streamlink_url.rstrip("/")
+        source_base = self._streamlink_source_base_url()
+
+        # ClearKey channels are only playable through the relay when the
+        # media proxy can decrypt them server-side (client_drm=false). With
+        # MEDIA_PROXY_URL unset the stream route would 503 for them, so skip
+        # them here rather than emit entries that fail at playback time.
+        # Unencrypted channels keep working either way.
+        clearkey_playable = bool(self.media_proxy_url)
+
+        m3u_content = "#EXTM3U\n"
+
+        # Determine which providers to process
+        if providers is None:
+            providers_to_process = self.manager.list_providers()
+        else:
+            providers_to_process = (
+                [providers] if isinstance(providers, str) else providers
+            )
+
+        channels_included = 0
+        channels_skipped = 0
+
+        for provider_name, provider_label, channels in self._iter_m3u_provider_channels(providers_to_process):
+            try:
+                # Process each channel
+                for channel in channels:
+                    channel_id = channel.channel_id
+
+                    # Try to get DRM configs
+                    try:
+                        drm_configs = self.manager.get_channel_drm_configs(
+                            provider_name=provider_name, channel_id=channel_id
+                        )
+                        drm_dict = self._drm_configs_to_dict(drm_configs)
+
+                        # Same inclusion rule as
+                        # _generate_m3u_proxied_filtered_content: ClearKey (when
+                        # the proxy can decrypt it for the relay) or explicitly
+                        # unencrypted. Anything else — Widevine/PlayReady,
+                        # inaccessible, or unknown — is skipped: streamlink
+                        # cannot decrypt it, so an entry would just fail.
+                        has_clearkey = "org.w3.clearkey" in drm_dict and drm_dict["org.w3.clearkey"]
+                        is_unencrypted = "none" in drm_dict
+
+                        if has_clearkey and not clearkey_playable:
+                            channels_skipped += 1
+                            # Config-signal warning, throttled to once per
+                            # interval — the per-channel detail below stays
+                            # at debug level because the warning is about
+                            # the deployment, not this channel.
+                            self._warn_clearkey_skip_throttled()
+                            logger.debug(
+                                f"TS M3U: skipping {provider_name}/{channel_id} - ClearKey "
+                                f"needs the media proxy (MEDIA_PROXY_URL not set)"
+                            )
+                            continue
+
+                        if not (has_clearkey or is_unencrypted):
+                            channels_skipped += 1
+                            logger.debug(
+                                f"TS M3U: skipping {provider_name}/{channel_id} - unsupported DRM or no access"
+                            )
+                            continue
+
+                        # Source handed to the relay: our own stream route with
+                        # server-side decrypt (client_drm=false — matches this
+                        # playlist's lack of KODIPROP directives). No
+                        # highest_quality_only: the relay's streamlink picks
+                        # its own "best" variant. stream_path_for swaps in the
+                        # index.m3u8 alias for HLS-hinted channels, which
+                        # streamlink handles most reliably.
+                        stream_path = self.stream_path_for(
+                            channel, "stream/index.mpd?client_drm=false"
+                        )
+                        source_url = (
+                            f"{source_base}/api/providers/{provider_name}"
+                            f"/channels/{channel_id}/{stream_path}"
+                        )
+
+                        # Relay entry URL. urlencode escapes the source's own
+                        # ':', '/', '?' and '&' so it stays one query parameter.
+                        relay_url = (
+                            f"{relay_base}{self._STREAMLINK_WATCH_PATH}"
+                            f"?{urlencode({'url': source_url})}"
+                        )
+
+                        # Header only (EXTINF, no KODIPROP) — live-only, so
+                        # include_catchup=False suppresses catchup attributes
+                        # even for channels that support DVR: an endless TS
+                        # has no seekable window. No inputstream.adaptive
+                        # directives — a plain TS URL is played by the regular
+                        # demuxer.
+                        m3u_content += self._build_m3u_entry_header(
+                            provider_name, channel,
+                            provider_label=provider_label,
+                            drm_directives="",
+                            include_catchup=False,
+                        )
+                        m3u_content += f"{relay_url}\n"
+                        channels_included += 1
+
+                    except Exception as drm_err:
+                        # Could not get DRM info - skip channel
+                        logger.warning(
+                            f"TS M3U: could not get DRM for {provider_name}/{channel_id}: {drm_err}"
+                        )
+                        channels_skipped += 1
+                        continue
+
+            except Exception as provider_err:
+                logger.warning(
+                    f"Failed to process provider '{provider_name}': {str(provider_err)}"
+                )
+                continue
+
+        logger.info(
+            f"TS M3U: included {channels_included} channels, skipped {channels_skipped}"
+        )
+
+        return m3u_content, channels_included, channels_skipped
+
     def _generate_m3u_proxied_filtered_all(self, save_to_cache: bool = False) -> str:
         """Internal method to generate filtered decrypted M3U for all providers."""
         logger.info("Generating filtered decrypted M3U playlist for all providers")
@@ -2063,6 +2337,52 @@ class UltimateService:
         """Public wrapper for filtered decrypted M3U (single provider)."""
         return self._generate_m3u_proxied_filtered_provider(provider, save_to_cache=save_to_cache)
 
+    def _serve_m3u_proxied_ts(self, providers, filename: str) -> str:
+        """Shared body of the TS public wrappers: generate, set headers."""
+        result = self._generate_m3u_proxied_ts_content(providers=providers)
+
+        # Not configured: render the 503 JSON here. Same None-sentinel
+        # convention as _generate_m3u_proxied_filtered_all/_provider — the
+        # old response.status_code >= 400 probe depended on response side
+        # effects set deep inside the generator, which made it fragile
+        # against anything else mutating the response on the way in. The
+        # channel-count headers below correctly stay unset on this path.
+        if result is None:
+            response.status = 503
+            response.content_type = "application/json"
+            return json.dumps(
+                {"error": "Streamlink not configured (STREAMLINK_URL not set)"}
+            )
+
+        m3u_content, included, skipped = result
+
+        response.content_type = "audio/x-mpegurl; charset=utf-8"
+        response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+        # Entries embed a per-request base URL (whenever
+        # STREAMLINK_SOURCE_BASE_URL is unset) and depend on an external
+        # relay: keep clients and intermediaries from caching the playlist.
+        response.headers["Cache-Control"] = "no-store"
+        # Skips are otherwise invisible to the client (a shorter playlist).
+        response.headers["X-M3U-Channels-Included"] = str(included)
+        response.headers["X-M3U-Channels-Skipped"] = str(skipped)
+
+        return m3u_content
+
+    def generate_m3u_proxied_ts_all(self) -> str:
+        """
+        Public wrapper: streamlink-relayed TS M3U for all providers. Backs
+        "/api/m3u/proxied/ts". Deliberately UNCACHED — see
+        _generate_m3u_proxied_ts_content.
+        """
+        logger.info("Generating TS M3U playlist for all providers")
+        return self._serve_m3u_proxied_ts(None, "playlist_proxied_ts.m3u8")
+
+    def generate_m3u_proxied_ts_provider(self, provider: str) -> str:
+        """Public wrapper: streamlink-relayed TS M3U for a single provider.
+        Uncached — see generate_m3u_proxied_ts_all."""
+        logger.info(f"Generating TS M3U playlist for provider '{provider}'")
+        return self._serve_m3u_proxied_ts(provider, f"{provider}_proxied_ts_playlist.m3u8")
+
     def generate_drm_directives(self, drm_configs) -> str:
         """Public wrapper for DRM directive generation."""
         return self._generate_drm_directives(drm_configs)
@@ -2348,6 +2668,23 @@ def run_standalone_service(config_dir: str = None):
     print(f"Default Country: {service.default_country}")
     print(f"Config Directory: {service.vfs.base_path}")
     print(f"Log Directory: {service.env_manager.get_config('profile_path', 'N/A')}")
+    # External relays are symmetric opt-ins (MEDIA_PROXY_URL /
+    # STREAMLINK_URL) — surface both at startup. STREAMLINK_SOURCE_BASE_URL
+    # is the non-obvious one: Docker deployments need it whenever the relay
+    # cannot resolve the host clients use (see _streamlink_source_base_url).
+    print(
+        f"Media Proxy: "
+        f"{service.media_proxy_url or 'disabled (MEDIA_PROXY_URL not set)'}"
+    )
+    print(
+        f"Streamlink TS Relay: "
+        f"{service.streamlink_url or 'disabled (STREAMLINK_URL not set)'}"
+    )
+    if service.streamlink_url:
+        print(
+            f"Streamlink Source Base URL: "
+            f"{service.streamlink_source_base_url or 'current request host (set STREAMLINK_SOURCE_BASE_URL if the relay cannot reach it)'}"
+        )
     print("=" * 60)
     print(f"API Endpoints:")
     print(f"  http://localhost:{service.server_port}/api/providers")
