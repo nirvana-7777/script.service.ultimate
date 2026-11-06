@@ -548,11 +548,21 @@ class UltimateService:
         if max_stale and (now - expiry) <= max_stale:
             logger.warning(f"Serving STALE decrypted manifest for {key} ({now - expiry:.1f}s past expiry)")
             return content
-        del self._decrypted_cache[key]
+        self._decrypted_cache.pop(key, None)  # pop, not del: concurrent readers may both see it expired
         return None
 
+    _DECRYPTED_CACHE_PRUNE_ABOVE = 64   # entries; pruning starts above this
+    _DECRYPTED_STALE_KEEP = 30          # seconds an expired entry is kept for the stale fallback
+
     def _set_decrypted_cached(self, key: str, content: str, ttl: int) -> None:
-        self._decrypted_cache[key] = (content, time.time() + ttl)
+        now = time.time()
+        self._decrypted_cache[key] = (content, now + ttl)
+        # Entries hold ClearKey material and were only ever removed when the SAME key was read again
+        # (one-off catchup keys therefore stayed in memory forever): drop long-expired ones on write.
+        if len(self._decrypted_cache) > self._DECRYPTED_CACHE_PRUNE_ABOVE:
+            for k, (_, expiry) in list(self._decrypted_cache.items()):
+                if expiry < now - self._DECRYPTED_STALE_KEEP:
+                    self._decrypted_cache.pop(k, None)
 
     @staticmethod
     def _fetch_and_cache_manifest(fetch_fn, cache_set, cache_get_stale, *,
@@ -635,9 +645,12 @@ class UltimateService:
 
         def fetch_fn():
             with _stage("resolve_url"):
-                manifest_url = self.manager.get_channel_manifest(
-                    provider_name=provider, channel_id=channel_id, country=country
-                )
+                try:
+                    manifest_url = self.manager.get_channel_manifest(
+                        provider_name=provider, channel_id=channel_id, country=country
+                    )
+                except ValueError as e:  # e.g. provider not found/disabled: 404, as before this was moved into the flight
+                    raise _ManifestUnavailable(str(e))
             if not manifest_url:
                 raise _ManifestUnavailable(
                     f'Manifest not available for channel "{channel_id}" from provider "{provider}"')
@@ -689,10 +702,13 @@ class UltimateService:
 
         def fetch_fn():
             with _stage("resolve_url"):
-                manifest_url = self.manager.get_catchup_manifest(
-                    provider_name=provider, channel_id=channel_id, start_time=start_time, end_time=end_time,
-                    epg_id=epg_id, country=country,
-                )
+                try:
+                    manifest_url = self.manager.get_catchup_manifest(
+                        provider_name=provider, channel_id=channel_id, start_time=start_time, end_time=end_time,
+                        epg_id=epg_id, country=country,
+                    )
+                except ValueError as e:  # e.g. provider not found/disabled: 404, as before this was moved into the flight
+                    raise _ManifestUnavailable(str(e))
             if not manifest_url:
                 raise _ManifestUnavailable("Catchup manifest not available")
             box["url"] = manifest_url
@@ -881,9 +897,12 @@ class UltimateService:
 
         def fetch_fn():
             with _stage("resolve_url"):
-                manifest_url = self.manager.get_channel_manifest(
-                    provider_name=provider, channel_id=channel_id, country=country, drm_variant=drm_variant,
-                )
+                try:
+                    manifest_url = self.manager.get_channel_manifest(
+                        provider_name=provider, channel_id=channel_id, country=country, drm_variant=drm_variant,
+                    )
+                except ValueError as e:  # e.g. provider not found/disabled: 404, as before this was moved into the flight
+                    raise _ManifestUnavailable(str(e))
             if not manifest_url:
                 raise _ManifestUnavailable(
                     f'Manifest not available for channel "{channel_id}" from provider "{provider}"')
@@ -942,10 +961,13 @@ class UltimateService:
 
         def fetch_fn():
             with _stage("resolve_url"):
-                manifest_url = self.manager.get_catchup_manifest(
-                    provider_name=provider, channel_id=channel_id, start_time=start_time, end_time=end_time,
-                    epg_id=epg_id, country=country,
-                )
+                try:
+                    manifest_url = self.manager.get_catchup_manifest(
+                        provider_name=provider, channel_id=channel_id, start_time=start_time, end_time=end_time,
+                        epg_id=epg_id, country=country,
+                    )
+                except ValueError as e:  # e.g. provider not found/disabled: 404, as before this was moved into the flight
+                    raise _ManifestUnavailable(str(e))
             if not manifest_url:
                 raise _ManifestUnavailable(
                     f'Catchup manifest not available for channel "{channel_id}" from provider "{provider}"')
