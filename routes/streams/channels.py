@@ -24,6 +24,8 @@ def setup_channel_routes(app, manager, service, helpers):
     _build_stream_headers = helpers["_build_stream_headers"]
     _resolve_stream_unified = helpers["_resolve_stream_unified"]
     _get_drm_configs = helpers["_get_drm_configs"]
+    _build_ts_stream_url = helpers["_build_ts_stream_url"]
+    _redirect_to_ts_proxy = helpers["_redirect_to_ts_proxy"]
 
     @tracked("channel")
     def _handle_channel_stream(provider, channel_id):
@@ -171,11 +173,26 @@ def setup_channel_routes(app, manager, service, helpers):
 
             _build_stream_headers(CONTENT_TYPE_CHANNEL, provider, channel_id, country=country)
 
+            # Optional MPEG-TS variant (None when TS_PROXY_URL is unset): the
+            # TS proxy's own URL, same shape as the backend's with .ts. The
+            # catchup template takes the same {start_time}/{end_time}
+            # placeholders; catchup is served on demand by the proxy.
+            ts_stream_url = _build_ts_stream_url(
+                CONTENT_TYPE_CHANNEL, provider, channel_id, country=country
+            )
+            ts_catchup_stream_url_template = (
+                f"{ts_stream_url}{catchup_qs_sep}"
+                f"start_time={{start_time}}&end_time={{end_time}}"
+                if ts_stream_url else None
+            )
+
             return {
                 "provider": provider,
                 "channel_id": channel_id,
                 "manifest_url": stream_url,
                 "catchup_stream_url_template": catchup_stream_url_template,
+                "ts_stream_url": ts_stream_url,
+                "ts_catchup_stream_url_template": ts_catchup_stream_url_template,
                 "stream_format": stream_format.value if stream_format else None,
             }
 
@@ -224,6 +241,17 @@ def setup_channel_routes(app, manager, service, helpers):
         manifest body when the media proxy is involved.
         """
         return _handle_channel_stream(provider, channel_id)
+
+    @app.route("/api/providers/<provider>/channels/<channel_id>/stream/index.ts")
+    def get_channel_stream_ts(provider, channel_id):
+        """
+        MPEG-TS alias of the channel stream: 302 to the TS proxy
+        (TS_PROXY_URL; 503 when unset), which converts the HLS/DASH stream
+        from get_channel_stream to TS. Live channels are shared between
+        viewers; catchup (start_time/end_time) is served on demand. The query
+        string is forwarded unchanged.
+        """
+        return _redirect_to_ts_proxy(CONTENT_TYPE_CHANNEL, provider, channel_id)
 
     @app.route("/api/providers/<provider>/channels/<channel_id>/drm")
     def get_channel_drm(provider, channel_id):

@@ -497,25 +497,25 @@ def setup_m3u_routes(app, manager, service):
             log_ctx=f"/api/providers/{provider}/m3u/proxied/ffmpeg",
         )
 
-    # ── Streamlink TS playlist (deliberately UNCACHED) ──────────────────
+    # ── TS playlist (deliberately UNCACHED) ──────────────────────────────
     # Entries deliver each channel as an endless MPEG-TS stream by pointing
-    # at the streamlink relay service (STREAMLINK_URL) with this backend's
-    # own stream URL (client_drm=false — server-side decrypt) as the source:
-    #     GET {STREAMLINK_URL}/watch?url=<percent-encoded backend stream URL>
-    # Filtered like proxied/filtered (ClearKey/unencrypted only) because
-    # streamlink cannot decrypt DRM itself; live-only (no catchup attrs,
-    # like the ffmpeg variant). Returns 503 when STREAMLINK_URL is unset —
-    # no fallback playlist exists for TS. Uncached: entry URLs embed a base
-    # URL the relay can reach (STREAMLINK_SOURCE_BASE_URL, else this
-    # request's host) and depend on the external relay, so no /generate
-    # variants either. Entry URLs are the relay's absolute URLs, which the
-    # serve-time absolutizer leaves alone. Included/skipped channel counts
-    # are exposed via X-M3U-Channels-Included / -Skipped (skips are
-    # otherwise invisible — a shorter playlist).
+    # straight at the MPEG-TS proxy (TS_PROXY_URL) with this backend's own
+    # stream path and a .ts extension:
+    #     {TS_PROXY_URL}/api/providers/<provider>/channels/<id>/stream/index.ts
+    # The proxy requests the matching index.mpd from this backend itself, with
+    # client_drm=false (server-side decrypt) and highest_quality_only=true
+    # forced. Filtered like proxied/filtered (ClearKey/unencrypted only)
+    # because the converter cannot decrypt DRM itself; live-only (no catchup
+    # attrs, like the ffmpeg variant). Returns 503 when TS_PROXY_URL is unset
+    # — no fallback playlist exists for TS. Uncached: the entries depend on an
+    # external service, so no /generate variants either. Entry URLs are the
+    # proxy's absolute URLs, which the serve-time absolutizer leaves alone.
+    # Included/skipped channel counts are exposed via X-M3U-Channels-Included
+    # / -Skipped (skips are otherwise invisible — a shorter playlist).
 
     @app.route("/api/m3u/proxied/ts")
     def get_m3u_proxied_ts_all():
-        """Generates streamlink-relayed TS M3U playlist for all providers. No caching."""
+        """Generates the TS-proxy M3U playlist for all providers. No caching."""
         response.headers["X-M3U-Mode"] = M3U_MODE_PROXIED_TS
         return _handle_m3u_route(
             lambda: service.generate_m3u_proxied_ts_all(),
@@ -524,7 +524,7 @@ def setup_m3u_routes(app, manager, service):
 
     @app.route("/api/providers/<provider>/m3u/proxied/ts")
     def get_m3u_proxied_ts_provider(provider):
-        """Generates streamlink-relayed TS M3U playlist for a provider. No caching."""
+        """Generates the TS-proxy M3U playlist for a provider. No caching."""
         response.headers["X-M3U-Mode"] = M3U_MODE_PROXIED_TS
         return _handle_m3u_route(
             _for_provider(

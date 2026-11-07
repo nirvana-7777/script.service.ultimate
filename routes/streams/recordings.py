@@ -28,6 +28,8 @@ def setup_recording_routes(app, manager, service, helpers):
     _build_stream_headers = helpers["_build_stream_headers"]
     _resolve_stream_unified = helpers["_resolve_stream_unified"]
     _get_drm_configs = helpers["_get_drm_configs"]
+    _build_ts_stream_url = helpers["_build_ts_stream_url"]
+    _redirect_to_ts_proxy = helpers["_redirect_to_ts_proxy"]
 
     @tracked("recording")
     def _handle_recording_stream(provider, recording_id):
@@ -119,6 +121,11 @@ def setup_recording_routes(app, manager, service, helpers):
                 "provider": provider,
                 "recording_id": recording_id,
                 "manifest_url": stream_url,
+                # Optional MPEG-TS variant (None when TS_PROXY_URL is unset).
+                # On-demand: play-through only; ?start=<seconds> seeks.
+                "ts_stream_url": _build_ts_stream_url(
+                    CONTENT_TYPE_RECORDING, provider, recording_id, country=country
+                ),
                 "stream_format": stream_format.value if stream_format else None,
             }
 
@@ -148,6 +155,13 @@ def setup_recording_routes(app, manager, service, helpers):
         no_proxy, highest_quality_only, country).
         """
         return _handle_recording_stream(provider, recording_id)
+
+    @app.route("/api/providers/<provider>/recordings/<recording_id>/stream/index.ts")
+    def get_recording_stream_ts(provider, recording_id):
+        """MPEG-TS alias of the recording stream: 302 to the TS proxy
+        (TS_PROXY_URL; 503 when unset). On-demand there: play-through only,
+        ?start=<seconds> begins later. The query string is forwarded."""
+        return _redirect_to_ts_proxy(CONTENT_TYPE_RECORDING, provider, recording_id)
 
     @app.route("/api/providers/<provider>/recordings/<recording_id>/drm")
     def get_recording_drm(provider, recording_id):

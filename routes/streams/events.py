@@ -28,6 +28,8 @@ def setup_event_routes(app, manager, service, helpers):
     _build_stream_headers = helpers["_build_stream_headers"]
     _resolve_stream_unified = helpers["_resolve_stream_unified"]
     _get_drm_configs = helpers["_get_drm_configs"]
+    _build_ts_stream_url = helpers["_build_ts_stream_url"]
+    _redirect_to_ts_proxy = helpers["_redirect_to_ts_proxy"]
 
     @tracked("event")
     def _handle_event_stream(provider, event_id):
@@ -129,6 +131,10 @@ def setup_event_routes(app, manager, service, helpers):
                 "event_id": event_id,
                 "manifest_url": stream_url,
                 "sw_drm_manifest_url": sw_drm_stream_url,
+                # Optional MPEG-TS variant (None when TS_PROXY_URL is unset).
+                "ts_stream_url": _build_ts_stream_url(
+                    CONTENT_TYPE_EVENT, provider, event_id, country=country
+                ),
                 "stream_format": stream_format.value if stream_format else None,
             }
 
@@ -172,6 +178,12 @@ def setup_event_routes(app, manager, service, helpers):
         rewritten manifest body when the media proxy is involved.
         """
         return _handle_event_stream(provider, event_id)
+
+    @app.route("/api/providers/<provider>/events/<event_id>/stream/index.ts")
+    def get_event_stream_ts(provider, event_id):
+        """MPEG-TS alias of the event stream: 302 to the TS proxy
+        (TS_PROXY_URL; 503 when unset). The query string is forwarded."""
+        return _redirect_to_ts_proxy(CONTENT_TYPE_EVENT, provider, event_id)
 
     @app.route("/api/providers/<provider>/events/<event_id>/drm")
     def get_event_drm(provider, event_id):

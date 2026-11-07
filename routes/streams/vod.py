@@ -28,6 +28,8 @@ def setup_vod_routes(app, manager, service, helpers):
     _build_stream_headers = helpers["_build_stream_headers"]
     _resolve_stream_unified = helpers["_resolve_stream_unified"]
     _get_drm_configs = helpers["_get_drm_configs"]
+    _build_ts_stream_url = helpers["_build_ts_stream_url"]
+    _redirect_to_ts_proxy = helpers["_redirect_to_ts_proxy"]
 
     @tracked("vod")
     def _handle_vod_stream(provider, vod_id):
@@ -108,6 +110,14 @@ def setup_vod_routes(app, manager, service, helpers):
         vod_id = path.split("/")[0]
         return _handle_vod_stream(provider, vod_id)
 
+    @app.route("/api/providers/<provider>/vod/<path:path>/stream/index.ts")
+    def get_vod_stream_ts(provider, path):
+        """MPEG-TS alias of the VOD stream: 302 to the TS proxy
+        (TS_PROXY_URL; 503 when unset). On-demand there: play-through only,
+        ?start=<seconds> begins later. The query string is forwarded."""
+        vod_id = path.split("/")[0]
+        return _redirect_to_ts_proxy(CONTENT_TYPE_VOD, provider, vod_id)
+
     @app.route("/api/providers/<provider>/vod/<path:path>/manifest")
     def get_vod_manifest(provider, path):
         vod_id = path.split("/")[0]
@@ -135,6 +145,11 @@ def setup_vod_routes(app, manager, service, helpers):
                 "provider": provider,
                 "vod_id": vod_id,
                 "manifest_url": stream_url,
+                # Optional MPEG-TS variant (None when TS_PROXY_URL is unset).
+                # On-demand: play-through only; ?start=<seconds> seeks.
+                "ts_stream_url": _build_ts_stream_url(
+                    CONTENT_TYPE_VOD, provider, vod_id, country=country
+                ),
                 "stream_format": stream_format.value if stream_format else None,
             }
 

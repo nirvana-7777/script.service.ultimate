@@ -24,13 +24,20 @@ helpers:
       manifest response — redirect, proxied rewrite, or decrypted rewrite.
       receiver_side selects who decrypts (client vs. server); every content
       type's route handler calls this directly with an explicit value.
+
+  _build_ts_stream_url / _redirect_to_ts_proxy
+      Optional MPEG-TS conversion (mpegts-proxy.py, TS_PROXY_URL). Every
+      content type's .../stream/index.ts answers with a 302 to the proxy,
+      which mirrors the backend's route layout and calls back into the normal
+      stream route with client_drm=false&highest_quality_only=true. Nothing
+      else in this module knows about TS.
 """
 
 import base64
 import json
 import re
 import time
-from urllib.parse import urlencode, urljoin, urlsplit
+from urllib.parse import quote, urlencode, urljoin, urlsplit
 
 from bottle import redirect, request, response
 from streaming_providers.base.stream_format import (
@@ -1161,6 +1168,57 @@ def make_helpers(manager, service):
                 )
             return _redirect_or_fetch(content_type, provider, content_id, country, drm_variant)
 
+    # =========================================================================
+    # TS PROXY (optional MPEG-TS converter — see mpegts-proxy.py)
+    # =========================================================================
+
+    # Backend content type -> path segment used by the stream routes (and
+    # mirrored by the TS proxy).
+    _TS_PATH_SEGMENT = {
+        CONTENT_TYPE_CHANNEL: "channels",
+        CONTENT_TYPE_EVENT: "events",
+        CONTENT_TYPE_VOD: "vod",
+        CONTENT_TYPE_RECORDING: "recordings",
+    }
+
+    def _build_ts_stream_url(content_type: str, provider: str, content_id: str,
+                             country=None):
+        """Direct URL of the TS proxy for this content (no redirect hop), or
+        None when TS_PROXY_URL is unset. The proxy mirrors this backend's
+        stream route, so the URL is the backend path with a .ts extension."""
+        base = getattr(service, "ts_proxy_url", "") or ""
+        if not base:
+            return None
+        url = (
+            f"{base}/api/providers/{quote(provider, safe='')}"
+            f"/{_TS_PATH_SEGMENT[content_type]}/{quote(str(content_id), safe='')}"
+            f"/stream/index.ts"
+        )
+        if country:
+            url += "?" + urlencode({"country": country})
+        return url
+
+    def _redirect_to_ts_proxy(content_type: str, provider: str, content_id: str):
+        """Backs every .../stream/index.ts: 302 to the TS proxy, query string
+        forwarded as-is (the proxy accepts country, drm_variant, no_proxy,
+        start_time/end_time/epg_id, start and name; it forces client_drm and
+        highest_quality_only itself).
+
+        Deliberately not wrapped in @tracked: the proxy calls this backend's
+        normal stream route right back, and THAT request is the tracked
+        playback — tracking the redirect too would count every play twice."""
+        target = _build_ts_stream_url(content_type, provider, content_id)
+        if target is None:
+            response.status = 503
+            return {
+                "error": "TS proxy not configured (TS_PROXY_URL not set)",
+                "hint": "Run mpegts-proxy and set TS_PROXY_URL to its client-visible base URL.",
+            }
+        query = request.query_string
+        # 302 explicitly: bottle's default is 303 on HTTP/1.1, which some
+        # simple players handle worse than the classic 302.
+        redirect(f"{target}?{query}" if query else target, 302)
+
     # Return all helpers as a dict for submodules to use
     return {
         "CONTENT_TYPE_CHANNEL": CONTENT_TYPE_CHANNEL,
@@ -1178,4 +1236,6 @@ def make_helpers(manager, service):
         "_validate_catchup_window": _validate_catchup_window,
         "_resolve_stream_unified": _resolve_stream_unified,
         "_serialize_drm_configs": _serialize_drm_configs,
+        "_build_ts_stream_url": _build_ts_stream_url,
+        "_redirect_to_ts_proxy": _redirect_to_ts_proxy,
     }
