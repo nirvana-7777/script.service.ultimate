@@ -333,25 +333,116 @@ class BaseAuthenticator(ABC):
 
     # Session management methods
     def _load_session(self) -> None:
-        """Load token from persistent storage"""
+        """
+        Load token from persistent storage.
+
+        Distinguishes four cases:
+          - storage unreadable         -> _current_token = None, file LEFT
+                                           INTACT (a transient I/O error
+                                           must not destroy the only
+                                           session)
+          - no session file / no entry -> _current_token = None (normal)
+          - entry present but unusable -> _current_token = None, file LEFT
+                                           INTACT (see note below)
+          - valid entry                -> load it; if unparseable, clear it
+
+        Backward-compatibility note (IMPORTANT):
+          The "unusable" branch (no access_token AND no refresh_token)
+          deliberately does NOT clear the record from disk. The previous
+          code left such records on disk and handed them to
+          _create_token_from_response(); a provider whose implementation
+          synthesizes a token from a partial record (e.g. an anonymous
+          or client-credentials provider), or whose parse can fail
+          transiently, would lose its recoverable state if we cleared
+          here. Leaving the file in place preserves pre-existing
+          behavior for every provider that has not been individually
+          audited for lazy-recovery semantics.
+
+          The magentaeu poison-loop bug is fixed by the PARSE-FAILURE
+          branch below, not by this one: magentaeu's record is
+          parseable (it has an access_token key, just empty), and its
+          _create_token_from_response raises on empty access_token, so
+          the parse-failure branch fires and clears it exactly once.
+          That fix is preserved here.
+
+          Do not add a clear to the unusable branch without first
+          auditing every provider's _create_token_from_response for
+          lazy-recovery or transient-failure semantics.
+        """
+        country_str = f" (country: {self.country})" if self.country else ""
         try:
-            country_str = f" (country: {self.country})" if self.country else ""
             logger.debug(f"Loading session for {self.provider_name}{country_str}")
 
-            token_data = self.settings_manager.load_token_data(self.provider_name, self.country)
-
-            if token_data:
-                self._current_token = self._create_token_from_response(token_data)
-                logger.info(
-                    f"Successfully loaded existing session for {self.provider_name}{country_str}"
+            # --- Read: a failure here is NOT grounds to delete the file. ---
+            try:
+                token_data = self.settings_manager.load_token_data(
+                    self.provider_name, self.country
                 )
-            else:
-                logger.info(f"No existing session found for {self.provider_name}{country_str}")
+            except Exception as read_err:
+                logger.error(
+                    f"Could not read stored session for "
+                    f"{self.provider_name}{country_str}: {read_err} -- "
+                    f"leaving the file intact and starting unauthenticated"
+                )
                 self._current_token = None
+                return
+
+            if not token_data:
+                logger.info(
+                    f"No existing session found for {self.provider_name}{country_str}"
+                )
+                self._current_token = None
+                return
+
+            # --- Detect records that cannot be used as-is, but DO NOT clear. ---
+            access = token_data.get("access_token") or ""
+            refresh = token_data.get("refresh_token") or ""
+            if not access and not refresh:
+                logger.warning(
+                    f"Stored session for {self.provider_name}{country_str} has "
+                    f"neither access_token nor refresh_token -- starting "
+                    f"unauthenticated. (File left intact for backward "
+                    f"compatibility; see _load_session docstring.)"
+                )
+                self._current_token = None
+                return
+
+            # --- Parse: a failure here IS grounds to clear the record. ---
+            try:
+                self._current_token = self._create_token_from_response(token_data)
+            except Exception as parse_err:
+                logger.error(
+                    f"Stored session for {self.provider_name}{country_str} is "
+                    f"unparseable ({parse_err}) -- clearing it so the next "
+                    f"authentication starts clean"
+                )
+                self._current_token = None
+                self._clear_stored_session_quietly()
+                return
+
+            logger.info(
+                f"Successfully loaded existing session for "
+                f"{self.provider_name}{country_str}"
+            )
 
         except Exception as e:
-            logger.error(f"Error loading session for {self.provider_name}: {e}")
+            # Safety net for anything unexpected (e.g. token_data of an
+            # exotic type raising inside the gate itself). At this point a
+            # malformed record is the likely cause, so clear it.
+            logger.error(
+                f"Error loading session for {self.provider_name}{country_str}: {e}"
+            )
             self._current_token = None
+            self._clear_stored_session_quietly()
+
+    def _clear_stored_session_quietly(self) -> None:
+        """Best-effort removal of the stored session; never raises."""
+        try:
+            self.settings_manager.clear_token(self.provider_name, self.country)
+        except Exception as clear_err:
+            logger.debug(
+                f"Could not clear stored session for {self.provider_name}: {clear_err}"
+            )
 
     def _save_session(self) -> None:
         """Save current token to persistent storage"""

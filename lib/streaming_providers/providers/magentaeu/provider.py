@@ -694,6 +694,10 @@ class MagentaEUProvider(StreamingProvider):
         """Validate Magenta TV credentials"""
         try:
             temp_authenticator = MagentaAuthenticator(
+                # country was missing: without it, non-default countries were
+                # validated against DEFAULT_COUNTRY's login endpoint (and
+                # the wrong country-scoped session slot) and always failed.
+                country=self.country,
                 config_dir=(
                     self.authenticator.settings_manager.config_dir
                     if hasattr(self.authenticator.settings_manager, "config_dir")
@@ -704,7 +708,11 @@ class MagentaEUProvider(StreamingProvider):
                 credentials=credentials,
             )
 
-            token = temp_authenticator.get_bearer_token()
+            # force_refresh=True: bypasses both the stored-token shortcut
+            # and the refresh path, so this is a genuine login with the
+            # credentials being validated -- not a rehearsal of the
+            # previous, possibly different, user's session.
+            token = temp_authenticator.get_bearer_token(force_refresh=True)
             return bool(token and len(token) > 0)
 
         except Exception as e:

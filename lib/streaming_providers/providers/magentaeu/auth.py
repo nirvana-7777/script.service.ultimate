@@ -401,8 +401,8 @@ class MagentaAuthenticator(BaseAuthenticator):
 
         logger.info(f"=== MagentaAuthenticator.__init__ AFTER super().__init__ ===")
 
-        # device_id/session_id are validated lazily by get_guest_session_ids();
-        # we only make sure a token object exists to read/write into.
+        # Make sure a token object exists (auth / account state only --
+        # guest IDs no longer live here).
         if not self._current_token or not isinstance(self._current_token, MagentaAuthToken):
             self._current_token = MagentaAuthToken(
                 access_token="",
@@ -412,18 +412,21 @@ class MagentaAuthenticator(BaseAuthenticator):
                 issued_at=time.time(),
             )
 
-        # Explicit constructor args (if the caller already knows good values)
-        # take precedence, but they don't get treated as pre-validated --
-        # session_id_updated_at stays at 0 so the first guest request still
-        # checks them.
-        if device_id:
-            self._current_token.device_id = device_id
-        if session_id:
-            self._current_token.session_id = session_id
+        # Guest session IDs -- held SEPARATELY from _current_token.
+        # Guest state is not an auth token: persisting it as one poisons
+        # session.json with access_token="", which _create_token_from_response
+        # rejects on the next load. They regenerate cheaply on cold start
+        # (one GET to the startup page), so memory-only is fine.
+        # Explicit constructor args seed the attributes but are NOT treated
+        # as pre-validated: _guest_session_updated_at stays at 0 so the
+        # first guest request still checks them against the startup page.
+        self._guest_device_id: str = device_id or ""
+        self._guest_session_id: str = session_id or ""
+        self._guest_session_updated_at: float = 0.0
 
         logger.info(
-            f"=== MagentaAuthenticator.__init__ COMPLETE - device_id/session_id "
-            f"will be validated on first guest request ==="
+            f"=== MagentaAuthenticator.__init__ COMPLETE - guest session "
+            f"will be established on first guest/login request ==="
         )
 
     # ------------------------------------------------------------------
@@ -511,50 +514,52 @@ class MagentaAuthenticator(BaseAuthenticator):
     def get_guest_session_ids(self, force_refresh: bool = False) -> Tuple[str, str]:
         """
         Return (device_id, session_id) for guest-flow requests (channel
-        list, EPG, etc). Single source of truth for every guest call site.
+        list, EPG, login headers, refresh headers ...). Single source of
+        truth for every guest call site.
+
+        Held on dedicated attributes, NOT on _current_token: guest state is
+        not an auth token, and writing it into the auth token slot poisons
+        session.json with access_token="" (which _create_token_from_response
+        rejects, forcing a re-auth loop on every load). Guest IDs are
+        memory-only; they regenerate cheaply on cold start.
 
         Values are re-validated whenever older than GUEST_SESSION_TTL_SECONDS
-        (or never validated at all -- session_id_updated_at == 0).
+        or never validated (_guest_session_updated_at == 0). Unverified
+        fallback pairs are returned but NOT timestamped, so the next call
+        retries the startup page.
         """
-        token = self._current_token
-        device_id = ""
-        session_id = ""
-        updated_at = 0.0
-        if isinstance(token, MagentaAuthToken):
-            device_id = token.device_id or ""
-            session_id = token.session_id or ""
-            updated_at = token.session_id_updated_at or 0.0
-
-        have_ids = bool(device_id and session_id)
-        age = time.time() - updated_at if have_ids else float("inf")
+        have_ids = bool(self._guest_device_id and self._guest_session_id)
+        validated = have_ids and self._guest_session_updated_at > 0.0
+        age = (time.time() - self._guest_session_updated_at) if validated else float("inf")
         is_stale = age > GUEST_SESSION_TTL_SECONDS
 
         if have_ids and not is_stale and not force_refresh:
-            return device_id, session_id
+            return self._guest_device_id, self._guest_session_id
+
+        if force_refresh:
+            reason = "forced refresh"
+        elif not have_ids:
+            reason = "not yet established"
+        elif not validated:
+            reason = "present but never validated"
+        else:
+            reason = f"stale (age={age:.0f}s)"
 
         logger.info(
-            f"[{self.country}] Guest session "
-            f"{'forced refresh' if force_refresh else ('stale (age=%.0fs)' % age if have_ids else 'not yet established')}"
-            f" -- fetching fresh device_id/session_id"
+            f"[{self.country}] Guest session {reason} "
+            f"-- fetching fresh device_id/session_id"
         )
         device_id, session_id, obtained = self._initialize_guest_session()
 
-        if not self._current_token or not isinstance(self._current_token, MagentaAuthToken):
-            self._current_token = MagentaAuthToken(
-                access_token="",
-                refresh_token="",
-                token_type="Bearer",
-                expires_in=0,
-                issued_at=time.time(),
-            )
-
-        self._current_token.device_id = device_id
-        self._current_token.session_id = session_id
+        self._guest_device_id = device_id
+        self._guest_session_id = session_id
 
         if obtained:
-            self._current_token.session_id_updated_at = time.time()
-            self._save_session()
+            self._guest_session_updated_at = time.time()
         else:
+            # 0.0 == "never validated": the next call re-checks rather than
+            # trusting an unverified pair.
+            self._guest_session_updated_at = 0.0
             logger.warning(
                 f"[{self.country}] Guest session unverified; will retry on "
                 f"next call rather than caching this pair"
@@ -568,12 +573,11 @@ class MagentaAuthenticator(BaseAuthenticator):
 
     def _get_auth_headers(self) -> Dict[str, str]:
         """Get headers for authentication request - required by BaseAuthenticator"""
-        device_id = ""
-        session_id = ""
-
-        if self._current_token and isinstance(self._current_token, MagentaAuthToken):
-            device_id = self._current_token.device_id or ""
-            session_id = self._current_token.session_id or ""
+        # Guest IDs, not token IDs: login headers must carry the same device
+        # identity as the login payload (_build_auth_payload) and every later
+        # refresh (_get_session_data).
+        device_id = self._guest_device_id or ""
+        session_id = self._guest_session_id or ""
 
         tracking_id = str(uuid.uuid4())
         call_time = str(int(time.time() * 1000))
@@ -598,12 +602,13 @@ class MagentaAuthenticator(BaseAuthenticator):
         if not self.credentials.username or not self.credentials.password:
             raise Exception("Username and password cannot be empty")
 
-        device_id = ""
-        if self._current_token and isinstance(self._current_token, MagentaAuthToken):
-            device_id = self._current_token.device_id or ""
-
-        if not device_id:
-            device_id = str(uuid.uuid4())
+        # Same device identity as the login headers (_get_auth_headers) and
+        # every later refresh (_get_session_data). _perform_authentication
+        # establishes the guest session before building the payload, so this
+        # is normally set; the uuid4 fallback only fires if the payload is
+        # built without a guest session (e.g. startup page unreachable
+        # during a device-limit upgrade).
+        device_id = self._guest_device_id or str(uuid.uuid4())
 
         encrypted_password = self._config.encrypt_password(self.credentials.password)
 
@@ -658,23 +663,26 @@ class MagentaAuthenticator(BaseAuthenticator):
     def _create_token_from_response(self, response_data: Dict[str, Any]) -> BaseAuthToken:
         """Create token from API response - required by BaseAuthenticator"""
 
-        # --- Preserve existing session data ---------------------------------
-        device_id = ""
-        session_id = ""
+        # --- Preserve existing state ----------------------------------------
+        # Guest device_id / session_id / session_id_updated_at are no longer
+        # read from response_data or carried over from _current_token: they
+        # are not auth-token state (real login/refresh responses never carry
+        # them), and persisting them on the token is what used to poison
+        # session.json with access_token="" records. Old session files that
+        # still contain those keys are simply ignored on load.
+        #
+        # channel_map_id and account_info ARE token state and are still
+        # restored / carried forward (refresh and upgrade paths are
+        # same-user, so they remain valid).
         channel_map_id = ""
-        session_id_updated_at = 0.0
         existing_account_info: Optional[Dict[str, Any]] = None
         existing_account_info_fetched_at = 0.0
 
         # Priority 1: fields stored directly on the token blob (restored
         # sessions come through this path -- _load_session() calls
         # _create_token_from_response with the persisted dict).
-        if "device_id" in response_data:
-            device_id = response_data.get("device_id", "") or ""
-        if "session_id" in response_data:
-            session_id = response_data.get("session_id", "") or ""
-        if "session_id_updated_at" in response_data:
-            session_id_updated_at = response_data.get("session_id_updated_at", 0.0) or 0.0
+        if "channel_map_id" in response_data:
+            channel_map_id = response_data.get("channel_map_id", "") or ""
 
         # account_info restore -- TTL-checked. A stale snapshot must not
         # override a real entitlement change that happened while the app
@@ -685,9 +693,7 @@ class MagentaAuthenticator(BaseAuthenticator):
             if age < self.ACCOUNT_INFO_TTL_SECONDS:
                 existing_account_info = response_data["account_info"]
                 existing_account_info_fetched_at = fetched_at
-                logger.debug(
-                    f"Restored persisted account_info (age={age:.0f}s)"
-                )
+                logger.debug(f"Restored persisted account_info (age={age:.0f}s)")
             else:
                 logger.debug(
                     f"Dropping persisted account_info: age {age:.0f}s "
@@ -695,34 +701,15 @@ class MagentaAuthenticator(BaseAuthenticator):
                 )
 
         # Priority 2: carry forward from the current token (refresh / upgrade
-        # paths -- same user, so the entitlements remain valid).
-        if (not device_id or not session_id) and isinstance(
-            self._current_token, MagentaAuthToken
-        ):
-            device_id = device_id or (self._current_token.device_id or "")
-            session_id = session_id or (self._current_token.session_id or "")
-            channel_map_id = self._current_token.channel_map_id or ""
-            session_id_updated_at = (
-                session_id_updated_at
-                or self._current_token.session_id_updated_at
-                or 0.0
-            )
+        # paths -- same user, so the channel map and entitlements remain
+        # valid).
+        if isinstance(self._current_token, MagentaAuthToken):
+            channel_map_id = channel_map_id or (self._current_token.channel_map_id or "")
             if existing_account_info is None:
                 existing_account_info = self._current_token.account_info
                 existing_account_info_fetched_at = (
                     self._current_token.account_info_fetched_at or 0.0
                 )
-
-        if device_id and session_id:
-            logger.debug(
-                f"Creating new token with session IDs - device_id: {device_id}, "
-                f"session_id: {session_id}"
-            )
-        else:
-            logger.warning(
-                "No session IDs found in response_data or current_token during "
-                "token creation"
-            )
 
         # --- Access token (required) ----------------------------------------
         access_token = self._read_token_field(
@@ -772,10 +759,7 @@ class MagentaAuthenticator(BaseAuthenticator):
             token_type=token_type,
             expires_in=expires_in,
             issued_at=issued_at,
-            device_id=device_id,
-            session_id=session_id,
             channel_map_id=channel_map_id,
-            session_id_updated_at=session_id_updated_at,
             refresh_expires_in=refresh_expires_in,
             account_info=existing_account_info,
             account_info_fetched_at=existing_account_info_fetched_at,
@@ -829,6 +813,13 @@ class MagentaAuthenticator(BaseAuthenticator):
             self._current_token.account_info_fetched_at = 0.0
 
         try:
+            # Browser parity: the startup page issues the deviceId/sessionId
+            # cookies that the login request then reuses. Establishing the
+            # guest session FIRST guarantees the login headers, the login
+            # payload and any later refresh all agree on one device
+            # identity (no more "" vs random-uuid4 divergence).
+            self.get_guest_session_ids()
+
             headers = self._get_auth_headers()
             payload = self._build_auth_payload()
 
@@ -893,15 +884,29 @@ class MagentaAuthenticator(BaseAuthenticator):
         return response.json()
 
     def _get_session_data(self) -> Tuple[str, str, str, float]:
-        """Safely get session data from current token"""
+        """
+        Guest IDs for token-related calls (refresh, upgrade, user account).
+
+        Guest IDs live on self._guest_* (see get_guest_session_ids), NOT on
+        _current_token. This is the single read path for _refresh_token,
+        _upgrade_token and get_user_account, so all three agree with the
+        login headers/payload on one device identity.
+
+        Self-establishing: guest state is memory-only (by design -- see
+        get_guest_session_ids), so on a cold start it is empty. Any token
+        call that needs deviceId/sessionId headers re-establishes them via
+        the startup page first, instead of silently sending empty strings.
+        """
+        self.get_guest_session_ids()
+        channel_map_id = ""
         if isinstance(self._current_token, MagentaAuthToken):
-            return (
-                self._current_token.device_id or "",
-                self._current_token.session_id or "",
-                self._current_token.channel_map_id or "",
-                self._current_token.session_id_updated_at or 0.0,
-            )
-        return "", "", "", 0.0
+            channel_map_id = self._current_token.channel_map_id or ""
+        return (
+            self._guest_device_id or "",
+            self._guest_session_id or "",
+            channel_map_id,
+            self._guest_session_updated_at or 0.0,
+        )
 
     def _refresh_token(self) -> Optional[BaseAuthToken]:
         """

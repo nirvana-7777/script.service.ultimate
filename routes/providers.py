@@ -4,7 +4,7 @@ Provider-related route handlers
 """
 
 import functools
-from typing import Optional
+from typing import Optional, Tuple
 
 from bottle import request, response
 from streaming_providers.base.errors import ProviderError
@@ -57,6 +57,43 @@ def handle_provider_errors(context: str, *, value_error_status: Optional[int] = 
         return wrapper
 
     return decorator
+
+
+def _classify_auth_verification_failure(exc: Exception) -> Tuple[int, str]:
+    """
+    Classify a post-save authentication failure into an HTTP status and a
+    machine-readable reason.
+
+      401 invalid_credentials   -- the provider itself rejected the login
+                                   (HTTP 400/401/403 on the auth endpoint)
+      429 rate_limited          -- provider throttled us; verdict unknown
+      502 provider_unreachable  -- network error, timeout, or provider 5xx:
+                                   NOT a credential problem
+      <mapped> provider_error   -- ProviderError subclasses keep whatever
+                                   status the shared error hierarchy assigns
+
+    Rationale: the user must be able to tell "wrong password" apart from
+    "the provider is down"; answering 401 for both sends people rewriting
+    perfectly good credentials.
+    """
+    # Provider-error hierarchy carries its own HTTP mapping where available.
+    if isinstance(exc, ProviderError):
+        try:
+            status, _body, _headers = error_to_http(exc)
+            return status, "provider_error"
+        except Exception:  # noqa: BLE001 - fall through to the heuristic
+            pass
+
+    resp = getattr(exc, "response", None)
+    code = getattr(resp, "status_code", None)
+
+    if code in (400, 401, 403):
+        return 401, "invalid_credentials"
+    if code == 429:
+        return 429, "rate_limited"
+    # No response object (ConnectionError / Timeout / DNS) or any other
+    # status (5xx, unexpected 4xx): treat as infrastructure.
+    return 502, "provider_unreachable"
 
 
 def setup_provider_routes(app, manager, service):
@@ -330,8 +367,10 @@ def setup_provider_routes(app, manager, service):
             # Parse JSON body
             try:
                 credentials_data = request.json
+                # Log keys only -- the body contains the plaintext password.
                 logger.debug(
-                    f"Received credentials data for {provider}: {credentials_data}"
+                    f"Received credentials data for {provider}: "
+                    f"keys={sorted(credentials_data.keys()) if isinstance(credentials_data, dict) else type(credentials_data).__name__}"
                 )
             except Exception as json_err:
                 logger.error(f"Invalid JSON in request body: {json_err}")
@@ -388,6 +427,96 @@ def setup_provider_routes(app, manager, service):
                     logger.warning(
                         f"Failed to reinitialize provider '{provider}' after credential change"
                     )
+                    response.status = 500
+                    response.content_type = "application/json; charset=utf-8"
+                    return {
+                        "success": False,
+                        "provider": provider,
+                        "message": "Credentials saved but provider reinitialisation failed",
+                        "action": "updated" if existing_credentials else "created",
+                        "reinitialized": False,
+                        "authenticated": None,
+                    }
+
+                # Verify the new credentials actually authenticate. Without
+                # this the endpoint returns 200 on saved-but-broken
+                # credentials, and the user only discovers the failure at
+                # playback time (or, in the magentaeu case, never -- because
+                # guest-session churn hides it in the logs).
+                provider_instance = manager.get_provider(provider)
+
+                if provider_instance is None:
+                    # Reinit reported success but no instance is available
+                    # (e.g. provider disabled). The save itself is fine --
+                    # report it as such instead of failing the request.
+                    logger.warning(
+                        f"Provider instance for '{provider}' not available "
+                        f"after reinit -- skipping auth verification"
+                    )
+                    response.status = 200
+                    response.content_type = "application/json; charset=utf-8"
+                    return {
+                        "success": True,
+                        "provider": provider,
+                        "message": message,
+                        "action": "updated" if existing_credentials else "created",
+                        "reinitialized": True,
+                        "authenticated": None,
+                    }
+
+                supported_auth_types = list(
+                    getattr(provider_instance, "supported_auth_types", None) or []
+                )
+                authenticator = getattr(provider_instance, "authenticator", None)
+
+                if "user_credentials" not in supported_auth_types or authenticator is None:
+                    # Anonymous / network-based / device-registration /
+                    # interactive providers: forcing a fresh auth here is
+                    # either meaningless or actively harmful (a pending
+                    # interactive login would be reported as a failure).
+                    logger.info(
+                        f"Post-save auth verification skipped for {provider} "
+                        f"(supported_auth_types={supported_auth_types or 'unknown'}, "
+                        f"has_authenticator={authenticator is not None})"
+                    )
+                    response.status = 200
+                    response.content_type = "application/json; charset=utf-8"
+                    return {
+                        "success": True,
+                        "provider": provider,
+                        "message": message,
+                        "action": "updated" if existing_credentials else "created",
+                        "reinitialized": True,
+                        "authenticated": None,
+                    }
+
+                # force_refresh=True bypasses both the stored-token shortcut
+                # and the refresh path, so this is a genuine login with the
+                # credentials that were just saved.
+                try:
+                    authenticator.get_bearer_token(force_refresh=True)
+                except Exception as auth_exc:  # noqa: BLE001 - classified below
+                    status, reason = _classify_auth_verification_failure(auth_exc)
+                    logger.warning(
+                        f"Post-save authentication failed for {provider} "
+                        f"(reason={reason}): {auth_exc}"
+                    )
+                    failure_message = (
+                        "Credentials saved, but authentication failed: "
+                        f"{auth_exc}"
+                    )
+                    response.status = status
+                    response.content_type = "application/json; charset=utf-8"
+                    return {
+                        "success": False,
+                        "provider": provider,
+                        "error": failure_message,
+                        "message": failure_message,
+                        "reason": reason,
+                        "action": "updated" if existing_credentials else "created",
+                        "reinitialized": True,
+                        "authenticated": False,
+                    }
 
                 response.status = 200
                 response.content_type = "application/json; charset=utf-8"
@@ -396,8 +525,10 @@ def setup_provider_routes(app, manager, service):
                     "provider": provider,
                     "message": message,
                     "action": "updated" if existing_credentials else "created",
-                    "reinitialized": reinit_success,
+                    "reinitialized": True,
+                    "authenticated": True,
                 }
+
             else:
                 # Determine appropriate status code
                 if "not registered" in message.lower():
