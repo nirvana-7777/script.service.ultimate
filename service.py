@@ -2539,6 +2539,40 @@ class UltimateService:
                 f"← {request.method} {request.path} → {response.status_code} (took {time.time() - getattr(request, '_start_time', time.time()):.2f}s)"
                 + (f" [{timing_str}]" if timing_str else ""))
 
+        # CORS for browser clients (e.g. the Ultimate UI). Registered before the
+        # route modules so it covers every route. Read-only methods on purpose.
+        def _apply_cors_headers():
+            response.set_header("Access-Control-Allow-Origin", "*")
+            response.set_header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+            response.set_header(
+                "Access-Control-Allow-Headers", "Origin, Accept, Content-Type, Range"
+            )
+            response.set_header(
+                "Access-Control-Expose-Headers", "Content-Length, Content-Range"
+            )
+
+        @self.app.hook("after_request")
+        def enable_cors():
+            _apply_cors_headers()
+
+        # Bottle rebuilds the headers when it renders an HTTPError (abort(),
+        # 404, 500), which drops the hook's headers. Re-apply them there so the
+        # browser sees the real status instead of an opaque CORS failure.
+        _default_error_handler = self.app.default_error_handler
+
+        def _cors_error_handler(res):
+            _apply_cors_headers()
+            return _default_error_handler(res)
+
+        self.app.default_error_handler = _cors_error_handler
+
+        @self.app.route("/", method="OPTIONS")
+        @self.app.route("/<path:path>", method="OPTIONS")
+        def cors_preflight(path=None):
+            response.status = 204
+            response.set_header("Access-Control-Max-Age", "86400")
+            return ""
+
         # Import route handlers here
         from routes.providers import setup_provider_routes
         from routes.streams import setup_stream_routes
