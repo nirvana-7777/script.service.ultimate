@@ -325,6 +325,15 @@ def make_helpers(manager, service):
             )
             return None
 
+    def _drop_drm_header():
+        """
+        Remove x-kodi-drm-configs from the response. Called on the branches
+        where the media proxy decrypts server-side (ClearKey, receiver_side
+        False): the client receives plaintext segments, so it needs no DRM
+        config and must not be handed the ClearKey keys.
+        """
+        response.headers.pop("x-kodi-drm-configs", None)
+
     def _build_drm_header(
             content_type: str,
             provider: str,
@@ -990,6 +999,8 @@ def make_helpers(manager, service):
                 # URLs route through the proxy either way, only the "proxy" vs
                 # "decrypt" endpoint differs).
                 if service.media_proxy_url:
+                    if not receiver_side:
+                        _drop_drm_header()
                     return service.get_decrypted_catchup_manifest(
                         provider, content_id,
                         start_time=start_time, end_time=end_time,
@@ -1103,6 +1114,8 @@ def make_helpers(manager, service):
                     f"(variant={drm_variant}) — using "
                     f"{'receiver-side' if receiver_side else 'server-side'} rewrite"
                 )
+                if not receiver_side:
+                    _drop_drm_header()
                 return service.get_decrypted_manifest(
                     provider, content_id, keyids,
                     receiver_side=receiver_side,
