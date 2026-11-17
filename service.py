@@ -2548,7 +2548,8 @@ class UltimateService:
                 "Access-Control-Allow-Headers", "Origin, Accept, Content-Type, Range"
             )
             response.set_header(
-                "Access-Control-Expose-Headers", "Content-Length, Content-Range"
+                "Access-Control-Expose-Headers",
+                "Content-Length, Content-Range, X-Kodi-Drm-Configs, X-Kodi-Stream-Format",
             )
 
         @self.app.hook("after_request")
