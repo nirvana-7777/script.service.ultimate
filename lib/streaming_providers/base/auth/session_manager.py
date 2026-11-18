@@ -12,7 +12,7 @@ from .base_auth import BaseAuthToken
 
 # Any session key whose NAME contains one of these is masked in the INFO logs of
 # save_session / load_session / save_scoped_token (unknown keys are logged in clear).
-_SENSITIVE_KEY_PARTS = ("token", "secret", "password", "jwt", "serial", "device_number")
+_SENSITIVE_KEY_PARTS = ("token", "secret", "password", "jwt", "serial", "device_number", "cookie", "device_id")
 
 
 def _locked(method):
