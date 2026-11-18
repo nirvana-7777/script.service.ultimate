@@ -4,8 +4,22 @@ Remote Login Handler for Magenta2 Backchannel Authentication
 Implements QR code-based authentication flow as fallback when line auth fails
 
 This handler contains provider-specific logic for MagentaTV.
+
+Two execution models are supported:
+- Blocking: start_remote_login() / poll_for_token() / perform_complete_flow()
+- Background: start_background_login() / get_background_status() /
+  wait_for_background_login() / cancel_background_login()
+
+The background API is a bridge for callers (e.g. the Magenta2 auth flow and
+channel warm-up) that expect fire-and-forget login with later status polling.
+It runs the proven blocking perform_complete_flow() on a daemon thread.
+Cancellation of a background login uses an explicit threading.Event that the
+polling loop checks every second — it never relies on side effects of the
+notifier's close() — and both the event and the bridge state are reset on
+every start_background_login() call.
 """
 
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
@@ -15,6 +29,11 @@ from ...base.network import HTTPManager
 from ...base.ui import NotificationFactory, NotificationInterface, NotificationResult
 from ...base.utils.logger import logger
 from .constants import DEFAULT_PLATFORM, DEFAULT_REQUEST_TIMEOUT, GRANT_TYPES, MAGENTA2_PLATFORMS, render_user_agent
+
+# Default OAuth scope for the MagentaTV backchannel (remote login) flow.
+# Kept as a named constant so the blocking and background entry points can
+# never drift apart.
+DEFAULT_REMOTE_LOGIN_SCOPE = "tvhubs offline_access"
 
 
 @dataclass
@@ -93,6 +112,18 @@ class RemoteLoginHandler:
 
         self._current_session: Optional[RemoteLoginSession] = None
 
+        # --- Background login bridge state (always initialized so
+        # get_background_status() is safe before any login was started) ---
+        self._bg_lock = threading.Lock()
+        self._bg_thread: Optional[threading.Thread] = None
+        self._bg_result: Optional[Dict[str, Any]] = None
+        self._bg_error: Optional[str] = None
+        self._bg_done = threading.Event()
+        # Explicit cancellation signal for background logins. poll_for_token()
+        # checks this every second, so cancellation does not depend on any
+        # side effect of the notifier's close().
+        self._bg_cancel = threading.Event()
+
         logger.debug(f"RemoteLoginHandler initialized with {self._notifier.__class__.__name__}")
 
     def set_notifier(self, notifier: NotificationInterface) -> None:
@@ -100,7 +131,7 @@ class RemoteLoginHandler:
         self._notifier = notifier
         logger.debug(f"Notifier set to: {notifier.__class__.__name__}")
 
-    def start_remote_login(self, scope: str = "tvhubs offline_access") -> RemoteLoginSession:
+    def start_remote_login(self, scope: str = DEFAULT_REMOTE_LOGIN_SCOPE) -> RemoteLoginSession:
         """
         Start backchannel authentication flow
 
@@ -294,6 +325,10 @@ class RemoteLoginHandler:
 
                 # Check if user cancelled (every second)
                 if current_time - last_countdown_update >= 1.0:
+                    if self._bg_cancel.is_set():
+                        logger.info("Background remote login cancelled")
+                        return None
+
                     if self._notifier.is_cancelled():
                         logger.info("User cancelled remote login")
                         return None
@@ -354,7 +389,7 @@ class RemoteLoginHandler:
             return None
 
     def perform_complete_flow(
-        self, scope: str = "tvhubs offline_access"
+        self, scope: str = DEFAULT_REMOTE_LOGIN_SCOPE
     ) -> Optional[Dict[str, Any]]:
         """
         Perform complete remote login flow with integrated polling
@@ -454,14 +489,179 @@ class RemoteLoginHandler:
             self._current_session = None
             self._notifier.close(success=False, message="Cancelled")
 
-    def get_session_status(self) -> Optional[Dict[str, Any]]:
-        """Get current session status"""
-        if not self._current_session:
+    # ========================================================================
+    # Background login bridge (start_background_login / get_background_status)
+    # ========================================================================
+
+    def start_background_login(self, scope: Optional[str] = None, **_compat_kwargs: Any) -> None:
+        """
+        Start the remote login flow on a background (daemon) thread.
+
+        Bridge for callers that expect the background API:
+        start the worker, return immediately, poll get_background_status().
+
+        Runs the proven blocking perform_complete_flow() internally, so QR
+        display, polling, timeout and cancellation behave identically to the
+        synchronous path.
+
+        Args:
+            scope: OAuth scopes to request (default: tvhubs offline_access)
+            **_compat_kwargs: Ignored, accepted for forward compatibility with
+                callers passing extra options; logged at debug level.
+
+        Raises:
+            RuntimeError: If a background login is already in progress
+        """
+        if _compat_kwargs:
+            logger.debug(
+                f"Ignoring unsupported kwargs in start_background_login: "
+                f"{sorted(_compat_kwargs)}"
+            )
+
+        effective_scope = scope or DEFAULT_REMOTE_LOGIN_SCOPE
+
+        with self._bg_lock:
+            if self._bg_thread is not None and self._bg_thread.is_alive():
+                raise RuntimeError("Remote login already in progress")
+
+            # Reset bridge state from any previous run
+            self._bg_result = None
+            self._bg_error = None
+            self._bg_done.clear()
+            self._bg_cancel.clear()
+
+            def _run() -> None:
+                try:
+                    token_data = self.perform_complete_flow(effective_scope)
+                    with self._bg_lock:
+                        self._bg_result = token_data
+                except Exception as e:
+                    error_text = f"{type(e).__name__}: {e}"
+                    logger.error(f"Background remote login failed: {error_text}")
+                    with self._bg_lock:
+                        self._bg_error = error_text
+                finally:
+                    self._bg_done.set()
+
+            self._bg_thread = threading.Thread(
+                target=_run, daemon=True, name="Magenta2RemoteLogin"
+            )
+            self._bg_thread.start()
+
+        logger.info(
+            f"Background remote login started (scope={effective_scope!r}, "
+            f"thread=Magenta2RemoteLogin)"
+        )
+
+    def get_background_status(self) -> Dict[str, Any]:
+        """
+        Get the status of the background login (safe to call at any time,
+        including before a login was ever started).
+
+        Returns:
+            Dict with:
+            - "status":    "not_started" | "in_progress" | "success" |
+                           "error" | "no_token"
+                           ("no_token" = finished without a token: timed out,
+                           cancelled, or the flow failed internally)
+            - "done":      True once the background thread has finished
+            - "in_progress": True while the background login is running
+            - "result":    Token data dict on success, else None
+            - "error":     Error string if the worker raised, else None
+            - "session":   Live session info (login code, QR target URL,
+                           remaining seconds) while a login is active,
+                           else None
+        """
+        with self._bg_lock:
+            thread = self._bg_thread
+            result = self._bg_result
+            error = self._bg_error
+            done = self._bg_done.is_set()
+
+        if result is not None:
+            status = "success"
+        elif error is not None:
+            status = "error"
+        elif done:
+            status = "no_token"
+        elif thread is None:
+            status = "not_started"
+        else:
+            status = "in_progress"
+
+        return {
+            "status": status,
+            "done": done,
+            # Derived from `status`, not from thread.is_alive(): the worker
+            # sets _bg_done as its last action, but the thread object stays
+            # "alive" briefly during teardown. Deriving from the snapshot
+            # keeps status and in_progress from contradicting each other in
+            # that window.
+            "in_progress": status == "in_progress",
+            "result": result,
+            "error": error,
+            "session": self.get_session_status(),
+        }
+
+    def wait_for_background_login(self, timeout: Optional[float] = None) -> Optional[Dict[str, Any]]:
+        """
+        Block until the background login finishes (or timeout elapses).
+
+        Args:
+            timeout: Maximum seconds to wait; None = wait indefinitely
+
+        Returns:
+            Token data dict on success; None if not finished in time, if no
+            login was ever started, or if the login failed. Call
+            get_background_status() to distinguish these cases.
+        """
+        with self._bg_lock:
+            thread = self._bg_thread
+
+        if thread is None:
             return None
 
+        thread.join(timeout=timeout)
+
+        with self._bg_lock:
+            return self._bg_result
+
+    def cancel_background_login(self) -> None:
+        """
+        Best-effort cancellation of a running background login.
+
+        Sets an explicit cancel event that poll_for_token() checks every
+        second, so cancellation does not depend on the notifier's close()
+        having any particular side effect. The background thread then exits
+        and the status becomes "no_token". No-op if nothing is running.
+        """
+        with self._bg_lock:
+            thread = self._bg_thread
+
+        if thread is not None and thread.is_alive():
+            logger.info("Cancelling background remote login")
+            self._bg_cancel.set()
+            self.cancel_current_session()
+        else:
+            logger.debug("No background remote login to cancel")
+
+    def get_session_status(self) -> Optional[Dict[str, Any]]:
+        """Get current session status"""
+        # Read once: the background login thread may clear
+        # _current_session concurrently with this status poll.
         session = self._current_session
+        if session is None:
+            return None
         elapsed = time.time() - session.started_at
         remaining = max(0, int(session.expires_in - elapsed))
+
+        # Best-effort: notifier implementations are not guaranteed thread-safe
+        # and may be closed concurrently by the login worker, so a raising
+        # is_cancelled() must not take down a status poll.
+        try:
+            notifier_cancelled = self._notifier.is_cancelled()
+        except Exception:
+            notifier_cancelled = False
 
         return {
             "login_code": session.initial_login_code,
@@ -471,5 +671,5 @@ class RemoteLoginHandler:
             "remaining_seconds": remaining,
             "is_expired": remaining <= 0,
             "interval": session.interval,
-            "is_cancelled": self._notifier.is_cancelled(),
+            "is_cancelled": notifier_cancelled or self._bg_cancel.is_set(),
         }
