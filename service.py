@@ -2706,7 +2706,7 @@ def start_service(service_instance):
         run(
             service_instance.app,
             server=ThreadedWSGIRefServer,
-            host="0.0.0.0",
+            host=os.environ.get("ULTIMATE_SERVER_HOST", "127.0.0.1"),
             port=port,
             quiet=not debug_mode,
             debug=debug_mode,
