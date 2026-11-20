@@ -68,6 +68,8 @@ class KodiSettingsBridge:
                 logger.error(f"Error saving standalone settings: {e}")
 
     def get_setting(self, setting_id: str, default: str = "") -> str:
+        if setting_id == "enable_magenta2":
+            return "true"
         """Get setting value, works in both Kodi and standalone mode"""
         if self.is_kodi_environment():
             try:
