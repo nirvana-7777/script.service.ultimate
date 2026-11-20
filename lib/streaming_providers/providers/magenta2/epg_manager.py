@@ -11,7 +11,13 @@ Uses the ThePlatform API:
 Design:
 - Single-shot window fetching for schedules (byListingTime=ISO~ISO)
 - No authentication required (guest access) — only device/session IDs
-- Bounded LRU caching for person name lookups
+- Bounded LRU caching for person name lookups (and, since F3, programme
+  detail lookups keyed on program guid)
+- Per-listing channel resolution (F1) — a programme simulcast on HD + SD
+  yields one grid entry per station, each with its own broadcast_id.
+- The schedule feed projection requests listings.guid (G2) so EPGEntry.
+  epg_event_id (the nPVR recording-slot guid) is populated on the real
+  feed path, not only from fully-shaped test fixtures.
 """
 
 from __future__ import annotations
@@ -39,7 +45,12 @@ class Magenta2EpgManager:
 
     _STATION_ID_PATTERN = re.compile(r"/Station/(\d+)$")
     _CREDIT_ROLE_PATTERN = re.compile(r"-[a-z0-9]+-([a-z0-9]+)-")
-    _PERSON_ID_PATTERN = re.compile(r"(gnp_\d+)$")
+    # F2: the previous pattern was $-anchored and therefore never matched
+    # actor credit ids, which carry a character-name suffix
+    # (...-actor-gnp_230637-max-black). Drop the anchor and take the first
+    # match. 'gnp_' is unique enough within these id formats that a first-
+    # match scan cannot collide with the role segment.
+    _PERSON_ID_PATTERN = re.compile(r"(gnp_\d+)")
 
     _ROLE_MAP = {
         # Text role names (from dt$creditIds role segment and credits[].creditType)
@@ -54,7 +65,6 @@ class Magenta2EpgManager:
         "composer": "composers",
         "contributor": "contributors",
         # ThePlatform AD-series numeric credit type codes (lowercase)
-        # Appear both as creditType in credits[] and as the role segment in dt$creditIds
         "ad1": "cast",        # Cast Member
         "ad2": "directors",   # Director
         "ad3": "producers",   # Producer
@@ -64,7 +74,19 @@ class Magenta2EpgManager:
         "ad7": "cast",        # Guest (treated as cast)
     }
 
+    # Single canonical list of all credit buckets the manager tracks. Used
+    # to build the empty credit-map dicts in both parsers so the two stay
+    # in sync (previous code listed 5 buckets in one place, 7 in another,
+    # causing silent drops on the grid path).
+    _CREDIT_BUCKETS: Tuple[str, ...] = (
+        "cast", "directors", "producers", "writers",
+        "presenter", "composers", "contributors",
+    )
+
     _CACHE_MAX_SIZE = 1000
+    # F3: programme-detail responses are the bulk of the fetch volume in a
+    # full multi-day import, so size this above the person cache.
+    _PROGRAM_CACHE_MAX_SIZE = 2048
 
     def __init__(
             self,
@@ -90,6 +112,9 @@ class Magenta2EpgManager:
 
         self._person_details_template = self._resolve_person_details_template()
         self._person_cache: OrderedDict[str, Optional[PersonData]] = OrderedDict()
+        # F3: caches both successful and failed detail fetches (None) to
+        # prevent retry storms across repeated listings of the same episode.
+        self._program_cache: OrderedDict[str, Optional[Dict[str, Any]]] = OrderedDict()
 
         logger.info(
             f"[Magenta2EpgManager] Initialised: "
@@ -197,7 +222,6 @@ class Magenta2EpgManager:
                     if exc_response and hasattr(exc_response, "headers"):
                         retry_after_val = exc_response.headers.get("Retry-After")
 
-                    # Explicit type check for the type checker
                     if isinstance(retry_after_val, str) and retry_after_val.isdigit():
                         wait_time = int(retry_after_val)
                     else:
@@ -265,20 +289,9 @@ class Magenta2EpgManager:
     def _extract_person_id_from_credit(credit_id: str) -> Optional[str]:
         if not credit_id:
             return None
+        # F2: no end-anchor; first match wins.
         match = Magenta2EpgManager._PERSON_ID_PATTERN.search(credit_id)
         return match.group(1) if match else None
-
-    def _resolve_entry_channel_id(self, entry: Dict[str, Any]) -> Optional[str]:
-        listings = entry.get("listings", [])
-        if not listings:
-            return None
-
-        first_listing = listings[0]
-        station_id_uri = first_listing.get("stationId")
-        if not station_id_uri:
-            return None
-
-        return self._extract_station_id(station_id_uri)
 
     # ------------------------------------------------------------------
     # Credit parsing from credit IDs
@@ -335,7 +348,7 @@ class Magenta2EpgManager:
                 id=person_id,
                 name=details.get("fullName", person_id),
                 image=image_url,
-                roles=details.get("roles")
+                roles=details.get("roles"),
             )
 
         self._person_cache[person_id] = person_data
@@ -349,24 +362,14 @@ class Magenta2EpgManager:
     ) -> Tuple[Dict[str, Optional[List[str]]], Dict[str, Optional[List[PersonData]]]]:
         """Parse the ``credits`` array that ThePlatform includes on detail responses.
 
-        This is the preferred path over ``_resolve_credit_names`` because:
-        - ``personName`` is already resolved — no person-details API call needed.
-        - ``creditType`` is a clean string (e.g. ``"AD6"``), not a regex-parsed segment.
-        - ``personId`` is available for optional enrichment via ``_get_person_data``.
-
-        Falls back to ``_get_person_data`` (person details API + LRU cache) only when
-        ``personName`` is absent, so the person-details API is still used when useful.
+        Preferred over ``_resolve_credit_names`` because ``personName`` is
+        already resolved (no person-details API call needed) and
+        ``creditType`` is a clean string. Enriches ``PersonData`` with
+        ``characterName`` when present. Falls back to ``_get_person_data``
+        only when ``personName`` is absent.
         """
-        string_buckets: Dict[str, Set[str]] = {
-            "cast": set(), "directors": set(), "producers": set(),
-            "writers": set(), "presenter": set(),
-            "composers": set(), "contributors": set(),
-        }
-        detail_buckets: Dict[str, List[PersonData]] = {
-            "cast": [], "directors": [], "producers": [],
-            "writers": [], "presenter": [],
-            "composers": [], "contributors": [],
-        }
+        string_buckets: Dict[str, Set[str]] = {b: set() for b in self._CREDIT_BUCKETS}
+        detail_buckets: Dict[str, List[PersonData]] = {b: [] for b in self._CREDIT_BUCKETS}
 
         for credit in credits or []:
             credit_type = credit.get("creditType", "").lower()
@@ -377,11 +380,22 @@ class Magenta2EpgManager:
             person_name = credit.get("personName", "").strip()
             person_id_uri = credit.get("personId", "")
             person_id = self._extract_person_id_from_credit(person_id_uri) if person_id_uri else None
+            character_name = (credit.get("characterName") or "").strip() or None
 
             if not person_name and person_id:
-                # Name missing — try the person details API (cached)
                 person_data = self._get_person_data(person_id)
                 if person_data:
+                    if character_name and not person_data.character_name:
+                        # F4: write the enriched copy back to the cache so
+                        # subsequent resolutions don't rebuild it.
+                        person_data = PersonData(
+                            id=person_data.id,
+                            name=person_data.name,
+                            image=person_data.image,
+                            roles=person_data.roles,
+                            character_name=character_name,
+                        )
+                        self._person_cache[person_id] = person_data
                     string_buckets[bucket].add(person_data.name)
                     detail_buckets[bucket].append(person_data)
                 continue
@@ -391,10 +405,16 @@ class Magenta2EpgManager:
 
             string_buckets[bucket].add(person_name)
 
-            # Build PersonData: enrich from cache/API only if already cached to
-            # avoid an extra API round-trip per person on every detail request.
             if person_id and person_id in self._person_cache:
                 cached = self._person_cache[person_id]
+                if cached and character_name and not cached.character_name:
+                    # F4: persist the enrichment in the cache, then move to
+                    # end for LRU bookkeeping.
+                    cached = PersonData(
+                        id=cached.id, name=cached.name, image=cached.image,
+                        roles=cached.roles, character_name=character_name,
+                    )
+                    self._person_cache[person_id] = cached
                 self._person_cache.move_to_end(person_id)
                 if cached:
                     detail_buckets[bucket].append(cached)
@@ -403,6 +423,7 @@ class Magenta2EpgManager:
             detail_buckets[bucket].append(PersonData(
                 id=person_id or person_name,
                 name=person_name,
+                character_name=character_name,
             ))
 
         final_strings = {
@@ -420,18 +441,10 @@ class Magenta2EpgManager:
     ) -> Tuple[Dict[str, Optional[List[str]]], Dict[str, Optional[List[PersonData]]]]:
         """
         Parse credit IDs into role buckets, resolving person names via API.
-        Returns a tuple of: (string_buckets, person_data_buckets)
+        Returns a tuple of: (string_buckets, person_data_buckets).
         """
-        string_buckets: Dict[str, Set[str]] = {
-            "cast": set(), "directors": set(), "producers": set(),
-            "writers": set(), "presenter": set(),
-            "composers": set(), "contributors": set(),
-        }
-        detail_buckets: Dict[str, List[PersonData]] = {
-            "cast": [], "directors": [], "producers": [],
-            "writers": [], "presenter": [],
-            "composers": [], "contributors": [],
-        }
+        string_buckets: Dict[str, Set[str]] = {b: set() for b in self._CREDIT_BUCKETS}
+        detail_buckets: Dict[str, List[PersonData]] = {b: [] for b in self._CREDIT_BUCKETS}
 
         for credit_id in credit_ids or []:
             role = self._parse_credit_role(credit_id)
@@ -459,7 +472,6 @@ class Magenta2EpgManager:
             key: values if values else None
             for key, values in detail_buckets.items()
         }
-
         return final_strings, final_details
 
     # ------------------------------------------------------------------
@@ -470,6 +482,13 @@ class Magenta2EpgManager:
         if not program_guid or not self._programs_feed_url:
             return {}
 
+        # F3: cache per program guid (including None for failed fetches) so
+        # a programme repeated across HD/SD/Timeshift listings is fetched
+        # once per grid import rather than once per listing.
+        if program_guid in self._program_cache:
+            self._program_cache.move_to_end(program_guid)
+            return self._program_cache[program_guid] or {}
+
         url = (
             f"{self._programs_feed_url}"
             f"?byGuid={program_guid}"
@@ -477,11 +496,16 @@ class Magenta2EpgManager:
         )
 
         data = self._get_with_retry(url, operation="epg_program_details")
-        if not data:
-            return {}
+        entry: Optional[Dict[str, Any]] = None
+        if data:
+            entries = data.get("entries", [])
+            entry = entries[0] if entries else None
 
-        entries = data.get("entries", [])
-        return entries[0] if entries else {}
+        self._program_cache[program_guid] = entry
+        if len(self._program_cache) > self._PROGRAM_CACHE_MAX_SIZE:
+            self._program_cache.popitem(last=False)
+
+        return entry or {}
 
     # ------------------------------------------------------------------
     # Schedule fetching
@@ -499,6 +523,7 @@ class Magenta2EpgManager:
         logger.debug(f"[Magenta2EpgManager] Fetching schedule window {start_iso} ~ {end_iso} (UTC)")
 
         fields = (
+            "listings.guid,"
             "listings.stationId,"
             "listings.program.guid,listings.program.title,"
             "listings.startTime,listings.endTime"
@@ -553,8 +578,14 @@ class Magenta2EpgManager:
 
         Prefers the production-still variant over the generic landscape image.
         Keys have dimension suffixes, so we match by prefix.
+
+        G1: 'HighResLandscape' is a prefix of 'HighResLandscapeProductionStill',
+        so iterating the generic prefix first let dict order decide which image
+        won. Iterate the specific prefix first; startswith() then naturally
+        prefers the production still and falls back to the generic landscape
+        only when no production still exists.
         """
-        for preferred in ("HighResLandscape", "HighResLandscapeProductionStill"):
+        for preferred in ("HighResLandscapeProductionStill", "HighResLandscape"):
             for key, entry in thumbnails.items():
                 if key.startswith(preferred) and isinstance(entry, dict):
                     url = entry.get("url")
@@ -564,28 +595,32 @@ class Magenta2EpgManager:
 
     @staticmethod
     def _extract_genre(tags: List[Dict[str, Any]]) -> Optional[str]:
-        """Return the first primary genre string (used by EPGEntry grid path)."""
-        for tag in tags or []:
-            scheme = tag.get("scheme", "")
-            if scheme in ("genre-primary", "category"):
-                title = tag.get("title")
-                if title:
-                    return title
+        """Return the best single genre string (used by EPGEntry grid path).
+
+        F5: genre-primary is preferred over category regardless of tag order.
+        category is a catalogue grouping ("200-Serie"), not a genre; using
+        tag order previously caused the category to win on the sample payload
+        simply because it appeared first in the list.
+        """
+        for preferred in ("genre-primary", "category"):
+            for tag in tags or []:
+                if tag.get("scheme") == preferred and tag.get("title"):
+                    return tag["title"]
         return None
 
     @staticmethod
     def _extract_genres(tags: List[Dict[str, Any]]) -> Optional[List[str]]:
-        """Return all unique genre strings from primary and secondary genre tags.
-
-        Used by the detail path to populate ``EPGProgramDetails.genres``.
+        """Return all unique genre strings, ordered genre-primary first,
+        then genre-secondary, then category. Matches ``_extract_genre``'s
+        priority so the single-value and list views agree.
         """
         seen: Dict[str, None] = {}  # ordered-set via insertion-order dict
-        for tag in tags or []:
-            scheme = tag.get("scheme", "")
-            if scheme in ("genre-primary", "genre-secondary", "category"):
-                title = tag.get("title")
-                if title and title not in seen:
-                    seen[title] = None
+        for preferred in ("genre-primary", "genre-secondary", "category"):
+            for tag in tags or []:
+                if tag.get("scheme") == preferred:
+                    title = tag.get("title")
+                    if title and title not in seen:
+                        seen[title] = None
         return list(seen) if seen else None
 
     @staticmethod
@@ -604,6 +639,27 @@ class Magenta2EpgManager:
                 return int(digits)
         return None
 
+    @staticmethod
+    def _parse_parental_rating_code(ratings: List[Dict[str, Any]]) -> Optional[str]:
+        """Return the raw rating string (e.g. 'FSK12', 'TV-PG') when present."""
+        for rating_obj in ratings or []:
+            raw = rating_obj.get("rating", "")
+            if raw and str(raw).upper() != "UNKNOWN":
+                return str(raw)
+        return None
+
+    @staticmethod
+    def _parse_languages(values: Any) -> Optional[List[str]]:
+        """Normalise a language value that may be a str or list."""
+        if not values:
+            return None
+        if isinstance(values, str):
+            return [values]
+        if isinstance(values, list):
+            cleaned = [str(v) for v in values if v]
+            return cleaned or None
+        return None
+
     def _parse_item_to_entry(
             self,
             item: Dict[str, Any],
@@ -619,18 +675,21 @@ class Magenta2EpgManager:
         listing_guid = item.get("guid") or None
         title = program.get("title", "Unknown")
 
+        # F1: channel_id is now resolved per-listing by get_epg_grid, so
+        # broadcast_id is unique per (station, start) even when the same
+        # programme airs simultaneously on HD and SD stations.
         broadcast_id = EPGEntry.encode_broadcast_id("magenta2", channel_id, start)
 
         details: Dict[str, Any] = {}
-        credit_map: Dict[str, Optional[List[str]]] = {
-            "cast": None, "directors": None, "producers": None,
-            "writers": None, "presenter": None,
-        }
+        # Initialise ALL buckets (not a subset) so composers/contributors
+        # resolved by _resolve_credits_from_list are never silently dropped.
+        credit_map: Dict[str, Optional[List[str]]] = {b: None for b in self._CREDIT_BUCKETS}
 
         if self._fetch_details and program_guid:
             details = self._fetch_program_details(program_guid)
-            # Prefer the credits[] array (names already resolved, clean creditType).
-            # Fall back to dt$creditIds regex parsing only when credits[] is absent.
+            # Prefer the credits[] array (names already resolved, clean
+            # creditType). Fall back to dt$creditIds regex parsing only when
+            # credits[] is absent.
             credits_list = details.get("credits") or []
             if credits_list:
                 credit_map, _ = self._resolve_credits_from_list(credits_list)
@@ -641,7 +700,8 @@ class Magenta2EpgManager:
 
         title = details.get("title") or title
         description = details.get("description")
-        # secondaryTitle is the episode subtitle/guest line, not an alternate language title
+        # secondaryTitle is the episode subtitle/guest line, not an alternate
+        # language title
         episode_name = details.get("secondaryTitle") or None
         year_raw = details.get("year")
         year = None
@@ -659,8 +719,16 @@ class Magenta2EpgManager:
 
         tags = details.get("tags", []) or []
         genre_description = self._extract_genre(tags)
+        genres = self._extract_genres(tags)
 
-        parental_rating = self._parse_parental_rating(details.get("ratings") or [])
+        ratings = details.get("ratings") or []
+        parental_rating = self._parse_parental_rating(ratings)
+        parental_rating_code = self._parse_parental_rating_code(ratings)
+
+        series_id = details.get("seriesId") or None
+        is_adult = details.get("isAdult") if isinstance(details.get("isAdult"), bool) else None
+        audio_languages = self._parse_languages(details.get("languages"))
+        subtitle_languages = self._parse_languages(details.get("dt$captionLanguages"))
 
         return EPGEntry(
             broadcast_id=broadcast_id,
@@ -678,15 +746,24 @@ class Magenta2EpgManager:
             cast=credit_map["cast"],
             directors=credit_map["directors"],
             writers=credit_map["writers"],
+            producers=credit_map["producers"],
+            presenter=credit_map["presenter"],
+            composers=credit_map["composers"],
+            contributors=credit_map["contributors"],
             genre=None,
             genre_sub_type=None,
             genre_description=genre_description,
+            genres=genres,
             season_number=season_number,
             episode_number=episode_number,
             episode_part_number=None,
+            series_id=series_id,
             star_rating=None,
             parental_rating=parental_rating,
-            parental_rating_code=None,
+            parental_rating_code=parental_rating_code,
+            is_adult=is_adult,
+            audio_languages=audio_languages,
+            subtitle_languages=subtitle_languages,
             first_aired=None,
             imdb_number=None,
             series_link=None,
@@ -759,14 +836,17 @@ class Magenta2EpgManager:
         grid: Dict[str, List[EPGEntry]] = {}
 
         for entry in schedule_data.get("entries", []):
-            channel_id = self._resolve_entry_channel_id(entry)
-            if channel_id is None:
-                continue
-            if wanted is not None and channel_id not in wanted:
-                continue
-
-            bucket = grid.setdefault(channel_id, [])
+            # F1: resolve the channel from EACH listing's own stationId.
+            # Previously the channel was resolved once per entry from
+            # listings[0], so an HD/SD simulcast bucketed both listings
+            # under the first station with duplicate broadcast_id values.
             for item in entry.get("listings", []):
+                channel_id = self._extract_station_id(item.get("stationId", ""))
+                if channel_id is None:
+                    continue
+                if wanted is not None and channel_id not in wanted:
+                    continue
+
                 start = self._parse_timestamp(item.get("startTime"))
                 end = self._parse_timestamp(item.get("endTime"))
                 if start is None or end is None or end <= start:
@@ -777,7 +857,7 @@ class Magenta2EpgManager:
                 program = item.get("program", {}) or {}
                 parsed = self._parse_item_to_entry(item, channel_id, start, end, program)
                 if parsed:
-                    bucket.append(parsed)
+                    grid.setdefault(channel_id, []).append(parsed)
 
         for entries in grid.values():
             entries.sort(key=lambda p: p.start)
@@ -816,24 +896,18 @@ class Magenta2EpgManager:
         if not raw:
             return None
 
-        # Prefer credits[] (names pre-resolved, clean creditType).
-        # Fall back to dt$creditIds + person API only when credits[] is absent.
+        # Prefer credits[] (names pre-resolved, clean creditType). Fall back
+        # to dt$creditIds + person API only when credits[] is absent.
         credits_list = raw.get("credits") or []
         if credits_list:
             credit_map, credit_details = self._resolve_credits_from_list(credits_list)
         else:
             credit_ids = raw.get("dt$creditIds", [])
-            credit_map, credit_details = (
-                self._resolve_credit_names(credit_ids) if credit_ids
-                else (
-                    {"cast": None, "directors": None, "producers": None,
-                     "writers": None, "presenter": None,
-                     "composers": None, "contributors": None},
-                    {"cast": None, "directors": None, "producers": None,
-                     "writers": None, "presenter": None,
-                     "composers": None, "contributors": None},
-                )
-            )
+            if credit_ids:
+                credit_map, credit_details = self._resolve_credit_names(credit_ids)
+            else:
+                credit_map = {b: None for b in self._CREDIT_BUCKETS}
+                credit_details = {b: None for b in self._CREDIT_BUCKETS}
 
         year_raw = raw.get("year")
         year = None
@@ -845,6 +919,7 @@ class Magenta2EpgManager:
 
         thumbnails = raw.get("thumbnails", {}) or {}
         tags = raw.get("tags", []) or []
+        ratings = raw.get("ratings") or []
 
         runtime_raw = raw.get("runtime")
         duration: Optional[int] = None
@@ -855,6 +930,18 @@ class Magenta2EpgManager:
                 duration = int(float(runtime_raw))
             except (ValueError, TypeError):
                 pass
+
+        series_id = raw.get("seriesId") or None
+        countries_raw = raw.get("dt$countries")
+        country_of_origin: Optional[List[str]] = None
+        if isinstance(countries_raw, str) and countries_raw:
+            country_of_origin = [countries_raw]
+        elif isinstance(countries_raw, list) and countries_raw:
+            country_of_origin = [str(c) for c in countries_raw if c]
+
+        is_adult = raw.get("isAdult") if isinstance(raw.get("isAdult"), bool) else None
+        audio_languages = self._parse_languages(raw.get("languages"))
+        subtitle_languages = self._parse_languages(raw.get("dt$captionLanguages"))
 
         return EPGProgramDetails(
             program_id=program_id,
@@ -878,6 +965,12 @@ class Magenta2EpgManager:
             season_number=self._parse_episode_number(raw.get("tvSeasonNumber")),
             episode_number=self._parse_episode_number(raw.get("tvSeasonEpisodeNumber")),
             genres=self._extract_genres(tags),
-            parental_rating=self._parse_parental_rating(raw.get("ratings") or []),
+            parental_rating=self._parse_parental_rating(ratings),
+            parental_rating_code=self._parse_parental_rating_code(ratings),
+            is_adult=is_adult,
+            audio_languages=audio_languages,
+            subtitle_languages=subtitle_languages,
+            series_id=series_id,
+            country_of_origin=country_of_origin,
             duration=duration,
         )

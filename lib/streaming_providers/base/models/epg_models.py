@@ -196,6 +196,12 @@ class EPGEntry:
     endpoint) that return producer data as part of a single one-shot
     fetch with no separate enrichment pass to fall back on.
     """
+    presenter: Optional[List[str]] = None
+    composers: Optional[List[str]] = None
+    contributors: Optional[List[str]] = None
+    # NEW: three more credit buckets, previously only on EPGProgramDetails.
+    # Populated on the grid path by _parse_item_to_entry when the provider
+    # exposes them via credits[] / dt$creditIds (Magenta2 does).
 
     # Optional fields - Genre/Category
     genre: Optional[int] = None
@@ -236,6 +242,11 @@ class EPGEntry:
     episode_part_number: Optional[int] = None
     """Part number for multi-part episodes (1-based)."""
 
+    # NEW: provider-native series identifier (distinct from program_id which
+    # is episode-scoped). Mirrors EPGProgramDetails.series_id so a detail
+    # fetch can be merged down onto the grid entry without a field rename.
+    series_id: Optional[str] = None
+
     # Optional fields - Ratings
     star_rating: Optional[int] = None
     """Star rating on 0-10 scale."""
@@ -245,6 +256,15 @@ class EPGEntry:
 
     parental_rating_code: Optional[str] = None
     """Text parental rating code (e.g., 'TV-PG', 'FSK 12')."""
+
+    # NEW: adult flag from the provider (Magenta2 sends isAdult: bool).
+    # Kept separate from EPGFlags because it is not a Kodi EPG_TAG_FLAG bit.
+    is_adult: Optional[bool] = None
+
+    # NEW: audio / subtitle languages as declared by the provider.
+    # e.g. Magenta2: languages=["de"], dt$captionLanguages=["und"].
+    audio_languages: Optional[List[str]] = None
+    subtitle_languages: Optional[List[str]] = None
 
     # Optional fields - Additional Metadata
     first_aired: Optional[int] = None
@@ -320,15 +340,18 @@ class EPGEntry:
             "directors",
             "writers",
             "producers",
+            "presenter", "composers", "contributors",
             "genre",
             "genre_description",
             "genres",
             "season_number",
             "episode_number",
             "episode_part_number",
+            "series_id",
             "star_rating",
             "parental_rating",
             "parental_rating_code",
+            "is_adult", "audio_languages", "subtitle_languages",
             "first_aired",
             "imdb_number",
             "series_link",
@@ -691,11 +714,16 @@ class EPGEntry:
 
 @dataclass(frozen=True)
 class PersonData:
-    """Enriched person data with image and roles."""
+    """
+    Enriched person data with image and roles.
+    NEW: optional ``character_name`` — the role the actor played, when the
+    provider's credits[] array supplies it (Magenta2 sends ``characterName``).
+    """
     id: str
     name: str
     image: Optional[str] = None
     roles: Optional[List[str]] = None
+    character_name: Optional[str] = None  # NEW
 
     def to_dict(self) -> Dict[str, Any]:
         result: Dict[str, Any] = {"id": self.id, "name": self.name}
@@ -703,6 +731,8 @@ class PersonData:
             result["image"] = self.image
         if self.roles:
             result["roles"] = self.roles
+        if self.character_name:  # NEW
+            result["character_name"] = self.character_name
         return result
 
 
@@ -766,6 +796,15 @@ class EPGProgramDetails:
     # Additional metadata
     genres: Optional[List[str]] = None
     parental_rating: Optional[int] = None
+    # NEW: raw parental rating string from the provider ("FSK12", "TV-PG").
+    # EPGEntry already has this field; mirror it here so a detail fetch can
+    # populate it and merge_content can carry it onto the grid entry.
+    parental_rating_code: Optional[str] = None
+    # NEW: adult flag (Magenta2 isAdult).
+    is_adult: Optional[bool] = None
+    # NEW: audio / subtitle languages declared by the provider.
+    audio_languages: Optional[List[str]] = None
+    subtitle_languages: Optional[List[str]] = None
     release_date: Optional[int] = None
     duration: Optional[int] = None
 
@@ -795,7 +834,8 @@ class EPGProgramDetails:
             "presenter", "composers", "contributors",
             "backdrop", "poster", "imdb_number", "provider_vod_id",
             "series_id",
-            "genres", "parental_rating",
+            "genres", "parental_rating", "parental_rating_code",
+            "is_adult", "audio_languages", "subtitle_languages",
             "release_date", "duration",
             "season_number", "episode_number",
             "country_of_origin", "trailer",
@@ -859,6 +899,12 @@ class EPGContent:
     episode_number: Optional[int] = None
     parental_rating: Optional[int] = None
     imdb_number: Optional[str] = None
+    # NEW shared fields (now exist on both classes)
+    series_id: Optional[str] = None
+    parental_rating_code: Optional[str] = None
+    is_adult: Optional[bool] = None
+    audio_languages: Optional[List[str]] = None
+    subtitle_languages: Optional[List[str]] = None
 
 
 def merge_content(entry: "EPGEntry", details: "EPGProgramDetails") -> "EPGEntry":
