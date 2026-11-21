@@ -215,8 +215,8 @@ class PvrHttpMixin:
     # NEW: opt-in request logging flags.  Concrete subclasses may override
     # these in __init__ (e.g. from an env var).  When _log_request_headers is
     # False, _log_request() returns immediately — zero overhead.
-    _log_request_headers: bool = True
-    _log_auth_token: bool = True
+    _log_request_headers: bool = False
+    _log_auth_token: bool = False
 
     # ------------------------------------------------------------------
     # Request logging (NEW)
