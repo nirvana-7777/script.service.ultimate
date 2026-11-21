@@ -22,6 +22,10 @@ from streaming_providers.base.models.timer import (
     TimerState,
     TimerWeekday,
 )
+from streaming_providers.base.timer_operations import (
+    ProviderNotFoundError,
+    TimersNotSupportedError,
+)
 from streaming_providers.base.utils import logger
 
 from datetime import datetime
@@ -133,6 +137,124 @@ def _timer_from_body(body: dict, client_index: int = 0) -> Timer:
     return Timer(client_index=client_index, **kwargs)
 
 
+# Timer payloads are a few hundred bytes; anything bigger is not a timer.
+_MAX_BODY_BYTES = 64 * 1024
+
+
+def _exc_message(e: Exception) -> str:
+    """str(KeyError('x')) is "'x'" — unwrap it."""
+    if isinstance(e, KeyError) and e.args:
+        return str(e.args[0])
+    return str(e)
+
+
+def _read_json_object(provider: str, **extra):
+    """
+    Read the request body as a JSON object.
+
+    Returns ``(body, None)`` on success, or ``(None, error_payload)`` after
+    setting ``response.status``.
+
+    Bottle's ``request.json`` raises HTTPError(400) on malformed JSON, which the
+    routes' blanket ``except Exception`` would turn into a 500 — and it hides
+    the raw bytes.  Reading the body ourselves avoids both.
+    """
+    request_id = request.get_header("X-Request-Id", "")
+    raw = request.body.read(_MAX_BODY_BYTES + 1)
+    if len(raw) > _MAX_BODY_BYTES:
+        response.status = 413
+        return None, {
+            "error": "Payload too large",
+            "message": f"Request body exceeds {_MAX_BODY_BYTES} bytes",
+            "provider": provider,
+            **extra,
+        }
+
+    logger.debug(
+        f"timers[{provider}] reqid={request_id!r}: "
+        f"Content-Type={request.get_header('Content-Type', '')!r} "
+        f"bytes={len(raw)} body={raw[:2000]!r}"
+    )
+
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except UnicodeDecodeError as e:
+        logger.warning(
+            f"timers[{provider}] reqid={request_id!r}: body is not valid UTF-8: "
+            f"{e} (first 100 bytes hex: {raw[:100].hex()})"
+        )
+        response.status = 400
+        return None, {
+            "error": "Bad request",
+            "message": f"Request body is not valid UTF-8: {e}",
+            "provider": provider,
+            **extra,
+        }
+    except json.JSONDecodeError as e:
+        logger.warning(
+            f"timers[{provider}] reqid={request_id!r}: JSON decode failed at "
+            f"line {e.lineno} col {e.colno} (char {e.pos}): {e.msg} - "
+            f"context: {raw[max(0, e.pos - 30):e.pos + 30]!r}"
+        )
+        response.status = 400
+        return None, {
+            "error": "Bad request",
+            "message": f"Request body must be valid JSON: {e.msg} at position {e.pos}",
+            "provider": provider,
+            **extra,
+        }
+
+    if not isinstance(body, dict) or not body:
+        response.status = 400
+        return None, {
+            "error": "Bad request",
+            "message": "Request body must be a non-empty JSON object",
+            "provider": provider,
+            **extra,
+        }
+    return body, None
+
+
+def _provider_unavailable(e: Exception, provider: str, **extra) -> dict:
+    """404 for an unknown/disabled provider, 501 when it has no timer support."""
+    if isinstance(e, TimersNotSupportedError):
+        response.status = 501
+        error = "Timers not supported"
+    else:
+        response.status = 404
+        error = "Provider not found"
+    return {"error": error, "message": str(e), "provider": provider, **extra}
+
+
+def _provider_error(
+    e: Exception, title: str, provider: str, default_status: int = 409, **extra
+) -> dict:
+    """
+    Response for an error raised by the provider while talking to its backend.
+
+    If the exception carries structured upstream info (``e.upstream``, see
+    NpvrApiError) it is passed on to the client: ``message`` becomes the
+    upstream's own explanation (e.g. "Recording is not allowed on this event")
+    and the full details go into ``upstream``.  An upstream 5xx maps to 502;
+    anything else keeps ``default_status``.
+    """
+    upstream = getattr(e, "upstream", None) or None
+    status = upstream.get("status") if upstream else None
+    response.status = 502 if isinstance(status, int) and status >= 500 else default_status
+
+    logger.error(f"{title} on '{provider}': {_exc_message(e)}")
+
+    body = {
+        "error": title,
+        "message": (upstream or {}).get("details") or _exc_message(e),
+        "provider": provider,
+        **extra,
+    }
+    if upstream:
+        body["upstream"] = upstream
+    return body
+
+
 # ---------------------------------------------------------------------------
 # Route setup
 # ---------------------------------------------------------------------------
@@ -159,13 +281,8 @@ def setup_timers_routes(app, manager, service):
         try:
             try:
                 timer_types = manager.timer_ops.get_timer_types(provider_name=provider)
-            except ValueError as e:
-                response.status = 404
-                return {
-                    "error": "Provider not found",
-                    "message": str(e),
-                    "provider": provider,
-                }
+            except (ProviderNotFoundError, TimersNotSupportedError) as e:
+                return _provider_unavailable(e, provider)
 
             serialized = [tt.to_dict() for tt in timer_types]
             response.status = 200
@@ -211,13 +328,12 @@ def setup_timers_routes(app, manager, service):
                     provider_name=provider,
                     include_inactive=include_inactive,
                 )
-            except ValueError as e:
-                response.status = 404
-                return {
-                    "error": "Provider not found",
-                    "message": str(e),
-                    "provider": provider,
-                }
+            except (ProviderNotFoundError, TimersNotSupportedError) as e:
+                return _provider_unavailable(e, provider)
+            except RuntimeError as e:
+                return _provider_error(
+                    e, "Failed to get timers", provider, default_status=502
+                )
             except Exception as e:
                 logger.error(f"Failed to get timers from '{provider}': {e}")
                 response.status = 500
@@ -258,13 +374,13 @@ def setup_timers_routes(app, manager, service):
                     provider_name=provider,
                     client_index=client_index,
                 )
-            except ValueError as e:
-                response.status = 404
-                return {
-                    "error": "Provider not found",
-                    "message": str(e),
-                    "provider": provider,
-                }
+            except (ProviderNotFoundError, TimersNotSupportedError) as e:
+                return _provider_unavailable(e, provider)
+            except RuntimeError as e:
+                return _provider_error(
+                    e, "Failed to get timer", provider,
+                    default_status=502, client_index=client_index,
+                )
             except Exception as e:
                 logger.error(
                     f"Failed to get timer {client_index} from '{provider}': {e}"
@@ -328,60 +444,17 @@ def setup_timers_routes(app, manager, service):
             201 Created with the saved Timer in the body.
             400 if the request body is invalid.
             404 if the provider is not found.
-            409 if the provider refuses the timer (e.g. conflict).
+            409 if the provider refuses the timer (e.g. conflict); the
+                provider's own explanation is in "message" and, when the
+                backend sent one, the structured error in "upstream".
+            501 if the provider has no timer support.
+            502 if the provider's backend failed (upstream 5xx).
             500 on unexpected errors.
         """
         try:
-            # TEMP DIAGNOSTIC (remove once the Invalid-JSON issue is confirmed
-            # fixed): request.json swallows the raw bytes on parse failure, so
-            # we can't tell what actually arrived. Read + log it manually first.
-            content_type = request.get_header("Content-Type", "")
-            content_length = request.get_header("Content-Length", "")
-            request_id = request.get_header("X-Request-Id", "")
-            raw_body = request.body.read()
-            logger.info(
-                f"add_provider_timer[{provider}] reqid={request_id!r}: "
-                f"Content-Type={content_type!r} Content-Length header={content_length!r} "
-                f"actual bytes={len(raw_body)}"
-            )
-            logger.info(
-                f"add_provider_timer[{provider}] reqid={request_id!r}: raw body (repr, truncated to 2000 chars)="
-                f"{raw_body[:2000]!r}"
-            )
-
-            try:
-                body = json.loads(raw_body.decode("utf-8"))
-            except UnicodeDecodeError as e:
-                logger.error(
-                    f"add_provider_timer[{provider}] reqid={request_id!r}: body is not valid UTF-8 — "
-                    f"{e} — first 100 bytes hex: {raw_body[:100].hex()}"
-                )
-                response.status = 400
-                return {
-                    "error": "Bad request",
-                    "message": f"Request body is not valid UTF-8: {e}",
-                    "provider": provider,
-                }
-            except json.JSONDecodeError as e:
-                logger.error(
-                    f"add_provider_timer[{provider}] reqid={request_id!r}: JSON decode failed at "
-                    f"line {e.lineno} col {e.colno} (char {e.pos}): {e.msg} — "
-                    f"context: {raw_body[max(0, e.pos - 30):e.pos + 30]!r}"
-                )
-                response.status = 400
-                return {
-                    "error": "Bad request",
-                    "message": f"Request body must be valid JSON: {e.msg} at position {e.pos}",
-                    "provider": provider,
-                }
-
-            if not body:
-                response.status = 400
-                return {
-                    "error": "Bad request",
-                    "message": "Request body must be valid JSON",
-                    "provider": provider,
-                }
+            body, error = _read_json_object(provider)
+            if error:
+                return error
 
             # Inject provider so the Timer knows where it belongs
             body.setdefault("provider", provider)
@@ -400,21 +473,18 @@ def setup_timers_routes(app, manager, service):
                 saved = manager.timer_ops.add_timer(
                     provider_name=provider, timer=timer
                 )
+            except (ProviderNotFoundError, TimersNotSupportedError) as e:
+                return _provider_unavailable(e, provider)
             except ValueError as e:
-                response.status = 404
+                # Provider-side validation (e.g. missing/invalid epg_event_id).
+                response.status = 400
                 return {
-                    "error": "Provider not found",
+                    "error": "Invalid timer data",
                     "message": str(e),
                     "provider": provider,
                 }
             except RuntimeError as e:
-                logger.error(f"Provider '{provider}' rejected add_timer: {e}")
-                response.status = 409
-                return {
-                    "error": "Timer rejected by provider",
-                    "message": str(e),
-                    "provider": provider,
-                }
+                return _provider_error(e, "Timer rejected by provider", provider)
             except Exception as e:
                 logger.error(f"Failed to add timer on '{provider}': {e}")
                 response.status = 500
@@ -455,15 +525,9 @@ def setup_timers_routes(app, manager, service):
             500 on unexpected errors.
         """
         try:
-            body = request.json
-            if not body:
-                response.status = 400
-                return {
-                    "error": "Bad request",
-                    "message": "Request body must be valid JSON",
-                    "provider": provider,
-                    "client_index": client_index,
-                }
+            body, error = _read_json_object(provider, client_index=client_index)
+            if error:
+                return error
 
             body.setdefault("provider", provider)
 
@@ -482,29 +546,29 @@ def setup_timers_routes(app, manager, service):
                 updated = manager.timer_ops.update_timer(
                     provider_name=provider, timer=timer
                 )
+            except (ProviderNotFoundError, TimersNotSupportedError) as e:
+                return _provider_unavailable(e, provider)
             except ValueError as e:
-                response.status = 404
+                response.status = 400
                 return {
-                    "error": "Provider not found",
+                    "error": "Invalid timer data",
                     "message": str(e),
                     "provider": provider,
+                    "client_index": client_index,
                 }
             except KeyError as e:
                 response.status = 404
                 return {
                     "error": "Timer not found",
-                    "message": str(e),
+                    "message": _exc_message(e),
                     "provider": provider,
                     "client_index": client_index,
                 }
             except RuntimeError as e:
-                response.status = 409
-                return {
-                    "error": "Update refused by provider",
-                    "message": str(e),
-                    "provider": provider,
-                    "client_index": client_index,
-                }
+                return _provider_error(
+                    e, "Update refused by provider", provider,
+                    client_index=client_index,
+                )
             except Exception as e:
                 logger.error(
                     f"Failed to update timer {client_index} on '{provider}': {e}"
@@ -560,29 +624,21 @@ def setup_timers_routes(app, manager, service):
                     client_index=client_index,
                     force_delete=force,
                 )
-            except ValueError as e:
-                response.status = 404
-                return {
-                    "error": "Provider not found",
-                    "message": str(e),
-                    "provider": provider,
-                }
+            except (ProviderNotFoundError, TimersNotSupportedError) as e:
+                return _provider_unavailable(e, provider)
             except KeyError as e:
                 response.status = 404
                 return {
                     "error": "Timer not found",
-                    "message": str(e),
+                    "message": _exc_message(e),
                     "provider": provider,
                     "client_index": client_index,
                 }
             except RuntimeError as e:
-                response.status = 409
-                return {
-                    "error": "Deletion refused by provider",
-                    "message": str(e),
-                    "provider": provider,
-                    "client_index": client_index,
-                }
+                return _provider_error(
+                    e, "Deletion refused by provider", provider,
+                    client_index=client_index,
+                )
             except Exception as e:
                 logger.error(
                     f"Failed to delete timer {client_index} from '{provider}': {e}"

@@ -87,6 +87,7 @@ import os  # NEW: for MAGENTA2_DEBUG_HTTP env toggle
 import re
 import threading
 import uuid
+import zlib
 from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional
 from urllib.parse import quote
@@ -120,7 +121,11 @@ _MAX_REFRESH_PAGES = 20
 
 # Listing GUIDs are formed as "{stationReference}_{8-hex-char program id}",
 # e.g. "das_erste_hd_033182e7" -> stationReference "das_erste_hd".
-_LISTING_GUID_STATION_RE = re.compile(r"^(?P<station_ref>.+)_[0-9a-f]{8}$")
+# The GUID is interpolated into a URL path (and the Authorization header goes
+# with it), so only a conservative charset is accepted.
+_LISTING_GUID_STATION_RE = re.compile(
+    r"^(?P<station_ref>[A-Za-z0-9_.\-]+)_[0-9a-f]{8}$"
+)
 
 
 def _env_flag(name: str) -> bool:
@@ -231,8 +236,8 @@ class TimersManager(PvrHttpMixin):
             List of :class:`Timer` objects ordered as returned by the API.
 
         Raises:
-            RuntimeError: When auth_headers_callback is missing or the API
-                          returns a non-200 status.
+            RuntimeError: When auth_headers_callback is missing, or the request
+                          fails (NpvrApiError carrying the upstream details).
         """
         pvr_base_url = self._get_pvr_base_url()
         url = f"{pvr_base_url}{PVR_GET_RECORDINGS_PATH}"
@@ -243,7 +248,10 @@ class TimersManager(PvrHttpMixin):
             "byRecordingStatus": "|".join(PVR_RECORDING_STATUSES_TIMERS),
         }
 
-        data = self._get(url, params)
+        # raise_on_error: a failed request must not look like "no timers" (an
+        # empty list would make the PVR client drop its timers, and
+        # _resolve_listing_guid() would report a misleading KeyError).
+        data = self._get(url, params, raise_on_error=True)
         if not data:
             return []
 
@@ -287,8 +295,10 @@ class TimersManager(PvrHttpMixin):
         Raises:
             ValueError:   If ``timer.epg_event_id`` is not set or is not a
                           valid listing GUID.
-            RuntimeError: If the API rejects the request (e.g. scheduling
-                          conflict, listing not found).
+            NpvrApiError (a RuntimeError): If the API rejects the request
+                          (e.g. 403 "Recording is not allowed on this event",
+                          scheduling conflict, listing not found).  The upstream
+                          status / details are attached to the exception.
         """
         if not timer.epg_event_id:
             raise ValueError(
@@ -296,12 +306,15 @@ class TimersManager(PvrHttpMixin):
                 "(listing GUID, e.g. 'das_erste_hd_033182e7')"
             )
 
+        # Builds (and thereby validates) the listing GUID before it is used in
+        # the URL.
+        payload = self._build_create_payload(timer)
+
         pvr_base_url = self._get_pvr_base_url()
         url = self._with_cid(
-            f"{pvr_base_url}{PVR_SCHEDULE_RECORDING_PATH}/{timer.epg_event_id}"
+            f"{pvr_base_url}{PVR_SCHEDULE_RECORDING_PATH}/"
+            f"{quote(timer.epg_event_id, safe='')}"
         )
-
-        payload = self._build_create_payload(timer)
 
         # _post_async() raises RuntimeError on any non-2xx answer; an empty
         # body on 202 is a success.
@@ -365,7 +378,7 @@ class TimersManager(PvrHttpMixin):
 
         pvr_base_url = self._get_pvr_base_url()
         url = self._with_cid(
-            f"{pvr_base_url}{PVR_UPDATE_RECORDING_PATH}/{listing_guid}"
+            f"{pvr_base_url}{PVR_UPDATE_RECORDING_PATH}/{quote(listing_guid, safe='')}"
         )
 
         status, _data = self._post_async(
@@ -424,7 +437,7 @@ class TimersManager(PvrHttpMixin):
     def _delete_listing(self, listing_guid: str) -> None:
         pvr_base_url = self._get_pvr_base_url()
         url = self._with_cid(
-            f"{pvr_base_url}{PVR_DELETE_RECORDING_PATH}/{listing_guid}"
+            f"{pvr_base_url}{PVR_DELETE_RECORDING_PATH}/{quote(listing_guid, safe='')}"
         )
         status_code = self._delete(url)
         logger.info(
@@ -450,6 +463,14 @@ class TimersManager(PvrHttpMixin):
         with self._index_lock:
             for t in timers:
                 if t.client_index and t.epg_event_id:
+                    known = self._listing_by_index.get(t.client_index)
+                    if known and known != t.epg_event_id:
+                        # client_index is a 31-bit hash; a collision would make
+                        # delete/update hit the wrong listing.
+                        logger.error(
+                            f"{self._provider}: client_index {t.client_index} "
+                            f"collision: '{known}' vs '{t.epg_event_id}'"
+                        )
                     self._listing_by_index[t.client_index] = t.epg_event_id
 
     def _refresh_index(self) -> None:
@@ -681,7 +702,9 @@ def _hex_id_to_int(hex_str: str) -> int:
     try:
         return int(hex_str, 16) & 0x7FFF_FFFF
     except ValueError:
-        return hash(hex_str) & 0x7FFF_FFFF
+        # NOT hash(): str hashes are salted per process (PYTHONHASHSEED), so
+        # the index would change on every restart.
+        return zlib.crc32(hex_str.encode("utf-8")) & 0x7FFF_FFFF
 
 
 def _seconds_to_minutes(seconds) -> int:

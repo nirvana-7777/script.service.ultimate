@@ -12,6 +12,7 @@ Public surface
     PvrHttpMixin        — HTTP + auth plumbing shared by both managers
 """
 
+import json
 import re
 from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Tuple
@@ -21,6 +22,84 @@ from .constants import PVR_ACCEPT_HEADER
 from ...base.utils.logger import logger
 from ...base.network import HTTPManager
 from .config_models import ProviderConfig
+
+
+# ---------------------------------------------------------------------------
+# Upstream error handling
+# ---------------------------------------------------------------------------
+
+# Cap for an upstream error body written to the log.  Real nPVR error bodies are
+# a few hundred bytes; the cap only guards against an upstream that answers
+# with a full HTML error page.
+_MAX_LOGGED_BODY_CHARS = 8192
+# Cap for the fallback text used in the exception message / API response when
+# the body is not a ThePlatform JSON error.
+_MAX_SUMMARY_CHARS = 300
+
+
+class NpvrApiError(RuntimeError):
+    """
+    A nPVR / ThePlatform request failed.
+
+    Subclasses RuntimeError, so existing ``except RuntimeError`` handlers keep
+    working.  The upstream error is kept in structured form so the route layer
+    can hand it to the client instead of a generic message.
+
+    ThePlatform error bodies look like::
+
+        {"code": 403, "name": "Forbidden Error",
+         "details": "Recording is not allowed on this event",
+         "correlationId": "<session>::<call>"}
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: Optional[int] = None,
+        error_name: Optional[str] = None,
+        details: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+    ):
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_name = error_name
+        self.details = details
+        self.correlation_id = correlation_id
+
+    @property
+    def upstream(self) -> Dict[str, object]:
+        """Structured upstream error for API responses (empty for transport errors)."""
+        data = {
+            "status": self.status_code,
+            "name": self.error_name,
+            "details": self.details,
+            "correlation_id": self.correlation_id,
+        }
+        return {k: v for k, v in data.items() if v is not None}
+
+
+def _parse_error_body(text: str) -> Dict[str, Optional[str]]:
+    """Best-effort extraction of name / details / correlationId from a JSON error body."""
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+
+    def pick(*keys: str) -> Optional[str]:
+        for key in keys:
+            value = data.get(key)
+            if value:
+                return str(value)
+        return None
+
+    return {
+        "name": pick("name", "title"),
+        "details": pick("details", "description", "message"),
+        "correlation_id": pick("correlationId"),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -313,17 +392,94 @@ class PvrHttpMixin:
             ) from exc
 
     # ------------------------------------------------------------------
+    # Error construction + logging
+    # ------------------------------------------------------------------
+
+    def _api_error(
+        self,
+        method: str,
+        url: str,
+        *,
+        response=None,
+        exc: Optional[BaseException] = None,
+    ) -> NpvrApiError:
+        """
+        Build the :class:`NpvrApiError` for a failed request and log it at
+        ERROR together with the COMPLETE upstream response body.
+
+        Works for both failure shapes: a response with a non-success status, and
+        an exception raised by the HTTP layer (``requests.HTTPError`` carries the
+        response on ``exc.response``).  Never raises.
+
+        NOTE: do not test a ``requests.Response`` for truthiness — its
+        ``__bool__`` is ``.ok`` and therefore False for every 4xx/5xx.
+        """
+        if response is None and exc is not None:
+            response = getattr(exc, "response", None)
+
+        status: Optional[int] = None
+        body_text = ""
+        if response is not None:
+            status = getattr(response, "status_code", None)
+            try:
+                body_text = response.text or ""
+            except Exception:  # undecodable / already-consumed body
+                body_text = ""
+
+        if status is None:
+            reason = (
+                f"{type(exc).__name__}: {exc}" if exc is not None
+                else "no response received"
+            )
+            logger.error(
+                f"{self._provider}: nPVR {method} {url} failed: {reason}",
+                exc_info=exc,
+            )
+            return NpvrApiError(f"{self._provider}: {method} request failed: {reason}")
+
+        if len(body_text) > _MAX_LOGGED_BODY_CHARS:
+            shown = (
+                f"{body_text[:_MAX_LOGGED_BODY_CHARS]}"
+                f"... [truncated, {len(body_text)} chars total]"
+            )
+        else:
+            shown = body_text or "<empty>"
+        logger.error(
+            f"{self._provider}: nPVR {method} {url} failed [HTTP {status}] "
+            f"- response body: {shown}"
+        )
+
+        info = _parse_error_body(body_text)
+        fallback = body_text.strip()[:_MAX_SUMMARY_CHARS]
+        details = info.get("details") or (None if info else (fallback or None))
+        summary = details or info.get("name") or "<empty response body>"
+        return NpvrApiError(
+            f"{self._provider}: {method} failed [HTTP {status}]: {summary}",
+            status_code=status,
+            error_name=info.get("name"),
+            details=details,
+            correlation_id=info.get("correlation_id"),
+        )
+
+    # ------------------------------------------------------------------
     # HTTP verbs
     # ------------------------------------------------------------------
 
-    def _get(self, url: str, params: Dict) -> Optional[Dict]:
+    def _get(
+        self, url: str, params: Dict, raise_on_error: bool = False
+    ) -> Optional[Dict]:
         """
         Authenticated GET against the nPVR API.
 
         Sets the required ``Accept`` header via ``PVR_ACCEPT_HEADER``.
 
+        Args:
+            raise_on_error: When True, a failed request raises
+                :class:`NpvrApiError` instead of returning None, so callers can
+                tell "request failed" apart from "nothing there".
+
         Returns:
-            Parsed JSON body, or None on error.
+            Parsed JSON body, or None on error (unless ``raise_on_error``).
         """
         headers = self._build_auth_headers()
         headers["Accept"] = PVR_ACCEPT_HEADER
@@ -332,18 +488,16 @@ class PvrHttpMixin:
 
         try:
             response = self._http.get(url, params=params, headers=headers)
-            if response and response.status_code == 200:
+            if response is not None and response.status_code == 200:
                 return response.json()
-            logger.warning(
-                f"{self._provider}: nPVR GET failed "
-                f"[{response.status_code if response else 'no response'}] {url}"
-            )
+            error = self._api_error("GET", url, response=response)
         except Exception as exc:
-            logger.error(
-                f"{self._provider}: nPVR GET exception for {url}: "
-                f"{type(exc).__name__}: {exc}",
-                exc_info=True,  # NEW
-            )
+            error = self._api_error("GET", url, exc=exc)
+            if raise_on_error:
+                raise error from exc
+            return None
+        if raise_on_error:
+            raise error
         return None
 
     def _post(self, url: str, payload: Dict) -> Optional[Dict]:
@@ -361,18 +515,11 @@ class PvrHttpMixin:
 
         try:
             response = self._http.post(url, json=payload, headers=headers)
-            if response and response.status_code in (200, 201):
+            if response is not None and response.status_code in (200, 201):
                 return response.json()
-            logger.warning(
-                f"{self._provider}: nPVR POST failed "
-                f"[{response.status_code if response else 'no response'}] {url}"
-            )
+            self._api_error("POST", url, response=response)
         except Exception as exc:
-            logger.error(
-                f"{self._provider}: nPVR POST exception for {url}: "
-                f"{type(exc).__name__}: {exc}",
-                exc_info=True,  # NEW
-            )
+            self._api_error("POST", url, exc=exc)
         return None
 
     def _post_async(
@@ -398,7 +545,9 @@ class PvrHttpMixin:
             None when the response has no (JSON) body.
 
         Raises:
-            RuntimeError: On transport errors, no response, or a non-2xx status.
+            NpvrApiError (a RuntimeError): On transport errors, no response, or
+                a non-2xx status.  Status, error name, details and correlation
+                id of the upstream error are available as attributes.
         """
         headers = self._build_auth_headers()
         headers["Content-Type"] = content_type
@@ -409,21 +558,12 @@ class PvrHttpMixin:
         try:
             response = self._http.post(url, json=payload, headers=headers)
         except Exception as exc:
-            raise RuntimeError(
-                f"{self._provider}: POST request failed for {url}: "
-                f"{type(exc).__name__}: {exc}"  # NEW: include exception type
-            ) from exc
+            # HTTP layers that raise on 4xx/5xx (requests.HTTPError) carry the
+            # response on the exception; _api_error() extracts and logs its body.
+            raise self._api_error("POST", url, exc=exc) from exc
 
-        if response is None:
-            raise RuntimeError(
-                f"{self._provider}: No response received for POST {url}"
-            )
-
-        if response.status_code not in (200, 201, 202, 204):
-            raise RuntimeError(
-                f"{self._provider}: POST failed [{response.status_code}] {url}: "
-                f"{response.text[:200]}"
-            )
+        if response is None or response.status_code not in (200, 201, 202, 204):
+            raise self._api_error("POST", url, response=response)
 
         body: Optional[Dict] = None
         if response.text and response.text.strip():
@@ -450,18 +590,11 @@ class PvrHttpMixin:
 
         try:
             response = self._http.put(url, json=payload, headers=headers)
-            if response and response.status_code == 200:
+            if response is not None and response.status_code == 200:
                 return response.json()
-            logger.warning(
-                f"{self._provider}: nPVR PUT failed "
-                f"[{response.status_code if response else 'no response'}] {url}"
-            )
+            self._api_error("PUT", url, response=response)
         except Exception as exc:
-            logger.error(
-                f"{self._provider}: nPVR PUT exception for {url}: "
-                f"{type(exc).__name__}: {exc}",
-                exc_info=True,  # NEW
-            )
+            self._api_error("PUT", url, exc=exc)
         return None
 
     def _delete(
@@ -483,7 +616,8 @@ class PvrHttpMixin:
 
         Raises:
             KeyError:     On 404.
-            RuntimeError: On any other non-success status or transport error.
+            NpvrApiError (a RuntimeError): On any other non-success status or
+                transport error.
         """
         headers = self._build_auth_headers()
 
@@ -492,23 +626,17 @@ class PvrHttpMixin:
         try:
             response = self._http.delete(url, headers=headers)
         except Exception as exc:
-            raise RuntimeError(
-                f"{self._provider}: DELETE request failed for {url}: "
-                f"{type(exc).__name__}: {exc}"  # NEW: include exception type
-            ) from exc
+            error = self._api_error("DELETE", url, exc=exc)
+            if error.status_code == 404:
+                raise KeyError(
+                    f"{self._provider}: Resource not found: {url}"
+                ) from exc
+            raise error from exc
 
-        if response is None:
-            raise RuntimeError(
-                f"{self._provider}: No response received for DELETE {url}"
-            )
-
-        if response.status_code == 404:
-            raise KeyError(f"{self._provider}: Resource not found: {url}")
-
-        if response.status_code not in ok_statuses:
-            raise RuntimeError(
-                f"{self._provider}: DELETE failed [{response.status_code}] {url}: "
-                f"{response.text[:200]}"
-            )
+        if response is None or response.status_code not in ok_statuses:
+            error = self._api_error("DELETE", url, response=response)
+            if error.status_code == 404:
+                raise KeyError(f"{self._provider}: Resource not found: {url}")
+            raise error
 
         return response.status_code

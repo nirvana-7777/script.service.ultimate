@@ -11,6 +11,14 @@ from .models.timer_type import TimerType
 from .utils.logger import logger
 
 
+class ProviderNotFoundError(ValueError):
+    """Provider unknown or disabled.  Subclasses ValueError for compatibility."""
+
+
+class TimersNotSupportedError(NotImplementedError):
+    """The provider does not implement timers."""
+
+
 class TimerOperations:
     """Handles all timer-related operations."""
 
@@ -34,11 +42,10 @@ class TimerOperations:
             the provider can accept.
 
         Raises:
-            ValueError: If the provider is not found or disabled.
+            ProviderNotFoundError:   If the provider is not found or disabled.
+            TimersNotSupportedError: If the provider does not implement timers.
         """
-        provider = self.registry.get_provider(provider_name)
-        if not provider:
-            raise ValueError(f"Provider '{provider_name}' not found or disabled")
+        provider = self._get_timer_provider(provider_name)
 
         timer_types = provider.get_timer_types()
         logger.debug(
@@ -89,11 +96,10 @@ class TimerOperations:
             List of Timer objects.
 
         Raises:
-            ValueError: If the provider is not found or disabled.
+            ProviderNotFoundError:   If the provider is not found or disabled.
+            TimersNotSupportedError: If the provider does not implement timers.
         """
-        provider = self.registry.get_provider(provider_name)
-        if not provider:
-            raise ValueError(f"Provider '{provider_name}' not found or disabled")
+        provider = self._get_timer_provider(provider_name)
 
         timers = provider.get_timers()
 
@@ -154,7 +160,8 @@ class TimerOperations:
             Timer object, or None if not found.
 
         Raises:
-            ValueError: If the provider is not found or disabled.
+            ProviderNotFoundError:   If the provider is not found or disabled.
+            TimersNotSupportedError: If the provider does not implement timers.
         """
         # Fetch all (including inactive) so we can look up any timer by index
         timers = self.get_timers(provider_name, include_inactive=True)
@@ -192,13 +199,13 @@ class TimerOperations:
             The saved Timer as confirmed by the provider.
 
         Raises:
-            ValueError:   If the provider is not found or disabled.
+            ProviderNotFoundError:   If the provider is not found or disabled.
+            TimersNotSupportedError: If the provider does not implement timers.
+            ValueError:   If the provider rejects the timer data as invalid.
             RuntimeError: If the provider rejects the timer (e.g. conflict,
                           insufficient permissions, unsupported timer type).
         """
-        provider = self.registry.get_provider(provider_name)
-        if not provider:
-            raise ValueError(f"Provider '{provider_name}' not found or disabled")
+        provider = self._get_timer_provider(provider_name)
 
         saved_timer = provider.add_timer(timer, **kwargs)
         logger.info(
@@ -227,14 +234,14 @@ class TimerOperations:
             The updated Timer as confirmed by the provider.
 
         Raises:
-            ValueError:   If the provider is not found or disabled.
+            ProviderNotFoundError:   If the provider is not found or disabled.
+            TimersNotSupportedError: If the provider does not implement timers.
+            ValueError:   If the provider rejects the timer data as invalid.
             KeyError:     If no timer with that client_index exists.
             RuntimeError: If the provider refuses the update (e.g. the timer
                           is currently recording and cannot be modified).
         """
-        provider = self.registry.get_provider(provider_name)
-        if not provider:
-            raise ValueError(f"Provider '{provider_name}' not found or disabled")
+        provider = self._get_timer_provider(provider_name)
 
         updated_timer = provider.update_timer(timer, **kwargs)
         logger.info(
@@ -270,14 +277,13 @@ class TimerOperations:
             None on success.
 
         Raises:
-            ValueError:   If the provider is not found or disabled.
+            ProviderNotFoundError:   If the provider is not found or disabled.
+            TimersNotSupportedError: If the provider does not implement timers.
             KeyError:     If no timer with that client_index exists.
             RuntimeError: If the provider refuses deletion (e.g. timer is
                           recording and force_delete is False).
         """
-        provider = self.registry.get_provider(provider_name)
-        if not provider:
-            raise ValueError(f"Provider '{provider_name}' not found or disabled")
+        provider = self._get_timer_provider(provider_name)
 
         provider.delete_timer(client_index, force_delete=force_delete, **kwargs)
         logger.info(
@@ -288,6 +294,25 @@ class TimerOperations:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _get_timer_provider(self, provider_name: str):
+        """
+        Return the provider, or raise.
+
+        Raises:
+            ProviderNotFoundError:   Provider unknown or disabled.
+            TimersNotSupportedError: Provider does not implement timers.
+        """
+        provider = self.registry.get_provider(provider_name)
+        if not provider:
+            raise ProviderNotFoundError(
+                f"Provider '{provider_name}' not found or disabled"
+            )
+        if not getattr(provider, "implements_timers", False):
+            raise TimersNotSupportedError(
+                f"Provider '{provider_name}' does not support timers"
+            )
+        return provider
 
     def _provider_implements_timers(self, provider_name: str) -> bool:
         """Return True if the named provider declares timer support."""
