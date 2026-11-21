@@ -33,9 +33,14 @@ Delete a timer  (confirmed via live capture):
 
     Deletion is addressed by LISTING GUID, not by recording id.
 
-Update an existing timer:
-    No dedicated endpoint has been captured.  update_timer() is implemented
-    as delete + re-schedule using the two confirmed endpoints above.
+Update an existing timer  (confirmed via live capture):
+    POST {pvr_base_url}/update-recording-for-listing/{listing_guid}?cid={cid}
+    Body:          {"startOffsetSeconds": 60, "endOffsetSeconds": 600}
+                   (no stationReferences)
+    Authorization: Basic {persona_token}
+    Response:      202 Accepted
+
+    Only the padding is changeable; the listing itself is fixed.
 
 The ``cid`` query parameter
 ---------------------------
@@ -99,13 +104,14 @@ from .constants import (
 from .pvr_helpers import PvrHelpers, PvrHttpMixin
 
 # TODO: move into constants.py alongside PVR_GET_RECORDINGS_PATH once stable.
-# Both confirmed via live network capture: schedule and delete are addressed
-# by listing GUID, not by recording id.
+# All three confirmed via live network capture: schedule, update and delete are
+# addressed by listing GUID, not by recording id.
 PVR_SCHEDULE_RECORDING_PATH = "/schedule-recording-for-listing"
 PVR_DELETE_RECORDING_PATH   = "/delete-recording-for-listing"
+PVR_UPDATE_RECORDING_PATH   = "/update-recording-for-listing"
 
-# Content-Type observed on the schedule request.  NOTE: PvrHttpMixin._post()
-# must send this (the old docs said "v=2; charset=utf-8").
+# Content-Type observed on the schedule request (the other nPVR calls use
+# PVR_ACCEPT_HEADER, i.e. v=2).  Passed to PvrHttpMixin._post_async().
 PVR_TIMER_CONTENT_TYPE = "application/json;v=3"
 
 # Safety cap when paging through all timers to refresh the index map.
@@ -283,13 +289,15 @@ class TimersManager(PvrHttpMixin):
 
         payload = self._build_create_payload(timer)
 
-        # Errors are expected to raise (RuntimeError) inside _post(); an empty
-        # body on 202 is a success, so the return value is NOT checked.
-        data = self._post(url, payload)
+        # _post_async() raises RuntimeError on any non-2xx answer; an empty
+        # body on 202 is a success.
+        _status, data = self._post_async(
+            url, payload, content_type=PVR_TIMER_CONTENT_TYPE
+        )
 
         logger.info(
             f"{self._provider}: Timer scheduled for listing "
-            f"'{timer.epg_event_id}' (202 accepted)"
+            f"'{timer.epg_event_id}' [HTTP {_status}]"
         )
 
         # 1) Body already contains a recording object (not expected, but cheap).
@@ -314,24 +322,24 @@ class TimersManager(PvrHttpMixin):
 
     def update_timer(self, timer: Timer) -> Timer:
         """
-        Update an existing timer (padding, etc.).
+        Update the padding of an existing timer.
 
-        No update endpoint has been captured, so this is implemented as
-        delete + re-schedule of the same listing.  Because both calls are
-        asynchronous (202), the re-schedule may race with the delete; treat
-        this method as UNVERIFIED until tested against the live API.
+        Uses ``POST update-recording-for-listing/{guid}`` (confirmed via live
+        capture).  The listing GUID is resolved from ``timer.client_index``;
+        only ``startOffsetSeconds`` / ``endOffsetSeconds`` are sent.
+
+        The API answers ``202 Accepted`` (asynchronous).  The updated timer is
+        looked up afterwards; if the list does not reflect it yet, a
+        provisional copy of ``timer`` is returned.
 
         Args:
             timer: Timer with updated fields; ``client_index`` must identify an
                    existing timer.
 
-        Returns:
-            The re-created Timer (see add_timer() for provisional behaviour).
-
         Raises:
-            ValueError: If ``timer.client_index`` is 0 (not yet saved).
-            KeyError:   If no timer with that client_index exists.
-            RuntimeError: If the API rejects delete or schedule.
+            ValueError:   If ``timer.client_index`` is 0 (not yet saved).
+            KeyError:     If no timer with that client_index exists.
+            RuntimeError: If the API rejects the update.
         """
         if not timer.client_index:
             raise ValueError(
@@ -341,17 +349,29 @@ class TimersManager(PvrHttpMixin):
 
         listing_guid = self._resolve_listing_guid(timer.client_index)
 
-        self._delete_listing(listing_guid)
-
-        replacement = copy.copy(timer)
-        replacement.epg_event_id = listing_guid
-        updated = self.add_timer(replacement)
-
-        logger.info(
-            f"{self._provider}: Timer updated (delete + schedule) — "
-            f"listing='{listing_guid}' client_index={updated.client_index}"
+        pvr_base_url = self._get_pvr_base_url()
+        url = self._with_cid(
+            f"{pvr_base_url}{PVR_UPDATE_RECORDING_PATH}/{listing_guid}"
         )
-        return updated
+
+        status, _data = self._post_async(
+            url,
+            self._build_update_payload(timer),
+            content_type=PVR_TIMER_CONTENT_TYPE,
+        )
+        logger.info(
+            f"{self._provider}: Timer for listing '{listing_guid}' "
+            f"updated [HTTP {status}]"
+        )
+
+        found = self._find_timer_by_listing(listing_guid)
+        if found is not None:
+            return found
+
+        provisional = copy.copy(timer)
+        provisional.epg_event_id = listing_guid
+        provisional.state = TimerState.SCHEDULED
+        return provisional
 
     def delete_timer(
         self,
@@ -502,6 +522,21 @@ class TimersManager(PvrHttpMixin):
                 cls._station_reference_from_listing_guid(timer.epg_event_id)
             ],
             # Timer model uses minutes, API uses seconds
+            "startOffsetSeconds": int(timer.margin_start or 0) * 60,
+            "endOffsetSeconds": int(timer.margin_end or 0) * 60,
+        }
+
+    @staticmethod
+    def _build_update_payload(timer: Timer) -> Dict:
+        """
+        Build the POST body for ``update-recording-for-listing/{guid}``.
+
+        Confirmed via live network capture:
+            {"startOffsetSeconds": N, "endOffsetSeconds": N}
+
+        No ``stationReferences`` here.  Both offsets are always sent.
+        """
+        return {
             "startOffsetSeconds": int(timer.margin_start or 0) * 60,
             "endOffsetSeconds": int(timer.margin_end or 0) * 60,
         }

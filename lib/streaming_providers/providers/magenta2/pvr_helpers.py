@@ -14,7 +14,7 @@ Public surface
 
 import re
 from datetime import datetime, timezone
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from .constants import PVR_ACCEPT_HEADER
 from ...base.utils.logger import logger
@@ -313,6 +313,63 @@ class PvrHttpMixin:
             logger.error(f"{self._provider}: nPVR POST exception for {url}: {exc}")
         return None
 
+    def _post_async(
+        self,
+        url: str,
+        payload: Dict,
+        content_type: str = PVR_ACCEPT_HEADER,
+    ) -> Tuple[int, Optional[Dict]]:
+        """
+        Authenticated POST for endpoints that answer asynchronously
+        (``202 Accepted``, usually with an empty body).
+
+        Unlike :meth:`_post`, failures are RAISED instead of returned as None,
+        so an empty body can be told apart from an error.
+
+        Args:
+            url:          Full request URL (query string included).
+            payload:      JSON body.
+            content_type: Content-Type header (e.g. ``"application/json;v=3"``).
+
+        Returns:
+            ``(status_code, body)`` where ``body`` is the parsed JSON object, or
+            None when the response has no (JSON) body.
+
+        Raises:
+            RuntimeError: On transport errors, no response, or a non-2xx status.
+        """
+        headers = self._build_auth_headers()
+        headers["Content-Type"] = content_type
+        headers["Accept"]       = PVR_ACCEPT_HEADER
+
+        try:
+            response = self._http.post(url, json=payload, headers=headers)
+        except Exception as exc:
+            raise RuntimeError(
+                f"{self._provider}: POST request failed for {url}: {exc}"
+            ) from exc
+
+        if response is None:
+            raise RuntimeError(
+                f"{self._provider}: No response received for POST {url}"
+            )
+
+        if response.status_code not in (200, 201, 202, 204):
+            raise RuntimeError(
+                f"{self._provider}: POST failed [{response.status_code}] {url}: "
+                f"{response.text[:200]}"
+            )
+
+        body: Optional[Dict] = None
+        if response.text and response.text.strip():
+            try:
+                parsed = response.json()
+                body = parsed if isinstance(parsed, dict) else None
+            except ValueError:
+                body = None
+
+        return response.status_code, body
+
     def _put(self, url: str, payload: Dict) -> Optional[Dict]:
         """
         Authenticated PUT against the nPVR API.
@@ -336,9 +393,19 @@ class PvrHttpMixin:
             logger.error(f"{self._provider}: nPVR PUT exception for {url}: {exc}")
         return None
 
-    def _delete(self, url: str) -> int:
+    def _delete(
+        self,
+        url: str,
+        ok_statuses: Tuple[int, ...] = (200, 202, 204),
+    ) -> int:
         """
         Authenticated DELETE against the nPVR API.
+
+        Args:
+            url:         Full request URL (query string included).
+            ok_statuses: Status codes treated as success.  ``202 Accepted`` is
+                         included because ``delete-recording-for-listing``
+                         answers asynchronously.
 
         Returns:
             HTTP status code on success.
@@ -364,7 +431,7 @@ class PvrHttpMixin:
         if response.status_code == 404:
             raise KeyError(f"{self._provider}: Resource not found: {url}")
 
-        if response.status_code not in (200, 204):
+        if response.status_code not in ok_statuses:
             raise RuntimeError(
                 f"{self._provider}: DELETE failed [{response.status_code}] {url}: "
                 f"{response.text[:200]}"
