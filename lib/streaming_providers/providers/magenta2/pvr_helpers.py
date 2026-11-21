@@ -15,6 +15,7 @@ Public surface
 import re
 from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Tuple
+from urllib.parse import urlencode  # NEW: for _log_request()
 
 from .constants import PVR_ACCEPT_HEADER
 from ...base.utils.logger import logger
@@ -211,6 +212,55 @@ class PvrHttpMixin:
     _provider_config: Optional[ProviderConfig]
     _auth_headers_callback: Optional[Callable[[], Dict[str, str]]]
 
+    # NEW: opt-in request logging flags.  Concrete subclasses may override
+    # these in __init__ (e.g. from an env var).  When _log_request_headers is
+    # False, _log_request() returns immediately — zero overhead.
+    _log_request_headers: bool = True
+    _log_auth_token: bool = True
+
+    # ------------------------------------------------------------------
+    # Request logging (NEW)
+    # ------------------------------------------------------------------
+
+    def _log_request(
+        self,
+        method: str,
+        url: str,
+        headers: Dict[str, str],
+        params: Optional[Dict] = None,
+        payload: Optional[Dict] = None,
+    ) -> None:
+        """
+        Dump the complete request URL, headers and payload for debugging.
+
+        Opt-in via ``_log_request_headers``.  The ``Authorization`` value is
+        redacted unless ``_log_auth_token`` is also True — a Basic persona
+        token is a bearer credential and must not leak into logs.
+
+        Emitted at DEBUG level, so it is dropped at INFO (production default).
+        Enable with ``ULTIMATE_DEBUG=1`` or ``debug_mode: true`` in config.
+        """
+        if not self._log_request_headers:
+            return
+
+        redacted: Dict[str, str] = {}
+        for key, value in headers.items():
+            if key.lower() == "authorization" and not self._log_auth_token:
+                scheme = value.split(" ", 1)[0] if " " in value else value
+                redacted[key] = f"{scheme} <redacted len={len(value)}>"
+            else:
+                redacted[key] = value
+
+        full_url = url
+        if params:
+            sep = "&" if "?" in url else "?"
+            full_url = f"{url}{sep}{urlencode(params, doseq=True)}"
+
+        logger.debug(
+            f"{self._provider}: >>> {method} {full_url} | "
+            f"headers={redacted} | payload={payload}"
+        )
+
     # ------------------------------------------------------------------
     # Base-URL resolution
     # ------------------------------------------------------------------
@@ -278,6 +328,8 @@ class PvrHttpMixin:
         headers = self._build_auth_headers()
         headers["Accept"] = PVR_ACCEPT_HEADER
 
+        self._log_request("GET", url, headers, params=params)  # NEW
+
         try:
             response = self._http.get(url, params=params, headers=headers)
             if response and response.status_code == 200:
@@ -287,7 +339,11 @@ class PvrHttpMixin:
                 f"[{response.status_code if response else 'no response'}] {url}"
             )
         except Exception as exc:
-            logger.error(f"{self._provider}: nPVR GET exception for {url}: {exc}")
+            logger.error(
+                f"{self._provider}: nPVR GET exception for {url}: "
+                f"{type(exc).__name__}: {exc}",
+                exc_info=True,  # NEW
+            )
         return None
 
     def _post(self, url: str, payload: Dict) -> Optional[Dict]:
@@ -301,6 +357,8 @@ class PvrHttpMixin:
         headers["Content-Type"] = PVR_ACCEPT_HEADER
         headers["Accept"]       = PVR_ACCEPT_HEADER
 
+        self._log_request("POST", url, headers, payload=payload)  # NEW
+
         try:
             response = self._http.post(url, json=payload, headers=headers)
             if response and response.status_code in (200, 201):
@@ -310,7 +368,11 @@ class PvrHttpMixin:
                 f"[{response.status_code if response else 'no response'}] {url}"
             )
         except Exception as exc:
-            logger.error(f"{self._provider}: nPVR POST exception for {url}: {exc}")
+            logger.error(
+                f"{self._provider}: nPVR POST exception for {url}: "
+                f"{type(exc).__name__}: {exc}",
+                exc_info=True,  # NEW
+            )
         return None
 
     def _post_async(
@@ -342,11 +404,14 @@ class PvrHttpMixin:
         headers["Content-Type"] = content_type
         headers["Accept"]       = PVR_ACCEPT_HEADER
 
+        self._log_request("POST", url, headers, payload=payload)  # NEW
+
         try:
             response = self._http.post(url, json=payload, headers=headers)
         except Exception as exc:
             raise RuntimeError(
-                f"{self._provider}: POST request failed for {url}: {exc}"
+                f"{self._provider}: POST request failed for {url}: "
+                f"{type(exc).__name__}: {exc}"  # NEW: include exception type
             ) from exc
 
         if response is None:
@@ -381,6 +446,8 @@ class PvrHttpMixin:
         headers["Content-Type"] = PVR_ACCEPT_HEADER
         headers["Accept"]       = PVR_ACCEPT_HEADER
 
+        self._log_request("PUT", url, headers, payload=payload)  # NEW
+
         try:
             response = self._http.put(url, json=payload, headers=headers)
             if response and response.status_code == 200:
@@ -390,7 +457,11 @@ class PvrHttpMixin:
                 f"[{response.status_code if response else 'no response'}] {url}"
             )
         except Exception as exc:
-            logger.error(f"{self._provider}: nPVR PUT exception for {url}: {exc}")
+            logger.error(
+                f"{self._provider}: nPVR PUT exception for {url}: "
+                f"{type(exc).__name__}: {exc}",
+                exc_info=True,  # NEW
+            )
         return None
 
     def _delete(
@@ -416,11 +487,14 @@ class PvrHttpMixin:
         """
         headers = self._build_auth_headers()
 
+        self._log_request("DELETE", url, headers)  # NEW
+
         try:
             response = self._http.delete(url, headers=headers)
         except Exception as exc:
             raise RuntimeError(
-                f"{self._provider}: DELETE request failed for {url}: {exc}"
+                f"{self._provider}: DELETE request failed for {url}: "
+                f"{type(exc).__name__}: {exc}"  # NEW: include exception type
             ) from exc
 
         if response is None:

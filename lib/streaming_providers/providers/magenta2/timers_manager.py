@@ -83,6 +83,7 @@ at which point RecordingsManager takes ownership of the object.
 """
 
 import copy
+import os  # NEW: for MAGENTA2_DEBUG_HTTP env toggle
 import re
 import threading
 import uuid
@@ -122,6 +123,12 @@ _MAX_REFRESH_PAGES = 20
 _LISTING_GUID_STATION_RE = re.compile(r"^(?P<station_ref>.+)_[0-9a-f]{8}$")
 
 
+def _env_flag(name: str) -> bool:
+    """Return True when the env var is set to a truthy value."""
+    value = os.environ.get(name, "")
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
 class TimersManager(PvrHttpMixin):
     """
     Manages Magenta2 nPVR timer CRUD.
@@ -158,6 +165,13 @@ class TimersManager(PvrHttpMixin):
         self._session_id            = str(uuid.uuid1())
         self._index_lock            = threading.Lock()
         self._listing_by_index: Dict[int, str] = {}
+
+        # NEW: opt-in request logging.  Set MAGENTA2_DEBUG_HTTP=1 (and
+        # MAGENTA2_DEBUG_HTTP_TOKEN=1 to also dump the raw Authorization
+        # value) to enable.  Output is emitted at DEBUG level, so it is only
+        # visible when ULTIMATE_DEBUG=1 or config debug_mode is true.
+        self._log_request_headers = _env_flag("MAGENTA2_DEBUG_HTTP")
+        self._log_auth_token      = _env_flag("MAGENTA2_DEBUG_HTTP_TOKEN")
 
     # =========================================================================
     # Timer types
