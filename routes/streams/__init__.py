@@ -141,6 +141,64 @@ def setup_stream_routes(app, manager, service):
             response.status = 500
             return {"error": f"Failed to fetch manifest: {str(e)}"}
 
+    @app.route("/api/providers/<provider>/<content_type>/<content_id>/manifest/url")
+    def get_original_manifest_url(provider, content_type, content_id):
+        """
+        Return the upstream manifest URL and the headers the provider expects,
+        without fetching or rewriting the manifest. Lets a client fetch the
+        original manifest itself.
+
+        Example:
+            GET /api/providers/rtlplus/channels/123/manifest/url
+        """
+        try:
+            country = request.query.get("country")
+
+            content_type_map = {
+                "channels": CONTENT_TYPE_CHANNEL,
+                "events": CONTENT_TYPE_EVENT,
+                "vod": CONTENT_TYPE_VOD,
+                "recordings": CONTENT_TYPE_RECORDING,
+            }
+            if content_type not in content_type_map:
+                response.status = 400
+                return {"error": f"Invalid content_type: {content_type}"}
+
+            ct_const = content_type_map[content_type]
+
+            manifest_url = helpers["_get_manifest_url"](
+                ct_const, provider, content_id, country=country
+            )
+            if not manifest_url:
+                response.status = 404
+                return {"error": f'Manifest not available for {content_type} "{content_id}" from provider "{provider}"'}
+
+            # Resolve headers AFTER the URL: providers may establish a session/token
+            # while resolving the manifest URL (same order as fetch_manifest_for_rewriter
+            # and _generate_m3u_noproxy_raw_content).
+            provider_instance = manager.get_provider(provider)
+            manifest_headers = (
+                provider_instance.get_manifest_headers(content_id) if provider_instance else {}
+            )
+            segment_headers = (
+                provider_instance.get_segment_headers(content_id) if provider_instance else {}
+            )
+
+            return {
+                "manifest_url": manifest_url,
+                "manifest_headers": manifest_headers or {},
+                "segment_headers": segment_headers or {},
+            }
+
+        except ValueError as e:
+            logger.error(f"Original manifest URL error for {provider}/{content_type}/{content_id}: {e}")
+            response.status = 404
+            return {"error": str(e)}
+        except Exception as e:
+            logger.error(f"Original manifest URL error for {provider}/{content_type}/{content_id}: {e}")
+            response.status = 500
+            return {"error": str(e)}
+
 
 def _serialize_drm_configs(drm_configs) -> dict:
     """
