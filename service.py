@@ -2642,9 +2642,6 @@ class _QuietRequestHandler(WSGIRequestHandler):
         pass
 
 
-_active_server = None
-
-
 class ThreadedWSGIRefServer(ServerAdapter):
     """
     Bottle's default server ('wsgiref') is single-threaded: one slow request
@@ -2656,7 +2653,6 @@ class ThreadedWSGIRefServer(ServerAdapter):
     """
 
     def run(self, handler):
-        global _active_server
         handler_cls = _QuietRequestHandler if self.quiet else WSGIRequestHandler
         server = make_server(
             self.host,
@@ -2665,11 +2661,9 @@ class ThreadedWSGIRefServer(ServerAdapter):
             server_class=_ThreadingWSGIServer,
             handler_class=handler_cls,
         )
-        _active_server = server
         try:
             server.serve_forever()
         finally:
-            _active_server = None
             server.server_close()
 
 
@@ -2712,7 +2706,7 @@ def start_service(service_instance):
         run(
             service_instance.app,
             server=ThreadedWSGIRefServer,
-            host=os.environ.get("ULTIMATE_SERVER_HOST", "127.0.0.1"),
+            host="0.0.0.0",
             port=port,
             quiet=not debug_mode,
             debug=debug_mode,
@@ -2751,19 +2745,9 @@ def run_kodi_service():
         # Monitor for Kodi shutdown
         monitor = xbmc.Monitor()
         while not monitor.abortRequested():
-            if monitor.waitForAbort(1):
+            if monitor.waitForAbort(5):
                 break
 
-        logger.info("Service stopping (Kodi shutdown requested)...")
-        if _active_server:
-            try:
-                _active_server.shutdown()
-            except Exception:
-                pass
-        try:
-            service.manager.stop_auto_refresh()
-        except Exception:
-            pass
         logger.info("Service stopped (Kodi shutdown)")
     except Exception as e:
         logger.error(f"Failed to start Kodi service: {e}")

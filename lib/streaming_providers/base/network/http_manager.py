@@ -541,21 +541,6 @@ class HTTPManager:
             f"{proxy_info}{referer_info} [timeout: {timeout}s]"
         )
 
-    @staticmethod
-    def _redact_url_for_log(url: str) -> str:
-        """Redact login codes, OAuth codes, tokens, request IDs, and credentials embedded in URLs before logging."""
-        import re as _re
-        if not url:
-            return url
-        # Case-insensitive replacement for path parameters like /remoteLogin/<secret> or /QrCode?target=...
-        redacted = _re.sub(r"(?i)(/remotelogin/)[^/?&#]+", r"\1<redacted>", url)
-        redacted = _re.sub(
-            r"(?i)([?&](?:login_code|code|token|access_token|refresh_token|target|auth_req_id|auth_req_sec|redirect_uri|redirect_url|client_secret|password|jwt|device_token|personaToken)=)[^&#]+",
-            r"\1<redacted>",
-            redacted,
-        )
-        return redacted
-
     def _log_response(self, response: requests.Response) -> None:
         """
         Log response details with timing information.

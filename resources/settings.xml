@@ -113,15 +113,13 @@
     <!-- =============================================== -->
     <!-- MAGENTA TV 2.0 (Germany)                       -->
     <!-- =============================================== -->
-      <!-- MAGENTA TV 2.0 (Germany)                       -->
-  <category id="magenta2" label="Magenta TV 2.0 Germany">
-    <setting id="enable_magenta2" type="bool" label="Enable Magenta TV 2.0 Germany" default="true" />
-    <setting id="magenta2_username" type="text" label="Telekom Login (E-Mail / Benutzername)" default="" />
-    <setting id="magenta2_password" type="text" label="Telekom Passwort" option="hidden" default="" />
-    <setting id="magenta2_proxy_enabled" type="bool" label="Enable Proxy" default="false" />
-    <setting id="magenta2_proxy_host" type="text" label="Proxy Host" visible="eq(-1,true)" />
-    <setting id="magenta2_proxy_port" type="number" label="Proxy Port" visible="eq(-2,true)" />
-  </category>
+    <category id="magenta2" label="Magenta TV 2.0 Germany">
+        <setting id="enable_magenta2" type="bool" label="Enable Magenta TV 2.0 Germany" default="false" />
+        <setting id="magenta2_country" type="text" label="Country Code" default="de" visible="false" />
+        <setting id="magenta2_proxy_enabled" type="bool" label="Enable Proxy" default="false" />
+        <setting id="magenta2_proxy_host" type="text" label="Proxy Host" visible="eq(-1,true)" />
+        <setting id="magenta2_proxy_port" type="number" label="Proxy Port" visible="eq(-2,true)" />
+    </category>
 
     <!-- =============================================== -->
     <!-- MAGENTA EU (Multi-Country)                     -->
