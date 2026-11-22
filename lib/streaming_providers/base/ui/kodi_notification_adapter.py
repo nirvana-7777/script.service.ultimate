@@ -65,7 +65,7 @@ class PollingThread(threading.Thread):
 
 class QRCodeDialog:
     def __init__(self, xbmcgui, xbmc, qr_image_path, login_code, expires_in,
-                 polling_thread=None, provider_name: str = "Service", vfs=None):
+                 polling_thread=None, provider_name: str = "Service"):
         self.xbmcgui = xbmcgui
         self.xbmc = xbmc
         self.qr_image_path = qr_image_path
@@ -73,69 +73,46 @@ class QRCodeDialog:
         self.expires_in = expires_in
         self.polling_thread = polling_thread
         self.provider_name = provider_name
-        self._vfs = vfs
 
         self.dialog = None
         self.user_closed = False
-        self.closed_by_auth = False
+        self.closed_by_auth = False  # FIX #2: separate flag for auth-triggered close
         self.time_label = None
         self.status_label = None
 
         self.monitor_thread = None
         self.monitor_stop = threading.Event()
 
-    def _ensure_backdrop_image(self) -> Optional[str]:
-        """Generate a 1x1 solid dark PNG via VFS to guarantee 100% modal background opacity in Kodi GLES."""
-        if not self._vfs:
-            return None
-        bg_path = self._vfs.join_path("bg_modal_dark.png")
-        if not self._file_exists(bg_path):
-            from base64 import b64decode
-            raw_png = b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
-            self._vfs.write_binary(bg_path, raw_png)
-        return bg_path if self._file_exists(bg_path) else None
-
     def show(self):
         try:
             self.dialog = self.xbmcgui.WindowDialog()
 
-            screen_width = self.dialog.getWidth() or 1920
-            screen_height = self.dialog.getHeight() or 1080
+            screen_width = self.dialog.getWidth()
+            screen_height = self.dialog.getHeight()
 
-            dialog_width = int(screen_width * 0.75)
-            dialog_height = int(screen_height * 0.82)
+            dialog_width = int(screen_width * 0.8)
+            dialog_height = int(screen_height * 0.8)
             dialog_x = (screen_width - dialog_width) // 2
             dialog_y = (screen_height - dialog_height) // 2
 
-            # Full-screen dark modal backdrop (prevents Kodi home screen tiles from showing through)
-            bg_path = self._ensure_backdrop_image()
-            if bg_path:
-                full_bg = self.xbmcgui.ControlImage(0, 0, screen_width, screen_height, bg_path)
-                try:
-                    full_bg.setColorDiffuse("0xFA0B0E14")  # 98% solid dark slate
-                except Exception:
-                    pass
-                self.dialog.addControl(full_bg)
+            bg = self.xbmcgui.ControlLabel(dialog_x, dialog_y, dialog_width, dialog_height, label="")
+            try:
+                bg.setColorDiffuse("0xE0000000")
+            except:
+                pass
+            self.dialog.addControl(bg)
 
-                # Inner modal card panel
-                card_panel = self.xbmcgui.ControlImage(dialog_x, dialog_y, dialog_width, dialog_height, bg_path)
-                try:
-                    card_panel.setColorDiffuse("0xFF161B22")  # High-contrast dark grey panel
-                except Exception:
-                    pass
-                self.dialog.addControl(card_panel)
-
-            title_y = dialog_y + 25
+            title_y = dialog_y + 30
             title = self.xbmcgui.ControlLabel(
-                x=dialog_x + 30, y=title_y, width=dialog_width - 60, height=45,
+                x=dialog_x + 50, y=title_y, width=dialog_width - 100, height=50,
                 label=f"[B]{self.provider_name} Remote Login[/B]", font="font30",
                 textColor="0xFFFFFFFF", alignment=0x00000002,
             )
             self.dialog.addControl(title)
 
-            qr_size = min(dialog_width // 2, dialog_height // 2, 380)
+            qr_size = min(dialog_width // 2, dialog_height // 2, 400)
             qr_x = (screen_width - qr_size) // 2
-            qr_y = title_y + 55
+            qr_y = title_y + 70
 
             if self._file_exists(self.qr_image_path):
                 qr_image = self.xbmcgui.ControlImage(qr_x, qr_y, qr_size, qr_size, self.qr_image_path)
@@ -143,43 +120,43 @@ class QRCodeDialog:
             else:
                 logger.error(f"QR image not found: {self.qr_image_path}")
 
-            instructions_y = qr_y + qr_size + 25
+            instructions_y = qr_y + qr_size + 40
             inst1 = self.xbmcgui.ControlLabel(
-                x=dialog_x + 30, y=instructions_y, width=dialog_width - 60, height=30,
-                label="[B]Scan QR code with your smartphone camera[/B]", font="font13",
-                textColor="0xFFE6EDF3", alignment=0x00000002,
+                x=dialog_x + 50, y=instructions_y, width=dialog_width - 100, height=30,
+                label="[B]Scan QR code with your app[/B]", font="font13",
+                textColor="0xFFFFFFFF", alignment=0x00000002,
             )
             self.dialog.addControl(inst1)
 
             inst2_y = instructions_y + 35
             inst2 = self.xbmcgui.ControlLabel(
-                x=dialog_x + 30, y=inst2_y, width=dialog_width - 60, height=32,
-                label=f"Or enter code on phone: [COLOR yellow][B]{self.login_code}[/B][/COLOR]", font="font13",
-                textColor="0xFFD0D7DE", alignment=0x00000002,
+                x=dialog_x + 50, y=inst2_y, width=dialog_width - 100, height=30,
+                label=f"Or enter code: [COLOR yellow]{self.login_code}[/COLOR]", font="font13",
+                textColor="0xFFCCCCCC", alignment=0x00000002,
             )
             self.dialog.addControl(inst2)
 
-            time_y = inst2_y + 40
+            time_y = inst2_y + 45
             self.time_label = self.xbmcgui.ControlLabel(
-                x=dialog_x + 30, y=time_y, width=dialog_width - 60, height=28,
+                x=dialog_x + 50, y=time_y, width=dialog_width - 100, height=30,
                 label=f"Time remaining: {self._format_time(self.expires_in)}", font="font12",
-                textColor="0xFFFFA500", alignment=0x00000002,
+                textColor="0xFFFF8800", alignment=0x00000002,
             )
             self.dialog.addControl(self.time_label)
 
-            status_y = time_y + 32
+            status_y = time_y + 35
             self.status_label = self.xbmcgui.ControlLabel(
-                x=dialog_x + 30, y=status_y, width=dialog_width - 60, height=28,
+                x=dialog_x + 50, y=status_y, width=dialog_width - 100, height=30,
                 label="Waiting for authentication...", font="font12",
-                textColor="0xFF8B949E", alignment=0x00000002,
+                textColor="0xFFAAAAAA", alignment=0x00000002,
             )
             self.dialog.addControl(self.status_label)
 
-            cancel_y = status_y + 30
+            cancel_y = status_y + 35
             cancel = self.xbmcgui.ControlLabel(
-                x=dialog_x + 30, y=cancel_y, width=dialog_width - 60, height=25,
-                label="(Press Back / Return to cancel)", font="font10",
-                textColor="0xFF6E7681", alignment=0x00000002,
+                x=dialog_x + 50, y=cancel_y, width=dialog_width - 100, height=25,
+                label="(Press any key to cancel)", font="font10",
+                textColor="0xFF888888", alignment=0x00000002,
             )
             self.dialog.addControl(cancel)
 
@@ -189,6 +166,7 @@ class QRCodeDialog:
             logger.info(f"Showing QR code dialog for {self.provider_name}")
             self.dialog.doModal()
 
+            # FIX #2: only mark as user_closed if auth didn't trigger the close
             self.user_closed = not self.closed_by_auth
             self._stop_monitor()
             logger.info(f"QR code dialog closed (user_closed={self.user_closed})")
@@ -219,17 +197,13 @@ class QRCodeDialog:
         logger.debug("Stopped dialog monitor thread")
 
     def _monitor_loop(self):
-        last_remaining = -1
         while not self.monitor_stop.is_set():
             try:
                 if self.polling_thread:
                     remaining = self.polling_thread.get_remaining_time()
 
-                    # Throttle setLabel calls to only when second integer changes (prevents GLES 5.3 FPS drop)
-                    if remaining != last_remaining:
-                        last_remaining = remaining
-                        if self.time_label:
-                            self.time_label.setLabel(f"Time remaining: {self._format_time(remaining)}")
+                    if self.time_label:
+                        self.time_label.setLabel(f"Time remaining: {self._format_time(remaining)}")
 
                     # FIX (new): handle expiry explicitly
                     if remaining <= 0:
@@ -357,7 +331,6 @@ class KodiNotificationAdapter(NotificationInterface):
                 qr_image_path, login_code, expires_in,
                 self._polling_thread,
                 provider_name=self.provider_name,
-                vfs=self._vfs,
             )
             self._qr_dialog.show()
 
@@ -406,7 +379,6 @@ class KodiNotificationAdapter(NotificationInterface):
                 qr_image_path, login_code, expires_in,
                 None,
                 provider_name=self.provider_name,
-                vfs=self._vfs,
             )
             self._qr_dialog.show()
 
@@ -476,7 +448,7 @@ class KodiNotificationAdapter(NotificationInterface):
                 logger.error("QR generator not available")
                 return None
 
-            logger.info("Generating QR code (<redacted>)")
+            logger.info(f"Generating QR code for: {target_url}")
             start_time = time.time()
 
             png_data = generate_qr_code_png(target_url, size=512)

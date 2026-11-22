@@ -514,73 +514,23 @@ class Sam3Client:
     # remote_login() blocks for up to ~5 minutes, which is unusable inside an
     # HTTP request. These three methods drive the handler's background mode.
 
-    @staticmethod
-    def _to_background_status(raw: Optional[Dict[str, Any]]) -> Optional[BackgroundLoginStatus]:
-        """Adapt RemoteLoginHandler.get_background_status() dict to BackgroundLoginStatus."""
-        if raw is None:
-            return None
-        if isinstance(raw, BackgroundLoginStatus):
-            return raw
-        raw_status = raw.get("status", "not_started")
-        if raw_status == "in_progress":
-            state = "pending"
-        elif raw_status == "success":
-            state = "completed"
-        elif raw_status == "error":
-            state = "failed"
-        else:
-            state = "idle"
-        session = raw.get("session") or {}
-        return BackgroundLoginStatus(
-            state=state,
-            login_code=str(session.get("login_code") or ""),
-            qr_target_url=session.get("qr_target_url"),
-            remaining_seconds=int(session.get("remaining_seconds") or 0),
-            error=raw.get("error"),
-        )
-
-    def start_remote_login_background(
-        self, scope: str = "tvhubs offline_access", session_wait_timeout: float = 5.0
-    ) -> Optional[BackgroundLoginStatus]:
+    def start_remote_login_background(self, scope: str = "tvhubs offline_access"):
         """
         Start a remote login without blocking, or join the one already
-        running (same login code). Returns BackgroundLoginStatus,
+        running (same login code). Returns the handler's BackgroundLoginStatus,
         or None if remote login is unavailable.
         """
         handler = self._get_remote_login_handler()
         if not handler:
             logger.error("Remote login not available")
             return None
+        return handler.start_background_login(scope)
 
-        raw = handler.get_background_status()
-        if raw.get("status") == "success":
-            return self._to_background_status(raw)
-
-        if raw.get("status") != "in_progress":
-            try:
-                handler.start_background_login(scope)
-            except RuntimeError:
-                # Another thread started it concurrently; join the active login
-                pass
-
-        # Wait briefly for start_remote_login() to populate login_code/qr_target_url
-        # so the initial HTTP 202 response immediately carries the login code.
-        deadline = time.monotonic() + max(0.0, session_wait_timeout)
-        while True:
-            raw = handler.get_background_status()
-            if raw.get("session") or raw.get("done") or raw.get("status") not in ("in_progress", "not_started"):
-                break
-            if time.monotonic() >= deadline:
-                break
-            time.sleep(0.05)
-
-        return self._to_background_status(raw)
-
-    def get_background_login_status(self) -> Optional[BackgroundLoginStatus]:
+    def get_background_login_status(self):
         """Current BackgroundLoginStatus, or None if remote login is unavailable.
         Never creates a handler or starts a login."""
         handler = self._remote_login_handler
-        return self._to_background_status(handler.get_background_status()) if handler else None
+        return handler.get_background_status() if handler else None
 
     def take_remote_login_token(self) -> Optional[Dict[str, Any]]:
         """Return the token data of a finished background login (once)."""

@@ -60,50 +60,7 @@ from .constants import (
     get_natco_key,
 )
 
-def _get_vienna_tz():
-    """Return DST-aware Europe/Vienna timezone with fallback for systems without tzdata."""
-    try:
-        from zoneinfo import ZoneInfo
-        return ZoneInfo("Europe/Vienna")
-    except Exception:
-        pass
-    try:
-        from dateutil import tz as _dateutil_tz
-        v_tz = _dateutil_tz.gettz("Europe/Vienna")
-        if v_tz is not None:
-            return v_tz
-    except Exception:
-        pass
-
-    import datetime as _mod_datetime
-
-    class _ViennaFallbackTZ(_mod_datetime.tzinfo):
-        """DST-aware Fallback for Europe/Vienna (CET UTC+1 / CEST UTC+2)."""
-        def utcoffset(self, dt: Optional[_mod_datetime.datetime]) -> _mod_datetime.timedelta:
-            if dt is None:
-                return _mod_datetime.timedelta(hours=1)
-            year = dt.year
-            d_march = _mod_datetime.datetime(year, 3, 31, 2, 0)
-            march_last_sun = d_march - _mod_datetime.timedelta(days=(d_march.weekday() + 1) % 7)
-            d_oct = _mod_datetime.datetime(year, 10, 31, 3, 0)
-            oct_last_sun = d_oct - _mod_datetime.timedelta(days=(d_oct.weekday() + 1) % 7)
-            naive = dt.replace(tzinfo=None)
-            if march_last_sun <= naive < oct_last_sun:
-                return _mod_datetime.timedelta(hours=2)
-            return _mod_datetime.timedelta(hours=1)
-
-        def dst(self, dt: Optional[_mod_datetime.datetime]) -> _mod_datetime.timedelta:
-            if dt is not None and self.utcoffset(dt) == _mod_datetime.timedelta(hours=2):
-                return _mod_datetime.timedelta(hours=1)
-            return _mod_datetime.timedelta(hours=0)
-
-        def tzname(self, dt: Optional[_mod_datetime.datetime]) -> str:
-            return "CEST" if dt is not None and self.dst(dt) else "CET"
-
-    return _ViennaFallbackTZ()
-
-
-_VIENNA_TZ = _get_vienna_tz()
+_VIENNA_TZ = ZoneInfo("Europe/Vienna")
 
 
 # ---------------------------------------------------------------------------
