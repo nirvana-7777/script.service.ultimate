@@ -56,12 +56,6 @@ from .constants import (
 
 # =====================================================================
 # TEMP DEBUG HELPERS -- remove after diagnosing PL login 500.
-#
-# To remove: delete everything between this marker and the matching
-# END TEMPORARY DEBUG HELPERS marker, then revert the three
-# `=== TEMP DEBUG ===` / `=== END TEMP DEBUG ===` call sites in
-# _perform_authentication, _upgrade_token and _refresh_token to their
-# original single `self._http_manager.post(...)` form.
 # =====================================================================
 
 _AUTH_DEBUG_SENSITIVE_HEADERS = {
@@ -70,8 +64,6 @@ _AUTH_DEBUG_SENSITIVE_HEADERS = {
 
 
 def _dbg_mask_headers(headers: Dict[str, str]) -> Dict[str, str]:
-    """Copy of headers with sensitive values masked; x-txn-id and
-    x-request-tracking-id are kept (not secret, needed for diagnosis)."""
     out: Dict[str, str] = {}
     for k, v in headers.items():
         if k.lower() in _AUTH_DEBUG_SENSITIVE_HEADERS and v:
@@ -82,8 +74,6 @@ def _dbg_mask_headers(headers: Dict[str, str]) -> Dict[str, str]:
 
 
 def _dbg_mask_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Deep-ish copy with password ciphertext length-preserved but value
-    masked, and username local-part masked."""
     import copy
     p = copy.deepcopy(payload)
     tl = p.get("telekomLogin")
@@ -98,7 +88,7 @@ def _dbg_mask_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     return p
 
 
-def _dbg_body_snippet(resp, limit: int = 2000) -> str:
+def _dbg_body_snippet(resp, limit: int = 4000) -> str:
     try:
         text = resp.text or ""
     except Exception:
@@ -116,33 +106,48 @@ def _dbg_log_auth_exchange(
     response=None,
     exc: Optional[BaseException] = None,
 ) -> None:
-    """Log the full auth request/response at DEBUG level."""
+    """Log the full auth request/response at DEBUG level.
+
+    NOTE: this project's logger.debug only accepts a single positional
+    argument (it's a custom StandardLogger wrapper, not logging.Logger),
+    so every line below is pre-formatted into one string.
+    """
     import json as _json
-    logger.debug("=" * 70)
-    logger.debug("AUTH DEBUG -- %s", label)
-    logger.debug("URL: %s", url)
-    logger.debug("HEADERS:\n%s", _json.dumps(_dbg_mask_headers(headers), indent=2, default=str))
-    logger.debug("PAYLOAD:\n%s", _json.dumps(_dbg_mask_payload(payload), indent=2, default=str))
+
+    lines = []
+    lines.append("=" * 70)
+    lines.append(f"AUTH DEBUG -- {label}")
+    lines.append(f"URL: {url}")
+    lines.append("HEADERS:")
+    lines.append(_json.dumps(_dbg_mask_headers(headers), indent=2, default=str))
+    lines.append("PAYLOAD:")
+    lines.append(_json.dumps(_dbg_mask_payload(payload), indent=2, default=str))
+
     if response is not None:
-        logger.debug(
-            "RESPONSE: status=%s content-type=%s content-length=%s",
-            response.status_code,
-            response.headers.get("Content-Type"),
-            response.headers.get("Content-Length"),
+        lines.append(
+            f"RESPONSE: status={response.status_code} "
+            f"content-type={response.headers.get('Content-Type')} "
+            f"content-length={response.headers.get('Content-Length')}"
         )
-        logger.debug("RESPONSE BODY:\n%s", _dbg_body_snippet(response))
+        lines.append("RESPONSE BODY:")
+        lines.append(_dbg_body_snippet(response))
+
     if exc is not None:
-        logger.debug("EXCEPTION: %s: %s", type(exc).__name__, exc)
+        lines.append(f"EXCEPTION: {type(exc).__name__}: {exc}")
         resp = getattr(exc, "response", None)
         if resp is not None:
-            logger.debug(
-                "EXC RESPONSE: status=%s content-type=%s content-length=%s",
-                resp.status_code,
-                resp.headers.get("Content-Type"),
-                resp.headers.get("Content-Length"),
+            lines.append(
+                f"EXC RESPONSE: status={resp.status_code} "
+                f"content-type={resp.headers.get('Content-Type')} "
+                f"content-length={resp.headers.get('Content-Length')}"
             )
-            logger.debug("EXC RESPONSE BODY:\n%s", _dbg_body_snippet(resp))
-    logger.debug("=" * 70)
+            lines.append("EXC RESPONSE BODY:")
+            lines.append(_dbg_body_snippet(resp))
+
+    lines.append("=" * 70)
+
+    # Single string, single arg -- works with the project's logger.debug.
+    logger.debug("\n".join(lines))
 
 # =====================================================================
 # END TEMPORARY DEBUG HELPERS
