@@ -891,7 +891,7 @@ def make_helpers(manager, service):
             end_time: int = None,
             epg_id: str = None,
             drm_variant: str = "auto",
-            receiver_side: bool = True,
+            receiver_side: bool = False,
             no_proxy: bool = False,
             highest_quality_only: bool = False,
     ):

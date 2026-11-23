@@ -48,13 +48,12 @@ def setup_vod_routes(app, manager, service, helpers):
             # client_drm is the public query-param name; receiver_side is
             # what _resolve_stream_unified calls the same axis internally —
             # translated here at the route boundary, same as channels.py.
-            # Old /stream/index.mpd (via the deprecated _resolve_stream
-            # wrapper) hardcoded receiver_side=True, so client_drm defaults
-            # to "true" here to preserve that for callers that don't pass
-            # it explicitly. This intentionally differs from channels.py's
-            # "false" default — that reflects channels' own prior behavior,
-            # not a shared convention.
-            client_drm = request.query.get("client_drm", "true").lower() == "true"
+            # Defaults to "false" (server-side decrypt), matching
+            # channels.py — every content type now shares this convention.
+            # Callers that want the old receiver-side behavior (the former
+            # /stream/proxied/ route hardcoded receiver_side=True) must pass
+            # client_drm=true explicitly.
+            client_drm = request.query.get("client_drm", "false").lower() == "true"
             highest_quality_only = request.query.get("highest_quality_only", "false").lower() == "true"
 
             logger.debug(

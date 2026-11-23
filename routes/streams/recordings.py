@@ -46,11 +46,12 @@ def setup_recording_routes(app, manager, service, helpers):
             country = request.query.get("country")
             drm_variant = request.query.get("drm_variant", "auto")
             no_proxy = request.query.get("no_proxy", "false").lower() == "true"
-            # Old /stream/index.mpd (via the deprecated _resolve_stream
-            # wrapper) hardcoded receiver_side=True, so client_drm defaults
-            # to "true" here to preserve that for callers that don't pass
-            # it explicitly — same reasoning as events.py/vod.py.
-            client_drm = request.query.get("client_drm", "true").lower() == "true"
+            # Defaults to "false" (server-side decrypt), matching
+            # channels.py — every content type now shares this convention.
+            # Callers that want the old receiver-side behavior (the former
+            # /stream/proxied/ route hardcoded receiver_side=True) must pass
+            # client_drm=true explicitly — same reasoning as events.py/vod.py.
+            client_drm = request.query.get("client_drm", "false").lower() == "true"
             highest_quality_only = request.query.get("highest_quality_only", "false").lower() == "true"
 
             logger.debug(
