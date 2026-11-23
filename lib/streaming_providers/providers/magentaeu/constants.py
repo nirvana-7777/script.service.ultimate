@@ -46,7 +46,7 @@ COUNTRY_CONFIG = {
         "language": "hr",
         "app_version": "02.0.1470",
         "media_player_type": 1,
-        "login_type": "native",
+        "login_type": "telekom",
         "login_base_url": "https://gateway-hr-proxy.tv.yo-digital.com/hr-idm/P",
         "rsa_key": """-----BEGIN PUBLIC KEY-----
 MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDMmKReuzuaCk10Wa6vv4ybcqjVN3cruj27IRp9YhdgEw9jcG728Aj9s60mY8B/czzW5ntKJQktyBRBZ98BKznRWBrVN/n9JR/m1UDc38PW4BPe4z5VtBe99dyFcJQ1VJij6HG0BFtw3isPR5NAUAAyGnXpNWKCat5TtBckqVatBQIDAQAB
@@ -60,7 +60,7 @@ MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDMmKReuzuaCk10Wa6vv4ybcqjVN3cruj27IRp9Yhdg
         "language": "pl",
         "app_version": "02.0.1540",
         "media_player_type": 1,
-        "login_type": "native",
+        "login_type": "telekom",
         "login_base_url": "https://gateway-pl-proxy.tv.yo-digital.com/pl-idm/P",
         "rsa_key": """-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxTkEaSufgfBKbzBAHRzSQreMYYCAg4wtjk44A31qVrt0/IaBNbAlvDNEWmB9kwZXK6s41XiPg1k/xsWNoug0nIU1eTEeTsRDwrMzxwYyn5ObO1jylBK0mEAmcl/cEk8A+DqW+raxoWSNq6IH4pciO3QVxeAzIP73FSBrcj81LEeDQsJY6ySbZ1mcDD1/axuCrUm2masJq3nifNOEZG7mAiy5pvoN54grldvXuc8nBne9tdMnCFRisRIO7f2KG5pQVqtLh41aeRTD0eg9c7SWYDhTcRb5MA+PqluZrtwQ3+J7kBGGlxkYHuQ10slR6YUqEELdd85CE7DtMx+PcGLxWwIDAQAB
@@ -74,7 +74,7 @@ MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxTkEaSufgfBKbzBAHRzSQreMYYCAg4wtjk44
         "language": "me",
         "app_version": "02.0.1570",
         "media_player_type": 1,
-        "login_type": "native",
+        "login_type": "telekom",
         "login_base_url": "https://gateway-me-proxy.tv.yo-digital.com/me-idm/P",
         "rsa_key": """-----BEGIN PUBLIC KEY-----
 MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEApoovXHgusvwv7S0cdg+xQYuY3Kb/J50n3GKpW4UmH4xG8NCAD6PBHPKGlVYl6sAnLXofJeq0DsXZJ9xFGH1wTQdd3hxwhGrigstluu4PbpiVRjrFe9AuZto+/Hb0+Ljr5BKFgNMYhpZOaBWgjkqtYWFyMzB1v3VtgUURqxyzMhgiPoCcqYynnqK1weJLGEMSZNlHeWwX46VlK/JqIwPw2ajl5IwvQFzY6BEQvfwXVJxIcvQwkcmeR1A3ACE1E1tvrATb1EPNeKh/E6Kukb8EGTB1O3WJa4IrdX6HI3BJLXftLZ9Y55HuHa+GrGkJRJvchxYCugxgHKSqNOnsT8FWYm1gdZZ6/i/jPo7/tpEdd2U6FxG7/I4rcpk2FzSSd3LKEHGf5v1V982Idbrlm+1LfsjoTx5Go2M8+uBR92pV0qSQlB4YXgQQgqpDUq9f9TwN67nj2jfRECR2hBITkK3+sC9ZxSHYg4Cp3ycHqetxUJ21kVmO6jMG+JsBHLuDKCIc3yrHXHBwhZt4XOhH6K564pUKBOfbe9mZlGrttEla0FK9B/WM315QQ9WgHA5pFyDFmjsB4MvFqKrbsrVUxDZM1COHVC7QbyEte45BDDO/amaB1aa6st5mNIm22m0s0jW8flHarGuulCDNBt9jHI6MnYLb3wpVj00b62Vmx1FX9qkCAwEAAQ==
@@ -88,7 +88,7 @@ MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEApoovXHgusvwv7S0cdg+xQYuY3Kb/J50n3GKp
         "language": "de",
         "app_version": "02.0.1470",
         "media_player_type": 1,
-        "login_type": "native",
+        "login_type": "telekom",
         "login_base_url": "https://gateway-at-proxy.tv.yo-digital.com/at-idm/P",
         "rsa_key": """-----BEGIN PUBLIC KEY-----
 MIIBIDANBgkqhkiG9w0BAQEFAAOCAQ0AMIIBCAKCAQEA0EsuGonW8+y5Oq2Hopru5oFCaXEDMBrWPDkzIeY1Vvot3z/l9Q3/bcUQV3Yo6DvbhlARQnMeqiKJ5dutZmdxuj+nhZq9FcL20RUywqGnxTCHaGAEb05Qlovu7Rbld2GeJa4nFP1RY5glUlr/DYVB+tIHqPfZVUSc1PS+l5QkB9TJir57ALxERBJGjT5vhQixXGf6IqmLkxm1okIbuGJa2ttmSWNq0OVi2cF40ZsV64ly7a3m6n2WBYmhqd3ghSprNHXwJBwYwu1L+9CF9oLQXHs9cUDhqyQB+3iDU2Ro/rtZsGcnvnIiDHRIWZ94zcOTOpdUH4pBujc8jF3qdw99UwIBJQ==
