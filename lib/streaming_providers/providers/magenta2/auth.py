@@ -1114,30 +1114,42 @@ class Magenta2Authenticator(BaseAuthenticator):
 
     def _perform_remote_login_flow(self) -> Optional[Dict[str, Any]]:
         """
-        Perform remote login flow
-        Used by TokenFlowManager callback
+        Perform remote login flow (non-blocking).
+        Used by TokenFlowManager callback.
+
+        Order matters: the status of a previous login is inspected BEFORE a
+        new one is started, because starting resets the previous result.
 
         Returns:
-            Token data dict or None
+            Token data dict if a login finished since the last call,
+            None otherwise (pending, failed, or remote login unavailable).
         """
         if not self._sam3_client:
             return None
 
-        # Non-blocking: never hold the calling HTTP request for the whole
-        # login window. Starting is idempotent while a login is pending, so
-        # repeated requests reuse the same code instead of issuing new ones.
         try:
-            status = self._sam3_client.start_remote_login_background(
-                scope="tvhubs offline_access"
-            )
-            if status is None:
-                return None
-            if status.state == "completed":
+            status = self._sam3_client.get_background_login_status()
+            state = status.get("status") if status else None
+
+            if state == "success":
                 # The user finished since the last request: hand the token to
-                # TokenFlowManager, which continues the normal chain.
+                # TokenFlowManager, which continues the normal chain. Taking
+                # the token also clears the background state.
                 return self._sam3_client.take_remote_login_token()
-            # Still pending: report "no token yet"; get_persona_token() turns
-            # this into AuthPendingError for the caller.
+
+            if state == "in_progress":
+                # Still waiting for the user; get_persona_token() turns this
+                # into AuthPendingError for the caller.
+                return None
+
+            if state == "error":
+                logger.error(f"Remote login error: {status.get('error')}")
+                self._sam3_client.reset_remote_login_background()
+                return None
+
+            # "not_started" | "no_token" (timed out / cancelled) | no handler yet:
+            # start a login. Idempotent; returns None by design.
+            self._sam3_client.start_remote_login_background(scope="tvhubs offline_access")
             return None
         except Exception as e:
             logger.error(f"Remote login flow failed: {e}")
@@ -1153,13 +1165,14 @@ class Magenta2Authenticator(BaseAuthenticator):
         if not self._sam3_client:
             return None
         status = self._sam3_client.get_background_login_status()
-        if status is None or status.state != "pending":
+        if not status or status.get("status") != "in_progress":
             return None
+        session = status.get("session") or {}
         return AuthPendingError(
             "Interactive login pending: enter the code to continue",
-            login_code=status.login_code,
-            qr_target_url=status.qr_target_url,
-            remaining_seconds=status.remaining_seconds,
+            login_code=session.get("login_code"),
+            qr_target_url=session.get("qr_target_url"),
+            remaining_seconds=session.get("remaining_seconds"),
             retry_after=REMOTE_LOGIN_RETRY_AFTER_SECONDS,
         )
 

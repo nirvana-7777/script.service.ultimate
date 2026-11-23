@@ -8,7 +8,8 @@ This handler contains provider-specific logic for MagentaTV.
 Two execution models are supported:
 - Blocking: start_remote_login() / poll_for_token() / perform_complete_flow()
 - Background: start_background_login() / get_background_status() /
-  wait_for_background_login() / cancel_background_login()
+  wait_for_background_login() / take_background_token() /
+  cancel_background_login() / reset_background_login()
 
 The background API is a bridge for callers (e.g. the Magenta2 auth flow and
 channel warm-up) that expect fire-and-forget login with later status polling.
@@ -107,7 +108,7 @@ class RemoteLoginHandler:
                 http_manager=http_manager,
                 provider_name=provider_name,  # Use the passed provider_name
                 success_message=f"{provider_name} login successful",
-                failure_template=f"{provider_name} login failed: {{reason}}",
+                failure_template=f"{provider_name} login failed: {{}}",  # adapters call .format(message) positionally
             )
 
         self._current_session: Optional[RemoteLoginSession] = None
@@ -644,6 +645,55 @@ class RemoteLoginHandler:
             self.cancel_current_session()
         else:
             logger.debug("No background remote login to cancel")
+
+    def take_background_token(self) -> Optional[Dict[str, Any]]:
+        """
+        Return the token data of a finished background login exactly once and
+        clear the bridge state, so the next login can be started.
+
+        Returns None if there is no finished successful login to collect
+        (nothing started, still running, failed, or already taken).
+        """
+        with self._bg_lock:
+            thread = self._bg_thread
+            if self._bg_result is None:
+                return None
+
+        # The worker stores the result before setting _bg_done; let it finish
+        # so clearing the state below cannot race with that last step.
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+
+        with self._bg_lock:
+            token_data = self._bg_result
+            self._bg_thread = None
+            self._bg_result = None
+            self._bg_error = None
+            self._bg_done.clear()
+            self._bg_cancel.clear()
+
+        if token_data is not None:
+            logger.debug("Background login token taken, state reset")
+        return token_data
+
+    def reset_background_login(self) -> None:
+        """
+        Clear background login state (e.g. after an error was reported).
+
+        Does nothing while the background thread is still running; use
+        cancel_background_login() for that.
+        """
+        with self._bg_lock:
+            thread = self._bg_thread
+            if thread is not None and thread.is_alive():
+                logger.debug("reset_background_login: thread still alive, ignoring")
+                return
+            self._bg_thread = None
+            self._bg_result = None
+            self._bg_error = None
+            self._bg_done.clear()
+            self._bg_cancel.clear()
+        logger.debug("Background login state reset")
 
     def get_session_status(self) -> Optional[Dict[str, Any]]:
         """Get current session status"""

@@ -427,6 +427,14 @@ class Sam3Client:
             logger.debug(
                 f"Invalidating remote login handler due to client ID change: {old_client_id} -> {new_client_id}"
             )
+            # A running background login belongs to the old handler: stop it
+            # so no orphaned QR dialog / polling thread outlives the handler
+            # (its status would no longer be visible via
+            # get_background_login_status(), and a second login would start).
+            try:
+                self._remote_login_handler.cancel_background_login()
+            except Exception as e:
+                logger.debug(f"Could not cancel background login: {e}")
             self._remote_login_handler = None
 
         logger.info(f"✓ Updated SAM3 client ID to: {new_client_id}")
@@ -514,32 +522,62 @@ class Sam3Client:
     # remote_login() blocks for up to ~5 minutes, which is unusable inside an
     # HTTP request. These three methods drive the handler's background mode.
 
-    def start_remote_login_background(self, scope: str = "tvhubs offline_access"):
+    def start_remote_login_background(self, scope: str = "tvhubs offline_access") -> None:
         """
-        Start a remote login without blocking, or join the one already
-        running (same login code). Returns the handler's BackgroundLoginStatus,
-        or None if remote login is unavailable.
+        Start a remote login without blocking. If one is already running this
+        is a no-op (the running login, and its code, is reused).
+
+        Always returns None: this only STARTS the login. Read progress with
+        get_background_login_status() (a dict) and collect the token with
+        take_remote_login_token(). Check can_use_remote_login() beforehand if
+        you need to know whether remote login is available at all.
+
+        Do not call this before checking the status of a finished login:
+        starting resets the previous result.
         """
         handler = self._get_remote_login_handler()
         if not handler:
             logger.error("Remote login not available")
             return None
-        return handler.start_background_login(scope)
+        try:
+            handler.start_background_login(scope)
+        except RuntimeError as e:
+            # "Remote login already in progress" - expected, not an error.
+            logger.debug(f"Background remote login already running: {e}")
+        return None
 
-    def get_background_login_status(self):
-        """Current BackgroundLoginStatus, or None if remote login is unavailable.
-        Never creates a handler or starts a login."""
+    def get_background_login_status(self) -> Optional[Dict[str, Any]]:
+        """
+        Current background login status as a dict, or None if no remote login
+        handler exists yet. Never creates a handler or starts a login.
+
+        Shape (see RemoteLoginHandler.get_background_status()):
+        {"status": "not_started" | "in_progress" | "success" | "error" |
+                   "no_token",
+         "done": bool, "in_progress": bool,
+         "result": token dict | None, "error": str | None,
+         "session": {login_code, qr_target_url, remaining_seconds, ...} | None}
+        """
         handler = self._remote_login_handler
         return handler.get_background_status() if handler else None
 
     def take_remote_login_token(self) -> Optional[Dict[str, Any]]:
-        """Return the token data of a finished background login (once)."""
+        """
+        Return the token data of a finished background login (once) and clear
+        the background state so the next login can start.
+        """
         handler = self._remote_login_handler
         token_data = handler.take_background_token() if handler else None
         if token_data and "refresh_token" in token_data:
             self.refresh_token = token_data["refresh_token"]
             logger.info("✓ Remote login successful, refresh token obtained")
         return token_data
+
+    def reset_remote_login_background(self) -> None:
+        """Clear background-login state (e.g. after reporting an error)."""
+        handler = self._remote_login_handler
+        if handler:
+            handler.reset_background_login()
 
     def get_remote_login_status(self) -> Optional[Dict[str, Any]]:
         """Get current remote login session status"""
