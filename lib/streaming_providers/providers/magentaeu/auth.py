@@ -54,6 +54,101 @@ from .constants import (
 )
 
 
+# =====================================================================
+# TEMP DEBUG HELPERS -- remove after diagnosing PL login 500.
+#
+# To remove: delete everything between this marker and the matching
+# END TEMPORARY DEBUG HELPERS marker, then revert the three
+# `=== TEMP DEBUG ===` / `=== END TEMP DEBUG ===` call sites in
+# _perform_authentication, _upgrade_token and _refresh_token to their
+# original single `self._http_manager.post(...)` form.
+# =====================================================================
+
+_AUTH_DEBUG_SENSITIVE_HEADERS = {
+    "authorization", "refresh_token", "cookie", "bff_token", "set-cookie",
+}
+
+
+def _dbg_mask_headers(headers: Dict[str, str]) -> Dict[str, str]:
+    """Copy of headers with sensitive values masked; x-txn-id and
+    x-request-tracking-id are kept (not secret, needed for diagnosis)."""
+    out: Dict[str, str] = {}
+    for k, v in headers.items():
+        if k.lower() in _AUTH_DEBUG_SENSITIVE_HEADERS and v:
+            out[k] = f"<redacted len={len(v)}>"
+        else:
+            out[k] = v
+    return out
+
+
+def _dbg_mask_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Deep-ish copy with password ciphertext length-preserved but value
+    masked, and username local-part masked."""
+    import copy
+    p = copy.deepcopy(payload)
+    tl = p.get("telekomLogin")
+    if isinstance(tl, dict):
+        pw = tl.get("password")
+        if isinstance(pw, str):
+            tl["password"] = f"<redacted len={len(pw)}>"
+        un = tl.get("username")
+        if isinstance(un, str) and "@" in un:
+            local, _, domain = un.partition("@")
+            tl["username"] = f"{local[:2]}***@{domain}"
+    return p
+
+
+def _dbg_body_snippet(resp, limit: int = 2000) -> str:
+    try:
+        text = resp.text or ""
+    except Exception:
+        return "<unreadable body>"
+    if len(text) > limit:
+        return f"{text[:limit]}... [{len(text) - limit} more chars]"
+    return text
+
+
+def _dbg_log_auth_exchange(
+    label: str,
+    url: str,
+    headers: Dict[str, str],
+    payload: Dict[str, Any],
+    response=None,
+    exc: Optional[BaseException] = None,
+) -> None:
+    """Log the full auth request/response at DEBUG level."""
+    import json as _json
+    logger.debug("=" * 70)
+    logger.debug("AUTH DEBUG -- %s", label)
+    logger.debug("URL: %s", url)
+    logger.debug("HEADERS:\n%s", _json.dumps(_dbg_mask_headers(headers), indent=2, default=str))
+    logger.debug("PAYLOAD:\n%s", _json.dumps(_dbg_mask_payload(payload), indent=2, default=str))
+    if response is not None:
+        logger.debug(
+            "RESPONSE: status=%s content-type=%s content-length=%s",
+            response.status_code,
+            response.headers.get("Content-Type"),
+            response.headers.get("Content-Length"),
+        )
+        logger.debug("RESPONSE BODY:\n%s", _dbg_body_snippet(response))
+    if exc is not None:
+        logger.debug("EXCEPTION: %s: %s", type(exc).__name__, exc)
+        resp = getattr(exc, "response", None)
+        if resp is not None:
+            logger.debug(
+                "EXC RESPONSE: status=%s content-type=%s content-length=%s",
+                resp.status_code,
+                resp.headers.get("Content-Type"),
+                resp.headers.get("Content-Length"),
+            )
+            logger.debug("EXC RESPONSE BODY:\n%s", _dbg_body_snippet(resp))
+    logger.debug("=" * 70)
+
+# =====================================================================
+# END TEMPORARY DEBUG HELPERS
+# =====================================================================
+
+
 # ---------------------------------------------------------------------------
 # JWT helpers
 # ---------------------------------------------------------------------------
@@ -827,13 +922,24 @@ class MagentaAuthenticator(BaseAuthenticator):
                 f"Authentication payload prepared for user: {self.credentials.username}"
             )
 
-            response = self._http_manager.post(
-                self.auth_endpoint,
-                operation="auth",
-                headers=headers,
-                json_data=payload,
-                timeout=self._config.timeout,
+            # === TEMP DEBUG: log request, response, and exception body ===
+            try:
+                response = self._http_manager.post(
+                    self.auth_endpoint,
+                    operation="auth",
+                    headers=headers,
+                    json_data=payload,
+                    timeout=self._config.timeout,
+                )
+            except Exception as exc:
+                _dbg_log_auth_exchange(
+                    "login POST", self.auth_endpoint, headers, payload, exc=exc
+                )
+                raise
+            _dbg_log_auth_exchange(
+                "login POST", self.auth_endpoint, headers, payload, response=response
             )
+            # === END TEMP DEBUG ===
 
             response.raise_for_status()
             token_data = response.json()
@@ -872,13 +978,24 @@ class MagentaAuthenticator(BaseAuthenticator):
 
         payload = self._build_auth_payload()
 
-        response = self._http_manager.post(
-            upgrade_url,
-            operation="auth_upgrade",
-            headers=headers,
-            json_data=payload,
-            timeout=self._config.timeout,
+        # === TEMP DEBUG: log request, response, and exception body ===
+        try:
+            response = self._http_manager.post(
+                upgrade_url,
+                operation="auth_upgrade",
+                headers=headers,
+                json_data=payload,
+                timeout=self._config.timeout,
+            )
+        except Exception as exc:
+            _dbg_log_auth_exchange(
+                "upgrade-token POST", upgrade_url, headers, payload, exc=exc
+            )
+            raise
+        _dbg_log_auth_exchange(
+            "upgrade-token POST", upgrade_url, headers, payload, response=response
         )
+        # === END TEMP DEBUG ===
 
         response.raise_for_status()
         return response.json()
@@ -955,13 +1072,24 @@ class MagentaAuthenticator(BaseAuthenticator):
 
             logger.debug(f"Refresh request - URL: {refresh_url}")
 
-            response = self._http_manager.post(
-                refresh_url,
-                operation="auth_refresh",
-                headers=headers,
-                json_data=payload,
-                timeout=self._config.timeout,
+            # === TEMP DEBUG: log request, response, and exception body ===
+            try:
+                response = self._http_manager.post(
+                    refresh_url,
+                    operation="auth_refresh",
+                    headers=headers,
+                    json_data=payload,
+                    timeout=self._config.timeout,
+                )
+            except Exception as exc:
+                _dbg_log_auth_exchange(
+                    "refresh-token POST", refresh_url, headers, payload, exc=exc
+                )
+                raise
+            _dbg_log_auth_exchange(
+                "refresh-token POST", refresh_url, headers, payload, response=response
             )
+            # === END TEMP DEBUG ===
 
             response.raise_for_status()
             token_data = response.json()
