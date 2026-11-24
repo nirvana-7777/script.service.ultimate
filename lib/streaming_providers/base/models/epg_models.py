@@ -824,6 +824,21 @@ class EPGProgramDetails:
     Not part of EPGContent — no matching EPGEntry field.
     """
 
+    content_type: Optional[str] = None
+    """
+    Provider-native content type (Magenta EU bifrost ``show_type``, e.g.
+    "Movie"). Lets consumers tell movies from series/episodes. Not part of
+    EPGContent — no matching EPGEntry field.
+    """
+
+    last_updated: Optional[int] = None
+    """
+    Provider-side last-modified time as Unix SECONDS (bifrost sends epoch
+    milliseconds as a string, or an empty string; the provider converts).
+    Useful for cache invalidation. Not part of EPGContent — no matching
+    EPGEntry field.
+    """
+
     def to_dict(self) -> dict:
         """Serialise to a plain dict, omitting None values."""
         result: dict = {"program_id": self.program_id}
@@ -839,6 +854,7 @@ class EPGProgramDetails:
             "release_date", "duration",
             "season_number", "episode_number",
             "country_of_origin", "trailer",
+            "content_type", "last_updated",
         )
 
         for field in simple_fields:
@@ -905,6 +921,14 @@ class EPGContent:
     is_adult: Optional[bool] = None
     audio_languages: Optional[List[str]] = None
     subtitle_languages: Optional[List[str]] = None
+    # Shared since the Magenta EU details work. EPGEntry and
+    # EPGProgramDetails already declare these with identical types, but they
+    # were not merged, so e.g. detail genres never reached the entry.
+    genres: Optional[List[str]] = None
+    producers: Optional[List[str]] = None
+    presenter: Optional[List[str]] = None
+    composers: Optional[List[str]] = None
+    contributors: Optional[List[str]] = None
 
 
 def merge_content(entry: "EPGEntry", details: "EPGProgramDetails") -> "EPGEntry":
@@ -917,17 +941,16 @@ def merge_content(entry: "EPGEntry", details: "EPGProgramDetails") -> "EPGEntry"
     this title) will not clobber a value already present on `entry`.
 
     Fields that exist on EPGProgramDetails but NOT in EPGContent (e.g.
-    provider_vod_id, genres, backdrop/poster, presenter/composers/
-    contributors, the *_details enriched-person fields) are intentionally
-    NOT copied here - EPGEntry has no matching field for them. Callers
-    that need that richer data should keep the EPGProgramDetails instance
-    itself rather than expecting it to appear on the merged EPGEntry.
+    provider_vod_id, backdrop/poster, the *_details enriched-person
+    fields) are intentionally NOT copied here - EPGEntry has no matching
+    field for them. Callers that need that richer data should keep the
+    EPGProgramDetails instance itself rather than expecting it to appear
+    on the merged EPGEntry.
 
-    Note: EPGEntry.producers is the one exception - it exists directly on
-    EPGEntry (not via EPGContent/merge) for providers like MoveTV that
-    return producer data in a single one-shot grid fetch with no separate
-    detail-fetch step to enrich later. It is set at parse time, not
-    merged in here.
+    Note: EPGEntry.producers is set at parse time by providers like MoveTV
+    that return producer data in a single one-shot grid fetch with no
+    separate detail-fetch step. It is also an EPGContent field now, so a
+    details object that carries producers overlays it; None never does.
 
     A new EPGEntry is returned (rather than mutating in place) because
     EPGEntry is not frozen, but merge_content should behave predictably
@@ -966,11 +989,13 @@ def merge_content(entry: "EPGEntry", details: "EPGProgramDetails") -> "EPGEntry"
             f"details for a different programme onto this entry"
         )
 
-    updates = {
-        f.name: getattr(details, f.name)
-        for f in fields(EPGContent)
-        if getattr(details, f.name) is not None
-    }
+    updates = {}
+    for f in fields(EPGContent):
+        # getattr default: tolerate details objects that predate newer
+        # shared fields instead of raising AttributeError.
+        value = getattr(details, f.name, None)
+        if value is not None:
+            updates[f.name] = value
     return replace(entry, **updates)
 
 

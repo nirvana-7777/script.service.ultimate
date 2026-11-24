@@ -49,7 +49,12 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ...base.managers import EpgManager
 from ...base.utils.logger import logger
-from ...base.models.epg_models import EPGEntry, EPGProgramDetails, EPGFlags
+from ...base.models.epg_models import (
+    EPGEntry,
+    EPGProgramDetails,
+    EPGFlags,
+    PersonData,
+)
 from .constants import (
     DEFAULT_REQUEST_TIMEOUT,
     SUPPORTED_COUNTRIES,
@@ -196,6 +201,10 @@ _ROLE_MAPS: Dict[str, Dict[str, str]] = {
     "me": _ROLES_ME,
     "pl": _ROLES_PL,
 }
+
+# (country, role_name) pairs already reported at INFO, so each unmapped role
+# is announced once per process instead of once per person.
+_UNMAPPED_ROLES_LOGGED: Set[Tuple[str, str]] = set()
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +511,15 @@ class MagentaEUEpgManager(EpgManager):
             raw.get("episode_number"), max_valid=None
         )
 
+        # Enriched people (person_id / image_url) for web UIs.
+        people = self._parse_credit_people(raw)
+
+        # Raw rating label; "" must not become a value that overlays the
+        # grid entry's own parental_rating_code during merge_content().
+        ratings_code = None
+        if ratings_raw is not None:
+            ratings_code = str(ratings_raw).strip() or None
+
         return EPGProgramDetails(
             program_id=program_id,
             description=description,
@@ -523,6 +541,18 @@ class MagentaEUEpgManager(EpgManager):
             duration=raw.get("runtime_seconds"),
             country_of_origin=raw.get("country_of_origin") or None,
             trailer=raw.get("trailer") or None,
+            cast_details=people["cast"],
+            directors_details=people["directors"],
+            writers_details=people["writers"],
+            producers_details=people["producers"],
+            presenter_details=people["presenter"],
+            # poster_image_url is a 16:9 landscape image, so it is exposed
+            # as a backdrop in addition to the icon.
+            backdrop=raw.get("poster_image_url") or None,
+            is_adult=raw.get("is_adult"),
+            parental_rating_code=ratings_code,
+            content_type=raw.get("show_type") or None,
+            last_updated=self._parse_epoch_ms(raw.get("last_updated")),
         )
 
     # ------------------------------------------------------------------
@@ -753,10 +783,11 @@ class MagentaEUEpgManager(EpgManager):
         Parse the ``roles`` list from programme details into credit buckets.
 
         Returns a dict with keys: cast, directors, producers, writers,
-        presenter, composers, contributors — each a sorted List[str] or None.
+        presenter, composers, contributors — each a List[str] in the
+        provider's billing order (first occurrence wins), or None.
         """
-        buckets: Dict[str, Set[str]] = {
-            k: set() for k in
+        buckets: Dict[str, Dict[str, None]] = {
+            k: {} for k in
             ["cast", "directors", "producers", "writers",
              "presenter", "composers", "contributors"]
         }
@@ -768,14 +799,84 @@ class MagentaEUEpgManager(EpgManager):
                 continue
             bucket = self._role_map.get(role_name)
             if bucket:
-                buckets[bucket].add(person_name)
+                buckets[bucket][person_name] = None
             else:
-                logger.debug(
-                    f"[MagentaEUEpgManager/{self._country}] "
-                    f"unmapped role '{role_name}' for '{person_name}'"
-                )
+                self._note_unmapped_role(role_name, person_name)
 
-        return {k: sorted(v) if v else None for k, v in buckets.items()}
+        return {k: list(v) or None for k, v in buckets.items()}
+
+    def _note_unmapped_role(self, role_name: str, person_name: str) -> None:
+        """Report a role label missing from the country's role map (once)."""
+        key = (self._country, role_name)
+        if key in _UNMAPPED_ROLES_LOGGED:
+            return
+        _UNMAPPED_ROLES_LOGGED.add(key)
+        logger.info(
+            f"[MagentaEUEpgManager/{self._country}] unmapped role "
+            f"'{role_name}' (first seen for '{person_name}') - add it to the "
+            f"country role map if it should appear in the EPG"
+        )
+
+    def _parse_credit_people(
+        self, raw: Dict[str, Any]
+    ) -> Dict[str, Optional[List[PersonData]]]:
+        """
+        Parse ``roles`` into enriched PersonData lists (id, name, image).
+
+        Returns a dict keyed by cast / directors / writers / producers /
+        presenter; each value is a List[PersonData] in the provider's
+        billing order, or None. Composers and contributors have no
+        ``*_details`` field on EPGProgramDetails and are not included.
+
+        People are de-duplicated per bucket by person_id (falling back to
+        the name), so two different people sharing a name are both kept,
+        while the same person may still appear in several buckets (e.g.
+        cast and producers). ``image_url`` is null for many people;
+        consumers must fall back to initials.
+        """
+        wanted = ("cast", "directors", "writers", "producers", "presenter")
+        people: Dict[str, Dict[str, PersonData]] = {k: {} for k in wanted}
+
+        for role in (raw.get("roles") or []):
+            role_name = role.get("role_name")
+            person_name = role.get("person_name")
+            if not role_name or not person_name:
+                continue
+            bucket = self._role_map.get(role_name)
+            if bucket is None:
+                self._note_unmapped_role(role_name, person_name)
+                continue
+            if bucket not in people:
+                continue
+            person_id = str(role.get("person_id") or person_name)
+            if person_id in people[bucket]:
+                continue
+            people[bucket][person_id] = PersonData(
+                id=person_id,
+                name=person_name,
+                image=role.get("image_url") or None,
+                roles=[role_name],
+            )
+
+        return {k: list(v.values()) or None for k, v in people.items()}
+
+    @staticmethod
+    def _parse_epoch_ms(value: Any) -> Optional[int]:
+        """
+        Convert bifrost ``last_updated`` (epoch milliseconds as a string,
+        e.g. "1794810040000"; empty string on some countries) to Unix
+        seconds. Values that already look like seconds are returned
+        unchanged; empty/junk values return None.
+        """
+        if value is None:
+            return None
+        try:
+            n = int(value)
+        except (ValueError, TypeError):
+            return None
+        if n <= 0:
+            return None
+        return n // 1000 if n >= 10 ** 11 else n
 
     @staticmethod
     def _parse_episode_number(value: Any, max_valid: Optional[int] = None) -> Optional[int]:
@@ -886,8 +987,9 @@ class MagentaEUEpgManager(EpgManager):
         flags = None
         if details:
             flag_bits = []
-            if details.get("is_live"):
-                flag_bits.append(EPGFlags.IS_LIVE)
+            # NOTE: bifrost's `is_live` is NOT "airing live right now": it is
+            # true for archive films (a 1950 and a 2017 movie in the samples),
+            # so it must not set EPGFlags.IS_LIVE.
             if details.get("show_type") == "TVShow":
                 flag_bits.append(EPGFlags.IS_SERIES)
             if flag_bits:

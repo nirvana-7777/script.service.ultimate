@@ -268,6 +268,10 @@ class ChannelManager:
                         provider_name=self._provider_name
                     )
                     streaming_channel.channel_number = channel_number
+                    # dt$channelNumber (tp_ch.channel_number) is unique per
+                    # station, whereas channel_number above (dt$displayChannelNumber)
+                    # is shared by the SD and HD variants of one channel.
+                    streaming_channel.unique_channel_number = tp_ch.channel_number
                     streaming_channel.quality = quality
                     streaming_channel.manifest = tp_ch.mpd_url
                     streaming_channel.manifest_script = manifest_script

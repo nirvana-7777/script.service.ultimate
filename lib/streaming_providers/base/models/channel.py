@@ -14,6 +14,11 @@ class Channel(Content):
     """
 
     channel_number: Optional[int] = None
+    # Provider-side identifier that is unique per channel *variant* (e.g. SD and
+    # HD of the same station), unlike channel_number, which is the number shown
+    # to the user and may legitimately be shared. Optional: clients fall back to
+    # their own identity scheme when it is None.
+    unique_channel_number: Optional[int] = None
     is_radio: bool = False
     catchup_hours: Optional[int] = 0
 
@@ -56,6 +61,7 @@ class Channel(Content):
     def to_dict(self) -> Dict:
         result = super().to_dict()
         result["ChannelNumber"] = self.channel_number
+        result["UniqueChannelNumber"] = self.unique_channel_number
         result["IsRadio"] = self.is_radio
         result["CatchupHours"] = self.catchup_hours
         return result
