@@ -26,7 +26,7 @@ from urllib.parse import quote
 from ...base.auth.session_manager import SessionManager
 from ...base.models import DRMConfig, StreamingChannel, Event
 from ...base.models.auth import AuthState
-from ...base.models.epg_models import EPGEntry, EPGProgramDetails
+from ...base.models.epg_models import EPGEntry, EPGProgramDetails, PersonData
 from ...base.models.proxy_models import ProxyConfig
 from ...base.network import HTTPManagerFactory, ProxyConfigManager
 from ...base.settings.provider_settings_store import ProviderSettingsStore
@@ -1338,6 +1338,10 @@ class Magenta2Provider(StreamingProvider):
     def get_program_details(self, program_id: str, **kwargs: Any) -> Optional[EPGProgramDetails]:
         """Get detailed metadata for a single programme."""
         return self._epg_manager.get_program_details(program_id)
+
+    def get_person_details(self, person_id: str, **kwargs: Any) -> Optional[PersonData]:
+        """Get name/image/roles for a single person (``gnp_<digits>``)."""
+        return self._epg_manager.get_person_details(person_id)
 
     # ------------------------------------------------------------------ #
     # Auth state / readiness introspection                                 #

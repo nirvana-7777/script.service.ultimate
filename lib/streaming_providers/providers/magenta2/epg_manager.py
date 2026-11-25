@@ -51,6 +51,8 @@ class Magenta2EpgManager:
     # match. 'gnp_' is unique enough within these id formats that a first-
     # match scan cannot collide with the role segment.
     _PERSON_ID_PATTERN = re.compile(r"(gnp_\d+)")
+    # Whole-string variant for IDs coming in from the API (no URI / suffix).
+    _PERSON_ID_FULL_PATTERN = re.compile(r"gnp_\d+$")
 
     _ROLE_MAP = {
         # Text role names (from dt$creditIds role segment and credits[].creditType)
@@ -357,6 +359,27 @@ class Magenta2EpgManager:
 
         return person_data
 
+    def get_person_details(self, person_id: str) -> Optional[PersonData]:
+        """Public person lookup (name, image, roles) for ``gnp_<digits>`` IDs.
+
+        Shares the bounded LRU cache with the credit resolvers. The returned
+        object never carries ``character_name``: the cache may hold one from
+        an earlier programme (F4 enrichment), but a character is
+        programme-specific and does not belong to the person.
+        """
+        if not person_id or not self._PERSON_ID_FULL_PATTERN.match(person_id):
+            return None
+
+        person = self._get_person_data(person_id)
+        if person is None:
+            return None
+        if person.character_name:
+            person = PersonData(
+                id=person.id, name=person.name,
+                image=person.image, roles=person.roles,
+            )
+        return person
+
     def _resolve_credits_from_list(
             self, credits: List[Dict[str, Any]]
     ) -> Tuple[Dict[str, Optional[List[str]]], Dict[str, Optional[List[PersonData]]]]:
@@ -372,7 +395,7 @@ class Magenta2EpgManager:
         detail_buckets: Dict[str, List[PersonData]] = {b: [] for b in self._CREDIT_BUCKETS}
 
         for credit in credits or []:
-            credit_type = credit.get("creditType", "").lower()
+            credit_type = (credit.get("creditType") or "").lower()
             bucket = self._ROLE_MAP.get(credit_type)
             if not bucket:
                 continue

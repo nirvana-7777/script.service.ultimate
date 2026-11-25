@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from .epg import EPGManager
 from .epg_capability import EPG_CAP_ALL, EpgCapability
 from .utils.logger import logger
-from .models.epg_models import EPGEntry, EPGProgramDetails
+from .models.epg_models import EPGEntry, EPGProgramDetails, PersonData
 
 
 class EPGWindowError(Exception):
@@ -302,6 +302,30 @@ class EPGOperations:
         logger.debug(f"No program detail support for '{provider_name}/{program_id}'")
         # The generic EPGManager has no program-detail index; native providers
         # must declare EpgCapability.DETAILS to support this endpoint.
+        return None
+
+    # ------------------------------------------------------------------
+    # Person detail
+    # ------------------------------------------------------------------
+
+    def get_person_details(
+        self,
+        provider_name: str,
+        person_id: str,
+    ) -> Optional[PersonData]:
+        """Get name/image/roles for a person referenced by program credits.
+
+        Not capability-routed (there is no person capability): a provider that
+        can resolve persons overrides ``get_person_details``; the mixin default
+        returns None.
+        """
+        provider = self._get_provider(provider_name)
+
+        lookup = getattr(provider, "get_person_details", None)
+        if callable(lookup):
+            return lookup(person_id)
+
+        logger.debug(f"No person detail support for '{provider_name}/{person_id}'")
         return None
 
     # ------------------------------------------------------------------

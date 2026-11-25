@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import ClassVar, Dict, List, Optional, Tuple
 
 from ..epg_capability import EpgCapability, derive_capabilities
-from ..models.epg_models import EPGEntry, EPGProgramDetails
+from ..models.epg_models import EPGEntry, EPGProgramDetails, PersonData
 
 
 class ProviderEpgMixin:
@@ -100,6 +100,15 @@ class ProviderEpgMixin:
 
         Override if provider supports program details.
         Default returns None (no details).
+        """
+        return None
+
+    def get_person_details(self, person_id: str, **kwargs) -> Optional[PersonData]:
+        """
+        Get name/image/roles for a single person referenced by program credits.
+
+        Override if provider supports person lookups.
+        Default returns None (not supported).
         """
         return None
 

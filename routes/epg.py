@@ -12,6 +12,7 @@ Endpoints:
   GET /api/providers/<provider>/epg/grid                      – Multi-channel grid view (JSON)
   GET /api/providers/<provider>/channels/<channel_id>/epg     – Single-channel program list
   GET /api/providers/<provider>/programs/<program_id>         – Deep program detail
+  GET /api/providers/<provider>/persons/<person_id>           – Person detail (name, image, roles)
   GET /api/providers/<provider>/epg-mapping                   – Load channel→EPG ID mapping
   POST /api/providers/<provider>/epg-mapping                  – Persist channel→EPG ID mapping
 """
@@ -435,6 +436,38 @@ def setup_epg_routes(app, manager, service):
             logger.error(f"Program detail error for {provider}/{program_id}: {e}")
             response.status = 500
             response.content_type = "application/json; charset=utf-8"
+            return {"error": f"Internal server error: {e}"}
+
+    @app.route("/api/providers/<provider>/persons/<person_id>", method="GET")
+    def get_person_details(provider, person_id):
+        """
+        Return name, image and roles for a person referenced in a program's
+        ``*_details`` credit lists (the ``id`` field, e.g. ``gnp_230637``).
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            person = epg_ops.get_person_details(
+                provider_name=provider,
+                person_id=person_id,
+            )
+
+            if not person:
+                response.status = 404
+                return {"error": f"Person '{person_id}' not found for provider '{provider}'"}
+
+            return {
+                "provider": provider,
+                "person_id": person_id,
+                "person": person.to_dict(),
+            }
+
+        except ValueError as e:
+            logger.error(f"Person detail error for {provider}/{person_id}: {e}")
+            response.status = 404
+            return {"error": str(e)}
+        except Exception as e:
+            logger.error(f"Person detail error for {provider}/{person_id}: {e}")
+            response.status = 500
             return {"error": f"Internal server error: {e}"}
 
     # ------------------------------------------------------------------
