@@ -12,6 +12,7 @@ Endpoints:
   GET /api/providers/<provider>/epg/grid                      – Multi-channel grid view (JSON)
   GET /api/providers/<provider>/channels/<channel_id>/epg     – Single-channel program list
   GET /api/providers/<provider>/programs/<program_id>         – Deep program detail
+  GET /api/providers/<provider>/programs?ids=a,b,c            – Deep detail for several programs
   GET /api/providers/<provider>/persons/<person_id>           – Person detail (name, image, roles)
   GET /api/providers/<provider>/epg-mapping                   – Load channel→EPG ID mapping
   POST /api/providers/<provider>/epg-mapping                  – Persist channel→EPG ID mapping
@@ -436,6 +437,61 @@ def setup_epg_routes(app, manager, service):
             logger.error(f"Program detail error for {provider}/{program_id}: {e}")
             response.status = 500
             response.content_type = "application/json; charset=utf-8"
+            return {"error": f"Internal server error: {e}"}
+
+    MAX_BATCH_PROGRAM_IDS = 100
+
+    @app.route("/api/providers/<provider>/programs", method="GET")
+    def get_program_details_batch(provider):
+        """
+        Return full metadata for several programs in one request.
+
+        Query parameters:
+          ids – comma-separated program ids (required, max 100)
+
+        Response: {"provider", "requested", "programs": {id: details},
+                   "not_found": [id, ...]}. Providers without native batch
+        support answer 501; use the single-program endpoint for those.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        ids = list(
+            dict.fromkeys(
+                i.strip() for i in request.query.get("ids", "").split(",") if i.strip()
+            )
+        )
+        if not ids:
+            response.status = 400
+            return {"error": "Query parameter 'ids' is required (comma-separated)"}
+        if len(ids) > MAX_BATCH_PROGRAM_IDS:
+            response.status = 400
+            return {"error": f"At most {MAX_BATCH_PROGRAM_IDS} ids per request"}
+
+        try:
+            batch = epg_ops.get_program_details_batch(
+                provider_name=provider,
+                program_ids=ids,
+            )
+
+            if batch is None:
+                response.status = 501
+                return {"error": f"Provider '{provider}' does not support batch program details"}
+
+            return {
+                "provider": provider,
+                "requested": len(ids),
+                "programs": {
+                    pid: details.to_dict() for pid, details in batch.items() if details
+                },
+                "not_found": [pid for pid in ids if not batch.get(pid)],
+            }
+
+        except ValueError as e:
+            logger.error(f"Batch program detail error for {provider}: {e}")
+            response.status = 404
+            return {"error": str(e)}
+        except Exception as e:
+            logger.error(f"Batch program detail error for {provider}: {e}")
+            response.status = 500
             return {"error": f"Internal server error: {e}"}
 
     @app.route("/api/providers/<provider>/persons/<person_id>", method="GET")

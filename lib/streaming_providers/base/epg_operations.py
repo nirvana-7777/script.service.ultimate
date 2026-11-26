@@ -304,6 +304,27 @@ class EPGOperations:
         # must declare EpgCapability.DETAILS to support this endpoint.
         return None
 
+    def get_program_details_batch(
+        self,
+        provider_name: str,
+        program_ids: List[str],
+    ) -> Optional[Dict[str, Optional[EPGProgramDetails]]]:
+        """Get full metadata for several programs in one call.
+
+        Returns ``{program_id: details or None}``, or None if the provider
+        has no native batch support (callers fall back to single lookups).
+        """
+        provider = self._get_provider(provider_name)
+
+        if EpgCapability.DETAILS not in self._capabilities(provider):
+            return None
+
+        batch = getattr(provider, "get_program_details_batch", None)
+        if not callable(batch):
+            return None
+
+        return batch(program_ids)
+
     # ------------------------------------------------------------------
     # Person detail
     # ------------------------------------------------------------------

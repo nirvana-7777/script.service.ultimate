@@ -25,6 +25,7 @@ from __future__ import annotations
 import re
 import time
 import uuid
+from urllib.parse import quote
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -530,6 +531,82 @@ class Magenta2EpgManager:
 
         return entry or {}
 
+    # Set to False at runtime if the feed turns out to ignore a comma list
+    # in byGuid (see _fetch_program_details_batch).
+    _batch_supported = True
+
+    def _fetch_program_details_batch(self, guids: List[str]) -> Dict[str, Dict[str, Any]]:
+        """Raw feed entries for many guids, one request for all cache misses.
+
+        Uses ``byGuid=a|b|c&range=1-`` (ThePlatform's OR syntax, the same
+        ``|`` separator the other magenta2 managers use for their filters).
+        Misses are cached (including ``None``) exactly like single fetches.
+        If the feed returns nothing for a multi-guid query, the guids are
+        retried one by one; if that finds entries, the feed does not support
+        lists here and batching is switched off for this manager so later
+        calls go straight to singles.
+        """
+        result: Dict[str, Dict[str, Any]] = {}
+        missing: List[str] = []
+        for guid in guids:
+            if guid in self._program_cache:
+                self._program_cache.move_to_end(guid)
+                result[guid] = self._program_cache[guid] or {}
+            else:
+                missing.append(guid)
+
+        if not missing or not self._programs_feed_url:
+            return result
+
+        if len(missing) == 1 or not self._batch_supported:
+            for guid in missing:
+                result[guid] = self._fetch_program_details(guid)
+            return result
+
+        url = (
+            f"{self._programs_feed_url}"
+            f"?byGuid={quote('|'.join(missing), safe='')}"
+            f"&range=1-"
+            f"&cid={uuid.uuid4()}"
+        )
+        data = self._get_with_retry(url, operation="epg_program_details_batch")
+        if data is None:
+            # Request failed after retries: report as not fetched, do not
+            # cache, and do not multiply the load with N single retries.
+            for guid in missing:
+                result[guid] = {}
+            return result
+
+        entries = data.get("entries") or []
+        by_guid = {
+            entry["guid"]: entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("guid")
+        }
+
+        if not by_guid:
+            found_single = False
+            for guid in missing:
+                single = self._fetch_program_details(guid)
+                result[guid] = single
+                found_single = found_single or bool(single)
+            if found_single:
+                logger.warning(
+                    "[Magenta2EpgManager] Feed ignored byGuid=a|b|c; "
+                    "disabling program-detail batching"
+                )
+                self._batch_supported = False
+            return result
+
+        for guid in missing:
+            entry = by_guid.get(guid)
+            self._program_cache[guid] = entry
+            result[guid] = entry or {}
+        while len(self._program_cache) > self._PROGRAM_CACHE_MAX_SIZE:
+            self._program_cache.popitem(last=False)
+
+        return result
+
     # ------------------------------------------------------------------
     # Schedule fetching
     # ------------------------------------------------------------------
@@ -918,7 +995,35 @@ class Magenta2EpgManager:
         raw = self._fetch_program_details(program_id)
         if not raw:
             return None
+        return self._details_from_raw(program_id, raw)
 
+    def get_program_details_batch(
+            self, program_ids: List[str]
+    ) -> Dict[str, Optional[EPGProgramDetails]]:
+        """Details for many programmes using one feed request where possible.
+
+        Returns ``{program_id: details or None}`` for every distinct
+        requested id; ``None`` means the feed has no entry for it.
+        """
+        ids = list(dict.fromkeys(pid for pid in program_ids if pid))
+        raws = self._fetch_program_details_batch(ids)
+
+        result: Dict[str, Optional[EPGProgramDetails]] = {}
+        for pid in ids:
+            raw = raws.get(pid)
+            if not raw:
+                result[pid] = None
+                continue
+            try:
+                result[pid] = self._details_from_raw(pid, raw)
+            except Exception as exc:  # one bad entry must not fail the batch
+                logger.warning(
+                    f"[Magenta2EpgManager] Could not build details for {pid}: {exc}"
+                )
+                result[pid] = None
+        return result
+
+    def _details_from_raw(self, program_id: str, raw: Dict[str, Any]) -> EPGProgramDetails:
         # Prefer credits[] (names pre-resolved, clean creditType). Fall back
         # to dt$creditIds + person API only when credits[] is absent.
         credits_list = raw.get("credits") or []

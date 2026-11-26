@@ -1339,6 +1339,12 @@ class Magenta2Provider(StreamingProvider):
         """Get detailed metadata for a single programme."""
         return self._epg_manager.get_program_details(program_id)
 
+    def get_program_details_batch(
+        self, program_ids: List[str], **kwargs: Any
+    ) -> Dict[str, Optional[EPGProgramDetails]]:
+        """Get full metadata for many programs; None means no entry."""
+        return self._epg_manager.get_program_details_batch(program_ids)
+
     def get_person_details(self, person_id: str, **kwargs: Any) -> Optional[PersonData]:
         """Get name/image/roles for a single person (``gnp_<digits>``)."""
         return self._epg_manager.get_person_details(person_id)

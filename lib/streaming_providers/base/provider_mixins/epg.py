@@ -103,6 +103,18 @@ class ProviderEpgMixin:
         """
         return None
 
+    def get_program_details_batch(
+        self, program_ids: List[str], **kwargs
+    ) -> Optional[Dict[str, Optional[EPGProgramDetails]]]:
+        """
+        Get full metadata for many programs in one call.
+
+        Override if the provider can fetch several programs more cheaply than
+        one by one. Default returns None (not supported); callers then use
+        get_program_details per program.
+        """
+        return None
+
     def get_person_details(self, person_id: str, **kwargs) -> Optional[PersonData]:
         """
         Get name/image/roles for a single person referenced by program credits.
