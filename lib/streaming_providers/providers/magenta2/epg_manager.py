@@ -30,7 +30,7 @@ from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from ...base.models.epg_models import EPGEntry, EPGProgramDetails, PersonData
+from ...base.models.epg_models import EPGCategory, EPGEntry, EPGProgramDetails, PersonData
 from ...base.utils.logger import logger
 from ..lib_theplatform import paginate_feed, PaginationError
 from .constants import DEFAULT_REQUEST_TIMEOUT
@@ -85,6 +85,32 @@ class Magenta2EpgManager:
         "cast", "directors", "producers", "writers",
         "presenter", "composers", "contributors",
     )
+
+    # Telekom's ``category`` tag is a catalogue grouping with a numeric sort
+    # prefix ("200-Serie"), i.e. the KIND of programme, not a genre. It maps
+    # onto EPGCategory; genres come from genre-primary/-secondary only.
+    # Keys are the label with the numeric prefix stripped, casefolded.
+    # Only "serie" is confirmed against real payloads so far; the remaining
+    # keys are best-effort and unmapped labels yield category=None (logged
+    # once at debug level) instead of a guess.
+    _CATEGORY_PREFIX_PATTERN = re.compile(r"^\s*\d+\s*[-_.:]\s*")
+    _CATEGORY_MAP: Dict[str, str] = {
+        "serie": EPGCategory.SERIES,
+        "serien": EPGCategory.SERIES,
+        "film": EPGCategory.MOVIE,
+        "filme": EPGCategory.MOVIE,
+        "spielfilm": EPGCategory.MOVIE,
+        "show": EPGCategory.SHOW,
+        "shows": EPGCategory.SHOW,
+        "unterhaltung": EPGCategory.SHOW,
+        "sport": EPGCategory.SPORT,
+        "information": EPGCategory.INFORMATION,
+        "informationen": EPGCategory.INFORMATION,
+        "info": EPGCategory.INFORMATION,
+        "nachrichten": EPGCategory.INFORMATION,
+        "news": EPGCategory.INFORMATION,
+    }
+    _unmapped_categories_logged: Set[str] = set()
 
     _CACHE_MAX_SIZE = 1000
     # F3: programme-detail responses are the bulk of the fetch volume in a
@@ -697,12 +723,12 @@ class Magenta2EpgManager:
     def _extract_genre(tags: List[Dict[str, Any]]) -> Optional[str]:
         """Return the best single genre string (used by EPGEntry grid path).
 
-        F5: genre-primary is preferred over category regardless of tag order.
-        category is a catalogue grouping ("200-Serie"), not a genre; using
-        tag order previously caused the category to win on the sample payload
-        simply because it appeared first in the list.
+        genre-primary is preferred over genre-secondary regardless of tag
+        order. The ``category`` tag ("200-Serie") is deliberately NOT a
+        genre: it is the kind of programme and is exposed via
+        ``_extract_category`` / ``EPGEntry.category`` instead.
         """
-        for preferred in ("genre-primary", "category"):
+        for preferred in ("genre-primary", "genre-secondary"):
             for tag in tags or []:
                 if tag.get("scheme") == preferred and tag.get("title"):
                     return tag["title"]
@@ -710,18 +736,45 @@ class Magenta2EpgManager:
 
     @staticmethod
     def _extract_genres(tags: List[Dict[str, Any]]) -> Optional[List[str]]:
-        """Return all unique genre strings, ordered genre-primary first,
-        then genre-secondary, then category. Matches ``_extract_genre``'s
-        priority so the single-value and list views agree.
+        """Return all unique genre strings, genre-primary first, then
+        genre-secondary. Matches ``_extract_genre``'s priority so the
+        single-value and list views agree. Excludes the ``category`` tag
+        (see ``_extract_category``).
         """
         seen: Dict[str, None] = {}  # ordered-set via insertion-order dict
-        for preferred in ("genre-primary", "genre-secondary", "category"):
+        for preferred in ("genre-primary", "genre-secondary"):
             for tag in tags or []:
                 if tag.get("scheme") == preferred:
                     title = tag.get("title")
                     if title and title not in seen:
                         seen[title] = None
         return list(seen) if seen else None
+
+    @classmethod
+    def _extract_category(cls, tags: List[Dict[str, Any]]) -> Optional[str]:
+        """Map the ``category`` tag (e.g. "200-Serie") to an EPGCategory.
+
+        Returns None when there is no category tag or its label is not in
+        ``_CATEGORY_MAP``; unknown labels are logged once at debug level so
+        the map can be extended from real data.
+        """
+        for tag in tags or []:
+            if tag.get("scheme") != "category":
+                continue
+            title = tag.get("title")
+            if not title:
+                continue
+            key = cls._CATEGORY_PREFIX_PATTERN.sub("", str(title)).strip().casefold()
+            category = cls._CATEGORY_MAP.get(key)
+            if category:
+                return category
+            if title not in cls._unmapped_categories_logged:
+                cls._unmapped_categories_logged.add(title)
+                logger.debug(
+                    f"[Magenta2EpgManager] Unmapped category tag {title!r}; "
+                    f"leaving EPG category unset"
+                )
+        return None
 
     @staticmethod
     def _parse_parental_rating(ratings: List[Dict[str, Any]]) -> Optional[int]:
@@ -820,6 +873,7 @@ class Magenta2EpgManager:
         tags = details.get("tags", []) or []
         genre_description = self._extract_genre(tags)
         genres = self._extract_genres(tags)
+        category = self._extract_category(tags)
 
         ratings = details.get("ratings") or []
         parental_rating = self._parse_parental_rating(ratings)
@@ -854,6 +908,7 @@ class Magenta2EpgManager:
             genre_sub_type=None,
             genre_description=genre_description,
             genres=genres,
+            category=category,
             season_number=season_number,
             episode_number=episode_number,
             episode_part_number=None,
@@ -1093,6 +1148,7 @@ class Magenta2EpgManager:
             season_number=self._parse_episode_number(raw.get("tvSeasonNumber")),
             episode_number=self._parse_episode_number(raw.get("tvSeasonEpisodeNumber")),
             genres=self._extract_genres(tags),
+            category=self._extract_category(tags),
             parental_rating=self._parse_parental_rating(ratings),
             parental_rating_code=self._parse_parental_rating_code(ratings),
             is_adult=is_adult,

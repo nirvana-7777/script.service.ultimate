@@ -90,6 +90,38 @@ class EPGEventState(IntEnum):
     DELETED = 2  # Event deleted
 
 
+class EPGCategory:
+    """
+    Provider-independent, coarse programme CATEGORY (what kind of programme
+    this is), as opposed to its GENRE (what it is about / its style).
+
+    Examples: a sitcom episode is category ``SERIES`` with genre "Sitcom";
+    a Bundesliga match is category ``SPORT`` with genre "Fussball".
+
+    Providers map their own catalogue/type labels onto these values (see
+    e.g. the Magenta2 ``category`` tag, which carries labels like
+    "200-Serie"). Anything that cannot be mapped reliably stays ``None`` -
+    never guess, and never put provider-specific labels here. Provider
+    labels that are genre-like belong into ``genres`` / ``genre_description``.
+
+    Values are plain lowercase strings so they serialise unchanged to JSON
+    for the web UI and the PVR frontend.
+    """
+
+    MOVIE = "movie"
+    SERIES = "series"
+    SHOW = "show"
+    SPORT = "sport"
+    INFORMATION = "information"
+
+    ALL = frozenset({MOVIE, SERIES, SHOW, SPORT, INFORMATION})
+
+    @classmethod
+    def is_valid(cls, value: Optional[str]) -> bool:
+        """True for None (unset) and for any known category value."""
+        return value is None or value in cls.ALL
+
+
 @dataclass
 class EPGEntry:
     """
@@ -226,10 +258,20 @@ class EPGEntry:
 
     genres: Optional[List[str]] = None
     """
-    List of text genre/category labels (e.g. ["Komedija", "Drama", "Romansa"]),
+    List of text genre labels (e.g. ["Komedija", "Drama", "Romansa"]),
     distinct from the single numeric DVB-SI `genre` field and from the single
     `genre_description` string above. Named to match EPGProgramDetails.genres
     so the two line up if this ever gets pulled into a shared merge field.
+    Describes WHAT a programme is about; the kind of programme (movie,
+    series, ...) belongs into `category`.
+    """
+
+    category: Optional[str] = None
+    """
+    Coarse programme category, one of the EPGCategory constants (movie,
+    series, show, sport, information) or None when the provider does not say
+    / it cannot be mapped reliably. Orthogonal to `genre`/`genres`: a sitcom
+    episode has category "series" and genre "Sitcom".
     """
 
     # Optional fields - Episode Information
@@ -344,6 +386,7 @@ class EPGEntry:
             "genre",
             "genre_description",
             "genres",
+            "category",
             "season_number",
             "episode_number",
             "episode_part_number",
@@ -686,6 +729,12 @@ class EPGEntry:
         if self.end <= self.start:
             raise ValueError("end time must be after start time")
 
+        if not EPGCategory.is_valid(self.category):
+            raise ValueError(
+                f"category must be None or one of {sorted(EPGCategory.ALL)}, "
+                f"got {self.category!r}"
+            )
+
         # Validate episode numbers if set
         if (
             self.season_number is not None
@@ -795,6 +844,8 @@ class EPGProgramDetails:
 
     # Additional metadata
     genres: Optional[List[str]] = None
+    # Coarse programme category (EPGCategory constant); see EPGEntry.category.
+    category: Optional[str] = None
     parental_rating: Optional[int] = None
     # NEW: raw parental rating string from the provider ("FSK12", "TV-PG").
     # EPGEntry already has this field; mirror it here so a detail fetch can
@@ -839,6 +890,13 @@ class EPGProgramDetails:
     EPGEntry field.
     """
 
+    def __post_init__(self) -> None:
+        if not EPGCategory.is_valid(self.category):
+            raise ValueError(
+                f"category must be None or one of {sorted(EPGCategory.ALL)}, "
+                f"got {self.category!r}"
+            )
+
     def to_dict(self) -> dict:
         """Serialise to a plain dict, omitting None values."""
         result: dict = {"program_id": self.program_id}
@@ -849,7 +907,7 @@ class EPGProgramDetails:
             "presenter", "composers", "contributors",
             "backdrop", "poster", "imdb_number", "provider_vod_id",
             "series_id",
-            "genres", "parental_rating", "parental_rating_code",
+            "genres", "category", "parental_rating", "parental_rating_code",
             "is_adult", "audio_languages", "subtitle_languages",
             "release_date", "duration",
             "season_number", "episode_number",
@@ -925,6 +983,7 @@ class EPGContent:
     # EPGProgramDetails already declare these with identical types, but they
     # were not merged, so e.g. detail genres never reached the entry.
     genres: Optional[List[str]] = None
+    category: Optional[str] = None
     producers: Optional[List[str]] = None
     presenter: Optional[List[str]] = None
     composers: Optional[List[str]] = None
@@ -1261,6 +1320,7 @@ PVREPGTag = EPGEntry
 __all__ = [
     # Main classes
     "EPGEntry",
+    "EPGCategory",
     "EPGProgramDetails",
     "EPGContent",
     "PersonData",
