@@ -329,6 +329,18 @@ class EPGOperations:
     # Person detail
     # ------------------------------------------------------------------
 
+    def supports_person_details(self, provider_name: str) -> bool:
+        """True if the provider overrides ``get_person_details``.
+
+        Lets the API answer 501 (not supported) instead of 404 (unknown
+        person), so clients can stop asking providers that never can answer.
+        """
+        from .provider_mixins.epg import ProviderEpgMixin
+
+        provider = self._get_provider(provider_name)
+        method = getattr(type(provider), "get_person_details", None)
+        return method is not None and method is not ProviderEpgMixin.get_person_details
+
     def get_person_details(
         self,
         provider_name: str,

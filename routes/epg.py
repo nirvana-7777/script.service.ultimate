@@ -13,7 +13,7 @@ Endpoints:
   GET /api/providers/<provider>/channels/<channel_id>/epg     – Single-channel program list
   GET /api/providers/<provider>/programs/<program_id>         – Deep program detail
   GET /api/providers/<provider>/programs?ids=a,b,c            – Deep detail for several programs
-  GET /api/providers/<provider>/persons/<person_id>           – Person detail (name, image, roles)
+  GET /api/providers/<provider>/persons/<person_id>           – Person detail (name, image, roles); 501 if provider has no person lookup
   GET /api/providers/<provider>/epg-mapping                   – Load channel→EPG ID mapping
   POST /api/providers/<provider>/epg-mapping                  – Persist channel→EPG ID mapping
 """
@@ -502,6 +502,10 @@ def setup_epg_routes(app, manager, service):
         """
         response.content_type = "application/json; charset=utf-8"
         try:
+            if not epg_ops.supports_person_details(provider):
+                response.status = 501
+                return {"error": f"Provider '{provider}' does not support person details"}
+
             person = epg_ops.get_person_details(
                 provider_name=provider,
                 person_id=person_id,
