@@ -48,6 +48,8 @@ from .constants import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_PLATFORM,
     DEFAULT_REQUEST_TIMEOUT,
+    IMAGE_SCALE_EPG_SIZE,
+    IMAGE_SCALE_LOGO_SIZE,
     MAGENTA2_LEGACY_CLIENT_IDS,
     MAGENTA2_LOGO,
     MAGENTA2_PLATFORMS,
@@ -801,6 +803,9 @@ class Magenta2Provider(StreamingProvider):
             fetch_details=False,  # ← Don't fetch details on schedule grid
             default_past_days=7,
             default_future_days=13,
+            build_scaled_image_url=lambda url: self._build_scaled_image_url(
+                url, *IMAGE_SCALE_EPG_SIZE
+            ),
         )
         logger.debug("EPG Manager constructed")
 
@@ -1005,8 +1010,18 @@ class Magenta2Provider(StreamingProvider):
     # Image scaling                                                        #
     # ------------------------------------------------------------------ #
 
-    def _build_scaled_image_url(self, original_url: str) -> Optional[str]:
-        """Return a scaled logo URL using the image scaling service."""
+    def _build_scaled_image_url(
+        self,
+        original_url: str,
+        width: int = IMAGE_SCALE_LOGO_SIZE[0],
+        height: int = IMAGE_SCALE_LOGO_SIZE[1],
+    ) -> Optional[str]:
+        """Return a scaled image URL using the image scaling service.
+
+        Defaults to the channel-logo size; EPG images pass their own size.
+        Falls back to the original URL when the manifest carries no scaling
+        config.
+        """
         if not original_url:
             return None
         if not self.provider_config or not self.provider_config.manifest:
@@ -1023,10 +1038,20 @@ class Magenta2Provider(StreamingProvider):
                 call_params[key] = value
 
         base_url = image_config.scaling_base_url.rstrip("/")
+        # Already a scaling-service URL (e.g. the feed pre-scaled it):
+        # don't wrap it a second time.
+        if original_url.startswith(f"{base_url}/iss?"):
+            return original_url
         # Only `src` is quoted (it is a raw URL). The manifest-provided call
         # parameters are emitted verbatim — they may already be
         # percent-encoded, and re-quoting would double-encode them.
-        params = {**call_params, "x": "120", "y": "42", "ar": "keep", "src": original_url}
+        params = {
+            **call_params,
+            "x": str(width),
+            "y": str(height),
+            "ar": "keep",
+            "src": original_url,
+        }
         query_string = "&".join(
             f"{k}={quote(v, safe='') if k == 'src' else v}" for k, v in params.items()
         )

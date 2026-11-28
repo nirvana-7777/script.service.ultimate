@@ -28,7 +28,7 @@ import uuid
 from urllib.parse import quote
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from ...base.models.epg_models import EPGCategory, EPGEntry, EPGProgramDetails, PersonData
 from ...base.utils.logger import logger
@@ -126,6 +126,7 @@ class Magenta2EpgManager:
             fetch_details: bool = True,
             default_past_days: int = 7,
             default_future_days: int = 13,
+            build_scaled_image_url: Optional[Callable[[str], Optional[str]]] = None,
     ) -> None:
         self._endpoint_manager = endpoint_manager
         self._provider_config = provider_config
@@ -134,6 +135,9 @@ class Magenta2EpgManager:
         self._fetch_details = fetch_details
         self._default_past_days = default_past_days
         self._default_future_days = default_future_days
+        # Routes EPG image URLs (icon, backdrop, person portraits) through
+        # the provider's image scaling service. None = pass URLs unchanged.
+        self._build_scaled_image_url = build_scaled_image_url
 
         self._schedule_feed_url = self._resolve_feed_url("allChannelSchedulesFeed")
         self._programs_feed_url = self._resolve_feed_url("allProgramsFeedUrl")
@@ -371,7 +375,7 @@ class Magenta2EpgManager:
             image_url = None
             image_data = details.get("image")
             if image_data and isinstance(image_data, dict):
-                image_url = image_data.get("href")
+                image_url = self._scale_image(image_data.get("href"))
 
             person_data = PersonData(
                 id=person_id,
@@ -683,6 +687,20 @@ class Magenta2EpgManager:
     # Listing -> EPGEntry
     # ------------------------------------------------------------------
 
+    def _scale_image(self, url: Optional[str]) -> Optional[str]:
+        """Return ``url`` routed through the scaling service.
+
+        Never raises and never drops an image: on any failure (or when no
+        scaler is configured) the original URL is returned.
+        """
+        if not url or self._build_scaled_image_url is None:
+            return url
+        try:
+            return self._build_scaled_image_url(url) or url
+        except Exception as exc:
+            logger.warning(f"[Magenta2EpgManager] Image scaling failed for {url}: {exc}")
+            return url
+
     @staticmethod
     def _extract_icon(thumbnails: Dict[str, Any]) -> Optional[str]:
         """Return the best available poster/icon URL from a thumbnails dict.
@@ -868,7 +886,7 @@ class Magenta2EpgManager:
         episode_number = self._parse_episode_number(details.get("tvSeasonEpisodeNumber"))
 
         thumbnails = details.get("thumbnails", {}) or {}
-        icon = self._extract_icon(thumbnails)
+        icon = self._scale_image(self._extract_icon(thumbnails))
 
         tags = details.get("tags", []) or []
         genre_description = self._extract_genre(tags)
@@ -1131,8 +1149,8 @@ class Magenta2EpgManager:
             description=raw.get("description"),
             episode_name=raw.get("secondaryTitle") or None,
             year=year,
-            icon=self._extract_icon(thumbnails),
-            backdrop=self._extract_backdrop(thumbnails),
+            icon=self._scale_image(self._extract_icon(thumbnails)),
+            backdrop=self._scale_image(self._extract_backdrop(thumbnails)),
             cast=credit_map["cast"],
             directors=credit_map["directors"],
             writers=credit_map["writers"],

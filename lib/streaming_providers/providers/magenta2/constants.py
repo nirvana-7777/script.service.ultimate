@@ -13,6 +13,15 @@ DEFAULT_COUNTRY = "de"
 
 MAGENTA2_LOGO = "https://thumb.wikimedia.org/wikipedia/commons/thumb/e/e4/Magenta_TV_Logo_2024.svg/1280px-Magenta_TV_Logo_2024.svg.png"
 
+# Image scaling service (ngiss) target sizes. With ``ar=keep`` these are
+# bounding boxes, not exact output sizes.
+# Channel logos.
+IMAGE_SCALE_LOGO_SIZE = (120, 42)
+# EPG images (programme icon/backdrop, person portraits). 660x372 is the
+# size the original T-Online web client requests; the manifest does not
+# provide one.
+IMAGE_SCALE_EPG_SIZE = (660, 372)
+
 # Platform configuration
 #
 # Each entry describes only what's needed to build the bootstrap/manifest
